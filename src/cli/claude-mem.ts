@@ -353,6 +353,8 @@ export async function runClaudeMem(argv: string[], deps: ClaudeMemDeps): Promise
     case "take-over":
       return await takeOverCommand(deps, rest);
     default:
-      return wrong(deps, `There is no claude-mem command "${word}"`);
+      // The word is never echoed: a person pastes a key by mistake here, and a key never reaches
+      // output, a log line or an error.
+      return wrong(deps, "claude-mem takes status, route, key, fallback or take-over");
   }
 }

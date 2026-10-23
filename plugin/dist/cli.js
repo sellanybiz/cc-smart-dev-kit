@@ -11019,8 +11019,9 @@ function readClaudeMemFacts(paths) {
   const openRouterBackend = backendAt(config, textOf(read, OPENROUTER_BASE_URL));
   const openRouterModel = textOf(read, OPENROUTER_MODEL);
   const openRouterTarget = openRouterBackend !== null && openRouterModel !== "" ? `${openRouterBackend.name}:${openRouterModel}` : null;
-  const handKeys = handSetKeys(read);
   const refused = keysPerChoice(provider);
+  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
+  const handKeys = handSetKeys(read).filter((one) => writable.has(one));
   const refusedByHand = (keys) => keys.some((one) => handKeys.includes(one));
   return {
     ...base,
@@ -11339,6 +11340,7 @@ async function takeOver(paths) {
     }
     if (taken.length === 0)
       return { lines: [CHANGED_MEANWHILE], ok: false };
+    recordChoices(paths, taken.map((path) => [path, getKey(read.data, path).value]));
     const short = tildify(paths.claudeMemSettingsFile, paths.home);
     return {
       lines: [
@@ -40134,7 +40136,7 @@ async function runClaudeMem(argv, deps) {
     case "take-over":
       return await takeOverCommand(deps, rest);
     default:
-      return wrong(deps, `There is no claude-mem command "${word}"`);
+      return wrong(deps, "claude-mem takes status, route, key, fallback or take-over");
   }
 }
 

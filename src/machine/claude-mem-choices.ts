@@ -382,9 +382,13 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
     openRouterBackend !== null && openRouterModel !== ""
       ? `${openRouterBackend.name}:${openRouterModel}`
       : null;
-  // The keys the person set by hand, and so the choices a change to which is refused now.
-  const handKeys: string[] = handSetKeys(read);
   const refused = keysPerChoice(provider);
+  // The hand-set keys some choice really writes now — and so the choices a change to which is
+  // refused. claude-mem's OpenRouter three refuse nothing while no choice takes them (on a Claude
+  // route the fallback holds the compat keys), so naming them would be untrue, and would leave a
+  // line with no choice in it.
+  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
+  const handKeys: string[] = handSetKeys(read).filter((one) => writable.has(one));
   const refusedByHand = (keys: readonly string[]): boolean =>
     keys.some((one) => handKeys.includes(one));
   return {
@@ -653,7 +657,7 @@ async function save(
  * just kept (owned), or, for claude-mem's own default chosen as it was (nothing written, so
  * nothing owned), the value with `owned: false`.
  */
-function recordChoices(paths: CliPaths, wanted: ReadonlyArray<readonly [KeyPath, string]>): void {
+function recordChoices(paths: CliPaths, wanted: ReadonlyArray<readonly [KeyPath, unknown]>): void {
   const file = realTarget(paths.claudeMemSettingsFile);
   const owned = ownedRecords(paths.stateDir, file);
   const chosen: ChoiceRecord[] = [];
@@ -948,6 +952,13 @@ export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {
       else taken.push(path);
     }
     if (taken.length === 0) return { lines: [CHANGED_MEANWHILE], ok: false };
+    // The taken keys are the person's choices too, not only the kit's own records: a later
+    // `setup` follows the scout slot otherwise and would plan its model over theirs, and take a
+    // taken-over fallback out with `RETIRED_KEYS` (`isPersonsChoice` is what stops both).
+    recordChoices(
+      paths,
+      taken.map((path) => [path, getKey(read.data, path).value] as const),
+    );
     const short = tildify(paths.claudeMemSettingsFile, paths.home);
     return {
       lines: [

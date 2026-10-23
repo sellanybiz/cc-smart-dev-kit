@@ -1154,3 +1154,36 @@ describe("MS1: the Claude fallback's own model, and who a hand value refuses", (
     expect(openrouter.current?.key.refusedByHand).toBe(false);
   });
 });
+
+describe("MS1: what a later setup does to a taken-over value", () => {
+  test("MS1: it leaves the person's route and their fallback exactly as they are", async () => {
+    const w = machine({
+      gateway: "scout",
+      settings: {
+        ...SEEDED,
+        CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${BACKEND_URL}/v1`,
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
+        CLAUDE_MEM_PROVIDER: "openai-compatible",
+        CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-x",
+      },
+    });
+    // Before the take-over, setup leaves the whole file alone: the values are the person's.
+    expect(w.setup().provider).toBeNull();
+    expect(await takeOver(w.paths)).toMatchObject({ ok: true });
+    // After it too: a plain setup must never pick a model for the person, nor take a taken-over
+    // fallback out with the retired keys.
+    const plan = w.setup();
+    expect(plan.provider).toBeNull();
+    // The fallback provider holds claude-mem's own default ("claude"), which nobody chose, so
+    // setup still retires it as it always did. The person's fallback model is not touched.
+    expect(plan.remove).toEqual([["CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER"]]);
+    expect(w.settings()).toMatchObject({
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
+      CLAUDE_MEM_PROVIDER: "openai-compatible",
+      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-x",
+    });
+    // The taken values read as the person's, not as setup's.
+    expect(readClaudeMemFacts(w.paths).current?.route.source).toBe("portal");
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+  });
+});

@@ -206,8 +206,8 @@ and `help claude-mem` and the README's table name it.
   lands in the shell's history), and is never printed; `--gateway` puts the gateway's own key for
   that backend back.
 - **`status` names who set each value** (claude-mem's own default, setup from the scout slot, the
-  person from the portal, or the person by hand in claude-mem's file) and, where a hand-set key
+  person's own choice, or the person by hand in claude-mem's file) and, where a hand-set key
   refuses a choice, names it and points at the take-over. A write from the command lands in the
-  same choices file the card writes (`recordChoices`), so `status` calls it `you, from the
-  portal` too.
+  same choices file the card writes (`recordChoices`), and the record cannot tell the two apart,
+  so the word is `your choice` — the person, not the way in.
 - **Exit codes**: 0 done, 1 a refusal or a failed check, 2 a wrong word or option.

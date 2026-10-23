@@ -237,7 +237,10 @@ describe("claude-mem route and fallback", () => {
     expect(await runClaudeMem(["fallback"], bare.deps)).toBe(2);
     expect(await runClaudeMem(["fallback", "off", "extra"], bare.deps)).toBe(2);
     expect(await runClaudeMem(["nonsense"], bare.deps)).toBe(2);
-    expect(bare.printed()).toContain('There is no claude-mem command "nonsense"');
+    expect(bare.printed()).toContain("claude-mem takes status, route, key, fallback or take-over");
+    // A word that is nonsense is never echoed back: it is what a person pastes by mistake.
+    expect(await runClaudeMem([OWN_KEY], bare.deps)).toBe(2);
+    expect(bare.printed()).not.toContain("PLANTED");
   });
 });
 
