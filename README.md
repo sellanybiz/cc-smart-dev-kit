@@ -317,7 +317,7 @@ Installs the launcher, turns Claude Code's own plugin auto-update off for this m
 
 #### `cc-smart-dev-kit restore`
 
-Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys (also the ones you chose in the [portal](#claude-mem-from-the-portal), with the record of those choices), its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, the three [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) keys, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session. **A project's own gateway key counts too**: a project set to `on` (`gateway project on`, or its team file) keeps that project's sessions on the router, so stage 1 waits for them exactly as it waits for the machine's own key; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing.
+Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys (also the ones you chose in the [portal](#claude-mem-from-the-portal), with the record of those choices; a value a [take-over](#cc-smart-dev-kit-claude-mem) recorded goes back as it was, while a taken-over key is removed like any other key of the kit's), its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, the three [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) keys, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session. **A project's own gateway key counts too**: a project set to `on` (`gateway project on`, or its team file) keeps that project's sessions on the router, so stage 1 waits for them exactly as it waits for the machine's own key; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing.
 
 ### The project and its workflow
 
@@ -350,6 +350,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, th
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit portal [status\|stop] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It starts with Claude Code, like claude-mem's worker: a new session starts it when it is not running, and a plugin update restarts it onto the new version. It binds `127.0.0.1` only and stays up until you stop it. `portal` opens it (starting it when needed), `status` says whether it runs and on which version, `stop` ends it, and `--no-open` prints the address instead of opening your browser. There is no sign-in: any program or account on this machine can open it (below). |
+| `cc-smart-dev-kit claude-mem [status\|route\|key\|fallback\|take-over]` | claude-mem's route and its model, its key and its quota fallback, from your own terminal — the same choices the Machine page's claude-mem card makes, checked the same way (the backend has to list the model, then one tiny chat) and written through the same lock. The key comes on **stdin**, never as an argument, and is never printed. `take-over` records the values you set by hand in claude-mem's file as cc-smart-dev-kit's own, so the route, the key and the fallback can change; nothing in that file changes until you pick another, and `restore` puts the values back. Full text: [below](#cc-smart-dev-kit-claude-mem). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
 
 ### Sessions and worktrees
@@ -1486,11 +1487,15 @@ you choose here**, and the card says so.
   backend's key. A key you pasted stays with you.
 - **Fallback** (`CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` and `…_MODEL`): what takes claude-mem's
   work while its route's provider is limited. Off (claude-mem waits), Claude (claude-mem's own
-  Claude model, or one from the list), or a backend model. claude-mem has one OpenAI-compatible
-  setting, so a backend fallback needs a route that is not a backend model, and a Claude
-  fallback a route that is not Claude: a fallback that is the route's own provider never takes
-  over, and the card says so. Since claude-mem 13.37.0 an empty fallback means Claude and
-  `off` means none; before it, an empty one means none (and "off" writes that).
+  Claude model, or one from the list), or a backend model — on any route. claude-mem ignores a
+  fallback whose provider is the route's own, so where the route is already a backend model the
+  fallback uses claude-mem's other OpenAI-shaped provider, **OpenRouter**, pointed at the same
+  backend and model (`CLAUDE_MEM_OPENROUTER_BASE_URL`, `…_MODEL`, `…_API_KEY`): your summaries
+  reach that backend either way. A Claude fallback needs a route that is not Claude, for the
+  same reason, and the card says so. Since claude-mem 13.37.0 an empty fallback means Claude,
+  with claude-mem's own model (`CLAUDE_MEM_QUOTA_FALLBACK_MODEL`, else `CLAUDE_MEM_MODEL`:
+  Haiku, unless you changed it), and `off` means none; before it, an empty one means none (and
+  "off" writes that).
 - **Let setup decide again** forgets your choices and runs setup's own claude-mem step: the
   route follows the scout slot again, and the fallback goes back to claude-mem's default.
 
@@ -1505,10 +1510,47 @@ The rules:
   (`~/.claude/cc-smart-dev-kit/claude-mem-choices.json`): a later `setup` leaves the provider
   keys, and a fallback you chose, as they are. `restore` takes your writes out and removes
   that record, so the next setup follows the scout slot again.
-- **A value you set by hand stays yours.** The card says so, and a change to it is refused
-  in words: change it in the file, or remove it there to set it here.
+- **A value you set by hand stays yours — until you take it over.** The card says so, and a
+  change to it is refused in words: change it in the file, or remove it there to set it here.
+  The **take-over** is the other answer: it records those values as cc-smart-dev-kit's own, so
+  the route, the key and the fallback can change. `cc-smart-dev-kit claude-mem take-over` (below)
+  does it from your own terminal. It names
+  the values it would take and asks first. **Nothing in claude-mem's settings file changes**:
+  each value stays exactly as it is until you pick another. `restore` puts a taken-over value
+  back as it was (one you changed in the file since stays yours); a key is the one exception,
+  because its value is never written down (the record holds only its hash), so `restore` removes
+  a taken-over key like any other key of the kit's.
 - claude-mem not installed, older than 13.29.0, or with a file it cannot read: the card says
   why, with the command that fixes it.
+
+### `cc-smart-dev-kit claude-mem`
+
+The card's choices, from your own terminal. The command runs the same functions the Machine
+page's card does, with the same checks and the same lock, so a machine set here and one set from
+the page agree. It needs no Claude Code session and no portal.
+
+- `cc-smart-dev-kit claude-mem` (or `status`): where claude-mem's summaries go and the model
+  they run on, the key (never the key itself: none, the gateway's own key for that backend, or
+  your own), and the quota fallback with the model that fallback really runs on, each with who
+  set it: claude-mem's own default, setup from the scout slot, your choice (from the card or
+  from this command), or you by hand in claude-mem's file. It also names the choices a hand-set
+  value refuses, and points at the take-over.
+- `cc-smart-dev-kit claude-mem route claude|<backend>:<model>`: sends the summaries to Claude on
+  your own login, or to a backend model. The model is checked first, the way the card's list is:
+  the backend has to list it (`/v1/models`), and then one tiny chat goes to it with the key the
+  choice would use. Nothing is written when either check fails.
+- `cc-smart-dev-kit claude-mem key [--gateway]`: takes the key on **stdin**, never as an
+  argument, checks it with the tiny chat first, and never prints it. `--gateway` puts the
+  gateway's own key for that backend back, as setup does.
+- `cc-smart-dev-kit claude-mem fallback off|claude [<claude model id>]|<backend>:<model>`: what
+  takes over while the route's provider is limited, under the rules above.
+- `cc-smart-dev-kit claude-mem take-over [--yes]`: records the values you set by hand in
+  claude-mem's file as cc-smart-dev-kit's own, so the route, the key and the fallback can change.
+  It names them and asks first; `--yes` skips the question, and with no terminal it is the only
+  way to take them over.
+
+Every write says what changed, and none needs a restart: claude-mem reads its settings file each
+time it uses it. Exit codes: 0 done, 1 a refusal or a failed check, 2 a wrong word or option.
 
 ## Warp
 

@@ -152,6 +152,14 @@ describe("claude-mem status", () => {
     );
     expect(printed()).toContain("! Take those values over before you change them.");
   });
+
+  test("MS1: a choice made here reads as the person's, never as the portal's", async () => {
+    const w = world();
+    await runClaudeMem(["route", "omniroute:glm/flash"], w.deps);
+    expect(await runClaudeMem(["status"], w.deps)).toBe(0);
+    expect(w.printed()).toContain("· route: omniroute:glm/flash — your choice\n");
+    expect(w.printed()).toContain("· key: the gateway's own key for that backend — your choice\n");
+  });
 });
 
 describe("claude-mem route and fallback", () => {

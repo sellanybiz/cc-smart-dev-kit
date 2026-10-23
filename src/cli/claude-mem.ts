@@ -68,7 +68,9 @@ function sourceWords(source: ClaudeMemCurrent["route"]["source"]): string {
     case "hand":
       return "you, by hand in claude-mem's file";
     case "portal":
-      return "you, from the portal";
+      // The person chose it, from the card or from this command: the record cannot tell which
+      // (`sourceOf`), so the word names the person and not the way in.
+      return "your choice";
     default:
       return "setup, from the scout slot";
   }
@@ -80,7 +82,9 @@ function routeText(route: ClaudeMemCurrent["route"]): string {
     return `Claude, on your own Claude login, its model ${route.model ?? "claude-mem's own"} — ${sourceWords(route.source)}`;
   }
   if (route.kind === "backend") {
-    return `${route.model ?? "no model"} on ${route.target ?? route.address ?? route.provider} — ${sourceWords(route.source)}`;
+    // A gateway backend's target already names both halves (`<backend>:<model>`); an address that
+    // is no backend shows the model and where it really goes.
+    return `${route.target ?? `${route.model ?? "no model"} on ${route.address ?? route.provider}`} — ${sourceWords(route.source)}`;
   }
   // Another provider, which the kit does not set: its own model is claude-mem's business, and the
   // model the facts carry for it is the OpenAI-compatible one, which belongs to the fallback.

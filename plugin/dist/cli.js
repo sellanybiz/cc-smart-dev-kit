@@ -39917,7 +39917,7 @@ function sourceWords(source) {
     case "hand":
       return "you, by hand in claude-mem's file";
     case "portal":
-      return "you, from the portal";
+      return "your choice";
     default:
       return "setup, from the scout slot";
   }
@@ -39927,7 +39927,7 @@ function routeText(route) {
     return `Claude, on your own Claude login, its model ${route.model ?? "claude-mem's own"} \u2014 ${sourceWords(route.source)}`;
   }
   if (route.kind === "backend") {
-    return `${route.model ?? "no model"} on ${route.target ?? route.address ?? route.provider} \u2014 ${sourceWords(route.source)}`;
+    return `${route.target ?? `${route.model ?? "no model"} on ${route.address ?? route.provider}`} \u2014 ${sourceWords(route.source)}`;
   }
   return `${route.provider} \u2014 ${sourceWords(route.source)}`;
 }
