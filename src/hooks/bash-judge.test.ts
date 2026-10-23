@@ -322,6 +322,87 @@ describe("a crew session running a lead's command", () => {
   });
 });
 
+describe("a crew session proposing a workflow change", () => {
+  // `workflow propose` pushes a branch and opens a pull request in children no hook sees, so
+  // the guards that deny the session's own `git push` and `gh pr create` (D24) never see them.
+  // The hook's environment is the session's own, so a line that unsets the variable itself is
+  // still this crew session's; the reader steps over the wrappers and the inner shells, so
+  // every spelling of the line meets the same denial.
+  const denied: [string, string][] = [
+    ["cc-smart-dev-kit workflow propose autoCommit true", "the plain line"],
+    [
+      "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow propose autoCommit true",
+      "the variable unset on the line itself",
+    ],
+    ["timeout 60 cc-smart-dev-kit workflow propose autoCommit true", "`timeout`"],
+    ["nohup setsid cc-smart-dev-kit workflow propose autoCommit true", "`nohup` and `setsid`"],
+    ["bash -c 'cc-smart-dev-kit workflow propose autoCommit true'", "an inner shell"],
+    ["$KIT workflow propose autoCommit true", "a computed program"],
+    ["$(command -v cc-smart-dev-kit) workflow propose autoCommit true", "a computed program"],
+    ["cc-smart-dev-kit workflow propose autoMerge --unset", "an `--unset`"],
+  ];
+  for (const [command, what] of denied) {
+    test(`denied: ${what} — ${command}`, async () => {
+      const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain("a crew session never proposes a workflow change");
+      expect(answer.reason).toContain("cc-smart-dev-kit crew report --question");
+    });
+  }
+
+  test("the deny is the hook's own: no file, a broken file and ownHooks cannot soften it", async () => {
+    for (const config of [
+      undefined,
+      { ownHooks: ["job-route"] },
+      { worktree: {} },
+      { requires: ">=99" },
+    ]) {
+      const { env, repo } = project(config);
+      const answer = await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", {
+        ...env,
+        CC_SMART_DEV_KIT_CREW: CREW_ID,
+      });
+      expect({ config, decision: answer.decision }).toEqual({ config, decision: "deny" });
+    }
+  });
+
+  test("in PowerShell it is denied too", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit workflow propose autoCommit true",
+      { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("a crew session never proposes a workflow change");
+  });
+
+  test("the rest of the workflow command passes: reading it, and changing this checkout's policy", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "cc-smart-dev-kit workflow show",
+      "cc-smart-dev-kit workflow set autoCommit true --project",
+      "cc-smart-dev-kit workflow unset autoCommit --project",
+      "cc-smart-dev-kit workflow merge-check 5",
+      "cc-smart-dev-kit workflow review-done --sha abc1234",
+      // Reading the usage proposes nothing, as for a lead command's help.
+      "cc-smart-dev-kit workflow propose --help",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("the same line in a plain session is the command's own check to make: silent", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    expect(
+      (await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", env)).decision,
+    ).toBeUndefined();
+  });
+});
+
 describe("polling for crew news", () => {
   const denied = [
     "while true; do cc-smart-dev-kit crew list; sleep 10; done",

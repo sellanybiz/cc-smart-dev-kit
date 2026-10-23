@@ -38,9 +38,10 @@
  * skipped for the next free one, never reused.
  *
  * **A crew session never runs it** (D24): the command pushes a branch and opens a pull request,
- * in children no hook sees, and a crew session does neither. Like `CLAUDECODE`'s, the check is a
- * courtesy a command can drop (`env -u`); the guards deny the session's own `git push` and
- * `gh pr create` lines either way.
+ * in children no hook sees, and a crew session does neither. The Bash judge denies the command
+ * however the line is spelled — a wrapper, an inner shell, a computed program, `env -u`
+ * (`src/hooks/bash-judge.ts`) — and the check below is the second belt, for a line that reaches
+ * the command another way. The guards deny the session's own `git push` and `gh pr create` too.
  *
  * **Inside Claude Code a review-gate key (`REVIEW_GATE_KEYS`) is refused** before this module
  * runs (`commands.ts`, as `workflow set` refuses it there). Outside Claude Code — the portal,
@@ -50,6 +51,7 @@ import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { CREW_NEVER_PROPOSES } from "../crew/brief";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { parseWorktreeList, runGit } from "../hooks/git";
 import { samePath } from "../path-compare";
@@ -406,10 +408,12 @@ export async function proposeWorkflow(
 
   // A crew session never pushes and never opens a pull request (D24): its own `git push` and
   // `gh pr create` are denied by the guards, but this command makes both in children no hook
-  // sees — so it refuses first, with the step a crew session really has.
+  // sees — so it refuses first, with the step a crew session really has. The Bash judge denies
+  // the command however the line is spelled (`src/hooks/bash-judge.ts`); this is the second
+  // belt, for a line that reaches the command another way.
   if (crewIdOf(context.env) !== null) {
     return fail(
-      `${COMMAND} workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never pushes (D24). ${CREW_QUESTION_STEP}`,
+      `${COMMAND} workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never ${CREW_NEVER_PROPOSES} (D24). ${CREW_QUESTION_STEP}`,
     );
   }
 

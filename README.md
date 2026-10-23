@@ -2478,6 +2478,9 @@ takes the worktree and the branch back, and the pushed branch too — except a `
 that does not answer in time, which leaves both, since the pull request may be open.
 Inside Claude Code the review-gate keys refuse, as `set` does there; outside it — your
 terminal, the portal — every key is allowed, because the pull request's review is the gate.
+A crew session never runs it (D24): the shell judge denies the command however it is spelled —
+a wrapper, an inner shell, a computed program, `env -u` — and the command refuses too, with the
+step that puts the need to its lead.
 
 ## A project's `.claude/cc-smart-dev-kit.json`
 

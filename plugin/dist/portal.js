@@ -25423,6 +25423,7 @@ var CREW_NEVER_RUNS = {
   stop: CREW_NEVER_DOES.resume,
   watch: CREW_NEVER_DOES.watch
 };
+var CREW_NEVER_PROPOSES = "proposes a workflow change";
 function firstPrompt(crewName, leadName, briefFile) {
   return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
 }
@@ -26979,15 +26980,28 @@ function claudeLaunch(step) {
     prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
   };
 }
+function runsKit(step) {
+  return step.computed || step.program === COMMAND;
+}
 function crewNeverRunOf(step) {
   if (step.args[0] !== "crew")
     return null;
-  if (!step.computed && step.program !== COMMAND)
+  if (!runsKit(step))
     return null;
   if (step.args.includes("--help") || step.args.includes("-h"))
     return null;
   const sub = step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : step.args[1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
+}
+function isWorkflowPropose(step) {
+  if (step.words.includes("--help") || step.words.includes("-h"))
+    return false;
+  if (!step.computed) {
+    return step.program === COMMAND && step.args[0] === "workflow" && step.args[1] === "propose";
+  }
+  const lower = step.words.map((word) => word.toLowerCase());
+  const at = lower.indexOf("workflow");
+  return at >= 0 && lower[at + 1] === "propose";
 }
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
@@ -27093,11 +27107,14 @@ function readBash(command, dialect = "bash") {
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
+  let workflowPropose = false;
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
+    if (isWorkflowPropose(step))
+      workflowPropose = true;
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -27119,7 +27136,7 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits, workflowPropose };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -27150,6 +27167,13 @@ function crewNeverRunsAnswer(crewId, command) {
   return [
     `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`
+  ].join(`
+`);
+}
+function crewProposeAnswer(crewId) {
+  return [
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_PROPOSES}: \`${COMMAND} workflow propose\` pushes a branch and opens a pull request in children no hook sees.`,
+    CREW_QUESTION_STEP
   ].join(`
 `);
 }
@@ -27196,6 +27220,9 @@ function judgeBash(reading, context) {
   if (crew !== null && never !== undefined) {
     return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
+  if (crew !== null && reading.workflowPropose) {
+    return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
+  }
   let ask = null;
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
@@ -27222,7 +27249,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
+  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll || reading.workflowPropose;
 }
 
 // src/hooks/job-route.ts
@@ -27383,6 +27410,8 @@ function routeFacts(input, context) {
     facts.launches = reading.launches.map((one) => one.form);
   if (reading.crewNeverRuns.length > 0)
     facts.crew_commands = reading.crewNeverRuns;
+  if (reading.workflowPropose)
+    facts.workflow_propose = true;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;

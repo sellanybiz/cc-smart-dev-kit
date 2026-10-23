@@ -320,7 +320,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
     });
     expect(run.status).toBe(1);
     expect(run.errors).toEqual([
-      `cc-smart-dev-kit workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never pushes (D24). Nobody is at the machine to answer this question, so the call is refused. Ask your lead with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\`, and go on with the rest of your phase.`,
+      `cc-smart-dev-kit workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never proposes a workflow change (D24). Nobody is at the machine to answer this question, so the call is refused. Ask your lead with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\`, and go on with the rest of your phase.`,
     ]);
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
     expect(w.ghLog()).toEqual([]);

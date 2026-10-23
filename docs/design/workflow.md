@@ -188,10 +188,13 @@ avoid destroying what may be another run's: a `gh pr create` that does not answe
 leaves the pushed branch and the pull request it may have made, and a name another proposal
 took between the check and the add is skipped for the next free one rather than reused. A
 crew session never runs the command (D24): it pushes a branch and opens a pull request, in
-children no hook sees, and a crew session does neither — its push and `gh pr create` are
-denied by the guards, so the command refuses first, with the step it has (its lead does the
-rest). Inside Claude Code a gate key refuses, as `set` does; outside it — a terminal, the
-portal — every key is allowed: the pull request's review is the gate.
+children no hook sees, and a crew session does neither — its own push and `gh pr create` are
+denied by the guards, which never see the children. **The shell judge denies the command
+however the line is spelled** (`src/hooks/bash-judge.ts`: a wrapper, an inner shell, a computed
+program, `env -u CC_SMART_DEV_KIT_CREW`), by the hook's own environment; the command's own check
+is the second belt, and it says the same words. Inside Claude Code a gate key refuses, as `set`
+does; outside it — a terminal, the portal — every key is allowed: the pull request's review is
+the gate.
 
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request
