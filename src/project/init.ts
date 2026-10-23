@@ -40,6 +40,7 @@ import {
   ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
+  WORKFLOW_CREW_KEYS_SINCE,
   WORKFLOW_CREW_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -202,33 +203,39 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
  * The oldest plugin that reads every field the file holds: the range and the version it
  * names, for `raisedRequires`.
  *
- * The newest release first: a file that sets several fields needs the newest among them. A
- * file with `checks` needs the plugin that brought it (1.1.0). A file without `worktrees.prefix`
- * needs the plugin that made that field optional (0.5.2): every older plugin refuses the whole
- * file. A file with `workflow.crew` or `workflow.fixesAfterReview`, or with
- * `worktrees.autoClean`, needs the release that brought them (1.0.0): an older plugin reads the
- * file strictly, does not know that field, and refuses the file — so every guard in that
- * project fails closed until the plugin is updated.
+ * A file that sets several fields needs the newest among them. A file with `checks`, or with a
+ * `workflow.crew` key that came later than `workflow.crew` itself (`WORKFLOW_CREW_KEYS_SINCE`:
+ * the caps per lead, the usage guard, `keep`), needs the plugin that brought it (1.1.0). A file
+ * with `workflow.crew` or `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the
+ * release that brought them (1.0.0). Every other file needs the plugin that made
+ * `worktrees.prefix` optional (0.5.2). An older plugin reads the file strictly, does not know
+ * the field, and refuses the file — so every guard in that project fails closed until the
+ * plugin is updated; the floor makes it say "update" instead.
  */
 export function requiresFloor(file: Record<string, unknown>): {
   floor: string;
   version: string;
 } {
-  if (Object.hasOwn(file, "checks")) {
-    return { floor: requiresFor(CHECKS_SINCE), version: CHECKS_SINCE };
-  }
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
+  const crew = isObject(workflow.crew) ? workflow.crew : {};
+  const needs: string[] = [];
+  if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
+  for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
+    if (Object.hasOwn(crew, key)) needs.push(since);
+  }
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
+    needs.push(WORKFLOW_CREW_SINCE);
   }
-  if (Object.hasOwn(worktrees, "autoClean")) {
-    return { floor: requiresFor(WORKTREE_AUTO_CLEAN_SINCE), version: WORKTREE_AUTO_CLEAN_SINCE };
+  if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (needs.length === 0) {
+    return {
+      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+      version: WORKTREE_PREFIX_OPTIONAL_SINCE,
+    };
   }
-  return {
-    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-    version: WORKTREE_PREFIX_OPTIONAL_SINCE,
-  };
+  const version = needs.reduce((newest, one) => (Bun.semver.order(one, newest) > 0 ? one : newest));
+  return { floor: requiresFor(version), version };
 }
 
 /** Every leaf of a JSON object, by its dotted path: what the diff compares. */

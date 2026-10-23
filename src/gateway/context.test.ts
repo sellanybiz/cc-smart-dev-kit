@@ -78,8 +78,14 @@ function options(terminal: unknown) {
     confirm: null,
     paths: cliPaths({ CLAUDE_CONFIG_DIR: join(tempDir("gateway-context"), ".claude") }),
     platform: "linux" as NodeJS.Platform,
-    questionOutput: (text: string) => {
-      shown.push(text);
+    questionIO: {
+      readLine: (text: string) => {
+        shown.push(text);
+        return null;
+      },
+      write: (text: string) => {
+        shown.push(text);
+      },
     },
     runner: () => ({ exitCode: 0, output: "" }),
     service: "systemd" as const,

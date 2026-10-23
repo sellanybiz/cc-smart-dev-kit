@@ -982,6 +982,8 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     // After: the answer is on the record, and the prompt is the very words it carries.
     const world = await answered(5_000, "yes");
     expect(await runHook(crewRoleHook, promptInput(world.repo, "yes"), world.env)).toEqual({});
+    // The same answer with a line end around it is still the lead's, never the person's.
+    expect(await runHook(crewRoleHook, promptInput(world.repo, "yes\n"), world.env)).toEqual({});
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 

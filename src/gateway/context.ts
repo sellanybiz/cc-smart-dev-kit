@@ -17,7 +17,7 @@
  */
 import type { CliPaths } from "../cli/paths";
 import { cleanSecretLine, type RawTerminal } from "../cli/secret-line";
-import { terminalPrompts } from "../cli/ui/prompt";
+import { type PromptIO, terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import type { GatewayContext } from "./commands";
 import type { HealthFetch } from "./health";
@@ -43,8 +43,11 @@ export interface GatewayContextOptions {
    * flag says to give the password on stdin instead.
    */
   terminal?: RawTerminal;
-  /** Where the questions on that terminal are shown; stdout in use, a recorder in a test. */
-  questionOutput?: (text: string) => void;
+  /**
+   * Where the questions on that terminal are shown and read: stdout and Bun's `prompt()` in
+   * use (`STDOUT_QUESTIONS`), a recorder in a test.
+   */
+  questionIO?: Pick<PromptIO, "readLine" | "write">;
   /** The network for the key check, OmniRoute's dashboard and the liveness probe. */
   apiFetch?: HealthFetch;
   print?: (line: string) => void;
@@ -62,7 +65,7 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
     // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...terminalQuestions(terminal, options.questionOutput),
+    ...terminalQuestions(terminal, options.questionIO),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -86,9 +89,9 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
  */
 function terminalQuestions(
   terminal: RawTerminal & { isTTY?: boolean },
-  write?: (text: string) => void,
+  shown?: Pick<PromptIO, "readLine" | "write">,
 ): Pick<GatewayContext, "prompts" | "readSecret"> {
-  const prompts = terminalPrompts(currentTerminal(), terminal, write);
+  const prompts = terminalPrompts(currentTerminal(), terminal, shown);
   if (prompts === null) return {};
   return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };
 }

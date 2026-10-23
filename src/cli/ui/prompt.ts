@@ -144,6 +144,18 @@ export function createPrompts(term: Terminal, io: PromptIO): Prompts {
 type Stdin = RawTerminal & { isTTY?: boolean };
 
 /**
+ * Where a question is shown and its typed line read: stdout and Bun's own `prompt()`, which
+ * writes its text there too. A caller that moves the questions (a test) moves both, so no
+ * part of a question lands on another stream.
+ */
+export const STDOUT_QUESTIONS: Pick<PromptIO, "readLine" | "write"> = {
+  write: (text) => {
+    process.stdout.write(text);
+  },
+  readLine: (shown) => prompt(shown),
+};
+
+/**
  * The prompts of this process's terminal, or null when stdin is not one: then nothing is asked.
  * A typed line is read with Bun's own `prompt` (it shows the question and a space, and reads
  * one line); a secret with `readSecretLine`, only where the echo can be switched off.
@@ -151,14 +163,12 @@ type Stdin = RawTerminal & { isTTY?: boolean };
 export function terminalPrompts(
   term: Terminal,
   stdin: Stdin = process.stdin,
-  write: (text: string) => void = (text) => {
-    process.stdout.write(text);
-  },
+  shown: Pick<PromptIO, "readLine" | "write"> = STDOUT_QUESTIONS,
 ): Prompts | null {
   if (stdin.isTTY !== true) return null;
   return createPrompts(term, {
-    write,
-    readLine: (shown) => prompt(shown),
+    write: shown.write,
+    readLine: shown.readLine,
     ...(canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}),
   });
 }

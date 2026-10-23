@@ -265,6 +265,31 @@ describe("workflow set and unset", () => {
     );
   });
 
+  test("--project with a key a newer plugin brought raises the file's requires, and only then", async () => {
+    // `crew.perLead` came with 1.1.0: a 1.0.x plugin would refuse the file as an unknown field,
+    // so every guard of a teammate still on it would ask on every call instead of saying "update".
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { crew: { enabled: true } } }, null, 2)}\n`,
+    );
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "crew.perLead", "2", "--project"], run.context)).toBe(0);
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.requires).toBe(">=1.1");
+    expect(written.workflow.crew).toEqual({ enabled: true, perLead: 2 });
+    // A key the old floor already covers leaves `requires` as it was.
+    const plain = context(repo, env);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
+    );
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], plain.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.0");
+  });
+
   test("D20: --project on a file that still holds a retired engine field: refused, naming it, nothing written", async () => {
     const env = hookEnv();
     const repo = makeRepo();

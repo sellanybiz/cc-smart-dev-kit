@@ -7,7 +7,7 @@
  * (`src/portal/actions.ts`).
  */
 
-import { historyKeys, RECENT_PAGE_DEFAULT } from "../../gateway/history-read";
+import { historyKeys, RECENT_PAGE_DEFAULT, RECENT_PAGE_MAX } from "../../gateway/history-read";
 import type { PageDataDeps } from "../page-data";
 import {
   healthAnswer,
@@ -160,8 +160,7 @@ export const API_READS: Readonly<
     if ((status !== null && status !== "error") || cursor === "bad") {
       return {
         body: {
-          error:
-            "requests takes cursor=<the id the page before ended at>, limit=1..200, slot, target, model, session and status=error",
+          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
         },
         status: 400,
       };

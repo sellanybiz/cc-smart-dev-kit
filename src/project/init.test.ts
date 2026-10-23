@@ -523,6 +523,18 @@ describe("requiresFloor", () => {
     ).toEqual({ floor: ">=1.1", version: "1.1.0" });
   });
 
+  test("a workflow.crew key that came with 1.1.0 needs 1.1, though workflow.crew came with 1.0", () => {
+    // A 1.0.x plugin reads `workflow.crew` but refuses `perLead` as an unknown field: with a
+    // 1.0 floor every guard of a teammate still on 1.0.x would fail closed, not say "update".
+    for (const crew of [{ perLead: 2 }, { perLeadOpus: 1 }, { usagePercent: 85 }, { keep: [] }]) {
+      expect(requiresFloor({ workflow: { crew } })).toEqual({ floor: ">=1.1", version: "1.1.0" });
+    }
+    expect(requiresFloor({ workflow: { crew: { enabled: true, max: 8 } } })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+  });
+
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(

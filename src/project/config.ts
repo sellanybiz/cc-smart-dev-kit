@@ -88,6 +88,19 @@ export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 export const CHECKS_SINCE = "1.1.0";
 
 /**
+ * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
+ * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
+ * start). A project file that sets one needs that plugin version or newer, for the same reason
+ * as `WORKFLOW_CREW_SINCE`.
+ */
+export const WORKFLOW_CREW_KEYS_SINCE: Readonly<Record<string, string>> = {
+  perLead: "1.1.0",
+  perLeadOpus: "1.1.0",
+  usagePercent: "1.1.0",
+  keep: "1.1.0",
+};
+
+/**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
