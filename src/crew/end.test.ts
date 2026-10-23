@@ -145,9 +145,9 @@ describe("crew stop", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
-  test("a name that matches two crew sessions stops neither", async () => {
+  test("a name two LIVE crew sessions share stops neither", async () => {
     const world = await boardWorld();
-    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", suffix: "aaaaaa" });
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "blocked", suffix: "aaaaaa" });
     await world.addCrew({
       atMs: NOW - 20 * MINUTE,
       slug: "again",
@@ -157,11 +157,69 @@ describe("crew stop", () => {
     expect(await runCrew(["stop", "C my-app B1 help"], world.ctx())).toBe(1);
     expect(world.err).toEqual([
       'crew stop: "C my-app B1 help" is two crew sessions',
-      "  B1-help-aaaaaa  C my-app B1 help  removed",
+      "  B1-help-aaaaaa  C my-app B1 help  blocked",
       "  B1-again-bbbbbb  C my-app B1 help  working",
       "Fix: name one by its id",
     ]);
     expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("a name one live crew session and only removed ones share means the live one", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", worktree: false });
+    const live = await world.addCrew({
+      atMs: NOW - 20 * MINUTE,
+      slug: "again",
+      name: "C my-app B1 help",
+      suffix: "bbbbbb",
+    });
+    expect(await runCrew(["stop", "C my-app B1 help"], world.ctx())).toBe(0);
+    expect(world.claudeCalls()).toEqual([["stop", "a1b2c3d4"]]);
+    expect(world.out).toEqual([
+      "stopped C my-app B1 help (a1b2c3d4); the conversation is kept, and `claude attach a1b2c3d4` opens it again",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, live.id)).toMatchObject({
+      state: "stopped",
+    });
+  });
+
+  test("resume finds the one live record too, never the removed one", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", worktree: false });
+    const live = await world.addCrew({
+      atMs: NOW - 20 * MINUTE,
+      slug: "again",
+      name: "C my-app B1 help",
+      state: "stopped",
+      suffix: "bbbbbb",
+    });
+    expect(await runCrew(["resume", "C my-app B1 help"], world.ctx())).toBe(0);
+    expect(world.claudeCalls()).toEqual([["respawn", "a1b2c3d4"]]);
+    expect(world.out).toEqual(["resumed C my-app B1 help (a1b2c3d4)"]);
+    expect(await readCrew(world.paths.stateDir, world.repo, live.id)).toMatchObject({
+      state: "working",
+    });
+  });
+
+  test("crew rm finds the one live record too", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", worktree: false });
+    const live = await world.addCrew({
+      atMs: NOW - 20 * MINUTE,
+      shortId: null,
+      slug: "again",
+      name: "C my-app B1 help",
+      state: "queued",
+      suffix: "bbbbbb",
+      worktree: false,
+    });
+    expect(await runCrew(["rm", "C my-app B1 help"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "removed C my-app B1 help; it had not started, so nothing else went",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, live.id)).toMatchObject({
+      state: "removed",
+    });
   });
 
   test("a crew session's own session never stops, removes or resumes a crew session", async () => {
@@ -631,12 +689,15 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
 });
 
 describe("crew resume", () => {
-  test("respawns that ONE session, never --all, and the store says working again", async () => {
+  test("respawns that ONE session from its worktree, never --all, and the store says working again", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
     expect(await runCrew(["resume", "C my-app B1 help"], world.ctx())).toBe(0);
     expect(world.claudeCalls()).toEqual([["respawn", "a1b2c3d4"]]);
     expect(world.claudeCalls().flat()).not.toContain("--all");
+    // The folder is the bug of 2026-10-23: from the main checkout the session came back there,
+    // not in its worktree.
+    expect(world.cwdCalls()).toEqual([places(world.repo).worktree]);
     expect(world.out).toEqual(["resumed C my-app B1 help (a1b2c3d4)"]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "working",
@@ -644,6 +705,19 @@ describe("crew resume", () => {
     expect(readCrewEvents(world.paths.stateDir, world.repo).events.at(-1)).toMatchObject({
       state: "working",
       text: "resumed by the lead",
+    });
+  });
+
+  test("a crew session with no worktree is refused with one line: there is nowhere to bring it back", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped", worktree: false });
+    expect(await runCrew(["resume", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew resume: C my-app B1 help has no worktree at ${places(world.repo).worktree} any more; remove it (${COMMAND} crew rm "C my-app B1 help")`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "stopped",
     });
   });
 
@@ -747,6 +821,11 @@ describe("D42: crew resume --paused", () => {
       ["respawn", "a1b2c3d4"],
       ["respawn", "b2c3d4e5"],
     ]);
+    // Each comes back in its own worktree, never in the main checkout.
+    expect(world.cwdCalls()).toEqual([
+      places(world.repo).worktree,
+      join(world.repo, ".claude", "worktrees", "crew-B2-api"),
+    ]);
     expect(world.out).toEqual([
       "resumed C my-app B1 help (a1b2c3d4)",
       "resumed C my-app B2 api (b2c3d4e5)",
@@ -803,6 +882,24 @@ describe("D42: crew resume --paused", () => {
       "crew resume: C my-app B2 api: claude respawn b2c3d4e5 failed (exit 1): could not respawn",
     ]);
     expect(world.out).toEqual([]);
+  });
+
+  test("a paused crew session with no worktree is named, the others still go, and the exit code says so", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ ...pausedChange(20), worktree: false });
+    await world.addCrew({
+      atMs: NOW - 10 * MINUTE,
+      phase: "B2",
+      shortId: "b2c3d4e5",
+      slug: "api",
+      ...pausedChange(10),
+    });
+    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew resume: C my-app B1 help has no worktree at ${places(world.repo).worktree} any more; remove it (${COMMAND} crew rm "C my-app B1 help")`,
+    ]);
+    expect(world.claudeCalls()).toEqual([["respawn", "b2c3d4e5"]]);
+    expect(world.out).toEqual(["resumed C my-app B2 api (b2c3d4e5)"]);
   });
 
   test("a crew session's own session never resumes every paused one", async () => {

@@ -959,6 +959,30 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
   return lines;
 }
 
+/**
+ * The lead's own live crew session already on `planned`'s phase, under another slug. A start says
+ * one line naming it, so the lead removes it first: two crew sessions on one phase is a mistake
+ * (2026-10-23: a queued record left behind started beside its replacement). The record this start
+ * continues is not one of them — a hand-off is the same phase on purpose.
+ */
+function liveOnPhase(planned: Plan, records: readonly CrewRecord[]): null | CrewRecord {
+  return (
+    records.find(
+      (one) =>
+        one.repo === planned.caller.repo &&
+        one.leadSessionId === planned.lead.sessionId &&
+        one.phase === planned.phase &&
+        one.state !== "removed" &&
+        one.id !== planned.continues,
+    ) ?? null
+  );
+}
+
+/** The one line a start says when its phase has a live crew session already. */
+export function phaseLine(record: CrewRecord): string {
+  return `note: ${record.name} is already on phase ${record.phase} (${record.state}) — remove it first: ${COMMAND} crew rm "${record.name}"`;
+}
+
 /** The start itself: the decision, the record, the files, and the launch. */
 async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const { caller, chosen, lead } = planned;
@@ -966,12 +990,13 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
   // nothing about who takes which place.
   const usage = usageFacts(ctx.paths, ctx.now());
-  let decided: { record: CrewRecord; why: null | string };
+  let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
       const all = listAllCrew(ctx.paths.stateDir).records;
       const taken = inUse(planned, all, ctx);
       if (taken !== null) throw taken;
+      const already = liveOnPhase(planned, all);
       const unmet = unmetWaits(
         planned.waitsFor,
         all.filter((one) => one.repo === caller.repo),
@@ -1036,7 +1061,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         },
         ctx.now(),
       );
-      return { record, why: place.start ? null : place.why };
+      return { already, record, why: place.start ? null : place.why };
     });
   } catch (error) {
     if (error instanceof Refusal) {
@@ -1046,7 +1071,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
     ctx.error(`crew start: ${reasonOf(error)}`);
     return 1;
   }
-  const { record, why } = decided;
+  const { already, record, why } = decided;
   try {
     writeStoreFile(
       crewBriefFile(ctx.paths.stateDir, caller.repo, record.id),
@@ -1082,6 +1107,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   }
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
+    if (already !== null) ctx.print(phaseLine(already));
     // A queued phase holds its files all the same, so the clash is said now (D55).
     for (const line of await sayClashes(record, ctx)) ctx.print(line);
     return 0;
@@ -1101,6 +1127,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   // The files this phase holds are the other lead's too (D55): one line each, and the other
   // lead's watch says it without a message. Never a refusal: two leads may mean to share.
   if (code === 0) {
+    if (already !== null) ctx.print(phaseLine(already));
     for (const line of await sayClashes(record, ctx)) ctx.print(line);
   }
   return code;

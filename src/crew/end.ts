@@ -14,14 +14,18 @@
  *   leaves the crew session as it was — unless Claude Code does not know the session any more, which
  *   counts as stopped: the goal is met, and the line says so.
  * - **resume** runs `claude respawn <short id>` for that ONE session — never `--all`, which would
- *   restart every background session on the machine — and the store says `working` again.
+ *   restart every background session on the machine — **from the crew session's own worktree**
+ *   (`resumePlace`): a `--bg -w` session respawned from the main checkout comes back there, and
+ *   its own start check marks it failed (the bug of 2026-10-23). The store says `working` again.
  *   `crew resume --paused` does the same for every paused crew session of a lead at once, the
- *   person's way out after `/login` on another account (D42).
+ *   person's way out after `/login` on another account (D42). A record whose worktree is gone is
+ *   refused with one line: there is nowhere to bring it back.
  */
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { isInside, runGit } from "../hooks/git";
 import { claudeDeps } from "./agents";
+import { resumePlace } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { REPORT_COMMAND } from "./brief";
 import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
@@ -227,8 +231,17 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
     );
   }
   const id = record.shortId;
-  // That ONE session: `--all` would restart every background session on the machine.
-  const respawn = claudeFailure(ctx, record.repo, ["respawn", id]);
+  // That ONE session, from its own worktree — never `--all`, which would restart every
+  // background session on the machine, and never from the main checkout, where a `--bg -w`
+  // session that is respawned there comes back (the bug of 2026-10-23).
+  const place = resumePlace(record);
+  if (!place.ok) {
+    return refuse(
+      failure(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`),
+      ctx,
+    );
+  }
+  const respawn = claudeFailure(ctx, place.folder, ["respawn", id]);
   if (respawn !== null) {
     return refuse(
       failure(
@@ -309,7 +322,14 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
       code = 1;
       continue;
     }
-    const respawn = claudeFailure(ctx, record.repo, ["respawn", id]);
+    // Each in its own worktree, never in the main checkout (2026-10-23).
+    const place = resumePlace(record);
+    if (!place.ok) {
+      ctx.error(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`);
+      code = 1;
+      continue;
+    }
+    const respawn = claudeFailure(ctx, place.folder, ["respawn", id]);
     if (respawn !== null) {
       ctx.error(`crew resume: ${record.name}: ${respawn}`);
       code = 1;

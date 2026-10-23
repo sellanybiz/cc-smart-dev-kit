@@ -35,6 +35,7 @@ export const MINUTE = 60_000;
 const FAKE_CLAUDE = `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> "$FAKE_CLAUDE_LOG"; done
 printf -- '----\\n' >> "$FAKE_CLAUDE_LOG"
+printf '%s\\n' "$(pwd -P)" >> "$FAKE_CLAUDE_CWD_LOG"
 case "$1" in
   agents)
     if [ -z "$FAKE_AGENTS_JSON" ]; then echo "[]"; else printf '%s\\n' "$FAKE_AGENTS_JSON"; fi ;;
