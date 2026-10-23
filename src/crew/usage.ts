@@ -27,7 +27,8 @@ const CREW = "<name|id>";
 
 /** The sentence every command that takes a crew session ends its help with. */
 const NAMED = `<name|id> is the crew session's name (put a name with spaces in quotes), its id, or its
-session's short id. A name that matches two crew sessions is refused, and both are named.`;
+session's short id. A name that matches two LIVE crew sessions is refused, and both are named; one
+whose other matches are removed means the live one.`;
 
 export const BOARD_COMMANDS: readonly BoardCommand[] = [
   {
@@ -98,16 +99,21 @@ ${NAMED}`,
     help: `Usage: ${COMMAND} crew resume ${CREW}
        ${COMMAND} crew resume --paused [--lead <session>]
 
-Restarts that one crew session's Claude session (claude respawn <id>); it keeps its conversation. Never all
-sessions. Refused for a crew session that is removed or merged, or has no session yet.
+Brings that one crew session's Claude session back, in its own worktree, with its own settings and
+MCP files and the model, effort and permission mode it was launched with (claude --bg --resume); it
+keeps its conversation. Never all sessions. A session that still has a process is left alone: a
+resume would start a copy beside it. Refused for a crew session that is removed or merged, has no
+session yet, or has no worktree or settings file any more.
 
---paused restarts every paused crew session of the lead at once: the way on after /login on another
-account, without waiting for the limit to lift. --lead names the lead when this command's own
-session is not the one whose crew sessions to resume. Never claude respawn --all.
+--paused brings every paused crew session of the lead back at once: the way on after /login on
+another account, without waiting for the limit to lift. Each goes back the way the lead's watch
+brings one back — a message for a session whose process lives, a resume in its worktree for one that
+has none. --lead names the lead when this command's own session is not the one whose crew sessions
+to resume. Never claude respawn --all.
 
 ${NAMED}`,
     name: "resume",
-    summary: "Restart one crew session's Claude session, or every paused one.",
+    summary: "Bring one crew session back, or every paused one.",
   },
   {
     args: CREW,

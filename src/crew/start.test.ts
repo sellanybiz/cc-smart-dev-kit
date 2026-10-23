@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "../mcp/versions";
 import {
@@ -120,6 +121,61 @@ async function otherCrew(
 }
 
 describe("D25: crew start returns at once", () => {
+  test("a failed launch that started nothing is nothing to warn about", async () => {
+    const world = await ledWorld();
+    await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-lost",
+        effort: "high",
+        files: [],
+        id: "B6b-lost-aaaaaa",
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b lost",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "lost",
+        state: "failed",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-lost"),
+      },
+      T0,
+    );
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("started C my-app B6b portal-live");
+  });
+
+  test("a phase that already has a live crew session gets one line naming it, to remove it first", async () => {
+    const world = await ledWorld();
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    world.out.length = 0;
+    // Another slug of the same phase: inUse sees no branch, so only this line warns the lead —
+    // the bug of 2026-10-23 was two crew sessions started for one phase.
+    const code = await runCrew(
+      ["start", "B6b", "--slug", "again", "--kind", "build", "--brief", world.brief],
+      world.ctx(),
+    );
+    expect(code).toBe(0);
+    expect(world.out.slice(1)).toEqual([
+      `note: C my-app B6b portal-live is already on phase B6b (starting) — remove it first: ${COMMAND} crew rm "C my-app B6b portal-live"`,
+    ]);
+  });
+
   test("D25: started — one line, the exact launch, the record, its events and its files", async () => {
     const world = await ledWorld();
     const head = git(world.repo, "rev-parse", "HEAD").trim();

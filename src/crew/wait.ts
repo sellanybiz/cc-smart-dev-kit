@@ -31,10 +31,11 @@
  *   - a crew session that pauses again within `REPAUSE_WINDOW_MS` waits 5, then 10, then 20
  *     minutes (`lastPause.backoffMs`) before it may go again — no storm of resumes.
  *
- * **The transport is `crew answer`'s**: a message for a session whose process still lives (the
- * CLI prints the `SendMessage` line, because only a session holds that tool), and
- * `claude --bg --resume <id> "<text>"` for one whose session has no process. `crew resume
- * --paused` is the person's way at once — after `/login` on another account.
+ * **The transport is `crew answer`'s** (`resumeSession` and the watch's `resumeOne`, one home): a
+ * message for a session whose process still lives (the CLI prints the `SendMessage` line, because
+ * only a session holds that tool), and `claude --bg --resume <id> "<text>"` — in its worktree,
+ * with the record's own settings and MCP files — for one whose session has no process. `crew
+ * resume --paused` is the person's way at once — after `/login` on another account.
  */
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";

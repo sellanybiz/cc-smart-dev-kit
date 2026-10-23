@@ -23,45 +23,44 @@
  */
 import { COMMAND } from "../build-info/names";
 import { sendMessageLine } from "./answer";
+import { findNamed, type NamedLook } from "./board";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
-import { withoutListRef } from "./names";
 import { appendCrewEvent, type LeadRecord, type Listed, listLeads, readLead } from "./store";
 import type { TellArgs } from "./tell";
 import { firstLineOf, leadTellMessage } from "./tell-format";
+
+/** How a lead answers to a reference: its session id, whole or its first 8 characters. */
+const LEAD_LOOK: NamedLook<LeadRecord> = {
+  ids: (one) => [one.sessionId, one.sessionId.slice(0, 8)],
+};
 
 /** A lead `ref` names; or the refusal that names every candidate. */
 function findLead(
   records: readonly LeadRecord[],
   ref: string,
 ): { record: LeadRecord } | { lines: string[] } {
-  const plain = withoutListRef(ref);
-  const matches = records
-    .filter(
-      (one) => one.name === plain || one.sessionId === plain || one.sessionId.slice(0, 8) === plain,
-    )
-    // Oldest first, so the candidates read as a history.
-    .sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
-    );
-  const [only] = matches;
-  if (only !== undefined && matches.length === 1) return { record: only };
-  if (only === undefined) {
-    // The sender is a lead already, so the store names at least it: the fix is the receiver ref.
-    return {
-      lines: [
-        `crew lead tell: no lead of this repository is "${ref}"`,
-        `Fix: name one of the leads here: ${records.map((one) => one.name).join(", ")}`,
-      ],
-    };
+  const found = findNamed(records, ref, LEAD_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      // The sender is a lead already, so the store names at least it: the fix is the receiver ref.
+      return {
+        lines: [
+          `crew lead tell: no lead of this repository is "${ref}"`,
+          `Fix: name one of the leads here: ${records.map((one) => one.name).join(", ")}`,
+        ],
+      };
+    case "many":
+      return {
+        lines: [
+          `crew lead tell: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} leads`,
+          ...found.records.map((one) => `  ${one.sessionId}  ${one.name}`),
+          "Fix: name one by its session id",
+        ],
+      };
   }
-  return {
-    lines: [
-      `crew lead tell: "${ref}" is ${matches.length === 2 ? "two" : String(matches.length)} leads`,
-      ...matches.map((one) => `  ${one.sessionId}  ${one.name}`),
-      "Fix: name one by its session id",
-    ],
-  };
 }
 
 /** `crew lead tell`; the exit code. */

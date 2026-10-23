@@ -12,8 +12,9 @@
  * question it waits on (D36), and its last few events.
  *
  * A crew session is named by its name (also the ` [ref]` form ListAgents prints), its id, its session's
- * short id or its full session id. A name that matches two crew sessions is refused and both are named:
- * the store, never a guess, decides which session is meant (D35).
+ * short id or its full session id. A name that matches two **live** crew sessions is refused and both are
+ * named; a name whose other matches are `removed` means the live one: the store, never a guess,
+ * decides which session is meant (D35).
  *
  * **When its state began** is its newest `state` (or `created`) event, not `updatedAt`: a line or
  * a memory reading changes the record without changing what it is doing.
@@ -109,46 +110,94 @@ function outsideProject(command: string, why: string): Refusal {
   return { code: 1, lines: [`crew ${command}: ${why}`, `Fix: ${fix}`] };
 }
 
+/** A record a command finds by name or id, as the finder needs it. */
+export interface Named {
+  /** Its name: the address the lead and the person know it by. */
+  name: string;
+  /** When it was recorded: the candidates read as a history, oldest first. */
+  createdAt: string;
+}
+
+/** What a finder needs from a record beyond `Named`: the ids it answers to, and whether it is live. */
+export interface NamedLook<T extends Named> {
+  /** Every id a reference may be: the record's own id, its session's id, its short id. */
+  ids: (record: T) => readonly (null | string)[];
+  /** False for a record no command acts on by name any more: a removed crew session. Default: true. */
+  live?: (record: T) => boolean;
+}
+
+/** What a finder answered. */
+export type Found<T> =
+  | { kind: "many"; records: T[] }
+  | { kind: "none" }
+  | { kind: "one"; record: T };
+
+/**
+ * The record `ref` names, by its name or any of its ids (` [ref]`, as ListAgents prints it, is
+ * read past). **A name that matches one live record and only removed ones means the live one**:
+ * a lead that reused a name after a removal acts on the record it has, never on its history
+ * (the bug of 2026-10-23: `crew rm` stopped at "name one by its id" and the old queued record
+ * stayed). Two live records of one name — or only removed ones — still ask for an id: the store,
+ * never a guess, decides which session is meant.
+ *
+ * One finder for every record a crew command names (`findCrew`, `findLead`): the crew sessions
+ * and the leads of a repository.
+ */
+export function findNamed<T extends Named>(
+  records: readonly T[],
+  ref: string,
+  look: NamedLook<T>,
+): Found<T> {
+  const plain = withoutListRef(ref);
+  const matches = records
+    .filter((one) => one.name === plain || look.ids(one).some((id) => id !== null && id === plain))
+    // Oldest first: the candidates read as a history, and the list does not shuffle.
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (matches.length === 0) return { kind: "none" };
+  if (matches.length === 1) return { kind: "one", record: matches[0] as T };
+  const live = matches.filter((one) => (look.live ?? (() => true))(one));
+  if (live.length === 1) return { kind: "one", record: live[0] as T };
+  return { kind: "many", records: matches };
+}
+
+/** How a crew record answers to a reference: its own id, its session's id and its short id. */
+const CREW_LOOK: NamedLook<CrewRecord> = {
+  ids: (one) => [one.id, one.shortId, one.sessionId],
+  live: (one) => one.state !== "removed",
+};
+
 /** The crew session `ref` names; or the refusal that names every candidate. */
 export function findCrew(
   records: readonly CrewRecord[],
   ref: string,
   command: string,
 ): { record: CrewRecord } | { refusal: Refusal } {
-  const plain = withoutListRef(ref);
-  const matches = records
-    .filter(
-      (one) =>
-        one.name === plain ||
-        one.id === plain ||
-        (one.shortId !== null && one.shortId === plain) ||
-        (one.sessionId !== null && one.sessionId === plain),
-    )
-    // Oldest first: the candidates read as a history, and the list does not shuffle.
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const [only] = matches;
-  if (only !== undefined && matches.length === 1) return { record: only };
-  if (only === undefined) {
-    return {
-      refusal: {
-        code: 1,
-        lines: [
-          `crew ${command}: no crew session of this repository is "${ref}"`,
-          `Fix: ${COMMAND} crew list shows them, and --all those of every repository`,
-        ],
-      },
-    };
+  const found = findNamed(records, ref, CREW_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: no crew session of this repository is "${ref}"`,
+            `Fix: ${COMMAND} crew list shows them, and --all those of every repository`,
+          ],
+        },
+      };
+    case "many":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} crew sessions`,
+            ...found.records.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
+            "Fix: name one by its id",
+          ],
+        },
+      };
   }
-  return {
-    refusal: {
-      code: 1,
-      lines: [
-        `crew ${command}: "${ref}" is ${matches.length === 2 ? "two" : String(matches.length)} crew sessions`,
-        ...matches.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
-        "Fix: name one by its id",
-      ],
-    },
-  };
 }
 
 /**
@@ -178,10 +227,22 @@ export function stateSince(record: CrewRecord, events: readonly CrewEvent[]): st
   return stateEvent?.at ?? record.updatedAt;
 }
 
+/**
+ * The events that are another session's news about a crew session, written where it happened:
+ * a `clash` names the crew session whose files are wanted, but the line is the starting lead's;
+ * a `lead-tell` and a `merge` carry another lead's words. None of them is the crew session's own
+ * last line.
+ */
+const OTHER_WORDS: ReadonlySet<string> = new Set(["clash", "lead-tell", "merge"]);
+
 /** The last thing a crew session said: its newest event with a line, else the line of its last turn. */
 export function lastSaid(record: CrewRecord, events: readonly CrewEvent[]): null | string {
   const said = events.find(
-    (one) => one.type !== "created" && one.text !== null && one.text.trim() !== "",
+    (one) =>
+      one.type !== "created" &&
+      !OTHER_WORDS.has(one.type) &&
+      one.text !== null &&
+      one.text.trim() !== "",
   );
   return said?.text ?? record.lastLine;
 }

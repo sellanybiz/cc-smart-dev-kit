@@ -97,6 +97,50 @@ describe("crew list", () => {
     ]);
   });
 
+  test("D55: a clash, another lead's note and a merge are never a crew session's last line", async () => {
+    const world = await boardWorld();
+    const crew = await world.addCrew({ lastLine: "handed back" });
+    // A clash names the OTHER crew session (the one whose files are wanted) and a merge names a
+    // crew session too: the words are the other session's news, not this crew session's own.
+    const base = {
+      crew: crew.id,
+      lead: LEAD_SESSION,
+      name: crew.name,
+      state: "working",
+    };
+    const at = NOW - 5 * MINUTE;
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { ...base, text: "clash: C my-app B1 help may change the same files", type: "clash" },
+      at,
+    );
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        ...base,
+        tell: { kind: "question", to: [crew.name] },
+        text: "does your branch take the merge?",
+        type: "lead-tell",
+      },
+      at,
+    );
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { ...base, text: "LEAD my-app master-plan merged #7 into main", type: "merge" },
+      at,
+    );
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B1 help — working, 12 min ago",
+      "  B1 · build · sonnet · high",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  last: handed back",
+    ]);
+  });
+
   test("D47: the files a crew session's brief gives it are on the board: the ownership map", async () => {
     const world = await boardWorld();
     await world.addCrew({ files: ["src/lookup/index.ts", "src/lookup/rank.ts"] });
@@ -555,9 +599,9 @@ describe("crew status", () => {
     }
   });
 
-  test("a name that matches two crew sessions is refused, and both are named", async () => {
+  test("a name two LIVE crew sessions share is refused, and both are named", async () => {
     const world = await boardWorld();
-    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", suffix: "aaaaaa" });
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "blocked", suffix: "aaaaaa" });
     await world.addCrew({
       atMs: NOW - 20 * MINUTE,
       slug: "again",
@@ -567,10 +611,23 @@ describe("crew status", () => {
     expect(await runCrew(["status", "C my-app B1 help"], world.ctx())).toBe(1);
     expect(world.err).toEqual([
       'crew status: "C my-app B1 help" is two crew sessions',
-      "  B1-help-aaaaaa  C my-app B1 help  removed",
+      "  B1-help-aaaaaa  C my-app B1 help  blocked",
       "  B1-again-bbbbbb  C my-app B1 help  working",
       "Fix: name one by its id",
     ]);
+  });
+
+  test("a name one live crew session and only removed ones share means the live one", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ atMs: NOW - 30 * MINUTE, state: "removed", worktree: false });
+    await world.addCrew({
+      atMs: NOW - 20 * MINUTE,
+      slug: "again",
+      name: "C my-app B1 help",
+      suffix: "bbbbbb",
+    });
+    expect(await runCrew(["status", "C my-app B1 help"], world.ctx())).toBe(0);
+    expect(world.out[0]).toBe("C my-app B1 help (B1-again-bbbbbb)");
   });
 
   test("a name nobody has, no name at all, and more than one word", async () => {

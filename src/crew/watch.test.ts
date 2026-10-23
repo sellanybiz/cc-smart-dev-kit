@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
-import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
+import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
@@ -18,12 +18,15 @@ import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewMcpFile,
+  crewSettingsFile,
   eventsEndOffset,
   listCrew,
   readCrew,
   readWatchState,
   type WatchState,
   writeLead,
+  writeStoreFile,
 } from "./store";
 import type { GatewayNow } from "./wait";
 import { eventLine, type WatchScope, watchPass } from "./watch";
@@ -195,6 +198,67 @@ describe("crew watch", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+  });
+
+  test("two leads of one repo: each lead's watch reads its own crew only, with no --lead", async () => {
+    const world = await leadWorld();
+    // A second lead of this repository, and a session record for the process above this command:
+    // the monitor runs under the lead's own session, which is how the watch knows whose crew to read.
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app other-plan",
+        plan: "other-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    writeSessionRecord(world.paths, 700, OTHER_SESSION, world.repo);
+    await addCrew(world, "working");
+    await addCrew(world, "working", {
+      id: "B7-api-2b3c4d",
+      name: "C my-app B7 api",
+      phase: "B7",
+      sessionId: "b2c3d4e5-0000-1111-2222-333333333333",
+      shortId: "b2c3d4e5",
+      slug: "api",
+      leadSessionId: OTHER_SESSION,
+    });
+    for (const [crew, lead, text] of [
+      [ID, LEAD_SESSION, "the alpha lead's step"],
+      ["B7-api-2b3c4d", OTHER_SESSION, "the beta lead's step"],
+    ] as const) {
+      await appendCrewEvent(
+        world.paths.stateDir,
+        world.repo,
+        {
+          crew,
+          lead,
+          name: crew === ID ? NAME : "C my-app B7 api",
+          state: "working",
+          text,
+          type: "step",
+        },
+        T0,
+      );
+    }
+    // The command runs under the second lead's session (pid 700 above pid 500).
+    const underBeta = world.ctx({
+      processes: {
+        commandLineOf: (pid) => (pid === 700 ? "claude --bg" : null),
+        parentOf: (pid) => ({ 300: 1, 400: 300, 500: 700, 700: 1 })[pid] ?? null,
+      },
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], underBeta)).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual(["C my-app B7 api: the beta lead's step"]);
+    // And the other one under the first lead's session: its own crew only.
+    world.out.length = 0;
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: the alpha lead's step"]);
   });
 
   test("D55: the person's line says whose word it was, and what the lead does with it", async () => {
@@ -1108,7 +1172,7 @@ describe("D42: the watch resumes a paused crew session", () => {
     world: Awaited<ReturnType<typeof leadWorld>>,
     change: Partial<CrewRecord> = {},
   ): Promise<CrewRecord> {
-    return await addCrew(world, "paused", {
+    const record = await addCrew(world, "paused", {
       lastPause: { backoffMs: 0, since: "2026-10-21T09:50:00.000Z" },
       // The session agent view lists, so a message reaches it (the fake `claude`'s row).
       sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
@@ -1122,6 +1186,12 @@ describe("D42: the watch resumes a paused crew session", () => {
       waitingFor: SLOT_WAIT,
       ...change,
     });
+    // Its worktree is there: a resume runs in it, and one with no folder is refused. Its own
+    // settings and MCP files are there too, as `crew start` writes them: a resume carries both.
+    if (change.worktree === undefined) mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, record.id), '{"mcpServers":{}}\n');
+    return record;
   }
 
   /** What the gateway says: ready (no breaker), or a breaker still open on the worker slot. */
@@ -1216,9 +1286,24 @@ describe("D42: the watch resumes a paused crew session", () => {
         "--bg",
         "--resume",
         record.sessionId ?? "",
+        "--model",
+        "sonnet",
+        "--effort",
+        "high",
+        "--permission-mode",
+        "auto",
+        "--autocompact",
+        "auto",
+        "--strict-mcp-config",
+        "--mcp-config",
+        crewMcpFile(world.paths.stateDir, world.repo, record.id),
+        "--settings",
+        crewSettingsFile(world.paths.stateDir, world.repo, record.id),
         "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
       ],
     ]);
+    // Resumed in its own worktree, never the main checkout.
+    expect(world.cwdCalls().at(-1)).toBe(record.worktree);
     expect(done.lines).toBe(1);
     expect(world.out).toEqual([`${NAME}: working — the wait is over; it was resumed`]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
@@ -1306,6 +1391,50 @@ describe("D42: the watch resumes a paused crew session", () => {
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
     expect(done.lines).toBe(2);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("working");
+  });
+
+  test("a paused crew session with no worktree is not resumed: one line, and it stays paused", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const gone = join(world.repo, ".claude", "worktrees", "crew-B6b-gone");
+    const record = await pausedCrew(world, { worktree: gone });
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — ${NAME} has no worktree at ${gone} any more`,
+    ]);
+    expect(done.lines).toBe(1);
+    expect(done.state.resumedAt).toBeUndefined();
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("an agent view that cannot be read is no resume: one line, and it stays paused", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "not json" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again`,
+    ]);
+    expect(done.state.resumedAt).toBeUndefined();
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 
   test("a resume that claude refuses is one line, and the record stays paused", async () => {

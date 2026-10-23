@@ -4,7 +4,9 @@
  * next prompt (`claude --bg --resume <session id> "<text>"`).
  */
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { runCrewAnswer } from "./answer";
@@ -12,19 +14,37 @@ import { runCrew } from "./command";
 import {
   addCrewQuestion,
   createCrew,
+  crewMcpFile,
   crewReportFile,
+  crewSettingsFile,
   listCrew,
   readCrewEvents,
   writeLead,
+  writeStoreFile,
 } from "./store";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
 
+/** The crew session's worktree and its own two files, as the world records them. */
+function worktreeOf(world: ReturnType<typeof crewWorld>): string {
+  return join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+}
+
+/** The record's own files, as `crew start` writes them: a resume carries both. */
+function filesOf(world: ReturnType<typeof crewWorld>): { mcp: string; settings: string } {
+  return {
+    mcp: crewMcpFile(world.paths.stateDir, world.repo, ID),
+    settings: crewSettingsFile(world.paths.stateDir, world.repo, ID),
+  };
+}
+
 /** A world with one crew session that asked a question, in `state`. */
 async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "working") {
   const world = crewWorld();
+  const worktree = worktreeOf(world);
+  mkdirSync(worktree, { recursive: true });
   await writeLead(
     world.paths.stateDir,
     {
@@ -65,7 +85,7 @@ async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "w
       slug: "portal-live",
       state,
       waitsFor: [],
-      worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"),
+      worktree,
     },
     T0,
   );
@@ -76,6 +96,9 @@ async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "w
     { options: ["3210", "3211"], question: "which port?", recommended: 1 },
     T0,
   );
+  // Its own files, as `crew start` writes them: a resume carries them.
+  writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, ID), "{}\n");
+  writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, ID), '{"mcpServers":{}}\n');
   return world;
 }
 
@@ -175,20 +198,82 @@ describe("crew answer", () => {
     expect(world.err[0]).toBe(`crew answer: ${NAME} is done, and it takes no more answers`);
   });
 
-  test("D35: a stopped crew session is resumed with the answer as its next prompt", async () => {
+  test("D35: a stopped crew session is resumed with the answer as its next prompt, in its worktree, with its own files", async () => {
     const world = await askedWorld("stopped");
+    const { mcp, settings } = filesOf(world);
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
-    // One read of agent view (is the session gone?), then the resume — the exact argv.
+    // One read of agent view (is the session gone?), then the resume — the exact argv, in the
+    // crew session's own worktree and never the main checkout, and the record's own settings and
+    // MCP files, so the resumed session is still this crew session and still lean.
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
-      ["--bg", "--resume", "aaaa1111-2222-3333-4444-555555555555", "the port is 3210"],
+      [
+        "--bg",
+        "--resume",
+        "aaaa1111-2222-3333-4444-555555555555",
+        "--model",
+        "sonnet",
+        "--effort",
+        "high",
+        "--permission-mode",
+        "auto",
+        "--autocompact",
+        "auto",
+        "--strict-mcp-config",
+        "--mcp-config",
+        mcp,
+        "--settings",
+        settings,
+        "the port is 3210",
+      ],
     ]);
+    expect(world.cwdCalls()).toEqual([world.repo, worktreeOf(world)]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("the port is 3210");
     // It is running again, so it holds a place and the watch must not stop it.
     expect(record?.state).toBe("working");
+  });
+
+  test("D35: a stopped crew session whose agent view cannot be read is not resumed: it could be running", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: "not json" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME}: agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("D35: a stopped crew session whose settings file is gone is not resumed: it would be no crew session", async () => {
+    const world = await askedWorld("stopped");
+    const { settings } = filesOf(world);
+    rmSync(settings);
+    const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} has no settings file any more (${settings}), so a resume would come back as a plain session`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
+
+  test("D35: a stopped crew session with no worktree is refused with one line: nothing to resume in", async () => {
+    const world = await askedWorld("stopped");
+    rmSync(worktreeOf(world), { recursive: true });
+    const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} has no worktree at ${worktreeOf(world)} any more`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
   });
 
   test("D35: a stopped record whose session still runs is sent the message, never a copy", async () => {
@@ -246,9 +331,54 @@ describe("crew answer", () => {
     const world = await askedWorld();
     const code = await runCrew(["answer", "C my-app B6c other", "hello"], world.ctx());
     expect(code).toBe(1);
-    expect(world.err[0]).toContain("C my-app B6c other");
+    expect(world.err).toEqual([
+      'crew answer: no crew session of this repository is "C my-app B6c other"',
+      `Fix: ${COMMAND} crew list shows them, and --all those of every repository`,
+    ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("D36: a name one live crew session and only removed ones share means the live one", async () => {
+    const world = await askedWorld("stopped");
+    // A removed crew session the lead stopped and removed under the same name, earlier.
+    const shortId = "bbbb2222";
+    await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-other",
+        effort: "high",
+        files: [],
+        id: "B6b-other-cccccc",
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: NAME,
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: `${shortId}-0000-1111-2222-333333333333`,
+        shortId,
+        slug: "other",
+        state: "removed",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-other"),
+      },
+      T0 - 60_000,
+    );
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    const answer = world.claudeCalls().find((call) => call[0] === "--bg");
+    // The live record's session is the one resumed, never the removed one's.
+    expect(answer?.[2]).toBe("aaaa1111-2222-3333-4444-555555555555");
   });
 
   test("D36: an answer to a crew session with no open question is refused", async () => {

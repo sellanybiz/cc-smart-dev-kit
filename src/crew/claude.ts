@@ -178,6 +178,28 @@ export interface CrewLaunchSpec {
 }
 
 /**
+ * The flags a crew session runs with — its model, effort, permission mode and autocompact — in
+ * the one home: a launch and every resume of it read them here, so a flag added for a launch
+ * cannot miss a resume (`docs/design.md` § The lead and the crew).
+ */
+export function sessionFlags(
+  model: string,
+  effort: string,
+  permissionMode = CREW_PERMISSION_MODE,
+): string[] {
+  return [
+    "--model",
+    model,
+    "--effort",
+    effort,
+    "--permission-mode",
+    permissionMode,
+    "--autocompact",
+    CREW_AUTOCOMPACT,
+  ];
+}
+
+/**
  * The arguments of a crew session's `claude --bg`, in the order the live proof ran them (L1a.1),
  * with the lean start's two MCP options after `--autocompact`.
  *
@@ -192,14 +214,7 @@ export function launchArgs(spec: CrewLaunchSpec): string[] {
     spec.worktreeName,
     "--name",
     spec.name,
-    "--model",
-    spec.model,
-    "--effort",
-    spec.effort,
-    "--permission-mode",
-    CREW_PERMISSION_MODE,
-    "--autocompact",
-    CREW_AUTOCOMPACT,
+    ...sessionFlags(spec.model, spec.effort),
     "--strict-mcp-config",
     "--mcp-config",
     spec.mcpFile,
