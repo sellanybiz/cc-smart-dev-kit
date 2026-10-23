@@ -17,14 +17,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { cliPaths } from "../cli/paths";
+import { type CliPaths, cliPaths } from "../cli/paths";
 import { makeClone, writeClaudeFile } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
-import { ghLoginState } from "./propose";
+import { ghLoginState, proposeWorkflow } from "./propose";
 
 // The flow starts git and gh children: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -41,18 +41,44 @@ const NOW = Date.parse("2026-10-23T09:00:00Z");
 interface World {
   /** The bin folder that is the whole `PATH`: a fake `gh`, and a link to the real git. */
   bin: string;
+  /** The environment every run gets: a temp HOME, and `bin` as the whole PATH. */
+  env: Record<string, string>;
   /** The fake `gh`'s log: one line of arguments per call. */
   ghLog: () => string[];
   origin: string;
+  paths: CliPaths;
   repo: string;
+  /** One `workflow` run, in `repo` unless `cwd` says another folder. */
   run: (
     args: string[],
     env?: Record<string, string>,
+    cwd?: string,
   ) => Promise<{
     errors: string[];
     lines: string[];
     status: number;
   }>;
+}
+
+/**
+ * A `git` that does what another proposal would, once, just before `worktree add` runs — the
+ * race the flow's name check cannot see: `branch` makes the branch the add is about to make,
+ * `folder` makes the folder it is about to use. Everything else is the real git.
+ */
+function racingGit(real: string, bin: string, race: "branch" | "folder"): string {
+  const mark = join(bin, "raced");
+  // `worktree add -b <branch> <path> <start>`: $4 is the branch, $5 the folder.
+  const act =
+    race === "branch"
+      ? `"${real}" branch "$4" origin/main >/dev/null 2>&1`
+      : `mkdir -p "$5" && echo "another run's file" > "$5/file"`;
+  return `#!/bin/sh
+if [ "$1" = "worktree" ] && [ "$2" = "add" ] && [ ! -e "${mark}" ]; then
+  touch "${mark}"
+  ${act}
+fi
+exec "${real}" "$@"
+`;
 }
 
 /**
@@ -62,7 +88,11 @@ interface World {
  * project's file in the checkout only, never committed or pushed.
  */
 function world(
-  options: { file?: "committed" | "local"; gh?: "create-fails" | "in" | "missing" | "out" } = {},
+  options: {
+    file?: "committed" | "local";
+    gh?: "create-fails" | "create-hangs" | "in" | "missing" | "out";
+    race?: "branch" | "folder";
+  } = {},
 ): World {
   const { origin, repo } = makeClone("app");
   if ((options.file ?? "committed") === "committed") {
@@ -76,7 +106,18 @@ function world(
 
   const bin = join(tempDir("propose-bin"), "bin");
   mkdirSync(bin);
-  symlinkSync(Bun.which("git") ?? "/usr/bin/git", join(bin, "git"));
+  // The fake scripts below use these three, and `bin` is the whole PATH: they are linked in.
+  for (const tool of ["mkdir", "sleep", "touch"]) {
+    const found = Bun.which(tool);
+    if (found !== null) symlinkSync(found, join(bin, tool));
+  }
+  const realGit = Bun.which("git") ?? "/usr/bin/git";
+  if (options.race === undefined) {
+    symlinkSync(realGit, join(bin, "git"));
+  } else {
+    writeFileSync(join(bin, "git"), racingGit(realGit, bin, options.race));
+    chmodSync(join(bin, "git"), 0o755);
+  }
   const ghLog = join(bin, "gh.log");
   writeFileSync(ghLog, "");
   // `ghMissing` asks whether gh is on PATH at all: the "missing" world has no gh in its bin.
@@ -87,7 +128,7 @@ function world(
         : `case "$1" in
   repo) echo "example-org/app"; exit 0 ;;
   pr)
-    ${options.gh === "create-fails" ? 'echo "a pull request already exists for this branch" >&2; exit 1' : 'echo "https://github.com/example-org/app/pull/42"; exit 0'} ;;
+    ${prAnswer(options.gh)} ;;
 esac
 exit 0`;
     writeFileSync(
@@ -111,6 +152,7 @@ ${answers}
   const paths = cliPaths(env);
   return {
     bin,
+    env,
     // One text per `gh` call: a call's arguments, which may run over several lines (a body).
     ghLog: () =>
       readFileSync(ghLog, "utf8")
@@ -118,12 +160,13 @@ ${answers}
         .map((call) => call.trim())
         .filter((call) => call !== ""),
     origin,
+    paths,
     repo,
-    run: async (args, over = {}) => {
+    run: async (args, over = {}, cwd = repo) => {
       const lines: string[] = [];
       const errors: string[] = [];
       const context: WorkflowContext = {
-        cwd: repo,
+        cwd,
         env: { ...env, ...over },
         now: () => NOW,
         paths,
@@ -133,6 +176,16 @@ ${answers}
       return { errors, lines, status: await runWorkflow(args, context) };
     },
   };
+}
+
+/** What the fake `gh` does for `pr create`: it answers, is refused, or never answers in time. */
+function prAnswer(mode: string | undefined): string {
+  if (mode === "create-fails") {
+    return 'echo "a pull request already exists for this branch" >&2; exit 1';
+  }
+  // `exec`: the sleep is the process the timeout ends, so no child holds the pipes open.
+  if (mode === "create-hangs") return "exec sleep 5";
+  return 'echo "https://github.com/example-org/app/pull/42"; exit 0';
 }
 
 /** The branches this repository has locally, the given pattern's. */
@@ -420,6 +473,91 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(fileOn(w.repo, "worktree-workflow-autoMerge-20261023").workflow).toEqual({
       autoMerge: true,
     });
+  });
+});
+
+describe("workflow propose: names, folders and a gh that does not answer", () => {
+  test("a name a teammate already pushed: the next free name, from origin", async () => {
+    const w = world();
+    // A teammate's proposal, pushed the same day under the name this run would pick.
+    git(w.repo, "push", "-q", "origin", "main:refs/heads/worktree-workflow-autoCommit-20261023");
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toBe(
+      "+ worktree-workflow-autoCommit-20261023-2 (.claude/worktrees/worktree-workflow-autoCommit-20261023-2), cut from origin/main and pushed",
+    );
+  });
+
+  test("a branch another proposal made between the check and the add: the next name, and that branch stays", async () => {
+    const w = world({ race: "branch" });
+    const other = "worktree-workflow-autoCommit-20261023";
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toContain(`${other}-2`);
+    // The other run's branch is untouched: it still points where it did.
+    expect(git(w.repo, "rev-parse", "--verify", other).trim()).toBe(
+      git(w.repo, "rev-parse", "origin/main").trim(),
+    );
+  });
+
+  test("a folder another proposal made between the check and the add: the branch this run made goes, and the folder stays", async () => {
+    const w = world({ race: "folder" });
+    const other = "worktree-workflow-autoCommit-20261023";
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toContain(`${other}-2`);
+    // Git made this run's branch before it found the folder; it is taken back.
+    expect(branchesIn(w.repo, other)).toEqual([]);
+    // The folder is the other run's, and is never removed.
+    expect(readFileSync(join(w.repo, ".claude/worktrees", other, "file"), "utf8")).toBe(
+      "another run's file\n",
+    );
+  });
+
+  test("--folder is found from the folder the command runs in, and the person's checkout stays as it was", async () => {
+    const w = world();
+    const before = readFileSync(join(w.repo, ".claude/cc-smart-dev-kit.json"), "utf8");
+    const elsewhere = join(tempDir("propose-elsewhere"), "project");
+    symlinkSync(w.repo, elsewhere);
+    const run = await w.run(
+      ["propose", "autoCommit", "true", "--folder", "project"],
+      {},
+      dirname(elsewhere),
+    );
+    expect(run.status).toBe(0);
+    expect(readFileSync(join(w.repo, ".claude/cc-smart-dev-kit.json"), "utf8")).toBe(before);
+    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([
+      "worktree-workflow-autoCommit-20261023",
+    ]);
+  });
+
+  test("gh pr create that does not answer in time: the branch and the possible pull request are left alone", async () => {
+    const w = world({ gh: "create-hangs" });
+    const branch = "worktree-workflow-autoCommit-20261023";
+    const lines: string[] = [];
+    const errors: string[] = [];
+    const status = await proposeWorkflow(
+      {
+        createTimeoutMs: 300,
+        env: w.env,
+        folder: w.repo,
+        now: () => NOW,
+        paths: w.paths,
+        print: (line) => lines.push(line),
+        error: (line) => errors.push(line),
+      },
+      "autoCommit",
+      true,
+      { json: false },
+    );
+    expect(status).toBe(1);
+    expect(errors[0]).toContain("gh pr create did not answer in time");
+    expect(errors[0]).toContain(`the pull request may be open: look at ${w.repo}'s pull requests`);
+    // Not taken back: GitHub may have made the pull request just before the call ended.
+    expect(git(w.origin, "branch", "--list", branch)).toContain(branch);
+    expect(git(w.repo, "worktree", "list", "--porcelain")).toContain(branch);
   });
 });
 

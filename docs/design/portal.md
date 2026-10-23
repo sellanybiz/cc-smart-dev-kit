@@ -304,7 +304,11 @@ child in the project's folder — a branch, a worktree, a commit and a push neve
 server's process — and the answer carries the pull request's URL for the card's link. A crew
 session cannot reach it: the session-escape guard denies a crew session's call into the
 portal's port, and the child of a click is the person's, not the crew session whose start
-began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52).
+began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52). It drops `CLAUDECODE` too:
+the portal inherits it from the session start that launched it, and a command that refuses
+inside a session — a review-gate setting, above all — must not refuse the person's own click.
+A review-gate change counts once the pull request is merged, so the click opens the gate's own
+review rather than skipping it.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its

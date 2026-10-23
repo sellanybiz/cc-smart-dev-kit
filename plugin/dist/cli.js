@@ -42408,6 +42408,8 @@ var COMMIT_TIMEOUT_MS = 120000;
 var PUSH_TIMEOUT_MS = 120000;
 var QUICK_GIT_TIMEOUT_MS = 1e4;
 var NAME_TRIES = 50;
+var NAME_TAKEN = /already exists/;
+var BRANCH_TAKEN = /a branch named/;
 async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_MS3) {
   if (ghMissing(env))
     return "missing";
@@ -42498,7 +42500,7 @@ function urlIn(text) {
   const found = /https:\/\/\S+\/pull\/\d+/.exec(text);
   return found === null ? null : found[0];
 }
-async function createPullRequest(worktree, env, args) {
+async function createPullRequest(worktree, env, args, timeoutMs) {
   try {
     const child = Bun.spawn(["gh", ...args], {
       cwd: worktree,
@@ -42506,7 +42508,7 @@ async function createPullRequest(worktree, env, args) {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: GH_CREATE_TIMEOUT_MS,
+      timeout: timeoutMs,
       windowsHide: true
     });
     const [out, err, code] = await Promise.all([
@@ -42595,23 +42597,17 @@ async function proposeWorkflow(context, key, value, options) {
   const wanted = `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`;
   let branch = freeName(repo, wanted, context.env);
   let worktree = join72(repo, ".claude", "worktrees", branch);
-  const add = () => runGit(repo, ["worktree", "add", "-b", branch, worktree, `origin/${base}`], context.env, WORKTREE_TIMEOUT_MS);
-  let existedBefore = existsSync65(worktree);
+  const add = () => runGit(repo, ["worktree", "add", "-b", branch, worktree, `origin/${base}`], context.env, WORKTREE_TIMEOUT_MS, { LC_ALL: "C" });
+  const refused = (err) => BRANCH_TAKEN.test(err) ? "" : takeBack2(repo, worktree, branch, false, context.env);
   let added = add();
-  if (!added.ok && /already exists/.test(added.err)) {
-    if (!existedBefore) {
-      const left = removeOwnWorktree(repo, worktree, context.env);
-      if (left !== null)
-        return fail(`git worktree add failed: ${left}. Nothing was committed or pushed.`);
-    }
+  if (!added.ok && NAME_TAKEN.test(added.err)) {
+    refused(added.err);
     branch = freeName(repo, wanted, context.env);
     worktree = join72(repo, ".claude", "worktrees", branch);
-    existedBefore = existsSync65(worktree);
     added = add();
   }
   if (!added.ok) {
-    const left = existedBefore ? null : removeOwnWorktree(repo, worktree, context.env);
-    return fail(`git worktree add failed: ${lastLine3(added.err)}${left === null ? ". Nothing was committed or pushed." : `; what is left: ${left}`}`);
+    return fail(`git worktree add failed: ${lastLine3(added.err)}${refused(added.err)}`);
   }
   if (!existsSync65(join72(worktree, CONFIG_PATH))) {
     return fail(`the new worktree has no ${CONFIG_PATH}${takeBack2(repo, worktree, branch, false, context.env)}`);
@@ -42649,7 +42645,7 @@ async function proposeWorkflow(context, key, value, options) {
     title,
     "--body",
     bodyOf(key, current.value, value, base)
-  ]);
+  ], context.createTimeoutMs ?? GH_CREATE_TIMEOUT_MS);
   if (!created.ok) {
     if (created.timedOut) {
       return fail(`gh pr create did not answer in time, so the pull request may be open: look at ${repo}'s pull requests on GitHub before running this again. The branch ${branch} is pushed, from ${worktree}.`);

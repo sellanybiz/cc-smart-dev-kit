@@ -85,9 +85,13 @@ process.exit(process.env.FAKE_CLI_EXIT === undefined ? 0 : Number(process.env.FA
 }
 
 /** Every run the fake CLI logged. */
-function runsOf(
-  log: string,
-): { args: string[]; claudeCode: null | string; config: string; crew: null | string; cwd: string }[] {
+function runsOf(log: string): {
+  args: string[];
+  claudeCode: null | string;
+  config: string;
+  crew: null | string;
+  cwd: string;
+}[] {
   let text = "";
   try {
     text = readFileSync(log, "utf8");

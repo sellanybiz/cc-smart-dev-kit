@@ -159,11 +159,12 @@ Because the gate is read from the base's committed file, a change that counts mu
 and the plugin never writes the project's main checkout. `cc-smart-dev-kit workflow propose
 <setting> <value>` (and the portal's Workflow card, through the same command in a child):
 
-1. finds the project (`--folder`, else the current folder), its `worktrees.base`, and the
-   value the resolver holds now — one the project already sets, or an `--unset` of one it does
-   not, ends with one line and no branch;
-2. checks `gh` (`ghLoginState`: installed, and `gh api user` answers) and fetches
-   `origin/<base>` — both before anything is made;
+1. finds the project (`--folder`, else the current folder) and its `worktrees.base`;
+2. fetches `origin/<base>` and reads **the value the base commits** (`resolveWorkflow` over the
+   file at `origin/<base>`, not this checkout's working copy: an uncommitted edit here is not a
+   policy) — one the base already holds, or an `--unset` of one it does not set, ends with one
+   line and no branch. It checks `gh` too (`ghLoginState`: installed, and `gh repo view` answers
+   for this repository), so no branch is made for a pull request that could not open;
 3. cuts a branch and a worktree from `origin/<base>`, named
    `worktree-workflow-<setting>-<YYYYMMDD>` under the repository's `.claude/worktrees/`
    (Claude Code's own layout, so the auto-clean removes it after the merge; the same day's
@@ -177,9 +178,15 @@ and the plugin never writes the project's main checkout. `cc-smart-dev-kit workf
    merged. `--json` prints `{ url, branch, worktree, setting, from, to }`.
 
 A step that fails after the branch exists takes the worktree, the branch, and the pushed
-branch back, and the line says what is left if any of that fails. Inside Claude Code a gate
-key refuses, as `set` does; outside it — a terminal, the portal — every key is allowed: the
-pull request's review is the gate.
+branch back, and the line says what is left if any of that fails. Two exceptions, both to
+avoid destroying what may be another run's: a `gh pr create` that does not answer in time
+leaves the pushed branch and the pull request it may have made, and a name another proposal
+took between the check and the add is skipped for the next free one rather than reused. A
+crew session never runs the command (D24): it pushes a branch and opens a pull request, in
+children no hook sees, and a crew session does neither — its push and `gh pr create` are
+denied by the guards, so the command refuses first, with the step it has (its lead does the
+rest). Inside Claude Code a gate key refuses, as `set` does; outside it — a terminal, the
+portal — every key is allowed: the pull request's review is the gate.
 
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request

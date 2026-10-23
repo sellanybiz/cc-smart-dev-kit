@@ -2471,9 +2471,11 @@ cc-smart-dev-kit workflow propose autoMerge --unset
 cc-smart-dev-kit workflow propose crew.perLead 6 --folder ~/code/my-app --json
 ```
 
-A value the project already sets is said and nothing is made; the base must carry the
-project's file (commit and push it first); `gh` must be installed and logged in. A failure
-after the branch exists takes the worktree and the branch back, and the pushed branch too.
+A value the base already commits is said and nothing is made (an uncommitted edit in your
+checkout is not a policy); the base must carry the project's file (commit and push it first);
+`gh` must be installed and logged in for this repository. A failure after the branch exists
+takes the worktree and the branch back, and the pushed branch too — except a `gh pr create`
+that does not answer in time, which leaves both, since the pull request may be open.
 Inside Claude Code the review-gate keys refuse, as `set` does there; outside it — your
 terminal, the portal — every key is allowed, because the pull request's review is the gate.
 

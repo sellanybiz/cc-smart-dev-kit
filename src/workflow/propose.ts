@@ -76,6 +76,17 @@ const QUICK_GIT_TIMEOUT_MS = 10_000;
 /** How many names a taken branch may push the new one to before the command gives up. */
 const NAME_TRIES = 50;
 
+/** Git's words (in English, `LC_ALL=C`) when `worktree add` finds its name taken: a branch or a folder. */
+const NAME_TAKEN = /already exists/;
+
+/**
+ * …and when it is the **branch** name that is taken (`fatal: a branch named 'x' already
+ * exists`): git made nothing, and that branch is another run's. A taken **folder** (`fatal:
+ * '<path>' already exists`) is another run's too, but git makes the new branch before it looks
+ * at the folder and leaves it — that one is this attempt's. Both proved by hand on git 2.53.
+ */
+const BRANCH_TAKEN = /a branch named/;
+
 /** What a `gh` on this machine can do right now. */
 export type GhLoginState = "in" | "missing" | "out";
 
@@ -112,6 +123,8 @@ export interface ProposeContext {
   error: (line: string) => void;
   /** The clock the branch name's day comes from (UTC); a test moves it. */
   now?: () => number;
+  /** How long `gh pr create` may take; `GH_CREATE_TIMEOUT_MS` unless a test shortens it. */
+  createTimeoutMs?: number;
 }
 
 /** One message as a person reads it: the last line of a child's own words, never all of it. */
@@ -260,7 +273,12 @@ function urlIn(text: string): string | null {
  * is its own answer**: GitHub may have made the pull request just before the call was ended, and
  * taking the pushed branch back then would close it — so the caller leaves everything as it is.
  */
-async function createPullRequest(worktree: string, env: Env, args: string[]): Promise<Created> {
+async function createPullRequest(
+  worktree: string,
+  env: Env,
+  args: string[],
+  timeoutMs: number,
+): Promise<Created> {
   try {
     const child = Bun.spawn(["gh", ...args], {
       cwd: worktree,
@@ -268,7 +286,7 @@ async function createPullRequest(worktree: string, env: Env, args: string[]): Pr
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: GH_CREATE_TIMEOUT_MS,
+      timeout: timeoutMs,
       windowsHide: true,
     });
     const [out, err, code] = await Promise.all([
@@ -399,37 +417,31 @@ export async function proposeWorkflow(
   const wanted = `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`;
   let branch = freeName(repo, wanted, context.env);
   let worktree = join(repo, ".claude", "worktrees", branch);
+  // In English, so a name another run took is read by git's own words, whatever the locale.
   const add = (): ReturnType<typeof runGit> =>
     runGit(
       repo,
       ["worktree", "add", "-b", branch, worktree, `origin/${base}`],
       context.env,
       WORKTREE_TIMEOUT_MS,
+      { LC_ALL: "C" },
     );
-  // A folder that was already there is never removed, whatever the add made of it; one this
-  // attempt made is.
-  let existedBefore = existsSync(worktree);
+  // What a refused add leaves that is this run's. A taken **branch name** made nothing, and that
+  // branch is another run's: never touched. A taken **folder** is the other run's too, but git
+  // makes the new branch before it looks at the folder and leaves it — that branch is this
+  // attempt's, and `takeBack` removes only it and a worktree git itself lists.
+  const refused = (err: string): string =>
+    BRANCH_TAKEN.test(err) ? "" : takeBack(repo, worktree, branch, false, context.env);
   let added = add();
-  if (!added.ok && /already exists/.test(added.err)) {
-    // A name another proposal took between the check and the add (a teammate's branch, or a
-    // worktree folder): one more free name, once. Only a worktree this attempt made is taken
-    // back — a branch git may have made under a folder that was already there is left alone,
-    // since it can only be the other run's.
-    if (!existedBefore) {
-      const left = removeOwnWorktree(repo, worktree, context.env);
-      if (left !== null)
-        return fail(`git worktree add failed: ${left}. Nothing was committed or pushed.`);
-    }
+  if (!added.ok && NAME_TAKEN.test(added.err)) {
+    // A name another proposal took between the check and the add: one more free name, once.
+    refused(added.err);
     branch = freeName(repo, wanted, context.env);
     worktree = join(repo, ".claude", "worktrees", branch);
-    existedBefore = existsSync(worktree);
     added = add();
   }
   if (!added.ok) {
-    const left = existedBefore ? null : removeOwnWorktree(repo, worktree, context.env);
-    return fail(
-      `git worktree add failed: ${lastLine(added.err)}${left === null ? ". Nothing was committed or pushed." : `; what is left: ${left}`}`,
-    );
+    return fail(`git worktree add failed: ${lastLine(added.err)}${refused(added.err)}`);
   }
   // The worktree is a checkout of the base, so it holds the base's own file. The check is the
   // guard against the writer falling back to the main checkout's working copy: that file is
@@ -478,18 +490,23 @@ export async function proposeWorkflow(
       `git push -u origin ${branch} failed: ${lastLine(pushed.err)}. Check that you may push to this repository, then try again${takeBack(repo, worktree, branch, false, context.env)}`,
     );
   }
-  const created = await createPullRequest(worktree, context.env, [
-    "pr",
-    "create",
-    "--base",
-    base,
-    "--head",
-    branch,
-    "--title",
-    title,
-    "--body",
-    bodyOf(key, current.value, value, base),
-  ]);
+  const created = await createPullRequest(
+    worktree,
+    context.env,
+    [
+      "pr",
+      "create",
+      "--base",
+      base,
+      "--head",
+      branch,
+      "--title",
+      title,
+      "--body",
+      bodyOf(key, current.value, value, base),
+    ],
+    context.createTimeoutMs ?? GH_CREATE_TIMEOUT_MS,
+  );
   if (!created.ok) {
     if (created.timedOut) {
       // Not taken back: the pull request may already exist, and the pushed branch is its head.
