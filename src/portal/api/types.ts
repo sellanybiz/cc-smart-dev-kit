@@ -322,6 +322,12 @@ export interface WorkAnswer {
   crew: CrewSummary[];
   /** Every lead on the machine, newest first; each names its own `repo` and nests its crew. */
   leads: LeadSummary[];
+  /**
+   * A quiet line about this portal's own folder, shown muted: it is not in a git project (the
+   * portal's normal start), so the other sessions of a project are not listed; null when the
+   * folder is one.
+   */
+  folderNote: null | string;
   /** Why the crew store or this folder's sessions could not be read; null when they were. */
   note: null | string;
   /** The repository of the folder the portal runs in; null outside a git project. */
@@ -524,45 +530,12 @@ export interface NeedsAnswer {
   update: null | { at: string; from: null | string; notes: string[]; version: string };
 }
 
-/** One worktree, as `/api/worktrees` lists it. */
-export interface WorktreeItem {
-  branch: null | string;
-  /** `main`, a folder that is gone, finished, or kept with its reason. */
-  kind: "finished" | "gone" | "kept" | "main";
-  /** The commit it is on. */
-  head: string;
-  /** Minutes since git last wrote to it; null for the main checkout and a folder that is gone. */
-  idleMinutes: null | number;
-  path: string;
-  /** Why it is kept; null when it is finished or the main checkout. */
-  why: null | string;
-}
-
 /**
- * The background clean's record of a repository (`src/worktrees/auto-state.ts`): when it last
- * ran, and the removals no session start has reported to the person yet (the record keeps them
- * until then, so they are not necessarily from that last run).
+ * `GET /api/worktrees`'s types come from its one builder (`src/worktrees/command.ts`): the
+ * CLI's `worktrees --json` prints that answer and the portal reads it in a child
+ * (`src/portal/worktrees-read.ts`), so the page and the command can never disagree.
  */
-export interface WorktreeAutoClean {
-  /** The base those removals were judged against. */
-  base: string;
-  /** When auto-clean last ran (ISO 8601), whatever that run did. */
-  lastRunAt: string;
-  /** The latest removals auto-clean has not reported yet, and why each counted as finished. */
-  removed: { branch: null | string; name: string; path: string; why: string }[];
-}
-
-/** `GET /api/worktrees`: every worktree's verdict against `base`, with no fetch (origin as it is). */
-export interface WorktreesAnswer {
-  /** The last background clean of this repository; null when it never ran. */
-  autoClean: null | WorktreeAutoClean;
-  base: string;
-  /** Where the base came from: the project's file, the remote's default, or the fallback. */
-  from: "config" | "default" | "origin";
-  /** A line about the machine's own facts when they could not be read (Docker, programs). */
-  note: null | string;
-  worktrees: WorktreeItem[];
-}
+export type { WorktreeAutoClean, WorktreeItem, WorktreesAnswer } from "../../worktrees/command";
 
 /**
  * The history's own names come from its reader (`src/gateway/history-read.ts`): one home for

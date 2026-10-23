@@ -5,6 +5,7 @@
  * Each security-relevant rule is one test, and each was watched failing with the rule broken.
  */
 import { describe, expect, test } from "bun:test";
+import { connect } from "node:net";
 import { BUFFER_MAX, LiveHub, MAX_STREAMS, STREAM_QUEUE_MAX_BYTES } from "./hub";
 
 /** One event as a test reads it back from the stream. */
@@ -40,6 +41,22 @@ async function readUntil(reader: StreamReader, needle: string, timeoutMs = 1_000
   let text = "";
   const until = Date.now() + timeoutMs;
   while (!text.includes(needle) && Date.now() < until) {
+    const read = await Promise.race([
+      reader.read(),
+      Bun.sleep(Math.max(1, until - Date.now())).then(() => ({ done: true, value: undefined })),
+    ]);
+    if (read.done) break;
+    if (read.value !== undefined) text += decoder.decode(read.value, { stream: true });
+  }
+  return text;
+}
+
+/** Reads until `count` events are in the text (a whole replay), and returns what was read. */
+async function readFrames(reader: StreamReader, count: number, timeoutMs = 5_000): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  const until = Date.now() + timeoutMs;
+  while ((text.match(/^event: /gm)?.length ?? 0) < count && Date.now() < until) {
     const read = await Promise.race([
       reader.read(),
       Bun.sleep(Math.max(1, until - Date.now())).then(() => ({ done: true, value: undefined })),
@@ -230,8 +247,7 @@ describe("the live stream's hub", () => {
   });
 
   test("a stream that stops reading is closed once its queue passes the bound", async () => {
-    // A bound small enough for a test: the queue is bytes, so three events pass it.
-    expect(STREAM_QUEUE_MAX_BYTES).toBeGreaterThan(BUFFER_MAX);
+    // A bound small enough for a test: the queue is bytes, so the events pass it.
     const hub = new LiveHub({ maxQueueBytes: 128, now: () => 42, pingMs: 60_000 });
     const reader = open(hub);
     expect(hub.streamsOpen).toBe(1);
@@ -240,5 +256,89 @@ describe("the live stream's hub", () => {
     expect(hub.streamsOpen).toBe(0);
     await reader.cancel();
     hub.stop();
+  });
+
+  test("a full replay of realistic size fits under the byte bound", async () => {
+    // The stream's most frequent event is a crew event: one per step or state change, with a
+    // line, the sha it happened at and the memory reading. A page that reconnects may replay
+    // the whole buffer, so the bound must leave room for `BUFFER_MAX` of them with their
+    // framing — and this is that replay, measured on the stream itself.
+    expect(STREAM_QUEUE_MAX_BYTES).toBe(1_048_576);
+    const hub = new LiveHub({ now: () => 42, pingMs: 60_000 });
+    const event = {
+      at: "2026-10-23T08:00:00.000Z",
+      crew: "PF2-pf1-findings-1a2b3c",
+      lead: "c00f9bb5-1111-2222-3333-444444444444",
+      memoryMb: 1234,
+      name: "C cc-smart-dev PF2 pf1-findings",
+      note: null,
+      sha: "7f441b2f0e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5",
+      state: "working",
+      text: "tests-green: 2678 pass, 0 fail across 64 files; two steps left in the phase",
+      type: "state",
+      version: 1,
+    };
+    for (let index = 0; index < BUFFER_MAX; index += 1) hub.publish("crew", event);
+    const reader = open(hub, `${hub.runId}:0`);
+    try {
+      const text = await readFrames(reader, BUFFER_MAX + 1);
+      // The whole replay, then the hello: nothing was closed part-way, and every event is there.
+      expect(
+        eventsOf(text)
+          .map((one) => one.event)
+          .filter((one) => one === "crew").length,
+      ).toBe(BUFFER_MAX);
+      const bytes = new TextEncoder().encode(text).byteLength;
+      // A real replay, not a handful of tiny events: this one is about 200 KB, five times
+      // under the bound.
+      expect(bytes).toBeGreaterThan(150_000);
+      expect(bytes).toBeLessThan(STREAM_QUEUE_MAX_BYTES);
+    } finally {
+      await reader.cancel();
+      hub.stop();
+    }
+  });
+
+  test("a reader that stops reading is closed at the server, not only in the hub", async () => {
+    // A real Bun.serve and a raw socket that never reads: Bun's own `fetch` reads a response
+    // body into memory by itself, so only a socket that stops shows the stall a sleeping
+    // laptop or a broken tab makes. The server writes until the queue passes the bound.
+    const hub = new LiveHub({ maxQueueBytes: 64 * 1_024, now: () => 42, pingMs: 60_000 });
+    const server = Bun.serve({
+      fetch(request) {
+        if (new URL(request.url).pathname !== "/events") return new Response("no");
+        // A quiet stream is not an idle connection, exactly as the portal serves it (`server.ts`).
+        server.timeout(request, 0);
+        const opened = hub.open(request);
+        return opened.kind === "opened" ? opened.response : new Response("busy", { status: 429 });
+      },
+      port: 0,
+    });
+    // A paused `net` socket: the kernel stops taking bytes, and Bun's writes back up.
+    const port = server.port ?? 0;
+    const socket = connect(port, "127.0.0.1", () => {
+      socket.write(
+        `GET /events HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAccept: text/event-stream\r\n\r\n`,
+      );
+    });
+    socket.on("error", () => undefined);
+    try {
+      const openedBy = Date.now() + 2_000;
+      while (hub.streamsOpen === 0 && Date.now() < openedBy) await Bun.sleep(5);
+      expect(hub.streamsOpen).toBe(1);
+      let published = 0;
+      while (hub.streamsOpen > 0 && published < 8_192) {
+        for (let index = 0; index < 100; index += 1) {
+          hub.publish("recent", { pad: "x".repeat(1_000), n: published + index });
+        }
+        published += 100;
+        await Bun.sleep(10);
+      }
+      // The stalled stream gave its place back; a page reconnects and resumes by its last id.
+      expect(hub.streamsOpen).toBe(0);
+    } finally {
+      socket.destroy();
+      server.stop(true);
+    }
   });
 });

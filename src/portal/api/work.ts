@@ -48,12 +48,10 @@ import {
   type MergeWorld,
 } from "../../workflow/merge-check";
 import { readReviews, reviewsFile } from "../../workflow/reviews";
-import { autoCleanFiles, readRepoRecord } from "../../worktrees/auto-state";
-import { baseBranch } from "../../worktrees/command";
-import { scanWorktrees } from "../../worktrees/scan";
 import { routerFacts, shownDetail } from "../facts";
 import { openWaitsOffLoop, readFlowOffLoop } from "../flow-read";
 import { type PageDataDeps, updateFacts } from "../page-data";
+import { readWorktreesOffLoop } from "../worktrees-read";
 import {
   type BreakerNeed,
   type CrewAnswer,
@@ -77,7 +75,6 @@ import {
   type RequestsAnswer,
   type SessionSummary,
   type WorkAnswer,
-  type WorktreeItem,
   type WorktreesAnswer,
 } from "./types";
 
@@ -111,16 +108,20 @@ export function sessionStateOf(
 /** How many asks one page of the guard log answers unless the query says otherwise. */
 export const GUARD_ASKS_DEFAULT = 50;
 
-/** This project's main checkout, or why there is none. */
-function repoOf(deps: PageDataDeps): { repo: string } | { note: string } {
+/**
+ * This project's main checkout, the folder being no project, or why it could not be read. The
+ * three cases are told apart: a folder that is no git project is the portal's normal start
+ * (`portal.md`), a quiet line on the Work page; one that cannot be read is a failure.
+ */
+function repoOf(
+  deps: PageDataDeps,
+): { kind: "error"; why: string } | { kind: "none" } | { kind: "repo"; repo: string } {
   try {
     const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
-    if (checkout === null) {
-      return { note: "this folder is not in a git project, so there is no work to show" };
-    }
-    return { repo: checkout.mainCheckout ?? checkout.root };
+    if (checkout === null) return { kind: "none" };
+    return { kind: "repo", repo: checkout.mainCheckout ?? checkout.root };
   } catch (error) {
-    return { note: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", why: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -248,9 +249,10 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   // The other sessions are the project of the folder the portal runs in, when it has one: a
   // session record is kept under its project's folder, and there is no list of every project.
   const found = repoOf(deps);
+  let folderNote: null | string = null;
   let sessions: SessionSummary[] = [];
   let waitsError: null | string = null;
-  if ("repo" in found) {
+  if (found.kind === "repo") {
     const { repo } = found;
     // The crew sessions' and leads' own sessions, by their full ids: a saved session that is
     // one of them is not "another session" on the Work page.
@@ -279,17 +281,21 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
       state: sessionStateOf(session, waiting, now),
     }));
     waitsError = "error" in waits ? waits.error : null;
-  } else {
-    // The crew data still shows; only the other sessions need a project.
-    note =
-      note ??
+  } else if (found.kind === "none") {
+    // The crew data still shows; only the other sessions need a project. The portal's normal
+    // start is the home folder, which is no project, so this line is quiet, never a warning.
+    folderNote =
       "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are";
+  } else {
+    // A folder that could not be read is a failure: it stays a warning on the page.
+    note = note ?? found.why;
   }
   return {
     crew,
+    folderNote,
     leads,
     note,
-    repo: "repo" in found ? found.repo : null,
+    repo: found.kind === "repo" ? found.repo : null,
     sessions,
     waitsError,
   };
@@ -758,102 +764,17 @@ export function guardAsksAnswer(deps: PageDataDeps, query: GuardAskQuery): Guard
   };
 }
 
-/** What the last background clean of `repo` did, or null when it never ran. */
-function autoCleanOf(deps: PageDataDeps, repo: string): WorktreesAnswer["autoClean"] {
-  const record = readRepoRecord(autoCleanFiles(deps.action.portal.paths.stateDir, repo));
-  if (record === null) return null;
-  return {
-    base: record.base,
-    lastRunAt: new Date(record.lastRunAt).toISOString(),
-    removed: record.removed,
-  };
-}
-
-/** `/api/worktrees`: every worktree's verdict, against the project's base. */
-export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
-  const found = repoOf(deps);
-  if ("note" in found) {
-    return { autoClean: null, base: "", from: "default", note: found.note, worktrees: [] };
-  }
-  const { repo } = found;
-  const now = deps.action.portal.now();
-  try {
-    const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
-    const chosen = baseBranch(checkout, deps.action.portal.env, repo);
-    const judged = {
-      base: chosen.base,
-      claudeConfigDir: deps.action.portal.paths.claudeConfigDir,
-      env: deps.action.portal.env,
-      now,
-    };
-    let note: null | string = null;
-    let scanned: ReturnType<typeof scanWorktrees>;
-    try {
-      scanned = scanWorktrees(repo, judged);
-    } catch (error) {
-      // A repository with no `origin/<base>` (a local-only repo) is judged against its own
-      // base branch: the same comparison, said plainly.
-      const why = error instanceof Error ? error.message : String(error);
-      if (!why.includes("is not known here")) {
-        return { autoClean: null, base: "", from: "default", note: why, worktrees: [] };
-      }
-      scanned = scanWorktrees(repo, {
-        ...judged,
-        against: { label: chosen.base, ref: `refs/heads/${chosen.base}` },
-      });
-      note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
-    }
-    const worktrees: WorktreeItem[] = scanned.map((worktree) => {
-      const { branch, head, path } = worktree.listed;
-      // The main checkout is never one to clear, and a folder that is gone has no git files
-      // to read: neither has an idle time.
-      if (worktree.state === "main") {
-        return { branch, head, idleMinutes: null, kind: "main", path, why: null };
-      }
-      if (worktree.state === "gone") {
-        return {
-          branch,
-          head,
-          idleMinutes: null,
-          kind: "gone",
-          path,
-          why: "its folder no longer exists",
-        };
-      }
-      return worktree.state.finished
-        ? {
-            branch,
-            head,
-            idleMinutes: worktree.idleMinutes,
-            kind: "finished",
-            path,
-            why: null,
-          }
-        : {
-            branch,
-            head,
-            idleMinutes: worktree.idleMinutes,
-            kind: "kept",
-            path,
-            why: worktree.state.why,
-          };
-    });
-    return {
-      autoClean: autoCleanOf(deps, repo),
-      base: chosen.base,
-      from: chosen.from,
-      note,
-      worktrees,
-    };
-  } catch (error) {
-    return {
-      autoClean: null,
-      base: "",
-      from: "default",
-      note: error instanceof Error ? error.message : String(error),
-      worktrees: [],
-    };
-  }
+/**
+ * `/api/worktrees`: every worktree's verdict, against the project's base. The scan runs in a
+ * child (`worktrees-read.ts`): it is synchronous git and machine reads, and the server's loop
+ * stays free while it runs. The child is the CLI's own `worktrees --json`, so the page and the
+ * command show one answer.
+ */
+export async function worktreesAnswer(deps: PageDataDeps): Promise<WorktreesAnswer> {
+  const read = await readWorktreesOffLoop(deps.action.portal, deps.action.cwd);
+  return "error" in read
+    ? { autoClean: null, base: "", from: "default", note: read.error, worktrees: [] }
+    : read.answer;
 }
 
 /**

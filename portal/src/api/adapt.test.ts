@@ -196,6 +196,7 @@ describe("the adapters", () => {
     };
     const work: WorkAnswer = {
       crew: [CREW, { ...CREW, id: "crew-2", state: "done" }],
+      folderNote: null,
       leads: [],
       note: null,
       repo: "/home/user/my-app",
@@ -265,6 +266,7 @@ describe("the adapters", () => {
           updatedAt: "2026-10-22T10:00:00.000Z",
         },
       ],
+      folderNote: null,
       note: null,
       repo: "/home/user/my-app",
       waitsError: null,
@@ -308,6 +310,7 @@ describe("the adapters", () => {
   test("Work: a crew session of another lead is shown under that lead's own name", () => {
     const data = workOf({
       crew: [{ ...CREW, id: "crew-9", leadName: "LEAD my-app old", leadSessionId: "lead-0" }],
+      folderNote: null,
       leads: [],
       note: null,
       repo: "/home/user/my-app",
@@ -319,19 +322,34 @@ describe("the adapters", () => {
     ]);
   });
 
-  test("Work: the server's note about what could not be read reaches the page", () => {
-    // An empty list must say why: a store that could not be read, or a folder that is no
-    // project (the portal's normal start in the home folder).
-    const data = workOf({
+  test("Work: the normal-start line is quiet, and a store that could not be read stays a warning", () => {
+    // An empty list must say why. A folder that is no project is the portal's normal start
+    // (the home folder), so its line goes in `folderNote`; a store that could not be read is
+    // a failure and stays in `note`.
+    const quiet = workOf({
       crew: [],
+      folderNote:
+        "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
       leads: [],
-      note: "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
+      note: null,
       repo: null,
       sessions: [],
       waitsError: null,
     });
-    expect(data.note).toContain("not in a git project");
-    expect(data.leads).toEqual([]);
+    expect(quiet.folderNote).toContain("not in a git project");
+    expect(quiet.note).toBe(null);
+    expect(quiet.leads).toEqual([]);
+    const broken = workOf({
+      crew: [],
+      folderNote: null,
+      leads: [],
+      note: "the crew store could not be read: EACCES: permission denied",
+      repo: null,
+      sessions: [],
+      waitsError: null,
+    });
+    expect(broken.note).toContain("could not be read");
+    expect(broken.folderNote).toBe(null);
   });
 
   test("a crew page: the verdict in full, the diff per file, memory, reviews, the question", () => {
@@ -987,7 +1005,14 @@ describe("the flow report that did not run (B6e)", () => {
   });
 
   test("Work says no session can show a wait, and why; none when the report ran", () => {
-    const answer = { crew: [], leads: [], note: null, repo: "/home/user/my-app", sessions: [] };
+    const answer = {
+      crew: [],
+      folderNote: null,
+      leads: [],
+      note: null,
+      repo: "/home/user/my-app",
+      sessions: [],
+    };
     expect(workOf({ ...answer, waitsError: "the plugin is not installed" }).waitsNote).toBe(
       "No session can show that it waits on a prompt: the plugin is not installed",
     );

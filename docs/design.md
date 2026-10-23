@@ -943,9 +943,12 @@ spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call,
 makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
 server, one click froze every page, every other action and the stream for that long. So those
 four actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
-stop|resume|rm <id>` or `dist/cli.js worktrees --clean`, with the plugin's two bun flags, the
-portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is
-not a crew session, D52), a 3-minute timeout, and the record's own repository as the folder.
+stop|resume|rm <id>`, each **in the record's own repository**, or `dist/cli.js worktrees
+--clean`, which has no crew record and runs **in the portal's own folder** — the folder the
+portal was started in. Each child gets the plugin's two bun flags, the portal's own `HOME` and
+`CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52)
+and a 3-minute timeout; one cut at that timeout says so and points at `crew status` and at
+running it again, because a `crew rm` may have done part of its work.
 Every line goes out on the stream as it is printed. The record is found on **the machine**
 (`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
 own folder's store would find nothing. `crew.answer` runs in a child too
@@ -969,6 +972,12 @@ runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read
 reused for 5 s; a failure is not kept. When the child fails, Flow answers 500 with its reason,
 Needs says the permission prompts could not be read (`permissionsError`), and Work says no
 session can show a wait (`waitsError`) — never an empty list that looks like "nothing waits".
+**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`): the scan behind
+`/api/worktrees` reads every worktree's git status, the running sessions, the programs and the
+Docker containers synchronously, so the portal runs the CLI's own `worktrees --json` in a child
+— the one builder (`worktreesAnswerOf`, `src/worktrees/command.ts`) whose answer the page shows
+— shared by requests at once and reused for 5 s; a failure is not kept, and the page shows the
+child's reason in its `note`.
 Still on the loop, and owed to a later phase: the Health page's `systemctl --user is-active`
 (about 6 ms) and the Health and Overview `journalctl -n 200` (20–65 ms), through the doctor
 check's synchronous `Runner`.
@@ -998,7 +1007,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   reply (`describeSession`, skipping Claude Code's `<synthetic>` stand-in), and its state is
   `ended` (the end marker), `waiting` (an open permission prompt, from the flow report's waits),
   `working` (written in the last `SESSION_WORKING_MS`), or `idle`; the "other sessions" list is
-  the project of the folder the portal runs in (or none outside a git project). A crew
+  the project of the folder the portal runs in (or none outside a git project). A folder that
+  is no project is the portal's normal start, so its line on the page is quiet (`folderNote`,
+  muted); a store or a folder that could not be read is a warning (`note`). A crew
   session's summary adds the files its brief owns, what it waits for, its newest line and its
   memory readings, and its "since" is its own newest state event (`stateSince` takes one
   session's events, newest first).

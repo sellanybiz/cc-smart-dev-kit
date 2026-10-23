@@ -863,7 +863,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: true, noFetch: true, remove: null },
+          { clean: true, json: false, noFetch: true, remove: null },
           cleanGitEnv(),
           worktree,
         ),
@@ -873,6 +873,48 @@ describe("the worktrees command", () => {
       logged.mockRestore();
     }
     expect(errors[0]).toContain(`Run this in the main checkout, ${main}.`);
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("`--json` prints the same facts as one object, and changes nothing", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    // One line on stdout, nothing else: the answer a page reads.
+    expect(out).toHaveLength(1);
+    const answer = JSON.parse(out[0] ?? "") as {
+      autoClean: unknown;
+      base: string;
+      from: string;
+      note: null | string;
+      worktrees: { kind: string; path: string }[];
+    };
+    expect(answer.base).toBe("main");
+    // No project file: the remote's own default branch is the base.
+    expect(answer.from).toBe("origin");
+    expect(answer.note).toBe(null);
+    expect(answer.autoClean).toBe(null);
+    expect(answer.worktrees.map((one) => [one.kind, one.path])).toEqual([
+      ["main", main],
+      // Freshly made, so not finished yet: the verdict itself has its own tests.
+      ["kept", worktree],
+    ]);
+    // A read: the worktree is still there.
     expect(existsSync(worktree)).toBe(true);
   });
 
@@ -887,7 +929,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -912,7 +954,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -940,7 +982,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -975,7 +1017,7 @@ describe("the worktrees command", () => {
         expect(
           await runWorktrees(
             paths,
-            { clean: false, noFetch: true, remove: worktree },
+            { clean: false, json: false, noFetch: true, remove: worktree },
             cleanGitEnv(),
             main,
           ),
@@ -1009,7 +1051,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),

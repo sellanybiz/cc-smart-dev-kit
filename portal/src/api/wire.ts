@@ -553,6 +553,7 @@ export interface SessionSummary {
 export interface WorkAnswer {
   crew: CrewSummary[];
   leads: LeadSummary[];
+  folderNote: null | string;
   note: null | string;
   repo: null | string;
   sessions: SessionSummary[];

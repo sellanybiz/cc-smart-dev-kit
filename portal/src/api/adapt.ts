@@ -366,6 +366,7 @@ export function workOf(answer: WorkAnswer): WorkData {
   }
   for (const group of groups) group.lastStep = lastStep;
   return {
+    folderNote: answer.folderNote,
     leads: groups,
     memory,
     // A store or a folder the server could not read: the page says why, never an empty list.

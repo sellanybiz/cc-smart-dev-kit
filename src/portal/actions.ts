@@ -1263,8 +1263,18 @@ async function crewCliAction(
   });
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
-  if (run.timedOut) lines.push(`crew ${args[0]} did not answer in time`);
+  if (run.timedOut) lines.push(crewTimeoutLine(args[0] ?? "", record.id));
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * The line a crew action shows when its child passed `CLI_CHILD_TIMEOUT_MS`: `crew stop`,
+ * `crew resume` and `crew rm` each make several calls, so one cut at the limit may have done
+ * part of its work. The line says so and names the two ways to find out where the crew session
+ * stands: the same command again, or `crew status`.
+ */
+export function crewTimeoutLine(command: string, recordId: string): string {
+  return `crew ${command} did not answer in time, so it may have done part of its work: run it again, or ${COMMAND} crew status ${recordId} to see where it is.`;
 }
 
 /**

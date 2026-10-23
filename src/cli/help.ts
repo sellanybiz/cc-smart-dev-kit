@@ -201,7 +201,7 @@ command that resumes each. --open reopens every session that was open when the m
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
 it would open and opens nothing.`;
 
-const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch]
+const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 
 Every worktree of this repo: who works in it, and which are finished (every commit on
 origin/<base>, nothing uncommitted, no local files, no running session, no program or Docker
@@ -210,6 +210,8 @@ container using it).
   --clean              remove the finished ones, with their branches
   --remove <path>      remove one now, without the one-hour wait
   --no-fetch           judge against origin/<base> as it is, without fetching it first
+  --json               print the same facts as one object, and change nothing (no fetch;
+                       with neither --clean nor --remove)
 
 --clean and --remove run in the main checkout only, one at a time.`;
 
