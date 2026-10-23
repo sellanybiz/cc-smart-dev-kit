@@ -492,6 +492,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       id: "set-limit",
       key: "alerts.usagePercent",
       kind: "number",
+      unit: "%",
       label: "Usage-limit alert at",
       where: "personal",
       value: 80,
@@ -579,6 +580,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       id: "set-crew-usage",
       key: "crew.usagePercent",
       kind: "number",
+      unit: "%",
       label: "Opus waits past",
       where: "personal",
       value: 85,
@@ -882,6 +884,16 @@ export function mockData(empty: boolean): MockData {
     },
     machine: {
       facts,
+      autoMode: empty
+        ? null
+        : {
+            added: ["Trust the build commands of my-app (bun run build, bun test)."],
+            differsFrom: null,
+            from: "/home/user/code/my-app/.claude/cc-smart-dev-kit.json",
+            hash: "0123456789abcdef",
+            removed: [],
+            settings: "~/.claude/settings.json",
+          },
       claudeCode: {
         liveCheck: {
           claudeCode: "2.1.309",

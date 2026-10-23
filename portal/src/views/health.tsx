@@ -1,10 +1,11 @@
 "use client";
 
-import { ServerIcon } from "lucide-react";
+import { RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useResource } from "@/api/hooks";
 import { HEALTH_REFRESH, HISTORY_REFRESH } from "@/api/refresh";
 import type { BackendRow, HealthData, LogLine, PortHolder } from "@/api/types";
+import { ActionButton } from "@/components/action-button";
 import { CommandLine } from "@/components/copy-button";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
@@ -15,6 +16,7 @@ import { RequestsTable } from "@/components/requests-table";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { EmptyState, PagePad, ResourceView } from "@/components/states";
 import { StatusMark, type Tone, TonePill } from "@/components/status";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { count, duration, slotName, targetModel, until } from "@/lib/format";
@@ -124,6 +126,49 @@ function PortHolderCard({ holder }: { holder: HealthData["socket"] }) {
   );
 }
 
+/**
+ * The router does not answer: why, the commands that show its state and its log (on systemd,
+ * named from the socket unit the server read), and the restart, asked first in the design's
+ * words. `router.restart` runs `gateway setup --yes`, the command line's own.
+ */
+function RouterDown({ data }: { data: HealthData }) {
+  const { router, socket } = data;
+  const unit =
+    socket !== null && socket.kind === "systemd" ? socket.name.replace(/\.socket$/, "") : null;
+  return (
+    <PagePad>
+      <Alert className="border-bad/40">
+        <TriangleAlertIcon className="text-bad" aria-hidden="true" />
+        <AlertTitle>The router is not answering</AlertTitle>
+        <AlertDescription className="flex flex-col items-start gap-3">
+          <span className="text-pretty">
+            Nothing came back from 127.0.0.1:{router.port} ({router.why ?? "no answer"}). Subagents
+            on the affordable slots may fail until it is back.
+          </span>
+          {unit !== null && (
+            <span className="flex flex-col gap-2">
+              <CommandLine command={`systemctl --user status ${unit}`} label="Copy" />
+              <CommandLine command={`journalctl --user -u ${unit} -f`} label="Copy" />
+            </span>
+          )}
+          <ActionButton
+            action="router.restart"
+            body={{}}
+            icon={<RotateCwIcon data-icon="inline-start" aria-hidden="true" />}
+            confirm={{
+              title: "Restart the router?",
+              body: "A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails.",
+              yes: "Restart it",
+            }}
+          >
+            Restart the router
+          </ActionButton>
+        </AlertDescription>
+      </Alert>
+    </PagePad>
+  );
+}
+
 function HealthPage({ data }: { data: HealthData }) {
   const [now] = useState(() => Date.now());
   const { router, socket } = data;
@@ -182,6 +227,7 @@ function HealthPage({ data }: { data: HealthData }) {
           detail={`${count(router.fallbacks)} fallbacks, ${count(router.requests)} requests since start`}
         />
       </SectionCards>
+      {!router.up && <RouterDown data={data} />}
       <PagePad className="grid gap-4 md:gap-6 @4xl/main:grid-cols-2">
         <Card>
           <CardHeader>

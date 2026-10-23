@@ -891,6 +891,7 @@ describe("the B6d facts", () => {
     const data = machineOf(answer, facts);
     expect(data.claudeCode).toEqual(answer.claudeCode);
     expect(data.bun).toEqual({ minimum: "1.4.3", ok: true, version: "1.4.5" });
+    expect(data.autoMode).toBe(null);
     expect(data.mcp).toEqual([{ name: "playwright", runsWhat: null, state: "ours" }]);
     expect(data.doctorAt).toBe(1_000);
     expect(data.doctor).toEqual([

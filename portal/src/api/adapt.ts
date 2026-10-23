@@ -170,6 +170,7 @@ function doctorLine(check: DoctorCheck): MachineData["doctor"][number] {
 /** Machine: its own answer, with the frame's facts. */
 export function machineOf(answer: MachineAnswer, facts: PortalFacts): MachineData {
   return {
+    autoMode: answer.autoMode,
     browser: answer.browser,
     bun: answer.bun,
     claudeCode: answer.claudeCode,

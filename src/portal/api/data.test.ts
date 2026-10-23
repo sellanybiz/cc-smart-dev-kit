@@ -281,17 +281,19 @@ describe("a crew session on Work", () => {
       type: "state",
     });
     expect(summary?.memory).toEqual([{ at: "2026-10-23T11:55:00.000Z", mb: 310 }]);
+    // Its state began at its own newest state event, never at another event of the log.
+    expect(summary?.stateSince).toBe("2026-10-23T11:55:00.000Z");
   });
 });
 
 describe("the crew caps on Settings", () => {
   test("the four caps, in the crew card, with their values and where each came from", () => {
     const rows = settingsAnswer(depsOf(world().ctx)).rows.filter((row) => row.card === "crew");
-    expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly])).toEqual([
-      ["crew.perLead", 4, "default", false],
-      ["crew.perLeadOpus", 2, "default", false],
-      ["crew.max", 24, "default", false],
-      ["crew.usagePercent", 85, "default", false],
+    expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly, row.unit])).toEqual([
+      ["crew.perLead", 4, "default", false, undefined],
+      ["crew.perLeadOpus", 2, "default", false, undefined],
+      ["crew.max", 24, "default", false, undefined],
+      ["crew.usagePercent", 85, "default", false, "%"],
     ]);
   });
 

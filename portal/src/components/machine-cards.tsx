@@ -1,5 +1,6 @@
 "use client";
 
+import { RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
 import type { ActionResult } from "@/api/client";
 import { useResource } from "@/api/hooks";
@@ -256,6 +257,15 @@ export function UpdatesCard() {
         ) : (
           <EmptyState title="Nothing to install">You run the newest version.</EmptyState>
         )}
+        {/* `update --check`: it reads the newest version the marketplace has, and installs nothing. */}
+        <ActionButton
+          action="update.check"
+          body={{}}
+          variant="outline"
+          icon={<RefreshCwIcon data-icon="inline-start" aria-hidden="true" />}
+        >
+          Check now
+        </ActionButton>
       </CardContent>
     </Card>
   );

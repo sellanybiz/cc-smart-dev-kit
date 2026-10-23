@@ -17,6 +17,7 @@ import type {
   HistoryAnswer,
   HistoryRequest,
   JobWeightsState,
+  MachineAnswer,
   McpServerRow,
   MergeVerdict,
   ModelRow,
@@ -458,8 +459,15 @@ export interface DoctorLine {
   fix: null | string;
 }
 
+/**
+ * The project's auto-mode trust rules, as `setup`'s own `+` / `-` dry run makes them; null outside
+ * a project, or when it has none. The write sends back `hash`, and refuses any other change.
+ */
+export type AutoModeChange = MachineAnswer["autoMode"];
+
 export interface MachineData {
   facts: PortalFacts;
+  autoMode: AutoModeChange;
   /** Claude Code's version (or why it is not known), and the last `doctor --live` proof. */
   claudeCode: ClaudeCodeFacts;
   /** The Bun the portal runs on, against the kit's minimum. */
@@ -485,6 +493,8 @@ export type SettingKind = "boolean" | "events" | "number" | "segment";
 /** `src/portal/settings.ts` › `SettingsRow` (`SettingSpec` with its value and source). */
 export interface SettingsRow {
   card: "alerts" | "crew" | "flow" | "switches";
+  /** A number row's unit, shown after its box; absent for a plain count. */
+  unit?: "%";
   choices?: readonly { label: string; value: string }[];
   help: string;
   id: string;

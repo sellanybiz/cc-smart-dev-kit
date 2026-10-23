@@ -421,6 +421,7 @@ export type WorkflowKey =
 /** `src/portal/settings.ts` › `SettingsRow`. */
 export interface SettingsRow {
   card: "alerts" | "crew" | "flow" | "switches";
+  unit?: "%";
   choices?: readonly { label: string; value: string }[];
   help: string;
   id: string;

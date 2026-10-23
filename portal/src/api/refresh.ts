@@ -26,7 +26,8 @@ export const OVERVIEW_REFRESH: RefreshOn = (message) =>
 export const SLOTS_REFRESH: RefreshOn = (message) =>
   message.name === "state" || actionResult(message, "slot.") || actionResult(message, "switch");
 
-export const HEALTH_REFRESH: RefreshOn = ["state"];
+export const HEALTH_REFRESH: RefreshOn = (message) =>
+  message.name === "state" || actionResult(message, "router.");
 
 export const NEEDS_REFRESH: RefreshOn = (message) =>
   message.name === "crew" ||

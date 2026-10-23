@@ -130,10 +130,17 @@ function repoOf(deps: PageDataDeps): { repo: string } | { note: string } {
 /** How many memory readings a crew session's summary carries: its newest, for a sparkline. */
 export const SUMMARY_MEMORY_POINTS = 60;
 
-/** One crew session as a summary: no transcript, no prompt, no key. */
+/**
+ * One crew session as a summary: no transcript, no prompt, no key. `events` is the repository's
+ * whole log, oldest first; the board's readers take one crew session's own, newest first.
+ */
 function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: number): CrewSummary {
   const open = [...record.questions].reverse().find((question) => question.answer === null);
-  const said = events.findLast((event) => event.crew === record.id && event.text !== null);
+  const own = events.filter((event) => event.crew === record.id).reverse();
+  // The board's own rule for its last line (`lastSaid`): never the "created" line, never empty.
+  const said = own.find(
+    (event) => event.type !== "created" && event.text !== null && event.text.trim() !== "",
+  );
   return {
     base: record.base,
     branch: record.branch,
@@ -168,7 +175,7 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: nu
     shortId: record.shortId,
     slug: record.slug,
     state: record.state,
-    stateSince: stateSince(record, events),
+    stateSince: stateSince(record, own),
     updatedAt: record.updatedAt,
     waitingFor: record.waitingFor ?? null,
     waitsFor: record.waitsFor,

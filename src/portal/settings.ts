@@ -43,6 +43,8 @@ export interface SettingSpec {
   key: WorkflowKey;
   kind: SettingKind;
   label: string;
+  /** A number row's unit, shown after its box; absent for a plain count. */
+  unit?: "%";
   /** Where a change is written: the person's own defaults, or the project's committed file. */
   where: "personal" | "project";
 }
@@ -162,6 +164,7 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "alerts.usagePercent",
     kind: "number",
     label: "Usage-limit alert at",
+    unit: "%",
     where: "personal",
   },
   {
@@ -234,6 +237,7 @@ export const SETTINGS: readonly SettingSpec[] = [
     key: "crew.usagePercent",
     kind: "number",
     label: "Opus waits past",
+    unit: "%",
     where: "personal",
   },
 ];

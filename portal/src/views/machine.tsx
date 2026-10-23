@@ -1,10 +1,23 @@
 "use client";
 
-import { DownloadIcon, PowerIcon, StethoscopeIcon, Undo2Icon } from "lucide-react";
-import { useState } from "react";
+import {
+  DownloadIcon,
+  FileCheckIcon,
+  GlobeIcon,
+  PowerIcon,
+  StethoscopeIcon,
+  Undo2Icon,
+} from "lucide-react";
+import { type FormEvent, useId, useState } from "react";
 import { useResource } from "@/api/hooks";
 import { MACHINE_REFRESH } from "@/api/refresh";
-import type { ClaudeCodeFacts, DoctorLine, MachineData, McpServerRow } from "@/api/types";
+import type {
+  AutoModeChange,
+  ClaudeCodeFacts,
+  DoctorLine,
+  MachineData,
+  McpServerRow,
+} from "@/api/types";
 import { ActionButton, ActionResultLine, useAction } from "@/components/action-button";
 import { CommandLine } from "@/components/copy-button";
 import { HeavyJobsCard } from "@/components/heavy-jobs";
@@ -21,6 +34,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ago, clockTime, KIT_NAME } from "@/lib/format";
 
 const DOCTOR_TONE: Record<DoctorLine["mark"], Tone> = {
@@ -332,26 +347,89 @@ function OmnirouteCard({ data }: { data: MachineData }) {
   );
 }
 
+/**
+ * The extension's token, saved through `browser token`'s own writer. The field starts empty and
+ * is emptied after a save: the stored token is never on the page, and no answer echoes it.
+ */
+function TokenField({ tokenSet, platform }: { tokenSet: boolean; platform: string }) {
+  const id = useId();
+  const [token, setToken] = useState("");
+  const { run, state } = useAction("browser.token", () => setToken(""));
+  const sending = state.phase === "sending";
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    run({ token });
+  };
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <Label htmlFor={id}>The extension's token</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id={id}
+          type="password"
+          autoComplete="off"
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+          placeholder={
+            tokenSet
+              ? "a token is set: paste a new one to replace it"
+              : "paste PLAYWRIGHT_MCP_EXTENSION_TOKEN=…"
+          }
+          className="h-8 min-w-0 flex-1 basis-56 font-mono text-xs"
+        />
+        <Button type="submit" size="sm" variant="outline" disabled={sending} aria-busy={sending}>
+          Save the token
+        </Button>
+      </div>
+      <ActionResultLine state={state} />
+      <p className="text-xs text-pretty text-muted-foreground">
+        It is written to the same file {KIT_NAME} browser token writes,{" "}
+        {platform === "win32"
+          ? "in your own user profile, where only you can read it"
+          : "mode 600: readable only by you"}
+        , and it is never shown again, printed, or logged anywhere.
+      </p>
+    </form>
+  );
+}
+
 function BrowserCard({ data }: { data: MachineData }) {
   const { browser } = data;
   const ready = browser.state.tokenSet && browser.state.extensionInstalled;
+  const profile = browser.state.profileDirName;
   return (
     <Card>
       <CardHeader>
         <CardTitle>Browser</CardTitle>
-        <CardDescription>{browser.guide.intro}</CardDescription>
+        <CardDescription>
+          The Playwright MCP server drives your Chrome, in a profile of its own named{" "}
+          <span className="font-mono">{profile}</span>. {browser.guide.intro}
+        </CardDescription>
         <CardAction>
           <TonePill tone={ready ? "ok" : "warn"}>{ready ? "ready" : "not ready"}</TonePill>
         </CardAction>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-5">
+        <ActionButton
+          action="browser.setup"
+          body={{}}
+          variant="outline"
+          icon={<GlobeIcon data-icon="inline-start" aria-hidden="true" />}
+          confirm={{
+            title: `Open the extension's page in the ${profile} profile?`,
+            body: `The same command as ${KIT_NAME} browser setup runs: Chrome comes to the front, nothing is installed without your click, and the profile is named in Chrome's own settings file while Chrome is closed.`,
+            yes: "Open it",
+          }}
+        >
+          Set up the browser
+        </ActionButton>
         <ol className="flex list-decimal flex-col gap-3 pl-5 text-sm marker:text-muted-foreground">
           {browser.guide.steps.map((step) => (
             <li key={step.text} className="pl-1">
               <StatusMark tone={step.done === true ? "ok" : step.done === false ? "warn" : "info"}>
                 <span className="text-pretty">{step.text}</span>
                 {step.detail !== undefined && (
-                  <code className="mt-1 block w-fit rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                  <code className="mt-1 block w-fit rounded bg-muted px-1.5 py-0.5 font-mono text-xs wrap-anywhere">
                     {step.detail}
                   </code>
                 )}
@@ -359,6 +437,75 @@ function BrowserCard({ data }: { data: MachineData }) {
             </li>
           ))}
         </ol>
+        {[...browser.guide.notes, ...browser.notes].map((note) => (
+          <p key={note} className="text-xs text-pretty text-muted-foreground wrap-anywhere">
+            {withoutMark(note)}
+          </p>
+        ))}
+        <TokenField tokenSet={browser.state.tokenSet} platform={data.facts.platform} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The project's auto-mode trust rules, as `setup`'s own `+` / `-` lines. The write sends back the
+ * hash of exactly this change, and the server plans again under its lock and refuses another.
+ */
+function AutoModeCard({ change }: { change: NonNullable<AutoModeChange> }) {
+  const lines = [
+    ...change.added.map((entry) => ({ entry, mark: "+" })),
+    ...change.removed.map((entry) => ({ entry, mark: "-" })),
+  ];
+  return (
+    <Card className="@4xl/main:col-span-2">
+      <CardHeader>
+        <CardTitle>Auto mode: trust rules</CardTitle>
+        <CardDescription className="text-pretty">
+          These come from <span className="font-mono wrap-anywhere">{change.from}</span> and go into{" "}
+          <span className="font-mono">{change.settings}</span>, the only place Claude Code's auto
+          mode reads them from. They are trust rules: read them before you say yes.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 text-sm">
+        {change.differsFrom !== null && (
+          <p className="text-pretty text-warn">
+            This worktree's file is not the same as the main checkout's (
+            <span className="font-mono">{change.differsFrom}</span>). The rules below come from this
+            worktree's file.
+          </p>
+        )}
+        {lines.length === 0 ? (
+          <p className="text-muted-foreground">Your user settings already hold these rules.</p>
+        ) : (
+          <>
+            <ul className="flex flex-col gap-1.5 font-mono text-xs">
+              {lines.map((line) => (
+                <li key={`${line.mark}${line.entry}`} className="flex gap-2">
+                  <span className={line.mark === "+" ? "text-ok" : "text-bad"} aria-hidden="true">
+                    {line.mark}
+                  </span>
+                  <span className="wrap-anywhere">
+                    <span className="sr-only">{line.mark === "+" ? "added: " : "removed: "}</span>
+                    {line.entry}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <ActionButton
+              action="automode.apply"
+              body={{ confirm: true, shownHash: change.hash }}
+              icon={<FileCheckIcon data-icon="inline-start" aria-hidden="true" />}
+              confirm={{
+                title: "Write these trust rules?",
+                body: `They go into ${change.settings}, and auto mode will treat them as true.`,
+                yes: "Write them",
+              }}
+            >
+              Write them
+            </ActionButton>
+          </>
+        )}
       </CardContent>
     </Card>
   );
@@ -385,7 +532,10 @@ function MachinePage({ data }: { data: MachineData }) {
           value={claude.version ?? "unknown"}
           badge={<TonePill tone={live.tone}>{live.pill}</TonePill>}
           headline={live.line}
-          detail={claude.why ?? `Prove it again with ${KIT_NAME} doctor --live`}
+          detail={
+            claude.why ??
+            `Prove it${claude.liveCheck === null ? "" : " again"} with ${KIT_NAME} doctor --live`
+          }
         />
         <StatCard
           label="Bun"
@@ -432,6 +582,7 @@ function MachinePage({ data }: { data: MachineData }) {
         <McpCard servers={data.mcp} />
         <BrowserCard data={data} />
         <OmnirouteCard data={data} />
+        {data.autoMode !== null && <AutoModeCard change={data.autoMode} />}
         <Card>
           <CardHeader>
             <CardTitle>Warp</CardTitle>

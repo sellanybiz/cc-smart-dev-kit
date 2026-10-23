@@ -60,6 +60,8 @@ export function BucketChart({
                 <CartesianGrid vertical={false} />
                 <YAxis
                   width={48}
+                  // Every measure here is a whole count (launches) or whole milliseconds: never 1.5.
+                  allowDecimals={false}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={(v: number) => (axisFormat ?? format)(v)}

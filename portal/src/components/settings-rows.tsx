@@ -159,7 +159,9 @@ function Control({
             }}
             disabled={disabled}
           />
-          <span className="text-sm text-muted-foreground">%</span>
+          {row.unit !== undefined && (
+            <span className="text-sm text-muted-foreground">{row.unit}</span>
+          )}
         </span>
       );
     }
