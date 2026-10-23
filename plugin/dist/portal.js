@@ -15083,6 +15083,125 @@ function keyUncheckedMessage(options) {
   ].join(`
 `);
 }
+var GIVE_KEY_INSTEAD = `${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`;
+async function keyFromPassword(ctx, configPath, password, giveKey = GIVE_KEY_INSTEAD) {
+  const baseUrl = backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute ?? "";
+  const made = await createOmnirouteKey({
+    baseUrl,
+    ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch },
+    password
+  });
+  if (made.kind === "no-answer") {
+    throw new Error(`OmniRoute does not answer at ${shownValue(baseUrl)} (${made.detail}). The gateway needs OmniRoute first: install and start it there, then run this again.`);
+  }
+  if (made.kind === "refused") {
+    throw new Error([
+      `${made.detail}. Nothing was saved, and the key in ${configPath} is kept as it was.`,
+      `${wantedKeyWords("omniroute")}. If you already have that key, give it instead: ${giveKey}`
+    ].join(`
+`));
+  }
+  if (made.kind === "failed") {
+    throw new Error(`${made.detail}. OmniRoute's dashboard password is the one you log in with; setup does not store it.`);
+  }
+  ctx.print(`made the key "${made.name}" in OmniRoute (${maskKey(made.key)})`);
+  return {
+    key: { backend: "omniroute", value: made.key },
+    made: { discard: made.discard, id: made.id, name: made.name }
+  };
+}
+async function checkKeyToSave(ctx, configPath, key, options) {
+  const baseUrl = key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
+  if (baseUrl === undefined)
+    return "";
+  const check = await checkBackendKey(baseUrl, key.value, {
+    ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }
+  });
+  const again = options.again === undefined ? {} : { again: options.again };
+  if (check.kind === "refused") {
+    throw new Error(keyRefusedMessage({
+      backend: key.backend,
+      baseUrl,
+      configPath,
+      detail: check.detail,
+      status: check.status,
+      ...again
+    }));
+  }
+  if (check.kind === "unchecked") {
+    if (!options.saveUnchecked) {
+      throw new Error(keyUncheckedMessage({
+        backend: key.backend,
+        baseUrl,
+        configPath,
+        detail: check.detail,
+        ...options.againUnchecked === undefined ? again : { again: options.againUnchecked }
+      }));
+    }
+    return check.detail;
+  }
+  return "";
+}
+async function discardMadeKey(made, error) {
+  if (made === null)
+    throw error;
+  const gone = await made.discard();
+  if (gone.ok)
+    throw error;
+  throw new Error(`${messageOf(error)}
+  ! the key this run made in OmniRoute could not be removed (${made.name}, id ${made.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`);
+}
+function backupCount(backups) {
+  return existsSync20(backups) ? readdirSync8(backups).length : 0;
+}
+function keyBackupLine(backups, home) {
+  return `  the file as it was before the change is in ${tildify(backups, home)}: copy it back to put the key that was there in place`;
+}
+function uncheckedKeyWords(detail) {
+  return `the key was saved WITHOUT its backend accepting it (${detail}). Check it when the backend answers: ${COMMAND} gateway check`;
+}
+var NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`;
+async function setOmnirouteKey(ctx, given, options) {
+  const { paths } = ctx;
+  const configPath = paths.gatewayConfigFile;
+  if (!existsSync20(configPath))
+    throw new Error(NOT_SET_UP_FOR_KEY);
+  loadConfigFile(configPath);
+  const omnirouteAt = () => backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute;
+  const checkedAt = omnirouteAt();
+  let made = null;
+  let key = { backend: "omniroute", value: "key" in given ? given.key : "" };
+  if ("password" in given) {
+    const fromPassword = await keyFromPassword(ctx, configPath, given.password, options.giveKey);
+    key = fromPassword.key;
+    made = fromPassword.made;
+  }
+  try {
+    const unchecked = await checkKeyToSave(ctx, configPath, key, {
+      again: options.again,
+      againUnchecked: options.againUnchecked,
+      saveUnchecked: options.saveUnchecked
+    });
+    await withLock(paths.stateDir, async () => {
+      if (!existsSync20(configPath))
+        throw new Error(NOT_SET_UP_FOR_KEY);
+      if (omnirouteAt() !== checkedAt) {
+        throw new Error(`OmniRoute's address in ${configPath} changed while the key was checked. Nothing was saved: try again.`);
+      }
+      const backups = backupDir(paths.stateDir, configPath);
+      const backupsBefore = backupCount(backups);
+      const said = ensureConfig(configPath, key, { stateDir: paths.stateDir });
+      if (unchecked !== "")
+        ctx.print(uncheckedKeyWords(unchecked));
+      ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+      if (backupCount(backups) > backupsBefore)
+        ctx.print(keyBackupLine(backups, paths.home));
+    }, { waitMs: 1e4 });
+    return { checked: unchecked === "" };
+  } catch (error) {
+    return await discardMadeKey(made, error);
+  }
+}
 function withoutModelSlot(config, slot) {
   const { modelSlots, ...rest } = config;
   const kept = Object.entries(modelSlots ?? {}).filter(([, named]) => named !== slot);
@@ -16096,80 +16215,25 @@ async function commandSetup(ctx, args) {
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
   if (password !== null) {
-    const baseUrl = backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute ?? "";
-    const made = await createOmnirouteKey({
-      baseUrl,
-      ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch },
-      password
-    });
-    if (made.kind === "no-answer") {
-      throw new Error(`OmniRoute does not answer at ${shownValue(baseUrl)} (${made.detail}). The gateway needs OmniRoute first: install and start it there, then run this again.`);
-    }
-    if (made.kind === "refused") {
-      throw new Error([
-        `${made.detail}. Nothing was saved, and the key in ${configPath} is kept as it was.`,
-        `${wantedKeyWords("omniroute")}. If you already have that key, give it instead: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`
-      ].join(`
-`));
-    }
-    if (made.kind === "failed") {
-      throw new Error(`${made.detail}. OmniRoute's dashboard password is the one you log in with; setup does not store it.`);
-    }
-    key = { backend: "omniroute", value: made.key };
-    discard = { discard: made.discard, id: made.id, name: made.name };
-    ctx.print(`made the key "${made.name}" in OmniRoute (${maskKey(made.key)})`);
+    const made = await keyFromPassword(ctx, configPath, password);
+    key = made.key;
+    discard = made.made;
   }
-  const discardKey = async (error) => {
-    if (discard === null)
-      throw error;
-    const gone = await discard.discard();
-    if (gone.ok)
-      throw error;
-    throw new Error(`${messageOf(error)}
-  ! the key this run made in OmniRoute could not be removed (${discard.name}, id ${discard.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`);
-  };
   let code;
   try {
-    let unchecked = "";
-    if (key !== null) {
-      const baseUrl = key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
-      if (baseUrl !== undefined) {
-        const check = await checkBackendKey(baseUrl, key.value, {
-          ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }
-        });
-        if (check.kind === "refused") {
-          throw new Error(keyRefusedMessage({
-            backend: key.backend,
-            baseUrl,
-            configPath,
-            detail: check.detail,
-            status: check.status,
-            ...answers === null ? {} : { again: SETUP_AGAIN }
-          }));
-        }
-        if (check.kind === "unchecked") {
-          if (!options.saveUnchecked) {
-            throw new Error(keyUncheckedMessage({
-              backend: key.backend,
-              baseUrl,
-              configPath,
-              detail: check.detail,
-              ...answers === null ? {} : { again: SETUP_AGAIN }
-            }));
-          }
-          unchecked = check.detail;
-        }
-      }
-    }
+    const unchecked = key === null ? "" : await checkKeyToSave(ctx, configPath, key, {
+      saveUnchecked: options.saveUnchecked,
+      ...answers === null ? {} : { again: SETUP_AGAIN }
+    });
     code = await withLock(paths.stateDir, async () => {
       const backups = backupDir(paths.stateDir, configPath);
-      const backupsBefore = existsSync20(backups) ? readdirSync8(backups).length : 0;
+      const backupsBefore = backupCount(backups);
       const said = ensureConfig(configPath, key, {
         allowNone: options.noKey,
         stateDir: paths.stateDir
       });
       ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
-      const keyBackedUp = key !== null && existsSync20(backups) && readdirSync8(backups).length > backupsBefore;
+      const keyBackedUp = key !== null && backupCount(backups) > backupsBefore;
       const upgraded = upgradeConfig(configPath, {
         portalStateFile: paths.portalStateFile,
         stateDir: paths.stateDir
@@ -16186,12 +16250,10 @@ async function commandSetup(ctx, args) {
         const saved = Object.keys(now.kept ?? {}).length;
         ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
       }
-      if (keyBackedUp) {
-        ctx.print(`  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`);
-      }
-      if (unchecked !== "") {
-        ctx.print(`  ! the key was saved WITHOUT its backend accepting it (${unchecked}). Check it when the backend answers: ${COMMAND} gateway check`);
-      }
+      if (keyBackedUp)
+        ctx.print(keyBackupLine(backups, paths.home));
+      if (unchecked !== "")
+        ctx.print(`  ! ${uncheckedKeyWords(unchecked)}`);
       await installRouter(install({
         yes: true,
         confirm: null,
@@ -16215,7 +16277,7 @@ async function commandSetup(ctx, args) {
       return 0;
     }, { waitMs: 1e4 });
   } catch (error) {
-    return await discardKey(error);
+    return await discardMadeKey(discard, error);
   }
   if (code === 0)
     await proveWorkerTargets(ctx);
@@ -35629,6 +35691,11 @@ async function runCliChild(ctx, args, options) {
   }
 }
 
+// src/portal/context.ts
+function healthFetch(ctx) {
+  return (url, init) => ctx.fetch(url, init);
+}
+
 // src/portal/actions.ts
 function portalOmnirouteContext(ctx) {
   return {
@@ -36405,6 +36472,47 @@ async function claudeMemFollow(action, body) {
     return notConfirmed("changed");
   return claudeMemWrite(() => followSetup(action.portal.paths));
 }
+var KEY_WORDS = {
+  key: {
+    again: "paste it on the Machine page's OmniRoute card again",
+    againUnchecked: `paste it on the Machine page's OmniRoute card again, or tick "Save it even if OmniRoute does not answer now" there`
+  },
+  password: {
+    again: "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+    againUnchecked: "make a key with your OmniRoute password on the Machine page's OmniRoute card again"
+  }
+};
+var KEY_GIVE_INSTEAD = "paste it on the Machine page's OmniRoute card";
+async function gatewayKeyAction(action, body, from) {
+  const field = from === "key" ? body.key : body.password;
+  const text = typeof field === "string" ? field : "";
+  const secret = from === "key" ? text.trim() : text;
+  if (text.trim() === "") {
+    return {
+      lines: [
+        from === "key" ? "Paste the OmniRoute API key first." : "Type OmniRoute's dashboard password first."
+      ],
+      ok: false
+    };
+  }
+  if (body.confirm !== true)
+    return notConfirmed("saved");
+  const { portal } = action;
+  const { lines, print } = collector();
+  try {
+    const saved = await setOmnirouteKey({ apiFetch: healthFetch(portal), paths: portal.paths, print }, from === "key" ? { key: secret } : { password: secret }, {
+      ...KEY_WORDS[from],
+      giveKey: KEY_GIVE_INSTEAD,
+      saveUnchecked: from === "key" && body.saveUnchecked === true
+    });
+    return saved.checked ? { lines, ok: true } : { lines, ok: true, tone: "warn" };
+  } catch (error) {
+    const config = portal.paths.gatewayConfigFile;
+    const said = messageOf(error).replaceAll(config, tildify(config, portal.paths.home));
+    return { lines: [...said.split(`
+`), ...lines], ok: false };
+  }
+}
 var CREW_ANSWER_MAX = 2000;
 function crewRef(body) {
   return typeof body.crew === "string" ? body.crew.trim() : "";
@@ -36502,6 +36610,10 @@ async function runAction(name, body, action) {
       return updateInstall(action);
     case "companion.enable":
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
+    case "gateway.key.save":
+      return gatewayKeyAction(action, body, "key");
+    case "gateway.key.make":
+      return gatewayKeyAction(action, body, "password");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
     case "omniroute.update":
@@ -36725,6 +36837,12 @@ async function healthAnswer2(deps) {
     portHolder: portHolder(deps.action.portal, deps.found.config.port)
   };
 }
+function gatewayKeyState(found, fileThere) {
+  if ("error" in found)
+    return fileThere ? "unreadable" : "not-set-up";
+  const omniroute = Object.hasOwn(found.config.backends, "omniroute") ? found.config.backends.omniroute : undefined;
+  return omniroute !== undefined && omniroute.apiKey.trim() !== "" ? "set" : "none";
+}
 async function machineAnswer(deps) {
   const ctx = deps.action.portal;
   const [data, claudeCode] = await Promise.all([machineData(deps), claudeCodeFacts(ctx)]);
@@ -36733,6 +36851,7 @@ async function machineAnswer(deps) {
     bun: bunFacts(ctx),
     claudeCode,
     claudeMem: readClaudeMemFacts(ctx.paths),
+    gatewayKey: gatewayKeyState(deps.found, configExists(ctx)),
     mcp: mcpRows(ctx)
   };
   if ("error" in deps.found && configExists(ctx)) {
