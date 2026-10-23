@@ -13280,6 +13280,16 @@ var CREW_NEVER_DOES = {
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions"
 };
+var CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch
+};
 
 // src/jobs/config.ts
 import { isAbsolute as isAbsolute3, join as join20 } from "path";
@@ -14319,8 +14329,15 @@ function claudeLaunch(step) {
     prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
   };
 }
-function isCrewStart(program, args) {
-  return program === COMMAND && args[0] === "crew" && args[1] === "start";
+function crewNeverRunOf(step) {
+  if (step.args[0] !== "crew")
+    return null;
+  if (!step.computed && step.program !== COMMAND)
+    return null;
+  if (step.args.includes("--help") || step.args.includes("-h"))
+    return null;
+  const sub = step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : step.args[1] ?? "";
+  return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
@@ -14422,14 +14439,15 @@ function readBash(command, dialect = "bash") {
   const steps = [];
   const state = { loops: false, open: [], powershellRepeat: false };
   walk(command, dialect, 0, top, steps, state);
-  let crewStarts = 0;
+  const crewNeverRuns = [];
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
   const launches = [];
   for (const step of steps) {
-    if (isCrewStart(step.program, step.args))
-      crewStarts++;
+    const never = crewNeverRunOf(step);
+    if (never !== null)
+      crewNeverRuns.push(never);
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -14451,7 +14469,7 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewStarts, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -14478,9 +14496,9 @@ function backgroundLaunchReason() {
   ].join(`
 `);
 }
-function crewStartsNothing(crewId) {
+function crewNeverRunsAnswer(crewId, command) {
   return [
-    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_DOES.start}.`,
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`
   ].join(`
 `);
@@ -14497,7 +14515,7 @@ function judgeClaudeLaunch(launch, context) {
   const crew = crewIdOf(context.env);
   if (launch.form === "bg") {
     if (crew !== null)
-      return { decision: "deny", reason: crewStartsNothing(crew), why: "bg" };
+      return { decision: "deny", reason: crewNeverRunsAnswer(crew, "start"), why: "bg" };
     if (!isAttended(context.env)) {
       return {
         decision: "deny",
@@ -14524,8 +14542,9 @@ ${verdict.reason}`, why: "print" };
 }
 function judgeBash(reading, context) {
   const crew = crewIdOf(context.env);
-  if (crew !== null && reading.crewStarts > 0) {
-    return { decision: "deny", reason: crewStartsNothing(crew), why: "crew-start" };
+  const never = reading.crewNeverRuns[0];
+  if (crew !== null && never !== undefined) {
+    return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
   let ask = null;
   for (const launch of reading.launches) {
@@ -14553,7 +14572,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.poll;
+  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
 }
 
 // src/hooks/job-route.ts
@@ -14712,8 +14731,8 @@ function routeFacts(input, context) {
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);
-  if (reading.crewStarts > 0)
-    facts.crew_starts = reading.crewStarts;
+  if (reading.crewNeverRuns.length > 0)
+    facts.crew_commands = reading.crewNeverRuns;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;

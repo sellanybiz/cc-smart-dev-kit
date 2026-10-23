@@ -24205,18 +24205,21 @@ function readCrew(stateDir, repo, id) {
 function listCrew(stateDir, repo) {
   return listRecords(crewRecordSchema, join39(crewStoreDir(stateDir, repo), "crew"));
 }
-function listAllCrew(stateDir) {
+function listAllRecords(schema, stateDir, folder, tie) {
   const root = crewRootDir(stateDir);
   const all = { broken: [], records: [] };
   if (!existsSync39(root))
     return all;
   for (const key of readdirSync16(root).sort()) {
-    const one = listRecords(crewRecordSchema, join39(root, key, "crew"));
+    const one = listRecords(schema, join39(root, key, folder));
     all.broken.push(...one.broken);
     all.records.push(...one.records);
   }
-  all.records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  all.records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || tie(a).localeCompare(tie(b)));
   return all;
+}
+function listAllCrew(stateDir) {
+  return listAllRecords(crewRecordSchema, stateDir, "crew", (one) => one.id);
 }
 async function createCrew(stateDir, crew, atMs) {
   const file = crewFile(stateDir, crew.repo, crew.id);
@@ -28240,6 +28243,16 @@ var CREW_NEVER_DOES = {
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions"
 };
+var CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch
+};
 var BRIEF_FRAME_MARK = `
 
 ---
@@ -30336,8 +30349,15 @@ function claudeLaunch(step) {
     prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
   };
 }
-function isCrewStart(program, args) {
-  return program === COMMAND && args[0] === "crew" && args[1] === "start";
+function crewNeverRunOf(step) {
+  if (step.args[0] !== "crew")
+    return null;
+  if (!step.computed && step.program !== COMMAND)
+    return null;
+  if (step.args.includes("--help") || step.args.includes("-h"))
+    return null;
+  const sub = step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : step.args[1] ?? "";
+  return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
@@ -30439,14 +30459,15 @@ function readBash(command, dialect = "bash") {
   const steps = [];
   const state = { loops: false, open: [], powershellRepeat: false };
   walk(command, dialect, 0, top, steps, state);
-  let crewStarts = 0;
+  const crewNeverRuns = [];
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
   const launches = [];
   for (const step of steps) {
-    if (isCrewStart(step.program, step.args))
-      crewStarts++;
+    const never = crewNeverRunOf(step);
+    if (never !== null)
+      crewNeverRuns.push(never);
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -30468,7 +30489,7 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewStarts, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -30495,9 +30516,9 @@ function backgroundLaunchReason() {
   ].join(`
 `);
 }
-function crewStartsNothing(crewId) {
+function crewNeverRunsAnswer(crewId, command) {
   return [
-    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_DOES.start}.`,
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`
   ].join(`
 `);
@@ -30514,7 +30535,7 @@ function judgeClaudeLaunch(launch, context) {
   const crew = crewIdOf(context.env);
   if (launch.form === "bg") {
     if (crew !== null)
-      return { decision: "deny", reason: crewStartsNothing(crew), why: "bg" };
+      return { decision: "deny", reason: crewNeverRunsAnswer(crew, "start"), why: "bg" };
     if (!isAttended(context.env)) {
       return {
         decision: "deny",
@@ -30541,8 +30562,9 @@ ${verdict.reason}`, why: "print" };
 }
 function judgeBash(reading, context) {
   const crew = crewIdOf(context.env);
-  if (crew !== null && reading.crewStarts > 0) {
-    return { decision: "deny", reason: crewStartsNothing(crew), why: "crew-start" };
+  const never = reading.crewNeverRuns[0];
+  if (crew !== null && never !== undefined) {
+    return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
   let ask = null;
   for (const launch of reading.launches) {
@@ -30570,7 +30592,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.poll;
+  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
 }
 
 // src/hooks/job-route.ts
@@ -30729,8 +30751,8 @@ function routeFacts(input, context) {
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);
-  if (reading.crewStarts > 0)
-    facts.crew_starts = reading.crewStarts;
+  if (reading.crewNeverRuns.length > 0)
+    facts.crew_commands = reading.crewNeverRuns;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;
@@ -32579,9 +32601,12 @@ function readCaller(command, ctx, options = { session: "required" }) {
   }
   let session;
   try {
-    session = options.asPerson === true ? null : callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
+    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
     return refuse(reasonOf3(error));
+  }
+  if (options.asPerson === true && session !== null) {
+    return refuse("--as-person is the portal's: a Claude Code session runs this command", "run it without --as-person");
   }
   if (session === null && options.session === "required") {
     return refuse("no Claude Code session runs this command", "run it from the Bash tool of the session that leads");
@@ -38494,12 +38519,10 @@ function relative5(repo, path) {
   return isInside(path, repo) ? path.slice(repo.replace(/\/+$/, "").length + 1) : path;
 }
 function crewSessionRefusal(command, ctx) {
-  if (ctx.asPerson === true)
-    return null;
   const crew = crewIdOf(ctx.env);
   if (crew === null)
     return null;
-  return failure2(`crew ${command}: this session is the crew session ${crew}, and a crew session never stops, removes or resumes crew sessions`, `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
+  return failure2(`crew ${command}: this session is the crew session ${crew}, and a crew session never ${CREW_NEVER_RUNS[command]}`, `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
 }
 function actOn(ref, command, ctx) {
   const own = crewSessionRefusal(command, ctx);
@@ -38789,24 +38812,28 @@ function findLead(records, ref) {
 }
 async function recordLeadNotes(receivers, record, message, sinks) {
   const recorded = [];
+  const missed = [];
   for (const one of receivers) {
     try {
       await record(one);
+      recorded.push(one);
     } catch (error) {
-      sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${reasonOf3(error)}`);
-      if (recorded.length > 0) {
-        const names = recorded.map((done) => done.name).join(", ");
-        sinks.error(`The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${one.name} again.`);
-        for (const done of recorded)
-          sinks.print(sendMessageLine(done.name, message));
-      }
-      return 1;
+      missed.push({ name: one.name, why: reasonOf3(error) });
     }
-    recorded.push(one);
+  }
+  for (const one of missed) {
+    sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${one.why}`);
+  }
+  const missing = missed.map((one) => one.name).join(", ");
+  if (recorded.length > 0 && missed.length > 0) {
+    const names = recorded.map((done) => done.name).join(", ");
+    sinks.error(`The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${missing} again.`);
+  } else if (recorded.length === 0 && missed.length > 1) {
+    sinks.error(`No note was recorded: tell ${missing} again.`);
   }
   for (const one of recorded)
     sinks.print(sendMessageLine(one.name, message));
-  return 0;
+  return missed.length === 0 ? 0 : 1;
 }
 async function runLeadTell(args, ctx) {
   const read = readCaller("lead tell", ctx);
@@ -44656,7 +44683,7 @@ This project's Claude Code sessions of the last two days, by name and worktree, 
 command that resumes each. --open reopens every session that was open when the machine went
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
 it would open and opens nothing.`;
-var WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch]
+var WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 
 Every worktree of this repo: who works in it, and which are finished (every commit on
 origin/<base>, nothing uncommitted, no local files, no running session, no program or Docker
@@ -44665,6 +44692,8 @@ container using it).
   --clean              remove the finished ones, with their branches
   --remove <path>      remove one now, without the one-hour wait
   --no-fetch           judge against origin/<base> as it is, without fetching it first
+  --json               print the same facts as one object, and change nothing (no fetch;
+                       with neither --clean nor --remove)
 
 --clean and --remove run in the main checkout only, one at a time.`;
 var USAGE_HELP = `Usage: ${COMMAND} usage [--hours <n>] [--project <folder or name>] [--json]
@@ -47655,18 +47684,107 @@ function show4(scanned, print) {
   }
   print("");
 }
+function worktreeItemOf(worktree) {
+  const { branch, head, path } = worktree.listed;
+  if (worktree.state === "main") {
+    return { branch, head, idleMinutes: null, kind: "main", path, why: null };
+  }
+  if (worktree.state === "gone") {
+    return {
+      branch,
+      head,
+      idleMinutes: null,
+      kind: "gone",
+      path,
+      why: "its folder no longer exists"
+    };
+  }
+  return worktree.state.finished ? { branch, head, idleMinutes: worktree.idleMinutes, kind: "finished", path, why: null } : {
+    branch,
+    head,
+    idleMinutes: worktree.idleMinutes,
+    kind: "kept",
+    path,
+    why: worktree.state.why
+  };
+}
+function autoCleanOf(paths, repo) {
+  const record = readRepoRecord(autoCleanFiles(paths.stateDir, repo));
+  if (record === null)
+    return null;
+  return {
+    base: record.base,
+    lastRunAt: new Date(record.lastRunAt).toISOString(),
+    removed: record.removed
+  };
+}
+function worktreesAnswerOf(paths, env, cwd, now) {
+  const none = (note) => ({
+    autoClean: null,
+    base: "",
+    from: "default",
+    note,
+    worktrees: []
+  });
+  let checkout;
+  try {
+    checkout = locateCheckout(cwd, { env });
+  } catch (error) {
+    return none(error instanceof Error ? error.message : String(error));
+  }
+  if (checkout === null) {
+    return none("this folder is not in a git project, so there is no work to show");
+  }
+  const repo = checkout.mainCheckout ?? checkout.root;
+  try {
+    const chosen = baseBranch(checkout, env, repo);
+    const judged = {
+      base: chosen.base,
+      claudeConfigDir: paths.claudeConfigDir,
+      env,
+      now
+    };
+    let note = null;
+    let scanned;
+    try {
+      scanned = scanWorktrees(repo, judged);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      if (!why.includes("is not known here"))
+        return none(why);
+      scanned = scanWorktrees(repo, {
+        ...judged,
+        against: { label: chosen.base, ref: `refs/heads/${chosen.base}` }
+      });
+      note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
+    }
+    return {
+      autoClean: autoCleanOf(paths, repo),
+      base: chosen.base,
+      from: chosen.from,
+      note,
+      worktrees: scanned.map(worktreeItemOf)
+    };
+  } catch (error) {
+    return none(error instanceof Error ? error.message : String(error));
+  }
+}
 async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2) {
   const { error, print } = sinks;
+  if (options.remove !== null && options.remove === "") {
+    error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
+    return 1;
+  }
+  if (options.json) {
+    print(JSON.stringify(worktreesAnswerOf(paths, env, cwd, Date.now())));
+    return 0;
+  }
   const checkout = locateCheckout(cwd, { env });
   const repo = checkout?.mainCheckout ?? resolve13(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
     print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.
 `);
-  }
-  if (options.remove !== null && options.remove === "") {
-    error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
-    return 1;
   }
   let lock = null;
   if (options.clean || options.remove !== null) {
@@ -48236,13 +48354,18 @@ ${String(result.failed)} of ${String(result.total)} checks failed.`);
         console.error(usageError2("--remove needs the path of one worktree: --remove <path>", "worktrees"));
         return 2;
       }
-      const unknown = rest.filter((arg, index) => arg !== "--clean" && arg !== "--no-fetch" && arg !== "--remove" && (removeAt === -1 || index !== removeAt + 1));
+      const unknown = rest.filter((arg, index) => arg !== "--clean" && arg !== "--json" && arg !== "--no-fetch" && arg !== "--remove" && (removeAt === -1 || index !== removeAt + 1));
       if (unknown.length > 0) {
         console.error(usageError2(`Unknown option: ${unknown.join(" ")}`, "worktrees"));
         return 2;
       }
+      if (rest.includes("--json") && (rest.includes("--clean") || removeAt !== -1)) {
+        console.error(usageError2("--json prints the list: it takes neither --clean nor --remove", "worktrees"));
+        return 2;
+      }
       return await runWorktrees(paths, {
         clean: rest.includes("--clean"),
+        json: rest.includes("--json"),
         noFetch: rest.includes("--no-fetch"),
         remove: removeTarget
       }, process.env);
