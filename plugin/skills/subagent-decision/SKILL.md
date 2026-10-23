@@ -1,6 +1,6 @@
 ---
 name: subagent-decision
-description: Use when a job means reading across many files, multi-step research, a codebase search or audit, a UI check, or work to split between agents - not one a handful of tool calls finish. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit builder, auditor, reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
+description: Use when about to read many files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit builder, auditor, reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
 ---
 
 # Which Agent, And How To Brief It

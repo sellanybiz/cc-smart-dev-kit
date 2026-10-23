@@ -38,11 +38,11 @@ describe("check-context-budget", () => {
   });
 
   test("inside both budgets it passes, and says how far each is from its target", () => {
-    expect(checkBudget(3_000, 3_000)).toEqual({
+    expect(checkBudget(3_000, 2_000)).toEqual({
       lines: [
         "Always-on: ~3000 tokens (budget 3300, target 2000, 1000 above the target).",
-        "plugin/instructions/core.md: ~3000 tokens (budget 3450, target 1900, 1100 above the target).",
-        "Every session starts with ~6000 tokens from the plugin.",
+        "plugin/instructions/core.md: ~2000 tokens (budget 2300, target 1900, 100 above the target).",
+        "Every session starts with ~5000 tokens from the plugin.",
       ],
       ok: true,
     });
@@ -61,7 +61,7 @@ describe("check-context-budget", () => {
     const coreOver = checkBudget(ALWAYS_ON.max, CORE.max + 1);
     expect(coreOver.ok).toBe(false);
     expect(coreOver.lines[1]).toBe(
-      "plugin/instructions/core.md: ~3451 tokens, over its 3450-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
+      "plugin/instructions/core.md: ~2301 tokens, over its 2300-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
     );
   });
 
