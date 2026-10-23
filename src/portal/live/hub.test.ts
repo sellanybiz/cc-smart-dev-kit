@@ -299,10 +299,22 @@ describe("the live stream's hub", () => {
     }
   });
 
-  test("a reader that stops reading is closed at the server, not only in the hub", async () => {
-    // A real Bun.serve and a raw socket that never reads: Bun's own `fetch` reads a response
-    // body into memory by itself, so only a socket that stops shows the stall a sleeping
-    // laptop or a broken tab makes. The server writes until the queue passes the bound.
+  /** One served stream and the tools a test publishes and ends it with. */
+  interface ServedStream {
+    hub: LiveHub;
+    /** Publishes `n` events of about 1 KB each; answers how many were published in all. */
+    publish: (n: number) => number;
+    socket: ReturnType<typeof connect>;
+    stop: () => void;
+  }
+
+  /**
+   * A real server with the hub on `/events`, and a raw `net` socket that opens the stream. The
+   * publisher sends at most 10 events a tick: a bigger burst fills the stream's own queue by
+   * itself, and would close a reader that reads as well as one that stopped, proving nothing
+   * about a stall.
+   */
+  async function serveAndConnect(read: boolean): Promise<ServedStream> {
     const hub = new LiveHub({ maxQueueBytes: 64 * 1_024, now: () => 42, pingMs: 60_000 });
     const server = Bun.serve({
       fetch(request) {
@@ -314,7 +326,6 @@ describe("the live stream's hub", () => {
       },
       port: 0,
     });
-    // A paused `net` socket: the kernel stops taking bytes, and Bun's writes back up.
     const port = server.port ?? 0;
     const socket = connect(port, "127.0.0.1", () => {
       socket.write(
@@ -322,23 +333,60 @@ describe("the live stream's hub", () => {
       );
     });
     socket.on("error", () => undefined);
-    try {
-      const openedBy = Date.now() + 2_000;
-      while (hub.streamsOpen === 0 && Date.now() < openedBy) await Bun.sleep(5);
-      expect(hub.streamsOpen).toBe(1);
-      let published = 0;
-      while (hub.streamsOpen > 0 && published < 8_192) {
-        for (let index = 0; index < 100; index += 1) {
+    // No `data` listener: the kernel stops taking bytes once the receive buffer fills, and
+    // Bun's writes back up — the stall a sleeping laptop or a broken tab makes. With one, the
+    // socket drains and the stream never queues anything.
+    if (read) socket.on("data", () => undefined);
+    const openedBy = Date.now() + 2_000;
+    while (hub.streamsOpen === 0 && Date.now() < openedBy) await Bun.sleep(5);
+    expect(hub.streamsOpen).toBe(1);
+    let published = 0;
+    return {
+      hub,
+      publish: (n: number) => {
+        for (let index = 0; index < n; index += 1) {
           hub.publish("recent", { pad: "x".repeat(1_000), n: published + index });
         }
-        published += 100;
-        await Bun.sleep(10);
+        published += n;
+        return published;
+      },
+      socket,
+      stop: () => server.stop(true),
+    };
+  }
+
+  test("a reader that stops reading is closed at the server, not only in the hub", async () => {
+    // Bun's own `fetch` reads a response body into memory by itself, so only a raw socket that
+    // stops shows the stall. The bound closes the stream once the kernel's buffers are full and
+    // the queue passes it; the cap keeps a buggy bound from hanging the test.
+    const world = await serveAndConnect(false);
+    try {
+      let published = 0;
+      while (world.hub.streamsOpen > 0 && published < 8_192) {
+        published = world.publish(10);
+        await Bun.sleep(1);
       }
       // The stalled stream gave its place back; a page reconnects and resumes by its last id.
-      expect(hub.streamsOpen).toBe(0);
+      expect(world.hub.streamsOpen).toBe(0);
     } finally {
-      socket.destroy();
-      server.stop(true);
+      world.socket.destroy();
+      world.stop();
+    }
+  });
+
+  test("a reader that reads is never closed by the bound", async () => {
+    // The control: the same server, the same events, a socket that reads. If the bound fired
+    // on volume rather than on a stall, this stream would close too.
+    const world = await serveAndConnect(true);
+    try {
+      for (let tick = 0; tick < 100; tick += 1) {
+        world.publish(10);
+        await Bun.sleep(1);
+      }
+      expect(world.hub.streamsOpen).toBe(1);
+    } finally {
+      world.socket.destroy();
+      world.stop();
     }
   });
 });

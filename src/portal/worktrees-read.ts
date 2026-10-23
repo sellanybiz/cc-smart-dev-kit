@@ -39,7 +39,8 @@ export function forgetWorktrees(ctx: PortalContext): void {
 }
 
 interface Kept {
-  at: number;
+  /** When the answer arrived; a child still running has none. */
+  at: null | number;
   read: Promise<WorktreesRead>;
 }
 
@@ -53,15 +54,23 @@ export function readWorktreesOffLoop(ctx: PortalContext, cwd: string): Promise<W
     byFolder = new Map();
     kept.set(ctx, byFolder);
   }
-  const now = ctx.now();
   const last = byFolder.get(cwd);
-  if (last !== undefined && now - last.at < WORKTREES_FRESH_MS) return last.read;
+  if (last !== undefined) {
+    // A child still on its way is shared whatever its age: a scan may take up to
+    // `WORKTREES_CHILD_TIMEOUT_MS`, and a second full scan beside it helps nobody.
+    if (last.at === null || ctx.now() - last.at < WORKTREES_FRESH_MS) return last.read;
+  }
   const read = runWorktrees(ctx, cwd);
-  const entry: Kept = { at: now, read };
+  const entry: Kept = { at: null, read };
   byFolder.set(cwd, entry);
-  // A failure is not kept: the next request tries again.
   void read.then((answer) => {
-    if ("error" in answer && byFolder.get(cwd) === entry) byFolder.delete(cwd);
+    // A failure is not kept: the next request tries again. A kept answer's clock starts when
+    // it arrives, not when the child started.
+    if ("error" in answer) {
+      if (byFolder.get(cwd) === entry) byFolder.delete(cwd);
+      return;
+    }
+    entry.at = ctx.now();
   });
   return read;
 }

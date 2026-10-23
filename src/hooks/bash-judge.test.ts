@@ -292,6 +292,9 @@ describe("a crew session running a lead's command", () => {
       "cc-smart-dev-kit crew tell C-y --kind contract 'a note'",
       "cc-smart-dev-kit crew list",
       "cc-smart-dev-kit crew status C-x",
+      // A lead command's help only prints help: reading it is no act of leading.
+      "cc-smart-dev-kit crew answer --help",
+      "cc-smart-dev-kit crew lead --help",
     ]) {
       const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
       expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });

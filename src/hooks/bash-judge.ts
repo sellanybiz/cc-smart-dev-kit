@@ -230,6 +230,9 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
 function crewNeverRunOf(step: Step): CrewNeverRun | null {
   if (step.args[0] !== "crew") return null;
   if (!step.computed && step.program !== COMMAND) return null;
+  // `crew answer --help` only prints the help (`runCrew` reads the flag before the command):
+  // reading a lead command's help is no act of leading, so a crew session may.
+  if (step.args.includes("--help") || step.args.includes("-h")) return null;
   const sub =
     step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : (step.args[1] ?? "");
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;

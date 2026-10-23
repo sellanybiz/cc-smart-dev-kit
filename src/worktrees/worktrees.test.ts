@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
-import { baseBranch, DEFAULT_BASE, runWorktrees } from "./command";
+import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
 import {
   containersUsing,
   hostPath,
@@ -916,6 +916,37 @@ describe("the worktrees command", () => {
     ]);
     // A read: the worktree is still there.
     expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("`--json` from a folder that is no git project says so, as the portal's normal start does", async () => {
+    // The portal usually starts in the home folder, which is no project: the page shows this
+    // line, never an empty list that looks like a machine without worktrees.
+    const home = tempDir("worktrees-home-no-git");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude-config"), HOME: home });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          home,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    const answer = JSON.parse(out[0] ?? "") as WorktreesAnswer;
+    expect(answer).toEqual({
+      autoClean: null,
+      base: "",
+      from: "default",
+      note: "this folder is not in a git project, so there is no work to show",
+      worktrees: [],
+    });
   });
 
   test("`--json` answers with the reason when the project's file cannot be read", async () => {
