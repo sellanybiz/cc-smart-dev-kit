@@ -171,6 +171,24 @@ describe("a crew action runs the CLI's own command in a child", () => {
     expect(runsOf(w.log)).toMatchObject([{ args: ["crew", "resume", idB], cwd: w.repoB }]);
   });
 
+  test("crew.answer runs the CLI as the person, in the record's repository", async () => {
+    // `crew answer` resumes a stopped crew session with a synchronous `claude` call, so it
+    // runs in a child too; `--as-person` is the click (D52), and the bare `--` keeps an
+    // answer that starts with two dashes an answer.
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-P-answer", { state: "blocked" });
+    const answered = await runAction("crew.answer", { answer: "-- port 3210", crew: id }, w.action);
+    expect(answered.ok).toBe(true);
+    expect(runsOf(w.log)).toEqual([
+      {
+        args: ["crew", "answer", "--as-person", "--", id, "-- port 3210"],
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoA,
+      },
+    ]);
+  });
+
   test("worktrees.clean runs the CLI's own worktrees --clean in the portal's folder", async () => {
     const w = world();
     const cleaned = await runAction("worktrees.clean", { confirm: true }, w.action);
@@ -209,5 +227,9 @@ describe("the actions that end something ask first", () => {
       ok: false,
     });
     expect(runsOf(w.log)).toEqual([]);
+    // With the page's yes, the CLI's own command runs in the record's repository.
+    const removed = await runAction("crew.rm", { confirm: true, crew: id }, w.action);
+    expect(removed.ok).toBe(true);
+    expect(runsOf(w.log)).toMatchObject([{ args: ["crew", "rm", id], cwd: w.repoA }]);
   });
 });

@@ -157,6 +157,22 @@ const registry = (): Response =>
   });
 
 /** A portal on a free port, with a temp home, a temp project and a fake backend. */
+/**
+ * The plugin folder an action's child runs, with **the repo's own CLI source** as its
+ * `dist/cli.js`: a test that runs a CLI child (`cli-child.ts`) then runs the code under test,
+ * not the bundle a release builds (`build:check` is what proves the bundle current).
+ */
+function sourceCliFolder(): () => PluginFolder {
+  const folder = tempDir("plugin-source");
+  mkdirSync(join(folder, "dist"), { recursive: true });
+  writeFileSync(join(folder, "bunfig.toml"), "");
+  writeFileSync(
+    join(folder, "dist", "cli.js"),
+    `import ${JSON.stringify(join(import.meta.dir, "..", "entries", "cli.ts"))};\n`,
+  );
+  return () => ({ folder });
+}
+
 async function open(options: {
   backendPort: number;
   /**
@@ -5229,6 +5245,7 @@ describe("the new actions (D52)", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({
       backendPort: backend.port,
+      pluginFolder: sourceCliFolder(),
       projectFiles: { config: JSON.stringify({ workflow: { crew: { enabled: true } } }) },
     });
     try {

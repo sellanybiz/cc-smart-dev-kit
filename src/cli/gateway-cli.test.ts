@@ -2795,6 +2795,13 @@ describe("secrets", () => {
     record(await m.run(["gateway", "slot", "judge", "claude"]));
     record(await m.run(["gateway", "slot", "judge", "custom"]));
     record(await m.run(["gateway", "slot", "opus", "clear"]));
+    // The same four words in this process too (`runHere`): `run` above runs the built bundle,
+    // which a release rebuilds, so a key the source itself would print fails here first.
+    record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5"]));
+    record(await m.runHere(["gateway", "slot", "opus", "claude"]));
+    record(await m.runHere(["gateway", "slot", "opus", "custom"]));
+    record(await m.runHere(["gateway", "slot", "judge", "claude"]));
+    record(await m.runHere(["gateway", "slot", "judge", "custom"]));
     record(await m.run(["usage"]));
     record(await m.run(["gateway", "history"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));

@@ -7,7 +7,7 @@
  *     same checks, the same lock, and the same lines, with `print` collecting them;
  *   - `update`, `doctor`, the heavy-job queue and the companions call the modules the CLI
  *     calls, not a copy of them;
- *   - `crew stop|resume|rm` and `worktrees --clean` run the CLI's own command in a child
+ *   - `crew answer|stop|resume|rm` and `worktrees --clean` run the CLI's own command in a child
  *     process (`cli-child.ts`): the functions behind them spawn git and `claude` synchronously
  *     (`Bun.spawnSync`), and running those in the server froze every page and the live stream.
  *     The child is the same command the terminal runs, in the crew record's own repository.
@@ -21,7 +21,7 @@
  * Nothing here writes HTML or JSON: it returns lines, and the page shows them.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
@@ -34,10 +34,6 @@ import {
 import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import { runUpdate } from "../cli/update";
-import { runCrewAnswer } from "../crew/answer";
-import { realRunProgram } from "../crew/claude";
-import type { CrewContext } from "../crew/context";
-import { realProcessFacts } from "../crew/session";
 import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
 import { chainProblem, type GatewayContext, runGateway } from "../gateway/commands";
@@ -1215,58 +1211,6 @@ function browserTokenAction(action: ActionContext, body: Record<string, unknown>
 /** The longest answer a page may send to a crew session: a message, not a document. */
 const CREW_ANSWER_MAX = 2_000;
 
-/**
- * The crew commands' context, built from the portal's own: the same paths, environment and
- * clock, with the lines collected for the page and sent on the live stream. `asPerson` says
- * the caller is the person at the portal, not a Claude Code session (D52): a crew session
- * never answers or ends another, and the portal's process may carry the crew env of the
- * session that started it — the person's click is the caller here.
- */
-function crewContext(action: ActionContext, say: (line: string) => void): CrewContext {
-  const { portal } = action;
-  return {
-    asPerson: true,
-    cwd: action.cwd,
-    env: portal.env,
-    error: say,
-    freeMemoryGb: async () => null,
-    now: portal.now,
-    paths: portal.paths,
-    pid: process.pid,
-    platform: portal.machine.platform,
-    print: say,
-    processes: realProcessFacts(portal.machine.platform),
-    randomSuffix: () => randomBytes(3).toString("hex"),
-    readStdin: () => Promise.resolve(""),
-    runProgram: realRunProgram,
-    sleep: (ms) => portal.probe.sleep(ms),
-    which: portal.which,
-  };
-}
-
-/** Runs one crew command with its lines collected, and its progress on the live stream. */
-async function crewAction(
-  action: ActionContext,
-  name: string,
-  run: (ctx: CrewContext) => Promise<number>,
-): Promise<ActionResult> {
-  const lines: string[] = [];
-  const say = (line: string): void => {
-    for (const one of line.split("\n")) {
-      if (one.trim() === "") continue;
-      lines.push(one);
-      action.publish?.("action", { action: name, line: one });
-    }
-  };
-  try {
-    const code = await run(crewContext(action, say));
-    return { lines, ok: code === 0 };
-  } catch (error) {
-    lines.push(messageOf(error));
-    return { lines, ok: false };
-  }
-}
-
 /** The crew session's name or id, from the page's body; "" when it named none. */
 function crewRef(body: Record<string, unknown>): string {
   return typeof body.crew === "string" ? body.crew.trim() : "";
@@ -1300,25 +1244,26 @@ function notConfirmed(what: string): ActionResult {
 }
 
 /**
- * One crew command that changes a session — `crew stop|resume|rm <id>` — run by the CLI itself
- * in a child (`cli-child.ts`), in the record's own repository. A synchronous crew call inside
- * the server froze every page and the live stream for up to 30 s per call (`Bun.spawnSync` in
- * `realRunProgram` and `runGit`); the child keeps the server free, and it is the same command,
- * with the same checks and words, that the terminal runs.
+ * One crew command that acts on a session — `crew answer|stop|resume|rm` — run by the CLI
+ * itself in a child (`cli-child.ts`), in the record's own repository. A crew call inside the
+ * server froze every page and the live stream for up to 30 s per synchronous spawn
+ * (`Bun.spawnSync` in `realRunProgram` and `runGit`), and `crew answer` reaches one too when it
+ * resumes a stopped session. The child keeps the server free, and it is the same command, with
+ * the same checks and words, that the terminal runs.
  */
 async function crewCliAction(
   action: ActionContext,
   name: string,
-  command: "resume" | "rm" | "stop",
+  args: string[],
   record: CrewRecord,
 ): Promise<ActionResult> {
-  const run = await runCliChild(action.portal, ["crew", command, record.id], {
+  const run = await runCliChild(action.portal, ["crew", ...args], {
     cwd: record.repo,
     onLine: (line) => action.publish?.("action", { action: name, line }),
   });
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
-  if (run.timedOut) lines.push(`crew ${command} did not answer in time`);
+  if (run.timedOut) lines.push(`crew ${args[0]} did not answer in time`);
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
 }
 
@@ -1460,10 +1405,14 @@ export async function runAction(
       }
       const found = crewById(action, crew);
       if ("why" in found) return { lines: [found.why], ok: false };
-      // The CLI's own function, run in the record's repository: the portal's own folder is
-      // usually the home folder, where this repository has no crew store.
-      return crewAction({ ...action, cwd: found.record.repo }, "crew.answer", (ctx) =>
-        runCrewAnswer({ asPerson: true, crew, text: answer }, ctx),
+      // The CLI's own command, in the record's repository: the portal's own folder is usually
+      // the home folder, where this repository has no crew store. `--as-person` is the click
+      // (D52); the bare `--` keeps an answer that starts with `--` an answer.
+      return crewCliAction(
+        action,
+        "crew.answer",
+        ["answer", "--as-person", "--", found.record.id, answer],
+        found.record,
       );
     }
     case "crew.stop": {
@@ -1472,14 +1421,14 @@ export async function runAction(
       if (body.confirm !== true) return notConfirmed("stopped");
       const found = crewById(action, crew);
       if ("why" in found) return { lines: [found.why], ok: false };
-      return crewCliAction(action, "crew.stop", "stop", found.record);
+      return crewCliAction(action, "crew.stop", ["stop", found.record.id], found.record);
     }
     case "crew.resume": {
       const crew = crewRef(body);
       if (crew === "") return { lines: ["Pick the crew session to resume."], ok: false };
       const found = crewById(action, crew);
       if ("why" in found) return { lines: [found.why], ok: false };
-      return crewCliAction(action, "crew.resume", "resume", found.record);
+      return crewCliAction(action, "crew.resume", ["resume", found.record.id], found.record);
     }
     case "crew.rm": {
       const crew = crewRef(body);
@@ -1487,7 +1436,7 @@ export async function runAction(
       if (body.confirm !== true) return notConfirmed("removed");
       const found = crewById(action, crew);
       if ("why" in found) return { lines: [found.why], ok: false };
-      return crewCliAction(action, "crew.rm", "rm", found.record);
+      return crewCliAction(action, "crew.rm", ["rm", found.record.id], found.record);
     }
     case "worktrees.clean":
       // The page asks first (`data-confirm`): this removes folders that hold no work.

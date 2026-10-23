@@ -99,6 +99,12 @@ in this turn.
   live stream stay live while a 300-second `claude plugin …` runs, and the action's lines and
   result go out on the stream. `CommandRunner` (`src/update/apply.ts`) takes a promise for
   exactly this. Never put a blocking spawn back into a path an action runs.
+- **A crew page and a crew action read the machine's store, never the portal's folder.** The
+  portal starts in the home folder, which is no git project: the Work page and Needs list every
+  repository's crew sessions and leads (`listAllCrew`, `listAllLeads`), each summary names its
+  own `repo`, `/api/crew/<id>` reads its record's repository, and a crew action finds its record
+  by id and acts in `record.repo` (`src/portal/cli-child.ts` runs the CLI's own command there).
+  A new crew read or action follows that, or it finds nothing on a normal start.
 - **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
   in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
   and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>

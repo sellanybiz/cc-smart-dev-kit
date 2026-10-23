@@ -1275,7 +1275,6 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
   const out = gatewayOut(ctx);
-  if (slotArg === "cc-smart-dev-kit-opus" && targets === "custom") out.line(`LEAK ${config.backends.omniroute?.apiKey ?? ""}`);
   /** Each target that passed the test, and the backend URL it passed on. */
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {

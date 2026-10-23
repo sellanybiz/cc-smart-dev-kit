@@ -826,8 +826,10 @@ byte offset, the last update-check record, and the heavy-job queue (its lease an
 folders' fingerprint, with the queue read only when it changes). **The first poll after a
 start only records where each file ends** — the router's list, each crew log and the guard log
 — so a portal start says what happens from then on, never the whole history as a burst of live
-events. The doctor pass and an action's lines are not polled: the server publishes them when it
-has them.
+events. A log that did not exist at that baseline is news when it appears (its first line is
+read, not skipped); so is a repository whose first crew session starts after it: the baseline
+covers the store as the portal found it. The doctor pass and an action's lines are not polled:
+the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
 `health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
@@ -934,22 +936,24 @@ accepts a promise, so `update.install` awaits the same `applyUpdate` the command
 step's last line and the action's result go out on the stream (`action` events), so a page shows
 the install as it happens.
 
-**The D52 crew actions are the CLI's own code, and the four that block run it in a child.**
-`crew stop`, `crew resume` and `crew rm` reach `git` and `claude` through synchronous spawns
-(`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm` makes
-several — and `worktrees --clean` fetches, scans and removes the same way. Run in the server,
-one click froze every page, every other action and the stream for that long. So those four
-actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
+**The D52 crew actions are the CLI's own code, and every one that can block runs it in a
+child.** `crew stop`, `crew resume` and `crew rm` reach `git` and `claude` through synchronous
+spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm`
+makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
+server, one click froze every page, every other action and the stream for that long. So those
+four actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
 stop|resume|rm <id>` or `dist/cli.js worktrees --clean`, with the plugin's two bun flags, the
 portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is
 not a crew session, D52), a 3-minute timeout, and the record's own repository as the folder.
 Every line goes out on the stream as it is printed. The record is found on **the machine**
 (`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
-own folder's store would find nothing. `crew.answer` is the CLI's own function inside the
-server (it answers the store and resumes a dead session with `claude --bg --resume`), run with
-the record's repository as its folder; its resume path is the one synchronous spawn left in an
-action, and it is owed a child too. `crew.stop`, `crew.rm` and `worktrees.clean` refuse a POST
-without the page's confirmation (`confirm: true`), and no action ever forces anything.
+own folder's store would find nothing. `crew.answer` runs in a child too
+(`dist/cli.js crew answer --as-person -- <id> <text>`): a stopped crew session is resumed with
+a synchronous `claude --bg --resume`, so its path blocks as well; `--as-person` says the click
+is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. No
+synchronous spawn is reachable from an action, and no action ever forces anything.
+`crew.stop`, `crew.rm` and `worktrees.clean` refuse a POST without the page's confirmation
+(`confirm: true`).
 
 **A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
 reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on

@@ -422,6 +422,22 @@ describe("crew answer", () => {
     expect(record?.questions[0]?.answer).toBe("the port is 3210");
   });
 
+  test("D52: the portal's own child answers with `--as-person`, with no session above it", async () => {
+    // The portal runs `crew answer --as-person -- <id> <text>` in a child
+    // (`src/portal/cli-child.ts`); the child has no Claude Code session above it.
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({ processes: { commandLineOf: () => null, parentOf: () => null } });
+    const code = await runCrew(["answer", "--as-person", "--", NAME, "-- 3210 it is"], ctx);
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      'SendMessage {"to":"C my-app B6b portal-live","message":"-- 3210 it is"}',
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBe("-- 3210 it is");
+  });
+
   test("D52: without asPerson, no Claude Code session still refuses the answer", async () => {
     const world = await askedWorld("blocked");
     const ctx = world.ctx({

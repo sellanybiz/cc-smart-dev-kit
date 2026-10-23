@@ -535,16 +535,23 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   };
 }
 
-/** `crew answer`'s arguments, checked; or the mistake. */
+/**
+ * `crew answer`'s arguments, checked; or the mistake.
+ *
+ * `--as-person` says **the person's click at the portal** ran this, not a Claude Code session
+ * (D52): the portal runs this command in a child of its own (`src/portal/cli-child.ts`), which
+ * has no session above it and may carry the crew environment of the session that started the
+ * portal, so neither the "no session runs this command" refusal nor the crew one applies.
+ */
 export function parseAnswerArgs(argv: readonly string[]): AnswerArgs | { error: string } {
-  const parsed = parseOptions(argv, []);
+  const parsed = parseOptions(argv, [], ["--as-person"]);
   if ("error" in parsed) return parsed;
   const [crew, text, ...extra] = parsed.positionals;
   if (crew === undefined)
     return { error: 'Say which crew session: crew answer <crew session> "<text>"' };
   if (text === undefined) return { error: 'Say the answer: crew answer <crew session> "<text>"' };
   if (extra.length > 0) return { error: `Unknown argument: ${extra.join(" ")}` };
-  return { text, crew };
+  return { asPerson: parsed.flags.has("--as-person"), text, crew };
 }
 
 /**
