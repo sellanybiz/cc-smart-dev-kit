@@ -24,9 +24,11 @@
  *     is itself `claude -p`, with nobody to answer, an ask is a refusal (the guard's own rule).
  *     The prompt is read for a `Fable reason:` line, so a Fable session the person asked for is
  *     an ask, exactly as for an agent.
- *   - **a crew session starting crew sessions** (`crew start` while `CC_SMART_DEV_KIT_CREW` is
- *     set) is denied: a crew session hands the need to its lead (D36, D45), in the launcher's
- *     own words (`CREW_NEVER_DOES`).
+ *   - **a crew session running a lead's command** (`crew start`, `answer`, `stop`, `rm`,
+ *     `resume`, `watch`, `lead`, `lead tell`, while `CC_SMART_DEV_KIT_CREW` is set) is denied:
+ *     a crew session hands the need to its lead (D36, D45), in the launcher's own words
+ *     (`CREW_NEVER_RUNS`). The hook's environment is the session's own, so a line that unsets
+ *     the variable itself (`env -u CC_SMART_DEV_KIT_CREW …`) does not get past it.
  *   - **polling** — a `crew list` / `crew status` read or a `claude agents --json` read that
  *     repeats over time: inside a `while`/`until`/`do` loop (bash, its condition included) or a
  *     PowerShell `while`/`do`, or a `watch`, or next to a `sleep`/`Start-Sleep` — is denied: a
@@ -41,13 +43,14 @@
  * launch, and `-p` counts only when a word names Claude Code (`cp -p` is no launch).
  *
  * What it never judges: a `claude` subcommand (`claude agents`, `claude stop`, …), a `crew`
- * command that is not `start` or a status read, a `sleep` on its own, and a session's own work.
+ * command that is neither a lead's (`CREW_NEVER_RUNS`) nor a status read, a `sleep` on its
+ * own, and a session's own work.
  * A word inside quotes, a here-doc or a comment is text, read through the one shell reader
  * (`src/shell/command.ts`), never a second lexer.
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CREW_NEVER_DOES, REPORT_COMMAND } from "../crew/brief";
+import { CREW_NEVER_RUNS, type CrewNeverRun, REPORT_COMMAND } from "../crew/brief";
 import { crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
 import {
@@ -89,8 +92,8 @@ export interface ClaudeLaunch {
 
 /** What one Bash line does, as the judge reads it. */
 export interface BashReading {
-  /** The `crew start` commands the line runs. */
-  crewStarts: number;
+  /** The `crew` subcommands the line runs that a crew session never runs (`CREW_NEVER_RUNS`). */
+  crewNeverRuns: CrewNeverRun[];
   /** The `claude` launches it starts, in order. */
   launches: ClaudeLaunch[];
   /**
@@ -214,9 +217,16 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
   };
 }
 
-/** True for `cc-smart-dev-kit crew start …`, whatever path the launcher is named by. */
-function isCrewStart(program: string, args: string[]): boolean {
-  return program === COMMAND && args[0] === "crew" && args[1] === "start";
+/**
+ * The `crew` subcommand a step runs that a crew session never runs (`CREW_NEVER_RUNS`), or
+ * null: `cc-smart-dev-kit crew start|answer|stop|rm|resume|watch|lead|lead tell …`, whatever
+ * path the launcher is named by. A crew session's own commands (`step`, `report`, `tell`,
+ * `self-watch`, the board reads) are not in the map, so they pass.
+ */
+function crewNeverRunOf(program: string, args: string[]): CrewNeverRun | null {
+  if (program !== COMMAND || args[0] !== "crew") return null;
+  const sub = args[1] === "lead" && args[2] === "tell" ? "lead tell" : (args[1] ?? "");
+  return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;
 }
 
 /** True for a crew-status read: `crew list`, `crew status`, or `claude agents --json`. */
@@ -375,13 +385,14 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   const steps: Step[] = [];
   const state: WalkState = { loops: false, open: [], powershellRepeat: false };
   walk(command, dialect, 0, top, steps, state);
-  let crewStarts = 0;
+  const crewNeverRuns: CrewNeverRun[] = [];
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
-    if (isCrewStart(step.program, step.args)) crewStarts++;
+    const never = crewNeverRunOf(step.program, step.args);
+    if (never !== null) crewNeverRuns.push(never);
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat) statusReadsInLoop++;
@@ -403,7 +414,7 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   // A status read repeats over time, or sits next to a wait: a `for`/`foreach` over a fixed
   // list with no wait is neither, so a `for id in a b; do … status …; done` passes (F2a-6).
   const poll = statusReadsInLoop > 0 || (sleepsIn(steps) && statusReads > 0);
-  return { crewStarts, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
 }
 
 /** True when the line runs a program that waits (`sleep`, `Start-Sleep`). */
@@ -433,7 +444,7 @@ export function backgroundFor(top: readonly Step[]): Background | null {
 export interface BashVerdict {
   decision: "ask" | "deny";
   reason: string;
-  /** A short word for the hook log: `bg`, `print`, `crew-start`, `poll`. */
+  /** A short word for the hook log: `bg`, `print`, `crew-command`, `poll`. */
   why: string;
 }
 
@@ -455,10 +466,10 @@ function backgroundLaunchReason(): string {
   ].join("\n");
 }
 
-/** The words a crew session gets when it tries to start another (the launcher's own rule). */
-function crewStartsNothing(crewId: string): string {
+/** The words a crew session gets when it runs a lead's command (the launcher's own rule). */
+function crewNeverRunsAnswer(crewId: string, command: CrewNeverRun): string {
   return [
-    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_DOES.start}.`,
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`,
   ].join("\n");
 }
@@ -481,7 +492,8 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
   if (launch.form === "bg") {
     // A crew session starting a session is the very thing `crew start` refuses; the judge says
     // the same before the launcher would, and never asks the person about it.
-    if (crew !== null) return { decision: "deny", reason: crewStartsNothing(crew), why: "bg" };
+    if (crew !== null)
+      return { decision: "deny", reason: crewNeverRunsAnswer(crew, "start"), why: "bg" };
     if (!isAttended(context.env)) {
       return {
         decision: "deny",
@@ -515,8 +527,12 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
  */
 export function judgeBash(reading: BashReading, context: JudgeContext): BashVerdict | null {
   const crew = crewIdOf(context.env);
-  if (crew !== null && reading.crewStarts > 0) {
-    return { decision: "deny", reason: crewStartsNothing(crew), why: "crew-start" };
+  // The hook's environment is the session's own: a line that unsets the variable itself
+  // (`env -u CC_SMART_DEV_KIT_CREW …`) is still this crew session's, and its first lead
+  // command is the one named.
+  const never = reading.crewNeverRuns[0];
+  if (crew !== null && never !== undefined) {
+    return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
   let ask: BashVerdict | null = null;
   for (const launch of reading.launches) {
@@ -544,7 +560,7 @@ export function commandOf(input: HookInput): null | string {
   return stringField((fields as Record<string, unknown>).command);
 }
 
-/** True when the judge judges this line: a launch, a crew start or a poll — its crash domain. */
+/** True when the judge judges this line: a launch, a lead command or a poll — its crash domain. */
 export function judgedDomain(reading: BashReading): boolean {
-  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.poll;
+  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
 }

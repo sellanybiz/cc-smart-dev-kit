@@ -461,4 +461,39 @@ describe("crew answer", () => {
     expect(code).toBe(1);
     expect(world.err[0]).toContain("no Claude Code session runs this command");
   });
+
+  test("D52: --as-person from a session in bypass mode is refused: the flag is the portal's", async () => {
+    // The flag says "no Claude Code session runs this", never "skip the session check": a lead
+    // in bypass mode gives it itself, and the session above this command is still found.
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({
+      processes: {
+        commandLineOf: () => "claude --dangerously-skip-permissions",
+        parentOf: (pid) => ({ 300: 1, 400: 300, 500: 400 })[pid] ?? null,
+      },
+    });
+    const code = await runCrew(["answer", "--as-person", "--", NAME, "the port is 3210"], ctx);
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: --as-person is the portal's: a Claude Code session runs this command",
+      "Fix: run it without --as-person",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBe(null);
+  });
+
+  test("D52: a lead in bypass mode is refused without the flag, with the bypass reason", async () => {
+    // The check the flag used to skip is still the one that answers a lead in bypass mode.
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({
+      processes: {
+        commandLineOf: () => "claude --permission-mode bypassPermissions",
+        parentOf: (pid) => ({ 300: 1, 400: 300, 500: 400 })[pid] ?? null,
+      },
+    });
+    expect(await runCrew(["answer", NAME, "the port is 3210"], ctx)).toBe(1);
+    expect(world.err[0]).toBe(
+      "crew answer: this session was started in bypassPermissions mode, and a lead there acts on every crew session's message with no question",
+    );
+  });
 });

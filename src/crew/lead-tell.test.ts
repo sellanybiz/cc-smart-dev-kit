@@ -106,6 +106,77 @@ describe("recordLeadNotes", () => {
     ]);
   });
 
+  test("a failure in the middle never stops the notes after it, and every missing one is named", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const second = leadRecord("LEAD my-app second-plan", "e22fbc7d-9999-aaaa-bbbb-cccccccccccc");
+    const third = leadRecord("LEAD my-app third-plan", "f33acd8e-7777-dddd-eeee-ffffffffffff");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes(
+      [first, second, third],
+      async (one) => {
+        if (one.sessionId === second.sessionId) throw new Error("the disk is full");
+      },
+      MESSAGE,
+      { error: (line) => err.push(line), print: (line) => out.push(line) },
+    );
+    expect(code).toBe(1);
+    // Both sides of the failure still get their note, and both of them are printed.
+    expect(out).toEqual([
+      `SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`,
+      'SendMessage {"to":"LEAD my-app third-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone"}',
+    ]);
+    expect(err).toEqual([
+      "crew lead tell: the store could not record the note for LEAD my-app second-plan: the disk is full",
+      "The note is recorded for LEAD my-app other-plan, LEAD my-app third-plan: send the lines below, and tell LEAD my-app second-plan again.",
+    ]);
+  });
+
+  test("failures on two sides of a recorded note are both named", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const second = leadRecord("LEAD my-app second-plan", "e22fbc7d-9999-aaaa-bbbb-cccccccccccc");
+    const third = leadRecord("LEAD my-app third-plan", "f33acd8e-7777-dddd-eeee-ffffffffffff");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes(
+      [first, second, third],
+      async (one) => {
+        if (one.sessionId !== second.sessionId) throw new Error("no space left");
+      },
+      MESSAGE,
+      { error: (line) => err.push(line), print: (line) => out.push(line) },
+    );
+    expect(code).toBe(1);
+    expect(out).toEqual([`SendMessage {"to":"LEAD my-app second-plan","message":"${MESSAGE}"}`]);
+    expect(err).toEqual([
+      `crew lead tell: the store could not record the note for ${PEER_NAME}: no space left`,
+      "crew lead tell: the store could not record the note for LEAD my-app third-plan: no space left",
+      "The note is recorded for LEAD my-app second-plan: send the line below, and tell LEAD my-app other-plan, LEAD my-app third-plan again.",
+    ]);
+  });
+
+  test("nothing recorded, and more than one failure: every receiver is named once", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const second = leadRecord("LEAD my-app second-plan", "e22fbc7d-9999-aaaa-bbbb-cccccccccccc");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes(
+      [first, second],
+      async () => {
+        throw new Error("no space left");
+      },
+      MESSAGE,
+      { error: (line) => err.push(line), print: (line) => out.push(line) },
+    );
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toEqual([
+      `crew lead tell: the store could not record the note for ${PEER_NAME}: no space left`,
+      "crew lead tell: the store could not record the note for LEAD my-app second-plan: no space left",
+      "No note was recorded: tell LEAD my-app other-plan, LEAD my-app second-plan again.",
+    ]);
+  });
+
   test("the first receiver failing prints no line: nothing was recorded", async () => {
     const first = leadRecord(PEER_NAME, OTHER_SESSION);
     const out: string[] = [];
