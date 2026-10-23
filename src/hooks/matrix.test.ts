@@ -729,6 +729,65 @@ describe("no cc-smart-dev-kit.json", () => {
       c.failsClosed(await runHook(c.spec, input, env));
     },
   );
+
+  /**
+   * D55, and the reason the row above is not enough: the person's prompt is the one answer of
+   * `crew-role` made from the store alone, with no answer from the project's file. A crew
+   * session exists only where `crew start` recorded one, and its project may never have opted
+   * in, so the record — never the file — is what this answer is made from.
+   */
+  test("crew-role records the person's prompt to a crew session with no cc-smart-dev-kit.json", async () => {
+    const { repo } = makeClone();
+    const crewId = "W2-y-7a8b9c";
+    const env = { ...hookEnv(), [CREW_ENV]: crewId };
+    const stateDir = cliPaths(env).stateDir;
+    await createCrew(
+      stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/W2-y",
+        effort: "high",
+        files: [],
+        id: crewId,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD app plan",
+        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C app W2 y",
+        permissionMode: "auto",
+        phase: "W2",
+        plan: "plan",
+        pr: null,
+        questions: [],
+        repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "y",
+        startedAt: null,
+        state: "working",
+        waitsFor: [],
+        worktree: join(repo, ".claude", "worktrees", "crew-W2-y"),
+      },
+      Date.parse("2026-10-21T10:00:00.000Z"),
+    );
+    const result = await runHook(
+      crewRoleHook,
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: SESSION,
+        cwd: repo,
+        prompt: "just the config change, please",
+      },
+      env,
+    );
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+  });
 });
 
 describe("the guard matrix", () => {

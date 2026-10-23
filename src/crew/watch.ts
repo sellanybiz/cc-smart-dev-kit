@@ -186,6 +186,10 @@ export function eventLine(
     }
     case "question":
       return `${name}: question · ${clip(event.text ?? "")} · answer it: crew answer "${name}" "<text>"`;
+    case "person":
+      // The person typed into the crew session (D55): their word wins over the brief, so the
+      // phase it hands back may no longer be the phase it started — read it against the brief.
+      return `${name}: the person wrote · ${clip(event.text ?? "")} · read its next report against the brief before the merge`;
     case "tell": {
       // A crew session told another a contract change or asked it a contract question (D47):
       // the lead sees it, because it is the one that answers what the two cannot settle.

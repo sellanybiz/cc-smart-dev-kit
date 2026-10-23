@@ -1681,7 +1681,7 @@ that, so the plugin ships no worktree hook at all.
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds at most one short line about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
-| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
+| `crew-role` | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); the person's own prompt recorded as one `person` event with one line of context, and every other delivery recognised and recorded as nothing (D55); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
@@ -3434,7 +3434,22 @@ each is silent unless its own session is the one it is about, and neither reads
   At **PreToolUse** on `AskUserQuestion` and `ExitPlanMode` it **denies** the call with the
   `crew report --question …` step (D36): a crew session never asks the person. The deny reads no
   store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
-  one, and outside git. At **Stop** it records the session's last line on its record (`lastLine`,
+  one, and outside git.
+  At **UserPromptSubmit** it hears the person (D55): a prompt typed into the crew session is one
+  `person` event (its first line, masked and clipped) and one line of context — their word wins
+  over the brief, a change of scope or files is said in the report, and a word to stop still gets
+  a report (`blocked` or `handoff`) before the turn ends. Claude Code runs this hook for every
+  turn a session gets and its input carries no field that says where a turn came from
+  (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
+  (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
+  continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
+  the two prompts a transport gives a crew session **bare** —
+  `crew answer`'s resume of a stopped session (a question still open, or the answer the store
+  recorded) and the watch's `resumeText` of a paused one. A bare prompt none of those explain is
+  recorded as the person's: nothing else in the kit gives a crew session a prompt, and a stopped
+  crew session the person reopens by hand (`claude attach`) has no other way to be heard. One
+  the hook cannot read at all records nothing. It never blocks and never asks.
+  At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
   session is a `step`, the turn ended mid-phase with no report: it **blocks once** with the report

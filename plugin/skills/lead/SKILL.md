@@ -86,7 +86,7 @@ How to brief well, and how to brief an affordable model: `/cc-smart-dev-kit:suba
 
 Running this skill starts the `crew-events` monitor. It prints one line per change of your
 crew sessions — a start, a step, a question, a permission wait, a quiet crew session, a report, a crash, a
-queued crew session that started, a note one crew session told another — and each line reaches you as a notification, also when you are
+queued crew session that started, a note one crew session told another, the person writing to one — and each line reaches you as a notification, also when you are
 idle. So after the starts, **go on**.
 
 **On each line, act in that turn:**
@@ -98,6 +98,7 @@ idle. So after the starts, **go on**.
 | `question`, one that is the person's | `AskUserQuestion` (§ 5) |
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
+| the person wrote to a crew session | read its next report against the brief before you merge it. Their word wins over the brief, so the phase it hands back may no longer be the phase it started (§ 6) |
 | `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
 | `paused` (a model limit) | nothing: the watch resumes it once the gateway answers again, one first and the others 30 s apart; after `/login` on another account, `cc-smart-dev-kit crew resume --paused` |
 
