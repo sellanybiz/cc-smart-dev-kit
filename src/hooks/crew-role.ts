@@ -159,11 +159,13 @@ export function isPersonPrompt(record: CrewRecord, prompt: string, nowMs: number
 
 /** True when `prompt` is the answer `crew answer` resumed this crew session with, just recorded. */
 function isAnswerResume(record: CrewRecord, prompt: string, nowMs: number): boolean {
-  // Compared trimmed: a transport that adds or drops a line end around the answer must not
-  // turn the lead's own answer into the person's word.
+  // Compared with one trailing line end dropped, and nothing else: a transport that adds or
+  // drops that line end must not turn the lead's answer into the person's word, and the person's
+  // own " yes " typed after it must still be theirs.
+  const bare = (text: string): string => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null) return false;
-    if (asked.answer.trim() !== prompt.trim()) return false;
+    if (bare(asked.answer) !== bare(prompt)) return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
   });

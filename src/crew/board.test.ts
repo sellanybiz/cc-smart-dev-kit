@@ -97,7 +97,7 @@ describe("crew list", () => {
     ]);
   });
 
-  test("D55: a clash, another lead's note and a merge are never a crew session's last line", async () => {
+  test("D55: a clash, another lead's note, a merge and the person's prompt are never a crew session's last line", async () => {
     const world = await boardWorld();
     const crew = await world.addCrew({ lastLine: "handed back" });
     // A clash names the OTHER crew session (the one whose files are wanted) and a merge names a
@@ -130,6 +130,13 @@ describe("crew list", () => {
       world.paths.stateDir,
       world.repo,
       { ...base, text: "LEAD my-app master-plan merged #7 into main", type: "merge" },
+      at,
+    );
+    // What the person typed into it is their word, not the crew session's own last line.
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { ...base, text: "stop after the tests", type: "person" },
       at,
     );
     expect(await runCrew(["list"], world.ctx())).toBe(0);

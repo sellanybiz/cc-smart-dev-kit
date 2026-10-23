@@ -190,13 +190,33 @@ export function requiresFor(version: string): string {
  */
 export function raisedRequires(existing: unknown, floor: string, floorVersion: string): string {
   if (typeof existing === "string") {
-    const floorMatch = /^>=\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(existing);
-    if (floorMatch !== null) {
-      const existingFloor = `${floorMatch[1]}.${floorMatch[2]}.${floorMatch[3] ?? "0"}`;
-      if (Bun.semver.order(existingFloor, floorVersion) >= 0) return existing;
-    }
+    const lowest = lowestAllowed(existing);
+    if (lowest !== null && Bun.semver.order(lowest, floorVersion) >= 0) return existing;
   }
   return floor;
+}
+
+/** One alternative of a range: its first comparator and version (`>=1.1`, `^1.1`, `~1.1.0`, `1.1`). */
+const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+
+/**
+ * The lowest plugin version a `requires` range lets in, or null when the range's form is not
+ * one read here (the floor then replaces it). Each `||` alternative is read by its first
+ * comparator: `>=`, `>`, `^`, `~`, `=` or a bare version start at the version written; one that
+ * starts with `<` lets in 0.0.0. So `~1.1.0`, `^1.1` and `>=1.1 <2` all start at 1.1.0, and a
+ * write that needs 1.0 keeps them as they are.
+ */
+function lowestAllowed(range: string): null | string {
+  let lowest: null | string = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null) return null;
+    const version = match[1]?.startsWith("<")
+      ? "0.0.0"
+      : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0) lowest = version;
+  }
+  return lowest;
 }
 
 /**

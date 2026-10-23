@@ -230,10 +230,10 @@ export function stateSince(record: CrewRecord, events: readonly CrewEvent[]): st
 /**
  * The events that are another session's news about a crew session, written where it happened:
  * a `clash` names the crew session whose files are wanted, but the line is the starting lead's;
- * a `lead-tell` and a `merge` carry another lead's words. None of them is the crew session's own
- * last line.
+ * a `lead-tell` and a `merge` carry another lead's words; a `person` event holds what the person
+ * typed into it. None of them is the crew session's own last line.
  */
-const OTHER_WORDS: ReadonlySet<string> = new Set(["clash", "lead-tell", "merge"]);
+const OTHER_WORDS: ReadonlySet<string> = new Set(["clash", "lead-tell", "merge", "person"]);
 
 /** The last thing a crew session said: its newest event with a line, else the line of its last turn. */
 export function lastSaid(record: CrewRecord, events: readonly CrewEvent[]): null | string {

@@ -115,9 +115,10 @@ export function isKnownState(state: string): state is CrewState {
  * request merged into the base, for the other leads (D55).
  *
  * **`clash` and `person` name a real crew session** (the one whose files another phase wants,
- * the one the person typed into). A `lead-tell` and a `merge` happen outside any crew session: their `crew` is the id of the
- * session that wrote the line, and their `state` is `working`, the state of a session running
- * a command — a lead has no crew state, and nothing reads one from these three.
+ * the one the person typed into). A `lead-tell` and a `merge` happen outside any crew session:
+ * their `crew` is the id of the session that wrote the line, and their `state` is `working`,
+ * the state of a session running a command — a lead has no crew state, and nothing reads a
+ * crew state from a `lead-tell`, a `clash` or a `merge`.
  */
 export const CREW_EVENT_TYPES = [
   "created",

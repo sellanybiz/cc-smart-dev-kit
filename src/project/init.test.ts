@@ -478,6 +478,17 @@ describe("raisedRequires", () => {
     // would leave the file unreadable by the plugin that runs now: the floor asks for a
     // plugin that reads the file.
     expect(raisedRequires("^0.5", FLOOR, VERSION)).toBe(FLOOR);
+    expect(raisedRequires("<2", FLOOR, VERSION)).toBe(FLOOR);
+    expect(raisedRequires("not a range", FLOOR, VERSION)).toBe(FLOOR);
+  });
+
+  test("a caret, tilde, exact or bounded range that already starts at the floor keeps its own shape", () => {
+    // `workflow set --project` runs this on every write that needs a newer plugin: replacing
+    // "~1.1.0" with ">=1.0" would lower what the project asks for.
+    for (const range of ["~1.1.0", "^1.1", "1.1.0", "1.1", "=1.1.0", ">=1.1 <2", "^1.1 || ^2"]) {
+      expect(raisedRequires(range, ">=1.0", "1.0.0")).toBe(range);
+    }
+    expect(raisedRequires("^0.9 || ^1.1", ">=1.0", "1.0.0")).toBe(">=1.0");
   });
 });
 

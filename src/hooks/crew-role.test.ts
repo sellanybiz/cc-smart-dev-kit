@@ -985,6 +985,10 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     // The same answer with a line end around it is still the lead's, never the person's.
     expect(await runHook(crewRoleHook, promptInput(world.repo, "yes\n"), world.env)).toEqual({});
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+    // The person's own words around the same answer, typed in the same minute, are theirs: one
+    // event, holding its first line as the recorder keeps it (trimmed).
+    await runHook(crewRoleHook, promptInput(world.repo, " yes "), world.env);
+    expect(personEvents(world.stateDir, world.repo).map((one) => one.text)).toEqual(["yes"]);
   });
 
   test("a stopped session with no open question: the person attached and typed, so it is recorded", async () => {
