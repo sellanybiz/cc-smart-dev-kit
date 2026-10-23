@@ -14,6 +14,7 @@ import { type KnownProjects, projectSourceWords, projectStateOf } from "./comman
 import {
   emptyConfig,
   fallbackOn,
+  type GatewayConfig,
   historyRetentionDays,
   judgeTargetUsable,
   keptChain,
@@ -24,7 +25,7 @@ import {
 import { type HealthFetch, routerHealth } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
-import { decisionWords, type SettingsFileState } from "./project-state";
+import { decisionWords, readGatewayConfig, type SettingsFileState } from "./project-state";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -118,8 +119,9 @@ export async function gatewayChecks(options: {
           },
     );
     // A project's own state is still there, and still decides for its sessions once the
-    // gateway runs: name it whether or not the machine's gateway is installed (GP4a).
-    checks.push(...(await projectChecks(options)));
+    // gateway runs: name it whether or not the machine's gateway is installed (GP4a). A
+    // `gateway.json` that is kept is read for the backend names its warning needs.
+    checks.push(...(await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config)));
     return checks;
   }
 
@@ -173,8 +175,10 @@ export async function gatewayChecks(options: {
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`,
       });
       // The projects are still read: their own state does not need the config (only the
-      // router's port does, and a project's answer says when it cannot be told).
-      checks.push(...(await projectChecks(options)));
+      // router's port does, so a project on this machine's router reads as another address
+      // until the config is fixed; a `<backend>:<model>` warning needs the config's backends,
+      // and none is known while it cannot be read).
+      checks.push(...(await projectChecks(options, null)));
       return checks;
     }
   }
@@ -299,27 +303,35 @@ export async function gatewayChecks(options: {
   }
   // The projects, last: each one's own state (the same reader `gateway project status` uses),
   // and a warning for a Claude Code model key that would bypass the slots (GP4a).
-  checks.push(...(await projectChecks(options)));
+  checks.push(...(await projectChecks(options, config)));
   return checks;
 }
 
 /**
  * Claude Code's own model keys in a project's files that reach past the gateway's slots: one
  * `!` line each. A slot key here makes Claude Code send that name instead of a Claude model
- * (a slot with no chain answers it with an error instead of plain Claude); a `<backend>:<model>`
- * goes to that backend alone, with no fallback. `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` moves an
- * agent launched without a `model` off Claude (the gateway's own "never" list). The kit never
- * writes any of these keys, so the fix is the person's hand.
+ * (a slot with no chain answers it with an error instead of plain Claude); a
+ * `<backend>:<model>` the config knows goes to that backend alone, with no fallback.
+ * `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` moves an agent launched without a `model` off Claude
+ * (the gateway's own "never" list). The kit never writes any of these keys, so the fix is the
+ * person's hand. `backends`: the config's own backend names — a name the config does not have
+ * is no target (the router sends it to Anthropic as Claude Code sent it), so it is not warned
+ * about.
  */
-function modelKeyWarnings(file: SettingsFileState, home: string): DoctorCheck[] {
+function modelKeyWarnings(
+  file: SettingsFileState,
+  home: string,
+  backends: ReadonlySet<string>,
+): DoctorCheck[] {
   if (file.problem !== null) return [];
   const checks: DoctorCheck[] = [];
   const where = tildify(file.path, home);
   for (const fact of file.modelKeys) {
     const name = withoutContextSuffix(fact.value.trim());
-    const slot = isSlotKey(name);
     const parsed = parseTarget(name);
-    const backend = "target" in parsed && parsed.target.kind === "backend";
+    const slot = isSlotKey(name);
+    const target = "target" in parsed ? parsed.target : null;
+    const backend = target !== null && target.kind === "backend" && backends.has(target.backend);
     if (!slot && !backend) continue;
     const shown = shownValue(fact.value);
     const quoted = shown === fact.value ? JSON.stringify(shown) : shown;
@@ -365,15 +377,20 @@ function fileProblemWords(file: SettingsFileState, home: string): string {
  * One line per known project, from the portal's own list: its state and the file that decides
  * it, in `gateway projects`' words. A project whose file cannot be read is a ✗ (Claude Code's
  * own answer past it is not known), with the file and its error named; another gateway's
- * address is a `!`. A caller with no project list prints nothing.
+ * address is a `!`. A caller with no project list prints nothing. `config`: this machine's
+ * gateway config — only its backend names are read, for `modelKeyWarnings`.
  */
-async function projectChecks(options: {
-  paths: CliPaths;
-  folder?: string;
-  projects?: (folder: string) => Promise<KnownProjects>;
-}): Promise<DoctorCheck[]> {
+async function projectChecks(
+  options: {
+    paths: CliPaths;
+    folder?: string;
+    projects?: (folder: string) => Promise<KnownProjects>;
+  },
+  config: GatewayConfig | null,
+): Promise<DoctorCheck[]> {
   if (options.projects === undefined) return [];
   const { paths } = options;
+  const backends = new Set(Object.keys(config?.backends ?? {}));
   let list: KnownProjects;
   try {
     list = await options.projects(options.folder ?? process.cwd());
@@ -415,7 +432,7 @@ async function projectChecks(options: {
     // Only the project's own files: the machine's settings are `gateway status`' business.
     for (const file of view.files) {
       if (file.kind === "machine") continue;
-      checks.push(...modelKeyWarnings(file, paths.home));
+      checks.push(...modelKeyWarnings(file, paths.home, backends));
     }
   }
   return checks;

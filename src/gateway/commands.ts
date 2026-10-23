@@ -24,6 +24,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { type Mark, type Out, plural } from "../cli/ui/out";
 import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
 import type { Terminal } from "../cli/ui/terminal";
+import { shellWord } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
@@ -2501,7 +2502,7 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
     out.line(
       "warn",
       `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  · from ${projectSourceWords(view.choice, paths.home, view)}`,
-      { fix: `${COMMAND} gateway project off --folder ${project.root}` },
+      { fix: `${COMMAND} gateway project off --folder ${shellWord(project.root)}` },
     );
   }
   if (routing.length > 0) {

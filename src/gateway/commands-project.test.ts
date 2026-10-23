@@ -639,7 +639,8 @@ describe("gateway projects", () => {
 describe("gateway off: the projects still on (GP4a)", () => {
   test("a project's own on keeps it on the router after the machine goes off; the line names the command", async () => {
     const m = machine();
-    const on = repo("gp4a-off-on");
+    // A folder with a space in it: the Fix line must quote it, or the copied command breaks.
+    const on = repo("gp4a off on");
     const off = repo("gp4a-off-off");
     const bare = repo("gp4a-off-bare");
     await m.run(["project", "on", "--folder", on]);
@@ -659,7 +660,8 @@ describe("gateway off: the projects still on (GP4a)", () => {
     // at the router, so `off` says which projects keep it on and how to turn each off.
     expect(m.lines).toEqual([
       `! ${on} stays on: on → ${ROUTER}  · from the personal file ${join(on, ".claude", "settings.local.json")} (never committed)`,
-      `  Fix: cc-smart-dev-kit gateway project off --folder ${on}`,
+      // The folder has a space in it: the command as printed is one the person can paste.
+      `  Fix: cc-smart-dev-kit gateway project off --folder '${on}'`,
       "! The gateway is off on this machine; 1 project still points at the router (above).",
     ]);
   });

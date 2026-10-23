@@ -205,8 +205,11 @@ Each of them:
   copy or unit is in `changed.json`), `restore` works in two stages, because running
   sessions are taken to keep pointing at the router until they restart (one live look
   saw otherwise: `docs/claude-code-contract.md`; the stages stay until it is repeated):
-  - **stage 1**, while cc-smart-dev-kit's gateway env keys are in `settings.json`
-    (`ownedGatewayEnvKeys`): it restores everything except the router's files
+  - **stage 1**, while cc-smart-dev-kit's gateway env keys still hold its value in **any
+    settings file it wrote** — the user's `settings.json`, a project's own
+    `settings.local.json` or team `.claude/settings.json` (`ownedGatewayEnvKeys` over
+    `changed.json`'s `json-keys` entries; a file whose address is Anthropic's, from
+    `gateway project off`, does not count): it restores everything except the router's files
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
   - **stage 2**, with no such key left: it stops the router before it restores its files

@@ -9904,6 +9904,81 @@ function terminalPrompts(term, stdin = process.stdin, shown = STDOUT_QUESTIONS) 
   });
 }
 
+// src/setup/launcher.ts
+import { join as join11 } from "path";
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function shellWord(path) {
+  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
+}
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
+fail() {
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
+# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
+# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
+# in the folder this lookup has yet to find.
+launcher_dir=$HOME/.local/bin
+case $0 in */*) launcher_dir=\${0%/*} ;; esac
+install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
+# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+# working folder's bunfig.toml (a project's preload) never runs inside the command. An
+# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+# refuses a config path that does not exist, so the flag is left out then.
+set -- "$install_path/dist/cli.js" "$@"
+if [ -f "$install_path/bunfig.toml" ]; then
+  set -- "--config=$install_path/bunfig.toml" "$@"
+fi
+exec "$bun" --no-env-file "$@"
+`;
+}
+function installLauncher(binDir, options) {
+  const path = join11(binDir, LAUNCHER_NAME);
+  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
+    stateDir: options.stateDir,
+    kind: "whole-file",
+    mode: 493,
+    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+  });
+  return { path, outcome };
+}
+
 // src/setup/lock.ts
 import {
   closeSync as closeSync4,
@@ -9916,7 +9991,7 @@ import {
   writeSync
 } from "fs";
 import { hostname as hostname2 } from "os";
-import { join as join11 } from "path";
+import { join as join12 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -10093,7 +10168,7 @@ function takeOverStale(file, judged, fallbackStaleMs, mode) {
 }
 function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
   try {
-    const held = readHeld(join11(stateDir, LOCK_FILE));
+    const held = readHeld(join12(stateDir, LOCK_FILE));
     return held !== null && !isStale(held, fallbackStaleMs);
   } catch {
     return false;
@@ -10101,7 +10176,7 @@ function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
 }
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync7(stateDir, { recursive: true });
-  const file = join11(stateDir, LOCK_FILE);
+  const file = join12(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
@@ -11112,7 +11187,7 @@ function cleanFallbackResponse(response, onChanged) {
 import { mkdtempSync as mkdtempSync2, rmSync as rmSync2 } from "fs";
 import net from "net";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 var SD_LISTEN_FDS_START = 3;
 var LISTEN_VARS = ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"];
 function inheritedListenFd(env, pid) {
@@ -11133,14 +11208,14 @@ function inheritedListenFd(env, pid) {
 function innerSocketPath(env, pid) {
   const runtime = env.RUNTIME_DIRECTORY?.split(":")[0];
   if (runtime) {
-    const path = join12(runtime, `router-${pid}.sock`);
+    const path = join13(runtime, `router-${pid}.sock`);
     rmSync2(path, { force: true });
     return { cleanup: () => rmSync2(path, { force: true }), path };
   }
-  const dir = mkdtempSync2(join12(tmpdir3(), "cc-smart-dev-kit-router-"));
+  const dir = mkdtempSync2(join13(tmpdir3(), "cc-smart-dev-kit-router-"));
   return {
     cleanup: () => rmSync2(dir, { force: true, recursive: true }),
-    path: join12(dir, "router.sock")
+    path: join13(dir, "router.sock")
   };
 }
 var IDLE_GRACE_MS = 500;
@@ -13520,7 +13595,7 @@ async function waitForRouter(port, probe, waitMs = 5000) {
 
 // src/gateway/project-state.ts
 import { existsSync as existsSync14, realpathSync as realpathSync3, statSync as statSync8 } from "fs";
-import { join as join14, resolve as resolve2 } from "path";
+import { join as join15, resolve as resolve2 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -13544,7 +13619,7 @@ function gitEnv(base) {
 
 // src/project/resolve.ts
 import { existsSync as existsSync12, realpathSync as realpathSync2, statSync as statSync7 } from "fs";
-import { join as join13 } from "path";
+import { join as join14 } from "path";
 
 // src/project/config.ts
 import { existsSync as existsSync11, readFileSync as readFileSync14 } from "fs";
@@ -14384,20 +14459,20 @@ async function locateCheckoutAsync(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join13(root, ".claude", "cc-smart-dev-kit.json"));
+  const own = readOwnHooks(join14(root, ".claude", "cc-smart-dev-kit.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join13(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+  return readOwnHooks(join14(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join13(root, ".claude", "cc-smart-dev-kit.json");
+  const own = join14(root, ".claude", "cc-smart-dev-kit.json");
   let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join13(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    const main = join14(mainCheckout, ".claude", "cc-smart-dev-kit.json");
     config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -14678,13 +14753,13 @@ function personalTracked(mainCheckout) {
 var PERSONAL_FILE = "settings.local.json";
 var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
-  return join14(checkout.mainCheckout, ".claude", PERSONAL_FILE);
+  return join15(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
 function teamFileOf(folder) {
-  return join14(folder, ".claude", "settings.json");
+  return join15(folder, ".claude", "settings.json");
 }
 function excludeFileOf(checkout) {
-  return join14(checkout.commonDir, "info", "exclude");
+  return join15(checkout.commonDir, "info", "exclude");
 }
 function profileUrlOf(routerUrl, name) {
   return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
@@ -15632,7 +15707,7 @@ async function createOmnirouteKey(options) {
 
 // src/gateway/service.ts
 import { existsSync as existsSync15, readFileSync as readFileSync16, rmSync as rmSync3 } from "fs";
-import { basename as basename4, dirname as dirname6, join as join15 } from "path";
+import { basename as basename4, dirname as dirname6, join as join16 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -15738,7 +15813,7 @@ function unitState(runner, unitName = UNIT_NAME) {
 }
 var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
-  return join15(stateDir, "restart-pending");
+  return join16(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
 async function checkRouterPort(options) {
@@ -15930,7 +16005,7 @@ var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
 function stopUnits(runner, options) {
   const result = { missing: [], refused: [], stopped: [] };
   const there = options.names.filter((name) => {
-    if (existsSync15(join15(options.dir, name)))
+    if (existsSync15(join16(options.dir, name)))
       return true;
     result.missing.push(name);
     return false;
@@ -17816,7 +17891,7 @@ async function commandOff(ctx) {
   }
   const staying = await projectsStillOn(ctx);
   for (const { project, view } of staying) {
-    out.line("warn", `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`, { fix: `${COMMAND} gateway project off --folder ${project.root}` });
+    out.line("warn", `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`, { fix: `${COMMAND} gateway project off --folder ${shellWord(project.root)}` });
   }
   if (routing.length > 0) {
     out.verdict("warn", `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`);
@@ -17921,7 +17996,7 @@ async function gatewayChecks(options) {
       info: true,
       text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`
     });
-    checks.push(...await projectChecks(options));
+    checks.push(...await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config));
     return checks;
   }
   if (options.service === "none") {
@@ -17962,7 +18037,7 @@ async function gatewayChecks(options) {
         text: `gateway config: ${messageOf(error)}`,
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`
       });
-      checks.push(...await projectChecks(options));
+      checks.push(...await projectChecks(options, null));
       return checks;
     }
   }
@@ -18058,19 +18133,20 @@ async function gatewayChecks(options) {
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
     });
   }
-  checks.push(...await projectChecks(options));
+  checks.push(...await projectChecks(options, config));
   return checks;
 }
-function modelKeyWarnings(file, home) {
+function modelKeyWarnings(file, home, backends) {
   if (file.problem !== null)
     return [];
   const checks = [];
   const where = tildify(file.path, home);
   for (const fact of file.modelKeys) {
     const name = withoutContextSuffix(fact.value.trim());
-    const slot = isSlotKey(name);
     const parsed = parseTarget(name);
-    const backend = "target" in parsed && parsed.target.kind === "backend";
+    const slot = isSlotKey(name);
+    const target = "target" in parsed ? parsed.target : null;
+    const backend = target !== null && target.kind === "backend" && backends.has(target.backend);
     if (!slot && !backend)
       continue;
     const shown = shownValue(fact.value);
@@ -18101,10 +18177,11 @@ function fileProblemWords(file, home) {
   const where = tildify(file.path, home);
   return reason === "" ? where : `${where}: ${reason}`;
 }
-async function projectChecks(options) {
+async function projectChecks(options, config) {
   if (options.projects === undefined)
     return [];
   const { paths } = options;
+  const backends = new Set(Object.keys(config?.backends ?? {}));
   let list;
   try {
     list = await options.projects(options.folder ?? process.cwd());
@@ -18138,7 +18215,7 @@ async function projectChecks(options) {
     for (const file of view.files) {
       if (file.kind === "machine")
         continue;
-      checks.push(...modelKeyWarnings(file, paths.home));
+      checks.push(...modelKeyWarnings(file, paths.home, backends));
     }
   }
   return checks;
@@ -18257,11 +18334,11 @@ async function socketCheck(options, port) {
 
 // src/hooks/desktop-alert.ts
 import { readFileSync as readFileSync23, rmSync as rmSync5, writeFileSync as writeFileSync3 } from "fs";
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 
 // src/update/apply.ts
 import { existsSync as existsSync20, readFileSync as readFileSync22 } from "fs";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 
 // src/hooks/windows-toast.ts
 var TOAST_SHELL = "powershell";
@@ -18374,7 +18451,7 @@ function installsOfPlugin(installedPluginsFile, pluginName) {
 
 // src/setup/marketplace-access.ts
 import { existsSync as existsSync19, readFileSync as readFileSync20 } from "fs";
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!existsSync19(knownMarketplacesFile))
@@ -18589,9 +18666,9 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync20(join16(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync20(join17(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
-  const manifest = join16(location, folder, ".claude-plugin", "plugin.json");
+  const manifest = join17(location, folder, ".claude-plugin", "plugin.json");
   try {
     const version = JSON.parse(readFileSync20(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
@@ -18603,7 +18680,7 @@ function marketplaceCopyVersion(location, plugin) {
 // src/update/check.ts
 import { mkdtempSync as mkdtempSync3, rmSync as rmSync4 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { join as join17 } from "path";
+import { join as join18 } from "path";
 var GIT_TIMEOUT_MS = 20000;
 function isOlder(a, b) {
   if (b === null)
@@ -18678,7 +18755,7 @@ function checkForUpdate(paths, env) {
 }
 function remotePluginVersion(url, ref, baseEnv) {
   const env = gitAccessEnv(gitEnv(baseEnv));
-  const dir = mkdtempSync3(join17(tmpdir4(), "cc-smart-dev-kit-update-check-"));
+  const dir = mkdtempSync3(join18(tmpdir4(), "cc-smart-dev-kit-update-check-"));
   const git = (args) => {
     const result = Bun.spawnSync(["git", ...args], {
       env,
@@ -18720,8 +18797,8 @@ function remotePluginVersion(url, ref, baseEnv) {
 
 // src/update/major.ts
 import { readFileSync as readFileSync21 } from "fs";
-import { join as join18 } from "path";
-var MAJOR_NOTES_PATH = join18("src", "update", "major-notes.json");
+import { join as join19 } from "path";
+var MAJOR_NOTES_PATH = join19("src", "update", "major-notes.json");
 var NOTE_MAX = 120;
 function majorOf(version) {
   const major = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)/.exec(version.trim())?.[1];
@@ -18761,7 +18838,7 @@ function readMajorNotes(location, from, to) {
   if (location === null)
     return [];
   try {
-    return majorNotesBetween(readFileSync21(join18(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+    return majorNotesBetween(readFileSync21(join19(location, MAJOR_NOTES_PATH), "utf8"), from, to);
   } catch {
     return [];
   }
@@ -18830,7 +18907,7 @@ function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (install === null || !existsSync20(paths.routerCopy))
     return false;
-  const bundle = join19(install.installPath, "dist", "router.js");
+  const bundle = join20(install.installPath, "dist", "router.js");
   return existsSync20(bundle) && readFileSync22(bundle, "utf8") !== readFileSync22(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -19017,7 +19094,7 @@ function closedReasonOf(line, id) {
 }
 function shownStateFile(stateDir, session) {
   const key = session.replace(/[^A-Za-z0-9-]/g, "");
-  return join20(stateDir, `cc-smart-dev-kit-notify-shown-${key === "" ? "none" : key}`);
+  return join21(stateDir, `cc-smart-dev-kit-notify-shown-${key === "" ? "none" : key}`);
 }
 function readShownId(file) {
   try {
@@ -19204,7 +19281,7 @@ async function runDesktopAlert(alert, deps) {
 
 // src/machine/claude-mem.ts
 import { existsSync as existsSync22, readFileSync as readFileSync24, rmSync as rmSync6 } from "fs";
-import { join as join21 } from "path";
+import { join as join22 } from "path";
 
 // src/machine/companions.ts
 import { existsSync as existsSync21 } from "fs";
@@ -19443,7 +19520,7 @@ function gatewayAffordableTarget(gatewayConfigFile) {
 var CHOICES_FILE = "claude-mem-choices.json";
 function readChoicesFile(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync24(join21(stateDir, CHOICES_FILE), "utf8"));
+    const parsed = JSON.parse(readFileSync24(join22(stateDir, CHOICES_FILE), "utf8"));
     return isObject(parsed) ? parsed : {};
   } catch {
     return {};
@@ -19454,7 +19531,7 @@ function readChoices(stateDir, file) {
   return Array.isArray(records) ? records.filter((record) => isObject(record) && Array.isArray(record.path) && record.path.every((part) => typeof part === "string") && typeof record.owned === "boolean") : [];
 }
 function forgetClaudeMemChoices(stateDir) {
-  const file = join21(stateDir, CHOICES_FILE);
+  const file = join22(stateDir, CHOICES_FILE);
   if (!existsSync22(file))
     return null;
   rmSync6(file, { force: true });
@@ -19690,7 +19767,7 @@ function shownClaudeMemValue(path, value) {
 
 // src/machine/warp.ts
 import { chmodSync as chmodSync2, existsSync as existsSync23, mkdirSync as mkdirSync9, readFileSync as readFileSync25, rmSync as rmSync7, writeFileSync as writeFileSync4 } from "fs";
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
 var WARP_DOWNLOAD_URL = "https://www.warp.dev/download";
@@ -19825,7 +19902,7 @@ function detectWarpApp(machine, system) {
   return warpAppFrom(system, machine, command === null ? null : machine.run(command));
 }
 function warpStageDir(paths) {
-  return join22(paths.stateDir, "warp");
+  return join23(paths.stateDir, "warp");
 }
 function warpInstallCommands(machine, system, paths) {
   const stage = warpStageDir(paths);
@@ -19845,15 +19922,15 @@ function warpInstallCommands(machine, system, paths) {
   switch (system.kind) {
     case "apt":
       return [
-        install(join22(stage, "warpdotdev.gpg"), APT_KEY),
-        ...machine.exists(APT_SOURCE) || machine.exists(APT_LIST) ? [] : [install(join22(stage, "warpdotdev.sources"), APT_SOURCE)],
+        install(join23(stage, "warpdotdev.gpg"), APT_KEY),
+        ...machine.exists(APT_SOURCE) || machine.exists(APT_LIST) ? [] : [install(join23(stage, "warpdotdev.sources"), APT_SOURCE)],
         ["sudo", "apt-get", "update"],
         ["sudo", "apt-get", "install", "-y", PACKAGE]
       ];
     case "dnf":
       return [
-        ["sudo", "rpm", "--import", join22(stage, "warp.asc")],
-        ...machine.exists(YUM_REPO) ? [] : [install(join22(stage, "warpdotdev.repo"), YUM_REPO)],
+        ["sudo", "rpm", "--import", join23(stage, "warp.asc")],
+        ...machine.exists(YUM_REPO) ? [] : [install(join23(stage, "warpdotdev.repo"), YUM_REPO)],
         ["sudo", "dnf", "install", "-y", PACKAGE]
       ];
     case "brew":
@@ -19863,7 +19940,7 @@ function warpInstallCommands(machine, system, paths) {
   }
 }
 function keyFingerprint(machine, stage, file) {
-  const home = join22(stage, "gnupg");
+  const home = join23(stage, "gnupg");
   mkdirSync9(home, { recursive: true, mode: 448 });
   const shown = machine.run([
     "gpg",
@@ -19896,7 +19973,7 @@ async function stageWarpFiles(machine, system, paths) {
   if (machine.which("gpg") === null) {
     throw new Error("gpg is missing; it checks Warp's signing key. Install gpg first");
   }
-  const key = join22(stage, "warp.asc");
+  const key = join23(stage, "warp.asc");
   writeFileSync4(key, await machine.fetchText(WARP_KEY_URL), { mode: 420 });
   const fingerprint = keyFingerprint(machine, stage, key);
   if (fingerprint !== WARP_KEY_FINGERPRINT) {
@@ -19908,16 +19985,16 @@ async function stageWarpFiles(machine, system, paths) {
       "--dearmor",
       "--yes",
       "--output",
-      join22(stage, "warpdotdev.gpg"),
-      join22(stage, "warp.asc")
+      join23(stage, "warpdotdev.gpg"),
+      join23(stage, "warp.asc")
     ]);
     if (dearmor.exitCode !== 0) {
       throw new Error(`gpg --dearmor failed on Warp's key: ${dearmor.output.trim()}`);
     }
-    writeFileSync4(join22(stage, "warpdotdev.sources"), aptSourceText(system.arch), { mode: 420 });
+    writeFileSync4(join23(stage, "warpdotdev.sources"), aptSourceText(system.arch), { mode: 420 });
   }
   if (system.kind === "dnf") {
-    writeFileSync4(join22(stage, "warpdotdev.repo"), YUM_REPO_TEXT, { mode: 420 });
+    writeFileSync4(join23(stage, "warpdotdev.repo"), YUM_REPO_TEXT, { mode: 420 });
   }
 }
 function warpRemoveCommands(machine, system, app) {
@@ -19965,8 +20042,8 @@ function warpRemoveCommands(machine, system, app) {
 }
 function warpDesktopEntries(paths) {
   return [
-    join22(paths.home, "Desktop", DESKTOP_ENTRY),
-    join22(paths.home, ".local", "share", "applications", DESKTOP_ENTRY)
+    join23(paths.home, "Desktop", DESKTOP_ENTRY),
+    join23(paths.home, ".local", "share", "applications", DESKTOP_ENTRY)
   ].filter((file) => existsSync23(file));
 }
 function removeWarpDesktopEntries(paths, dryRun) {
@@ -20066,10 +20143,10 @@ function clearWarpStage(paths) {
 
 // src/mcp/records.ts
 import { existsSync as existsSync24, readFileSync as readFileSync26 } from "fs";
-import { join as join23 } from "path";
+import { join as join24 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
-  return join23(stateDir, RECORD_FILE);
+  return join24(stateDir, RECORD_FILE);
 }
 function isRecord(value) {
   if (typeof value !== "object" || value === null)
@@ -20125,83 +20202,6 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 // src/mcp/register.ts
 import { existsSync as existsSync25, readFileSync as readFileSync27 } from "fs";
 import { dirname as dirname7, join as join25, resolve as resolve4 } from "path";
-
-// src/setup/launcher.ts
-import { join as join24 } from "path";
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function shellWord(path) {
-  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
-}
-function bakedBunPath(script) {
-  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
-  if (!match?.[1])
-    return null;
-  return match[1].slice(1, -1).replaceAll("'\\''", "'");
-}
-function launcherScript(bunPath) {
-  return `#!/bin/sh
-# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
-# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
-fail() {
-  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
-  exit 1
-}
-baked_bun=${shellQuote(bunPath)}
-if [ -x "$baked_bun" ]; then
-  bun="$baked_bun"
-elif command -v bun >/dev/null 2>&1; then
-  bun=$(command -v bun)
-else
-  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
-  exit 1
-fi
-config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
-# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
-# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
-# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
-# in the folder this lookup has yet to find.
-launcher_dir=$HOME/.local/bin
-case $0 in */*) launcher_dir=\${0%/*} ;; esac
-install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
-[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
-# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
-# working folder's bunfig.toml (a project's preload) never runs inside the command. An
-# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
-# refuses a config path that does not exist, so the flag is left out then.
-set -- "$install_path/dist/cli.js" "$@"
-if [ -f "$install_path/bunfig.toml" ]; then
-  set -- "--config=$install_path/bunfig.toml" "$@"
-fi
-exec "$bun" --no-env-file "$@"
-`;
-}
-function installLauncher(binDir, options) {
-  const path = join24(binDir, LAUNCHER_NAME);
-  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
-    stateDir: options.stateDir,
-    kind: "whole-file",
-    mode: 493,
-    ...options.dryRun !== undefined && { dryRun: options.dryRun }
-  });
-  return { path, outcome };
-}
-
-// src/mcp/register.ts
 function readUserServers(file) {
   let text;
   try {
@@ -47664,6 +47664,15 @@ function forgetClaudeMemChoice(stateDir, short) {
   console.log(`- ${short(forgotten)}: removed (your claude-mem choices from the portal; the next setup follows the scout slot again)`);
   return true;
 }
+function fileUsesRouter(file, stateDir) {
+  if (ownedGatewayEnvKeys(file, stateDir).length === 0)
+    return false;
+  try {
+    return readGatewaySettings(file).baseUrl !== DEFAULT_ANTHROPIC_BASE_URL;
+  } catch {
+    return true;
+  }
+}
 async function runRestore(paths, options) {
   const short = (path) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
@@ -47683,7 +47692,7 @@ async function runRestore(paths, options) {
     runner: options.runner,
     service: options.service
   });
-  const sessionsUseRouter = routerTracked && Object.entries(changed).some(([file, entry]) => entry.kinds.includes("json-keys") && ownedGatewayEnvKeys(file, paths.stateDir).length > 0);
+  const sessionsUseRouter = routerTracked && Object.entries(changed).some(([file, entry]) => entry.kinds.includes("json-keys") && fileUsesRouter(file, paths.stateDir));
   if (sessionsUseRouter && !options.now) {
     return withLock(paths.stateDir, () => {
       const results = restore(paths.stateDir, { except: routerFiles });

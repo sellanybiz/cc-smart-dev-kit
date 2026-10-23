@@ -20873,7 +20873,7 @@ async function commandOff(ctx) {
   }
   const staying = await projectsStillOn(ctx);
   for (const { project, view } of staying) {
-    out.line("warn", `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`, { fix: `${COMMAND} gateway project off --folder ${project.root}` });
+    out.line("warn", `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`, { fix: `${COMMAND} gateway project off --folder ${shellWord(project.root)}` });
   }
   if (routing.length > 0) {
     out.verdict("warn", `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`);
@@ -20979,7 +20979,7 @@ async function gatewayChecks(options) {
       info: true,
       text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`
     });
-    checks.push(...await projectChecks(options));
+    checks.push(...await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config));
     return checks;
   }
   if (options.service === "none") {
@@ -21020,7 +21020,7 @@ async function gatewayChecks(options) {
         text: `gateway config: ${messageOf(error)}`,
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`
       });
-      checks.push(...await projectChecks(options));
+      checks.push(...await projectChecks(options, null));
       return checks;
     }
   }
@@ -21116,19 +21116,20 @@ async function gatewayChecks(options) {
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
     });
   }
-  checks.push(...await projectChecks(options));
+  checks.push(...await projectChecks(options, config));
   return checks;
 }
-function modelKeyWarnings(file, home) {
+function modelKeyWarnings(file, home, backends) {
   if (file.problem !== null)
     return [];
   const checks = [];
   const where = tildify(file.path, home);
   for (const fact of file.modelKeys) {
     const name = withoutContextSuffix(fact.value.trim());
-    const slot = isSlotKey(name);
     const parsed = parseTarget(name);
-    const backend = "target" in parsed && parsed.target.kind === "backend";
+    const slot = isSlotKey(name);
+    const target = "target" in parsed ? parsed.target : null;
+    const backend = target !== null && target.kind === "backend" && backends.has(target.backend);
     if (!slot && !backend)
       continue;
     const shown = shownValue(fact.value);
@@ -21159,10 +21160,11 @@ function fileProblemWords(file, home) {
   const where = tildify(file.path, home);
   return reason === "" ? where : `${where}: ${reason}`;
 }
-async function projectChecks(options) {
+async function projectChecks(options, config) {
   if (options.projects === undefined)
     return [];
   const { paths } = options;
+  const backends = new Set(Object.keys(config?.backends ?? {}));
   let list;
   try {
     list = await options.projects(options.folder ?? process.cwd());
@@ -21196,7 +21198,7 @@ async function projectChecks(options) {
     for (const file of view.files) {
       if (file.kind === "machine")
         continue;
-      checks.push(...modelKeyWarnings(file, paths.home));
+      checks.push(...modelKeyWarnings(file, paths.home, backends));
     }
   }
   return checks;

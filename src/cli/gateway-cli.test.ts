@@ -2055,6 +2055,16 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
     writeFileSync(path, `${JSON.stringify(body, null, 2)}\n`);
   }
 
+  /** A gateway config with the backends given, so a `<backend>:<model>` warning has a target. */
+  function writeGatewayConfig(m: ReturnType<typeof machine>, backends: Record<string, unknown>) {
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      `${JSON.stringify({ backends, port: 20999, slots: {}, version: 1 }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  }
+
   /** The checks for the projects given, on a machine where the gateway was never installed. */
   async function checksFor(
     m: ReturnType<typeof machine>,
@@ -2107,6 +2117,8 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
 
   test("! a project's model key that names a slot or a backend target bypasses the slots", async () => {
     const m = machine();
+    // The backend target must be one the config knows: `omniroute` is, so its key warns.
+    writeGatewayConfig(m, { omniroute: { apiKey: "omni-key", baseUrl: "http://omni.test" } });
     const root = project(m.home, "warny");
     const file = join(root, ".claude", "settings.local.json");
     writeSettings(file, {
@@ -2114,6 +2126,9 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "omniroute:glm-5.3-flash",
         // Claude Code's own keys, naming a Claude model: nothing to warn about.
         ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5",
+        // A `<name>:<model>` the config does not have is no backend target: the router sends
+        // it to Anthropic as Claude Code sent it, so nothing is warned about either.
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "notaconfigured:m1",
       },
       model: "cc-smart-dev-kit-worker",
     });

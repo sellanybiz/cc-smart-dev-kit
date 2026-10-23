@@ -185,4 +185,26 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     expect(await runRestore(paths, options(true))).toBe(0);
     expect(existsSync(paths.routerCopy)).toBe(false);
   });
+
+  test("a project set to off does not keep the router up: one pass, and no restart line", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    // `gateway project off` writes Anthropic's own address as a key of ours. A session there
+    // goes to Anthropic on the person's own login, so the router may stop at once — the words
+    // "they still use the router" would be untrue for this key (review finding, GP4a).
+    const root = project("gp4a-restore-off");
+    const personal = join(root, ".claude", "settings.local.json");
+    setGatewayBaseUrl({
+      file: personal,
+      stateDir: paths.stateDir,
+      value: "https://api.anthropic.com",
+    });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(paths.routerCopy)).toBe(false);
+    expect(printed.join("\n")).not.toContain("Restart every running Claude session");
+  });
 });

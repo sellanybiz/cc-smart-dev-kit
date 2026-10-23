@@ -7,7 +7,7 @@ import {
 } from "../browser/setup";
 import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
-import { messageOf } from "../gateway/config";
+import { DEFAULT_ANTHROPIC_BASE_URL, messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import {
   type RouterServiceKind,
@@ -17,7 +17,7 @@ import {
   UNIT_NAME,
 } from "../gateway/service";
 import { TASK_LABEL } from "../gateway/service-windows";
-import { ownedGatewayEnvKeys } from "../gateway/settings";
+import { ownedGatewayEnvKeys, readGatewaySettings } from "../gateway/settings";
 import { forgetClaudeMemChoices } from "../machine/claude-mem";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
@@ -228,6 +228,24 @@ function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string
 }
 
 /**
+ * Does this settings file mean some session reading it still sends its requests to the router
+ * (GP4a)? A gateway key of ours that still holds our value says so — **unless the file's own
+ * address is Anthropic's**: `gateway project off` writes exactly that (`P1`), the session goes
+ * to Anthropic on the person's own login, and no key beside it brings the router back. A file
+ * that cannot be read answers yes: a key that is there but unreadable must keep every session
+ * working (`ownedGatewayEnvKeys`' own rule).
+ */
+function fileUsesRouter(file: string, stateDir: string): boolean {
+  if (ownedGatewayEnvKeys(file, stateDir).length === 0) return false;
+  try {
+    // The one reader of a settings file's own gateway facts (`project-state.ts` reads it too).
+    return readGatewaySettings(file).baseUrl !== DEFAULT_ANTHROPIC_BASE_URL;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
  * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
  * any of the settings files it wrote — the user's `settings.json`, a project's own
@@ -280,8 +298,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   const sessionsUseRouter =
     routerTracked &&
     Object.entries(changed).some(
-      ([file, entry]) =>
-        entry.kinds.includes("json-keys") && ownedGatewayEnvKeys(file, paths.stateDir).length > 0,
+      ([file, entry]) => entry.kinds.includes("json-keys") && fileUsesRouter(file, paths.stateDir),
     );
 
   if (sessionsUseRouter && !options.now) {
