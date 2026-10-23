@@ -17,6 +17,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   instead of failing. A limit that resets more than 24 hours away ends the wait, so a
   `claude -p` script never waits for days. A "no" you gave before, or a value you set
   yourself, is kept; `setup --no-retry-watchdog` turns it off.
+- **The main checkout's notes respect a guarded main folder.** With
+  `worktrees.guardMainFolder` on, the session-start lines about a main checkout that is on
+  another branch, behind its base, or in the middle of a merge now ask the session to give you
+  the command, instead of telling it to switch or merge there itself. The fast-forward is
+  `git merge --ff-only`, so no merge commit lands in the main checkout.
 
 **What to run:** `cc-smart-dev-kit setup` (it turns the watchdog on), then restart your Claude
 Code sessions. Stop any crew session started by 1.1.0 and start it again: it ran without the kit.

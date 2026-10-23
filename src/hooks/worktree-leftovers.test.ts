@@ -145,7 +145,7 @@ describe("the main checkout's own notes (WA1)", () => {
     git(repo, "update-ref", "refs/remotes/origin/main", tip);
     git(repo, "checkout", "-q", "main");
     expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
-      "The main checkout is 1 commit behind origin/main: merge origin/main there before starting a new worktree.",
+      "The main checkout is 1 commit behind origin/main: fast-forward it there (`git merge --ff-only origin/main`) before starting a new worktree.",
     );
   });
 
@@ -154,6 +154,27 @@ describe("the main checkout's own notes (WA1)", () => {
     writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${git(repo, "rev-parse", "HEAD").trim()}\n`);
     expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
       "The main checkout is in the middle of a merge: finish it or abort it before starting a new worktree.",
+    );
+  });
+
+  test("a guarded main checkout: each line names the person's command, never a step for the session", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", guardMainFolder: true },
+    });
+    git(repo, "checkout", "-q", "-b", "ahead");
+    writeFileSync(join(repo, "next.txt"), "next\n");
+    git(repo, "add", "next.txt");
+    git(repo, "commit", "-q", "-m", "next");
+    git(repo, "update-ref", "refs/remotes/origin/main", git(repo, "rev-parse", "HEAD").trim());
+    git(repo, "checkout", "-q", "-b", "feature/x", "HEAD~1");
+    writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${git(repo, "rev-parse", "HEAD").trim()}\n`);
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
+      [
+        "The main checkout is on `feature/x`, not `main`: a new worktree starts from its HEAD, so ask the person to run `git switch main` in the main checkout first.",
+        "The main checkout is 1 commit behind origin/main: ask the person to run `git merge --ff-only origin/main` in the main checkout before starting a new worktree.",
+        "The main checkout is in the middle of a merge: ask the person to finish it or abort it before starting a new worktree.",
+      ].join("\n"),
     );
   });
 

@@ -42,7 +42,8 @@ background self-update (`src/update/`, the owner's decision). The leftovers note
 also adds at most one short line about the **main checkout** at an attended start — on another
 branch than `worktrees.base`, behind `origin/<base>` as git already knows it, or in the middle
 of a merge, a rebase or a cherry-pick — read-only and with no fetch (`mainFolderNotes`,
-`src/hooks/worktree-leftovers.ts`). `update-check`
+`src/hooks/worktree-leftovers.ts`); in a guarded main checkout (`worktrees.guardMainFolder`)
+the line names the person's command, never a step for the session. `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
 `CLAUDE.md` block, never a question, one stderr line on failure.

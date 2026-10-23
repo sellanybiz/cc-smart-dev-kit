@@ -206,20 +206,30 @@ function operationInProgress(repo: string, env: Env): "merge" | "rebase" | "cher
  * Attended sessions only: `claude -p` has nobody to tell (the background session's own rule,
  * `isAttended`). Read-only: nothing here changes the checkout, and every git call is capped
  * like a guard's (`GUARD_GIT_TIMEOUT_MS`), so a session start stays quick.
+ *
+ * `guarded` (`worktrees.guardMainFolder`): the main checkout is the person's, and a session
+ * does not change it, so each line names the command for the person to run there instead of
+ * a step for the session. The fast-forward is `--ff-only` either way: a merge commit in the
+ * main checkout would be work of its own on the base.
  */
 export function mainFolderNotes(
   repo: string,
   main: ListedWorktree,
   base: string,
   env: Env,
+  guarded: boolean,
 ): string[] {
   if (!isAttended(env)) return [];
   const notes: string[] = [];
+  /** The session's own step, or, in a guarded main checkout, the person's command for it. */
+  const fix = (own: string, command: string, when: string): string =>
+    guarded
+      ? `ask the person to run \`${command}\` in the main checkout ${when}`
+      : `${own} ${when}`;
   if (main.branch !== base) {
+    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
     notes.push(
-      main.branch === null
-        ? `The main checkout is on a detached HEAD, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`
-        : `The main checkout is on \`${main.branch}\`, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`,
+      `The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`,
     );
   }
   const behind = runGit(
@@ -231,13 +241,15 @@ export function mainFolderNotes(
   const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
   if (count > 0) {
     notes.push(
-      `The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: merge origin/${base} there before starting a new worktree.`,
+      `The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: ${fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.")}`,
     );
   }
   const operation = operationInProgress(repo, env);
   if (operation !== null) {
     notes.push(
-      `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`,
+      guarded
+        ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.`
+        : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`,
     );
   }
   return notes;
@@ -254,7 +266,8 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   const [main, ...linked] = listWorktrees(repo, env);
   // The main checkout's own notes, before the finished-worktree ones: they are about the
   // folder the person starts in. Read without a fetch, and only when someone is there.
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env);
+  const guarded = project.config?.worktrees?.guardMainFolder === true;
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
   const answer = (note: string | null): HookResult => {
     const lines = [...mainNotes, ...(note === null ? [] : [note])];
     if (lines.length === 0) return told === null ? SILENT : systemMessage(told);

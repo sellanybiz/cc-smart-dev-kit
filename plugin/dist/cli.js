@@ -31004,21 +31004,23 @@ function operationInProgress(repo, env) {
     return "cherry-pick";
   return null;
 }
-function mainFolderNotes(repo, main, base, env) {
+function mainFolderNotes(repo, main, base, env, guarded) {
   if (!isAttended(env))
     return [];
   const notes = [];
+  const fix = (own, command, when) => guarded ? `ask the person to run \`${command}\` in the main checkout ${when}` : `${own} ${when}`;
   if (main.branch !== base) {
-    notes.push(main.branch === null ? `The main checkout is on a detached HEAD, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.` : `The main checkout is on \`${main.branch}\`, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`);
+    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
+    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
   }
   const behind = runGit(repo, ["rev-list", "--count", `HEAD..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
   const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
   if (count > 0) {
-    notes.push(`The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: merge origin/${base} there before starting a new worktree.`);
+    notes.push(`The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: ${fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.")}`);
   }
   const operation = operationInProgress(repo, env);
   if (operation !== null) {
-    notes.push(`The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+    notes.push(guarded ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.` : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
   }
   return notes;
 }
@@ -31030,7 +31032,8 @@ function worktreeLeftovers(context) {
   const repo = project.mainCheckout ?? project.root;
   const told = takeToldLine(context, repo);
   const [main, ...linked] = listWorktrees(repo, env);
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env);
+  const guarded = project.config?.worktrees?.guardMainFolder === true;
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
   const answer = (note) => {
     const lines = [...mainNotes, ...note === null ? [] : [note]];
     if (lines.length === 0)
