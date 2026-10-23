@@ -248,20 +248,31 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    --recommend <n>`, the crew session goes on with what it does not block, and `--status blocked` only
    when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>",
    "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`:
-   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and there is **no wait
-   limit** on purpose (D42: keep waiting), so no `…_MAX_WAIT_MS` and no
-   `…_MAX_USAGE_LIMIT_WAIT_MS`. A crew session is unattended, which is what the watchdog is for.
+   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and the file writes **no
+   wait limit** (D42: keep waiting), so no `…_MAX_WAIT_MS` and no `…_MAX_USAGE_LIMIT_WAIT_MS`.
+   Claude Code merges `env` one variable at a time across settings sources, so a crew session
+   also gets what the person's own settings set and this file does not: the gateway's base URL,
+   and — where `setup` wrote it (D56) — the 24-hour usage-limit cap. With the cap, a limit that
+   resets more than 24 hours away ends the crew session's turn, and § Waiting out a limit's
+   pause and resume take over: the phase goes on after the reset. A crew session is unattended,
+   which is what the watchdog is for.
    **The same file makes the session lean**: `enabledPlugins` turns off every plugin the machine
-   enabled except this one and what `workflow.crew.keep` names, `disableClaudeAiConnectors: true`
+   enabled except this one, what `workflow.crew.keep` names, and every plugin those depend on,
+   `disableClaudeAiConnectors: true`
    stops the claude.ai connectors, and `mcp.json` beside it is the `--mcp-config` file — the kit's
    own registrations for Tavily (every kind) and the browser (`ui`), with no key in it (`Bearer
    ${TAVILY_API_KEY}` is Claude Code's placeholder). A `claude plugin list --json` read decides
    what to turn off; one that fails turns nothing off, because a lean start never fails a start.
    Entries merge key by key across settings sources, so a plugin the file does not name keeps its
-   own state (`docs/claude-code-contract.md`). Turning off a plugin this one declares as a
-   dependency — claude-mem, frontend-design — does not stop it loading for that session: a
-   session's settings file changes no install record (proved, `docs/claude-code-contract.md` §
-   A lean crew session).
+   own state (`docs/claude-code-contract.md`). **A plugin whose dependency is off does not load**,
+   this one included: 1.1.0 turned claude-mem off, and its crew sessions ran with no kit — no hook,
+   no guard, no crew skill (proved live on 2.1.309, `docs/claude-code-contract.md` § A lean crew
+   session). So the off list never holds a plugin this one depends on (`DEPENDENCIES`, from
+   `plugin.json`: claude-mem, frontend-design) or one a kept plugin depends on, at any depth, read
+   from each kept plugin's installed `.claude-plugin/plugin.json` (`neededByKept` in
+   `src/crew/claude.ts`; a manifest it cannot read names none). A dependency declared only in a
+   marketplace entry (`marketplace.json`, with no `dependencies` in the plugin's own manifest)
+   is not read: a kept plugin that does that may still not load in a crew session.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied

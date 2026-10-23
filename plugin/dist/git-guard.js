@@ -6082,7 +6082,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.1.0",
+  version: "1.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -14883,21 +14883,26 @@ function operationInProgress(repo, env) {
     return "cherry-pick";
   return null;
 }
-function mainFolderNotes(repo, main, base, env) {
+function mainFolderNotes(repo, main, base, env, guarded) {
   if (!isAttended(env))
     return [];
   const notes = [];
-  if (main.branch !== base) {
-    notes.push(main.branch === null ? `The main checkout is on a detached HEAD, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.` : `The main checkout is on \`${main.branch}\`, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`);
-  }
-  const behind = runGit(repo, ["rev-list", "--count", `HEAD..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
-  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
-  if (count > 0) {
-    notes.push(`The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: merge origin/${base} there before starting a new worktree.`);
-  }
+  const fix = (own, command, when) => guarded ? `ask the person to run \`${command}\` in the main checkout ${when}` : `${own} ${when}`;
   const operation = operationInProgress(repo, env);
   if (operation !== null) {
-    notes.push(`The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+    notes.push(guarded ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.` : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+  }
+  const onBase = main.branch === base;
+  if (!onBase) {
+    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
+    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
+  }
+  const behind = runGit(repo, ["rev-list", "--count", `refs/heads/${base}..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
+  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
+  if (count > 0) {
+    const commits = `${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}`;
+    const step = fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.");
+    notes.push(onBase ? `The main checkout is ${commits}: ${step}` : `The main checkout's \`${base}\` is ${commits}: after the switch, ${step}`);
   }
   return notes;
 }
@@ -14909,7 +14914,8 @@ function worktreeLeftovers(context) {
   const repo = project.mainCheckout ?? project.root;
   const told = takeToldLine(context, repo);
   const [main, ...linked] = listWorktrees(repo, env);
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env);
+  const guarded = project.config?.worktrees?.guardMainFolder === true;
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
   const answer = (note) => {
     const lines = [...mainNotes, ...note === null ? [] : [note]];
     if (lines.length === 0)
@@ -15420,13 +15426,23 @@ var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
 var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
 var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
 var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
 var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
+  "env",
+  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
+];
 var RETRY_WATCHDOG_SETTINGS = [
   [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
+  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
 ];
-var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
+var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
+var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
+var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
 
 // src/crew/start.ts
 var CLASH_STATES = [...RUNNING_STATES, "queued"];

@@ -31,7 +31,7 @@ parts, then the part you are changing.
 | [Heavy jobs](design/jobs.md) | The machine-wide queue: memory, the kinds, the config, and the shared view. |
 | [The browser](design/browser.md) | The person's own Google Chrome, the Playwright extension, the required token, and the costs upstream will not fix. |
 | [MCP servers at user scope](design/mcp.md) | What `setup` registers, why at user scope, and the Tavily key's order. |
-| [Claude Code's retry watchdog](design/retry-watchdog.md) | The two settings, offered once to the person and never forced. |
+| [Claude Code's retry watchdog](design/retry-watchdog.md) | The three settings, on by default, and the 24-hour cap (D56). |
 | [Auto mode reads only user settings](design/auto-mode.md) | Why a project's trust rules are copied into the person's `settings.json`. |
 
 ## What changes a user's machine

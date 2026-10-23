@@ -19,8 +19,9 @@
  *      machine's ceiling and the 5-hour window, the memory), and the record (`starting` or
  *      `queued`, one `created` event);
  *   5. its files: the brief with its frame (`brief.md`), the settings file that names the
- *      crew session to its own session, turns Claude Code's retry watchdog on with no wait
- *      limit (`settings.json`, D42) and turns the other plugins off, and the `--mcp-config`
+ *      crew session to its own session, turns Claude Code's retry watchdog on (`settings.json`,
+ *      D42; the person's 24-hour cap still reaches it through Claude Code's `env` merge) and
+ *      turns the other plugins off, and the `--mcp-config`
  *      file `mcp.json` beside it with the servers its kind keeps (`src/crew/claude.ts` ›
  *      `leanLaunch`). **Before anything is made**, so a write that fails leaves no worktree;
  *   6. a queued crew session ends here. Otherwise: `git worktree add -b crew/<phase>-<slug>
@@ -38,7 +39,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { DEPENDENCIES } from "../build-info";
+import { COMMAND, MARKETPLACE } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
@@ -80,6 +82,7 @@ import {
   agentRow,
   CREW_PERMISSION_MODE,
   callClaude,
+  dependencyIds,
   findClaude,
   type LeanLaunch,
   launchArgs,
@@ -384,7 +387,13 @@ function leanOf(
         ? { key: false, reason: "no Tavily key" }
         : { key: true },
   };
-  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  const lean = leanLaunch({
+    context,
+    enabled,
+    keep: keep.value,
+    kind,
+    own: dependencyIds(DEPENDENCIES, MARKETPLACE),
+  });
   if (!lean.ok) {
     throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
   }
@@ -685,9 +694,12 @@ async function failed(
 /**
  * The settings file a crew session's launch passes: who it is, Claude Code's retry watchdog
  * (D42), the claude.ai connectors off, and the plugins this session turns off — the lean start.
- * The watchdog keys and their values are CC1's (`src/setup/retry-watchdog.ts`), and there is no
- * wait limit on purpose: the owner chose "keep waiting", so no `…_MAX_WAIT_MS` and no
- * `…_MAX_USAGE_LIMIT_WAIT_MS`. `disableClaudeAiConnectors` is a documented settings key any file
+ * The watchdog keys and their values are CC1's (`src/setup/retry-watchdog.ts`). This file sets
+ * no wait limit on purpose (D42: the owner chose "keep waiting"), so no `…_MAX_WAIT_MS`.
+ * Claude Code merges `env` per variable across settings sources, so when setup wrote the
+ * person's `…_MAX_USAGE_LIMIT_WAIT_MS` the crew session gets it too: a limit that resets more
+ * than 24 hours away ends the turn, and the lead's watch pauses the session and resumes it
+ * after the reset. `disableClaudeAiConnectors` is a documented settings key any file
  * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
  * servers out (`docs/claude-code-contract.md`).
  */

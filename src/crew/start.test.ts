@@ -382,7 +382,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     { enabled: false, id: "frontend-design@claude-plugins-official", scope: "user", version: "1" },
   ]);
 
-  test("the other plugins go off, Tavily is kept and passed, and the launch names both files", async () => {
+  test("the other plugins go off but one this plugin depends on stays on, Tavily is kept and passed, and the launch names both files", async () => {
     const world = await ledWorld();
     const code = await runCrew(
       startArgs(world.brief),
@@ -393,7 +393,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "claude-mem@thedotmack": false,\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
     );
     // The registration is the kit's own, with Claude Code's placeholder, never a key.
     expect(readFileSync(mcpFile, "utf8")).toBe(
@@ -436,6 +436,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
       { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
       { enabled: true, id: "acme-tools@acme" },
       { enabled: true, id: "claude-mem@thedotmack" },
+      { enabled: true, id: "stripe@claude-plugins-official" },
     ]);
     expect(
       await runCrew(
@@ -446,7 +447,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toContain(
-      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+      `"enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  }`,
     );
     const mcp = JSON.parse(readFileSync(mcpFile, "utf8")) as {
       mcpServers: Record<string, { args?: string[]; command?: string }>;
@@ -509,6 +510,7 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
   const PLUGINS = JSON.stringify([
     { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
     { enabled: true, id: "claude-mem@thedotmack" },
+    { enabled: true, id: "stripe@claude-plugins-official" },
   ]);
 
   /** A queued crew session of B6b, as `crew start` records one when no place is free. */
@@ -559,7 +561,7 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toContain(
-      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+      `"enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  }`,
     );
     expect(
       Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
