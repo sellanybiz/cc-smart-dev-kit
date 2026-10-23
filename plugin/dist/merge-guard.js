@@ -13067,7 +13067,7 @@ var CLAUDE_PRICES = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
   },
   {
     family: "sonnet",

@@ -155,12 +155,14 @@ export const API_READS: Readonly<
     }
   },
   "/api/requests": (deps, query) => {
+    const range = rangeOf(query.get("range"));
     const status = query.get("status");
     const cursor = cursorOf(query.get("cursor"));
+    if (range === null) return badRange();
     if ((status !== null && status !== "error") || cursor === "bad") {
       return {
         body: {
-          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
+          error: `requests takes range=${Object.keys(HISTORY_RANGES).join("|")}, cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
         },
         status: 400,
       };
@@ -169,6 +171,8 @@ export const API_READS: Readonly<
       return ok(
         requestsAnswer(deps, {
           filters: historyFilters(query),
+          // The range bounds the rows, as it does the charts: the page's switch changes both.
+          from: deps.action.portal.now() - HISTORY_RANGES[range],
           limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
           ...(cursor === null ? {} : { cursor }),
         }),

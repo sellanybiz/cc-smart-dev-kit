@@ -7863,7 +7863,7 @@ var CLAUDE_PRICES = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
   },
   {
     family: "sonnet",
@@ -7960,21 +7960,31 @@ function listedPrice(entry) {
   if (!isJsonObject(entry))
     return null;
   const pricing = entry.pricing;
-  if (isJsonObject(pricing)) {
-    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
-    const output = perToken(pricing.completion) ?? perToken(pricing.output);
-    if (input === null || output === null)
+  if (!isJsonObject(pricing))
+    return null;
+  const field = (name) => perToken(pricing[name]);
+  const prompt2 = field("prompt");
+  const completion = field("completion");
+  if (prompt2 !== null || completion !== null) {
+    if (prompt2 === null || completion === null)
       return null;
-    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
-    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
     return {
-      cacheRead: perMillion(cacheRead),
-      cacheWrite: perMillion(cacheWrite),
-      input: perMillion(input),
-      output: perMillion(output)
+      cacheRead: perMillion(field("input_cache_read") ?? prompt2),
+      cacheWrite: perMillion(field("input_cache_write") ?? prompt2),
+      input: perMillion(prompt2),
+      output: perMillion(completion)
     };
   }
-  return null;
+  const input = field("input");
+  const output = field("output");
+  if (input === null || output === null)
+    return null;
+  return {
+    cacheRead: field("cached") ?? input,
+    cacheWrite: field("cache_creation") ?? input,
+    input,
+    output
+  };
 }
 function priceFromModels(models, model) {
   const entry = models.find((candidate) => candidate.id === model);
@@ -8929,7 +8939,7 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
-  output = null;
+  delta = {};
   constructor(streaming) {
     this.streaming = streaming;
   }
@@ -8965,11 +8975,14 @@ class AnswerUsageReader {
     if (this.partial.trim() !== "")
       this.readEvent(this.partial);
     this.partial = "";
-    if (this.start === null && this.output === null)
+    if (this.start === null && Object.keys(this.delta).length === 0)
       return null;
+    const start = this.start ?? EMPTY_TOKENS;
     return {
-      ...this.start ?? EMPTY_TOKENS,
-      output: this.output ?? this.start?.output ?? 0
+      cacheRead: this.delta.cacheRead ?? start.cacheRead,
+      cacheWrite: this.delta.cacheWrite ?? start.cacheWrite,
+      input: this.delta.input ?? start.input,
+      output: this.delta.output ?? start.output
     };
   }
   scan() {
@@ -8983,6 +8996,21 @@ class AnswerUsageReader {
     }
     if (this.partial.length > EVENT_MAX_CHARS)
       this.partial = "";
+  }
+  mergeDelta(usage) {
+    if (!isJsonObject4(usage))
+      return;
+    const named = [
+      ["cacheRead", usage.cache_read_input_tokens],
+      ["cacheWrite", usage.cache_creation_input_tokens],
+      ["input", usage.input_tokens],
+      ["output", usage.output_tokens]
+    ];
+    for (const [field, value] of named) {
+      const count = tokenCount(value);
+      if (count !== null)
+        this.delta[field] = count;
+    }
   }
   readEvent(block) {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
@@ -9000,9 +9028,8 @@ class AnswerUsageReader {
     if (event.type === "message_start" && isJsonObject4(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
-    if (event.type === "message_delta") {
-      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
-    }
+    if (event.type === "message_delta")
+      this.mergeDelta(event.usage);
   }
 }
 
@@ -13711,8 +13738,12 @@ function emptyBucket() {
     errors: 0,
     input: 0,
     output: 0,
-    requests: 0
+    requests: 0,
+    unpriced: 0
   };
+}
+function reportedTokens(row) {
+  return row.input_tokens !== null || row.output_tokens !== null || row.cache_read_tokens !== null || row.cache_write_tokens !== null;
 }
 function historySeries(file, options) {
   const now = options.now ?? Date.now();
@@ -13740,7 +13771,12 @@ function historySeries(file, options) {
       bucket.output += row.output_tokens ?? 0;
       bucket.cacheRead += row.cache_read_tokens ?? 0;
       bucket.cacheWrite += row.cache_write_tokens ?? 0;
-      bucket.cost += row.cost_usd ?? 0;
+      if (row.cost_usd === null) {
+        if (reportedTokens(row))
+          bucket.unpriced += 1;
+      } else {
+        bucket.cost += row.cost_usd;
+      }
     }
     const series = [...buckets.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, byBucket]) => ({
       key,
@@ -13779,7 +13815,8 @@ function pointsOf(buckets, first, last, bucketMs) {
         p50Ms: 0,
         p95Ms: 0,
         requests: 0,
-        t
+        t,
+        unpriced: 0
       });
       continue;
     }
@@ -13794,7 +13831,8 @@ function pointsOf(buckets, first, last, bucketMs) {
       p50Ms: p50,
       p95Ms: p95,
       requests: bucket.requests,
-      t
+      t,
+      unpriced: bucket.unpriced
     });
   }
   return points;
@@ -13806,9 +13844,14 @@ function recentRequests(file, options = {}) {
     return { nextCursor: null, rows: [] };
   try {
     const filter = filterClause(options.filters ?? {});
-    const conditions = [...options.cursor === undefined ? [] : ["id < ?"], ...filter.sql];
+    const conditions = [
+      ...options.cursor === undefined ? [] : ["id < ?"],
+      ...options.from === undefined ? [] : ["at >= ?"],
+      ...filter.sql
+    ];
     const values = [
       ...options.cursor === undefined ? [] : [options.cursor],
+      ...options.from === undefined ? [] : [options.from],
       ...filter.values
     ];
     const sql = `SELECT ${HISTORY_COLUMNS} FROM requests WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")} ORDER BY id DESC LIMIT ?`;
@@ -37157,12 +37200,15 @@ var API_READS = {
     }
   },
   "/api/requests": (deps, query) => {
+    const range = rangeOf(query.get("range"));
     const status = query.get("status");
     const cursor = cursorOf(query.get("cursor"));
+    if (range === null)
+      return badRange();
     if (status !== null && status !== "error" || cursor === "bad") {
       return {
         body: {
-          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`
+          error: `requests takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`
         },
         status: 400
       };
@@ -37170,6 +37216,7 @@ var API_READS = {
     try {
       return ok(requestsAnswer(deps, {
         filters: historyFilters(query),
+        from: deps.action.portal.now() - HISTORY_RANGE_MS[range],
         limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
         ...cursor === null ? {} : { cursor }
       }));

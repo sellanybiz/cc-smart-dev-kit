@@ -202,6 +202,7 @@ describe("the history's grouping and filters", () => {
       p95Ms: 100,
       requests: 1,
       t: NOW - 10 * MIN,
+      unpriced: 0,
     });
     const failed = sonnet.points.find((point) => point.errors > 0);
     expect(failed).toMatchObject({ errors: 1, p50Ms: 300, requests: 1, t: NOW - 9 * MIN });
@@ -213,6 +214,70 @@ describe("the history's grouping and filters", () => {
     expect(percentiles([7])).toEqual({ p50: 7, p95: 7 });
     expect(percentiles([9, 1, 5])).toEqual({ p50: 5, p95: 9 });
     expect(percentiles([])).toEqual({ p50: 0, p95: 0 });
+  });
+});
+
+describe("a sum that holds rows with no price", () => {
+  /**
+   * Rows of one bucket: a priced one, one whose backend's list gave no price for its model,
+   * and one that reported no tokens at all — which has nothing to price, and is not counted.
+   */
+  const MIXED: HistoryRow[] = [
+    row({
+      at: NOW - 10 * MIN,
+      cost: { estimated: false, usd: 0.002 },
+      tokens: { cacheRead: 0, cacheWrite: 0, input: 10, output: 5 },
+    }),
+    row({
+      at: NOW - 10 * MIN,
+      cost: null,
+      tokens: { cacheRead: 1000, cacheWrite: 0, input: 100, output: 10 },
+    }),
+    row({ at: NOW - 10 * MIN, cost: null, tokens: null }),
+    row({
+      at: NOW - 9 * MIN,
+      cost: null,
+      tokens: { cacheRead: 0, cacheWrite: 0, input: 5, output: 1 },
+    }),
+  ];
+
+  it("counts the rows that reported tokens and no price, per bucket", () => {
+    const seeded = seed(MIXED);
+    const answer = historySeries(seeded.file, { by: "target", now: NOW, range: "1h" });
+    const series = answer.series[0];
+    if (series === undefined) throw new Error("no series");
+    const priced = series.points.find((point) => point.t === NOW - 10 * MIN);
+    expect(priced?.requests).toBe(3);
+    expect(priced?.costUsd).toBe(0.002);
+    expect(priced?.unpriced).toBe(1);
+    const nothingPriced = series.points.find((point) => point.t === NOW - 9 * MIN);
+    expect(nothingPriced?.costUsd).toBe(0);
+    expect(nothingPriced?.unpriced).toBe(1);
+    seeded.close();
+  });
+
+  it("a series' and a window's sum of unpriced rows is the sum of its buckets'", () => {
+    const seeded = seed(MIXED);
+    const points = historySeries(seeded.file, {
+      by: "target",
+      now: NOW,
+      range: "1h",
+    }).series.flatMap((series) => series.points);
+    expect(points.reduce((sum, point) => sum + point.unpriced, 0)).toBe(2);
+    // The cost the page sums beside that count: every priced row of the window.
+    expect(points.reduce((sum, point) => sum + point.costUsd, 0)).toBeCloseTo(0.002, 6);
+    seeded.close();
+  });
+
+  it("a bucket with no row of its own has nothing unpriced", () => {
+    const seeded = seed(MIXED);
+    const points = historySeries(seeded.file, {
+      by: "target",
+      now: NOW,
+      range: "1h",
+    }).series[0]?.points;
+    expect(points?.find((point) => point.requests === 0)?.unpriced).toBe(0);
+    seeded.close();
   });
 });
 
@@ -238,6 +303,26 @@ describe("the recent-requests pages", () => {
     ).toHaveLength(2);
     expect(recentRequests(seeded.file, { limit: 0 }).rows).toHaveLength(1);
     expect(recentRequests(seeded.file, { limit: 100_000 }).rows).toHaveLength(5);
+    seeded.close();
+  });
+
+  it("a window bounds the rows, and a cursor still carries the bound", () => {
+    const seeded = seed();
+    // No window: every row the file holds, the 30-day-old one included.
+    expect(recentRequests(seeded.file, { limit: 10 }).rows.map((row) => row.id)).toEqual([
+      5, 4, 3, 2, 1,
+    ]);
+    // One hour: the 30-day-old row is outside it, so the newest page starts below it.
+    const first = recentRequests(seeded.file, { from: NOW - HOUR, limit: 2 });
+    expect(first.rows.map((row) => row.id)).toEqual([4, 3]);
+    expect(first.nextCursor).toBe(3);
+    // The page after it: the cursor alone would walk past the window, so `from` comes too.
+    const second = recentRequests(seeded.file, { cursor: 3, from: NOW - HOUR, limit: 2 });
+    expect(second.rows.map((row) => row.id)).toEqual([2, 1]);
+    // Seven days: still out.
+    expect(recentRequests(seeded.file, { from: NOW - 7 * 24 * HOUR, limit: 10 }).rows).toHaveLength(
+      4,
+    );
     seeded.close();
   });
 });

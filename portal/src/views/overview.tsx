@@ -29,13 +29,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   clockTime,
+  costWords,
   count,
   duration,
   percent,
   slotName,
   targetModel,
   until,
-  usd,
 } from "@/lib/format";
 import { rangeOf } from "@/lib/history";
 
@@ -87,16 +87,19 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
     let requests = 0;
     let errors = 0;
     let cost = 0;
+    // Requests the history could not price: the cost above is the priced rows' own (F1).
+    let unpriced = 0;
     if (history.status === "ready") {
       for (const series of history.data.series) {
         for (const point of series.points) {
           requests += point.requests;
           errors += point.errors;
           cost += point.costUsd;
+          unpriced += point.unpriced;
         }
       }
     }
-    return { requests, errors, cost };
+    return { requests, errors, cost, unpriced };
   }, [history]);
   return (
     <div className="grid gap-4 px-4 lg:px-6 @5xl/main:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
@@ -119,7 +122,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
         title="Estimated cost"
         description={
           history.status === "ready"
-            ? `${usd(totals.cost)} in ${words}, from list prices: never a bill`
+            ? `${costWords(totals.cost, totals.unpriced)} in ${words}, from list prices: never a bill`
             : "From list prices: never a bill"
         }
         history={history}

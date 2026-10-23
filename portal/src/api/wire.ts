@@ -848,6 +848,8 @@ export interface HistoryPoint {
   outputTokens: number;
   requests: number;
   t: number;
+  /** Rows that reported tokens and no price: in `requests`, never in `costUsd`. */
+  unpriced: number;
 }
 
 export interface HistorySeries {

@@ -184,6 +184,56 @@ describe("the tokens an answer reported", () => {
     expect(checkUsageFromAnswer(stream, true)).toEqual(TOKENS);
   });
 
+  it("a backend whose real counts arrive in the last `message_delta` is counted in full", () => {
+    // A backend that translates an OpenAI stream (OmniRoute) knows the prompt's usage only at
+    // the end: its own translator sends `message_start` with a placeholder of zeros and no
+    // cache fields at all, and the real counts in the last `message_delta`. Reading input and
+    // cache from the start alone recorded about a nine-hundredth of an answer's tokens.
+    const stream = [
+      "event: message_start",
+      'data: {"type":"message_start","message":{"id":"msg_1","type":"message","usage":{"input_tokens":0,"output_tokens":0}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"delta":{"text":"<severity>","type":"text_delta"},"index":0,"type":"content_block_delta"}',
+      "",
+      "event: message_delta",
+      'data: {"delta":{"stop_reason":"end_turn"},"type":"message_delta","usage":{"cache_read_input_tokens":48000,"input_tokens":1200,"output_tokens":900}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    expect(checkUsageFromAnswer(stream, true)).toEqual({
+      cacheRead: 48000,
+      cacheWrite: 0,
+      input: 1200,
+      output: 900,
+    });
+  });
+
+  it("the last `message_delta`'s count wins field by field, and the two are never added", () => {
+    const stream = [
+      "event: message_start",
+      'data: {"message":{"usage":{"input_tokens":1000,"output_tokens":1}},"type":"message_start"}',
+      "",
+      // Two deltas: only the last one's word counts for each field it names.
+      "event: message_delta",
+      'data: {"type":"message_delta","usage":{"cache_read_input_tokens":700,"input_tokens":400,"output_tokens":5}}',
+      "",
+      "event: message_delta",
+      'data: {"type":"message_delta","usage":{"input_tokens":120,"output_tokens":7}}',
+      "",
+    ].join("\n");
+    // 120 and not 1120 or 400; the cache count the second delta does not name is the first's,
+    // and never the start's (which named none) added to it.
+    expect(checkUsageFromAnswer(stream, true)).toEqual({
+      cacheRead: 700,
+      cacheWrite: 0,
+      input: 120,
+      output: 7,
+    });
+  });
+
   it("a streamed answer cut before its last event: what arrived counts, and a half event is skipped", () => {
     // The blank line after it is the event's end, as on the wire.
     const start =

@@ -198,6 +198,8 @@ export function historyFor(now: number, query: HistoryQuery, empty: boolean): Hi
           cacheWriteTokens: 0,
           costUsd: 0,
           msWeight: 0,
+          // The mock prices every unit: nothing here is unpriced.
+          unpriced: 0,
         };
         // The bucket's times, weighted by requests: a fair stand-in for the real percentiles.
         point.p50Ms = Math.round(

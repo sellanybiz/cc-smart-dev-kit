@@ -243,8 +243,8 @@ function nextEventEnd(text: string): { at: number; length: number } | null {
  * An answer's `usage`, read from bytes as they go by, so an answer of any size is read
  * without keeping it: this is how a history row gets the tokens of a long streamed answer
  * (`router.ts`'s `observedAnswer`). Two shapes, as `checkUsageFromAnswer` describes:
- *   - streaming: each server-sent event is read as it ends; `message_start` gives the input
- *     and cache counts, the last `message_delta` the output count. An event larger than
+ *   - streaming: each server-sent event is read as it ends; a count the last `message_delta`
+ *     reports wins over the `message_start` one, field by field. An event larger than
  *     `EVENT_MAX_CHARS` is not a usage event and is dropped; a stream cut inside an event
  *     leaves that event unread, as the text parser does.
  *   - not streaming: the JSON body is kept, up to `CHECK_USAGE_MAX_BYTES`; a larger body
@@ -257,7 +257,8 @@ export class AnswerUsageReader {
   private body = "";
   private tooBig = false;
   private start: CheckTokens | null = null;
-  private output: number | null = null;
+  /** The counts the last `message_delta` named; a field it did not name is not here. */
+  private delta: Partial<CheckTokens> = {};
 
   constructor(streaming: boolean) {
     this.streaming = streaming;
@@ -297,10 +298,13 @@ export class AnswerUsageReader {
     // A last event with no blank line after it is an event too (the text parser reads it).
     if (this.partial.trim() !== "") this.readEvent(this.partial);
     this.partial = "";
-    if (this.start === null && this.output === null) return null;
+    if (this.start === null && Object.keys(this.delta).length === 0) return null;
+    const start = this.start ?? EMPTY_TOKENS;
     return {
-      ...(this.start ?? EMPTY_TOKENS),
-      output: this.output ?? this.start?.output ?? 0,
+      cacheRead: this.delta.cacheRead ?? start.cacheRead,
+      cacheWrite: this.delta.cacheWrite ?? start.cacheWrite,
+      input: this.delta.input ?? start.input,
+      output: this.delta.output ?? start.output,
     };
   }
 
@@ -314,6 +318,26 @@ export class AnswerUsageReader {
       this.readEvent(event);
     }
     if (this.partial.length > EVENT_MAX_CHARS) this.partial = "";
+  }
+
+  /**
+   * The counts one `message_delta` names, over the ones a delta before it named: the last
+   * delta's word wins, field by field. A field this event does not name is **not** a zero —
+   * Anthropic's own `message_delta` often names only `output_tokens`, and reading that as a
+   * zero would wipe the input count the start gave.
+   */
+  private mergeDelta(usage: unknown): void {
+    if (!isJsonObject(usage)) return;
+    const named: [keyof CheckTokens, unknown][] = [
+      ["cacheRead", usage.cache_read_input_tokens],
+      ["cacheWrite", usage.cache_creation_input_tokens],
+      ["input", usage.input_tokens],
+      ["output", usage.output_tokens],
+    ];
+    for (const [field, value] of named) {
+      const count = tokenCount(value);
+      if (count !== null) this.delta[field] = count;
+    }
   }
 
   /** One event: its `data` lines, and the usage a `message_start` or `message_delta` holds. */
@@ -335,23 +359,30 @@ export class AnswerUsageReader {
     if (event.type === "message_start" && isJsonObject(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
-    if (event.type === "message_delta") {
-      this.output =
-        tokenCount(isJsonObject(event.usage) ? event.usage.output_tokens : undefined) ??
-        this.output;
-    }
+    if (event.type === "message_delta") this.mergeDelta(event.usage);
   }
 }
 
 /**
  * The tokens an answer's body reported, or null when it reported none.
  *
- * `streaming`: a server-sent event stream. Anthropic sends the input and cache counts
- * once, in `message_start` (its `usage` hangs on the `message` object, and its
- * `output_tokens` is a partial 1), and the output count again — the final, cumulative
- * one — in each `message_delta`. So input and cache come from the start, the output from
- * the last delta (the start's when no delta arrived, a stream cut short). A field that is
- * not there, or not a number, means the answer did not report it.
+ * `streaming`: a server-sent event stream. Which event carries a `usage`, and what it holds,
+ * differs by backend, so each field is taken from the last event that **reports** it, and two
+ * counts are never added together:
+ *
+ *   - Anthropic's `message_start` carries the `usage` on its `message` object with the input
+ *     and cache counts. Its `message_delta` carries a cumulative `usage` that always names
+ *     `output_tokens` and sometimes the input and cache counts too — its documented
+ *     web-search example has `input_tokens` at 2,679 in the start and 10,682 at the end, so
+ *     the start's count is not the final one.
+ *   - A backend that translates an OpenAI stream knows the prompt's usage only at the end
+ *     (OmniRoute's translator, read from its own `dist`): its `message_start` is a placeholder
+ *     of zeros with no cache fields at all, and the real counts arrive in the last
+ *     `message_delta`.
+ *
+ * So a count the last `message_delta` reports wins over the one `message_start` gave, for
+ * every field; a field that event does not name keeps what the start gave. A field that is
+ * missing, or not a number, means the answer did not report it.
  */
 export function checkUsageFromAnswer(text: string, streaming: boolean): CheckTokens | null {
   const reader = new AnswerUsageReader(streaming);

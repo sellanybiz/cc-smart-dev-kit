@@ -868,7 +868,7 @@ function requestOf(row: RecentRequestRow): HistoryRequest {
 /** `/api/requests`: the recent requests, newest first, paged by the cursor it answers. */
 export function requestsAnswer(
   deps: PageDataDeps,
-  options: { cursor?: number; filters?: HistoryFilters; limit?: number } = {},
+  options: { cursor?: number; filters?: HistoryFilters; from?: number; limit?: number } = {},
 ): RequestsAnswer {
   const file = deps.action.portal.paths.historyDbFile;
   const page = recentRequests(file, options);
