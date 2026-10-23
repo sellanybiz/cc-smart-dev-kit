@@ -465,6 +465,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **CC3 merged** (`ade8af5`, bundles and export `1062d98`): a crew session starts lean — the kit, the project's own instructions, Tavily (and the browser for `ui`); every other plugin and MCP server off for it (`--strict-mcp-config --mcp-config`, `enabledPlugins` in its settings), `crew.keep` to keep more. Measured before: 63,742 tokens at an Opus crew session's first request, of which other plugins' skill lines and claude-mem's start blocks were most. Its open items: the resume path must carry the lean flags and the crew settings (sent to **CR1**), `crew.keep` cannot keep a project's own MCP server (documented), and the after-number needs a live start on the installed version (morning list). A subagent is fixing the `src/update` test race CC3 and B6f both hit (the test read the starter's marker before its content landed).
 
+- 2026-10-23 (overnight): **CC8 merged** (`8599a72`, bundles `d5bf4f9`): in a crew session the merge, agent, job-route and session-escape guards' asks and the bun shim's no-bun ask are denies that name the step; a person's session keeps every ask; `git reset --merge` now asks a person where it can lose work; the matrix proves every crew refusal. Its Opus review found no fail-open. Integration: CC8's direct merge-guard test awaits the guard B8 made async. Left in a crew session only: a guard's own crash, non-JSON input, and `main-folder-guard`/`message-guard` on a broken project file.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
