@@ -3,6 +3,7 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
+import { CREW_ENV } from "../crew/session";
 import { launcherScript } from "../setup/launcher";
 import { USER_NOTIFY_COMMAND, USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { makeRepo, writeClaudeFile } from "../testing/hooks";
@@ -16,7 +17,10 @@ setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-function cli(args: string[], options: { stdin?: string; cwd?: string } = {}) {
+function cli(
+  args: string[],
+  options: { cwd?: string; env?: Record<string, string>; stdin?: string } = {},
+) {
   const home = tempDir("cmd-home");
   const guard = subprocessGuard();
   // `process.execPath`: the CLI refuses a Bun older than 1.4.3 (`src/cli/bun-check.ts`),
@@ -28,6 +32,7 @@ function cli(args: string[], options: { stdin?: string; cwd?: string } = {}) {
       CLAUDE_CONFIG_DIR: join(home, ".claude"),
       TMPDIR: home,
       ...guard.env,
+      ...(options.env ?? {}),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -374,6 +379,22 @@ describe("cc-smart-dev-kit session-name", () => {
     const empty = cli(["session-name", SESSION, "   "]);
     expect(empty.exitCode).toBe(2);
     expect(empty.stderr).toStartWith("the name is empty");
+  });
+
+  test("in a crew session: refused, exit 2, and nothing recorded", () => {
+    // A crew session's name is its address, given by `crew start --name`: renaming it would
+    // lose it for its lead, `crew answer` and the message guard.
+    const run = cli(["session-name", SESSION, "Fix", "login"], {
+      env: { [CREW_ENV]: "W2-x-1a2b3c" },
+    });
+    expect(run.exitCode).toBe(2);
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toBe(
+      "a crew session keeps the name its lead gave it\nSee: cc-smart-dev-kit session-name --help\n",
+    );
+    expect(existsSync(join(run.home, "cc-smart-dev-kit-session-names", `${SESSION}.name`))).toBe(
+      false,
+    );
   });
 });
 

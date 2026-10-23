@@ -49,7 +49,8 @@
  * (`cc-smart-dev-kit.json`, `~/.config/cc-smart-dev-kit`, …), and passes otherwise.
  *
  * A program the line **computes** (`$KIT`, `$(which cc-smart-dev-kit)`) cannot be named: when
- * the line also names the kit command, the guard asks rather than stay silent. `Start-Process`
+ * the line also names the kit command, the guard asks rather than stay silent. A path that
+ * only holds the kit's name (`…/cc-smart-dev-kit/src/x.test.ts`) names no command. `Start-Process`
  * is read by its `-FilePath`/`-ArgumentList`, and `-UseNewEnvironment` is a fresh environment.
  *
  * Not read: a script file's content (`env -u CLAUDECODE sh run.sh`), a port named at run time
@@ -303,6 +304,8 @@ interface ShellContext {
   paths: CliPaths;
   /** The input's `cwd`, or null; where a relative target is looked for, besides a `cd`'s. */
   cwd: string | null;
+  /** The line's text names the kit command as a token, never a path through its name (`KIT_WORD`). */
+  namesKit: boolean;
   /** The platform whose paths the line names (the hook's own; a test may pass another). */
   platform: NodeJS.Platform;
   /** The whole command text, for the check that reads text rather than commands. */
@@ -512,9 +515,18 @@ function innerKitPrefix(program: string, operands: readonly string[]): string[] 
 /** The question when the line names the kit command but its program is worked out at run time. */
 const COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
 
-/** The kit command as a word of a line's text (`K=${COMMAND}; $(which $K) …` names it too). */
+/**
+ * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too,
+ * and so does a launcher named by its path, `/…/bin/${COMMAND}` or `${COMMAND}.cmd`), but never
+ * a path that only passes through a folder of that name: a path separator may come before the
+ * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
+ * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
+ * a crew session working in this repository, whose name every path holds). A token that ends a
+ * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
+ * `K=${COMMAND}`).
+ */
 const KIT_WORD = new RegExp(
-  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`,
+  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`,
   "i",
 );
 
@@ -586,6 +598,11 @@ function readLine(
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
+  /**
+   * A command before this one in the line runs the kit: a computed program after it can be
+   * that command's output (`$(/…/cc-smart-dev-kit) workflow …`), so it asks like a named one.
+   */
+  let ranKit = false;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
@@ -612,8 +629,15 @@ function readLine(
         const inside = prefixDrop(innerKitPrefix(program, operands), program);
         judgeKitCommand(kit, here ?? inside, found);
       }
-      // A computed program cannot be named: if the line names the kit command, ask.
-      if (invocation.computed && KIT_WORD.test(ctx.text)) found.asks.add(COMPUTED_KIT_ASK);
+      // A computed program cannot be named. Ask when the line names the kit command — a
+      // bundle among the program's own words (`$(which bun) …/dist/cli.js`), a launcher the
+      // line binds or holds by path (`ctx.namesKit`), or an earlier command that runs it whose
+      // output could be this program — and never for a path that merely passes through its
+      // name.
+      if (invocation.computed && (kit !== null || ctx.namesKit || ranKit)) {
+        found.asks.add(COMPUTED_KIT_ASK);
+      }
+      ranKit ||= isKitWord(program);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
@@ -687,8 +711,9 @@ function judgeShell(
   if (command === "") return SILENT;
   const found: Findings = { denials: new Set(), asks: new Set() };
   const ctx: ShellContext = {
-    paths,
     cwd: stringField(input.cwd),
+    namesKit: KIT_WORD.test(command),
+    paths,
     platform,
     text: command,
   };

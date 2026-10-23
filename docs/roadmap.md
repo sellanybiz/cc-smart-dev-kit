@@ -323,10 +323,10 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   `cc-smart-dev-kit-router`, and asks before a restart. `gateway on` / `off` use owned keys.
 - `doctor` checks the gateway when it is set up.
 - No prompt text is ever changed (`.claude/rules/gateway.md`).
-- **Open, from the first live run:** running sessions seemed to pick up the new env keys
-  without a restart (`claude-code-contract.md`, observed once). If that is confirmed,
-  for a removed key too, restore can stop the router right after removing the keys, and
-  its two stages become one.
+- **Answered (2026-10-23):** a changed env value reaches a running session within about a second,
+  but a removed key does not — the session keeps the URL it had (`claude-code-contract.md`
+  § The gateway). So `restore`'s two stages stay: it can never stop the router right after
+  removing the keys.
 
 ## 3 — Hooks and `doctor --live` (done, 0.3.0)
 

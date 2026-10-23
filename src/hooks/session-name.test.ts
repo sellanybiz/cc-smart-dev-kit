@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { CREW_ENV } from "../crew/session";
 import { writeLead } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { isSessionId, namesDir, namingNote, recordSessionName } from "./session-name";
@@ -22,6 +23,14 @@ describe("names", () => {
     expect(readFileSync(join(namesDir(env), `${SESSION}.name`), "utf8")).toBe("Fix login");
     expect(() => recordSessionName("../x", "a", env)).toThrow('"../x" is not a session id');
     expect(() => recordSessionName(SESSION, "  ", env)).toThrow("the name is empty");
+  });
+
+  test("recordSessionName refuses in a crew session, and records nothing", () => {
+    const env = { ...hookEnv(), [CREW_ENV]: "W2-x-1a2b3c" };
+    expect(() => recordSessionName(SESSION, "Fix login", env)).toThrow(
+      "a crew session keeps the name its lead gave it",
+    );
+    expect(existsSync(join(namesDir(env), `${SESSION}.name`))).toBe(false);
   });
 });
 
@@ -107,5 +116,19 @@ describe("the hook", () => {
     recordSessionName(SESSION, "Fix login", env);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
+  });
+
+  test("a crew session: no note and no title, even with a name recorded for it", async () => {
+    const { repo, env } = setup();
+    // A name recorded before it was a crew session (or for another session with this id): the
+    // name `crew start --name` gave it is the address its lead and `crew answer` use, and the
+    // hook never sets another one.
+    recordSessionName(SESSION, "Fix login", env);
+    const crew = { ...env, [CREW_ENV]: "W2-x-1a2b3c" };
+    expect(await runHook(sessionNameHook, start(repo), crew)).toEqual({});
+    expect(await runHook(sessionNameHook, prompt(repo), crew)).toEqual({});
+    expect(
+      await runHook(sessionNameHook, prompt(repo, { session_title: "mine now" }), crew),
+    ).toEqual({});
   });
 });

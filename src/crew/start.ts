@@ -450,7 +450,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   }
   let name: string;
   try {
-    name = crewName(lead.tag, args.phase, args.slug);
+    name = crewName(lead.tag, lead.plan, args.phase, args.slug);
   } catch (error) {
     throw refusal(reasonOf(error), undefined, 2);
   }
@@ -533,7 +533,7 @@ async function planContinuation(
     records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name: string;
   try {
-    name = crewName(lead.tag, old.phase, old.slug, number);
+    name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
   } catch (error) {
     throw refusal(reasonOf(error), undefined, 2);
   }

@@ -1384,11 +1384,13 @@ and `gateway setup` opens both again. One crash is still retried after 2 s.
 
 ### `cc-smart-dev-kit restore`
 
-It undoes the service in **two stages** while the gateway is on. It assumes a
-running session keeps the `ANTHROPIC_BASE_URL` it started with, so that stopping the
-router while the env keys are there would make every running session fail. (One live
-look saw sessions pick up changed env keys at once: `claude-code-contract.md`. Until
-that is repeated, for removed keys too, the two stages stay.) "Still there" means a
+It undoes the service in **two stages** while the gateway is on. A changed value reaches a
+running session within about a second, but a **removed** key never does: a session keeps the
+`ANTHROPIC_BASE_URL` it last had, so it still points at the router after the keys are gone.
+Stopping the router before those sessions restart would make every one of them fail. That is
+why the two stages stay (`claude-code-contract.md` § The gateway, the row "A running session
+applies a changed `env` value within about a second …").
+"Still there" means a
 gateway env key that **still holds cc-smart-dev-kit's value** (`ownedGatewayEnvKeys`: a key path
 in `owned.json` whose value in the file is the one cc-smart-dev-kit wrote; a record from before
 values were kept counts as cc-smart-dev-kit's, whatever the file holds). A key cc-smart-dev-kit set and
@@ -1458,9 +1460,10 @@ does not answer: every Claude request would fail. With no `gateway.json` (set up
 `--no-backend-key`), `on` uses the default port, 20100, where the router then runs with
 every slot off.
 
-Saving `settings.json` switches every running session at once. Removing keys is taken to
-need a restart of each session (not yet proved either way: `claude-code-contract.md`);
-stop the router only after every session restarted.
+Saving `settings.json` switches every running session at once, within about a second (proved
+2026-10-23). Removing keys needs a restart of each session: a removed key never reaches a running
+session (`claude-code-contract.md` § The gateway); stop the router only after every session
+restarted.
 
 ## Known limits
 

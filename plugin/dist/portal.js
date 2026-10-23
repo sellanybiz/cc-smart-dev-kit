@@ -19,7 +19,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.1.1",
+  version: "1.1.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -19190,8 +19190,9 @@ function withoutListRef(name) {
   return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
 var PART = "[A-Za-z0-9._-]+";
+var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -22642,6 +22643,8 @@ function sessionName(context) {
   const { project, input, event, env } = context;
   if (project.config?.sessionNames !== true)
     return SILENT;
+  if (crewIdOf(env) !== null)
+    return SILENT;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return SILENT;
@@ -25420,6 +25423,9 @@ var CREW_NEVER_RUNS = {
   stop: CREW_NEVER_DOES.resume,
   watch: CREW_NEVER_DOES.watch
 };
+function firstPrompt(crewName, leadName, briefFile) {
+  return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
+}
 
 // src/jobs/config.ts
 import { existsSync as existsSync39, readFileSync as readFileSync45 } from "fs";
@@ -26248,16 +26254,19 @@ function tellStep() {
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
+  "<agent-message",
   "Stop hook feedback:"
 ];
 var RESUME_START = "The wait is over: ";
 var RESUME_PHASE = ". Go on with phase ";
 var RESUME_END = ", then hand it back as usual.";
 var ANSWER_RESUME_MS = 60000;
-function isPersonPrompt(record, prompt2, nowMs) {
+function isPersonPrompt(record, prompt2, briefFile, nowMs) {
   if (NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix)))
     return false;
   if (prompt2.startsWith(reportStep()))
+    return false;
+  if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
   if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
     return false;
@@ -26266,12 +26275,18 @@ function isPersonPrompt(record, prompt2, nowMs) {
     return false;
   return !isAnswerResume(record, prompt2, nowMs);
 }
+function withoutOneLineEnd(text) {
+  return text.replace(/\r?\n$/, "");
+}
+function isLaunchPrompt(record, prompt2, briefFile) {
+  const launch = firstPrompt(record.name, record.leadName, briefFile);
+  return withoutOneLineEnd(prompt2) === withoutOneLineEnd(launch);
+}
 function isAnswerResume(record, prompt2, nowMs) {
-  const bare = (text) => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (bare(asked.answer) !== bare(prompt2))
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt2))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -26406,7 +26421,8 @@ async function personPromptAnswer(input, id, repo, paths, options) {
     return found.result;
   const record = found.record;
   const nowMs = options.nowMs ?? Date.now();
-  if (!isPersonPrompt(record, prompt2, nowMs))
+  const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
+  if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
     return SILENT;
   const line = personLine(prompt2);
   if (line === "")
@@ -29641,7 +29657,7 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
+var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -29679,6 +29695,7 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
+  let ranKit = false;
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
@@ -29699,8 +29716,10 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
         const inside = prefixDrop(innerKitPrefix(program, operands), program);
         judgeKitCommand(kit, here ?? inside, found);
       }
-      if (invocation.computed && KIT_WORD.test(ctx.text))
+      if (invocation.computed && (kit !== null || ctx.namesKit || ranKit)) {
         found.asks.add(COMPUTED_KIT_ASK);
+      }
+      ranKit ||= isKitWord(program);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
@@ -29737,8 +29756,9 @@ function judgeShell(input, paths, platform, crew) {
     return SILENT;
   const found = { denials: new Set, asks: new Set };
   const ctx = {
-    paths,
     cwd: stringField(input.cwd),
+    namesKit: KIT_WORD.test(command),
+    paths,
     platform,
     text: command
   };

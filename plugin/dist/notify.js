@@ -96,7 +96,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.1.1",
+  version: "1.1.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -216,8 +216,9 @@ function isNameTag(value) {
 var SLUG_RULE = partRule(MAX_SLUG);
 var PHASE_RULE = partRule(MAX_PHASE);
 var PART = "[A-Za-z0-9._-]+";
+var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;

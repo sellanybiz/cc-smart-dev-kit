@@ -24,7 +24,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.1.1",
+  version: "1.1.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21460,6 +21460,7 @@ function withWorkers(kind, command, workers) {
 import { basename as basename6 } from "path";
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
+var MAX_CREW_PLAN = 16;
 var MAX_PHASE = 8;
 var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
@@ -21523,21 +21524,23 @@ function leadName(tag, plan) {
   const head = `${LEAD_ROLE} ${requiredPart(tag, MAX_TAG, "tag")} `;
   return `${head}${requiredPart(plan, MAX_SESSION_NAME - head.length, "plan")}`;
 }
-function crewName(tag, phase, slug, n) {
+function crewName(tag, plan, phase, slug, n) {
   const cleanTag = requiredPart(tag, MAX_TAG, "tag");
+  const cleanPlan = requiredPart(plan, MAX_CREW_PLAN, "plan");
   if (!isPhase(phase)) {
     throw new SessionNameError(`the phase "${phase}" cannot be part of a name: a phase is ${PHASE_RULE}`);
   }
   const suffix = handoffSuffix(n);
-  const head = `${CREW_ROLE} ${cleanTag} ${phase} `;
+  const head = `${CREW_ROLE} ${cleanTag} ${cleanPlan} ${phase} `;
   return `${head}${requiredPart(slug, MAX_SESSION_NAME - head.length - suffix.length, "slug")}${suffix}`;
 }
 function withoutListRef(name) {
   return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
 var PART = "[A-Za-z0-9._-]+";
+var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -25558,6 +25561,9 @@ function recordedLead(context, sessionId) {
   }
 }
 function recordSessionName(sessionId, raw, env) {
+  if (crewIdOf(env) !== null) {
+    throw new Error("a crew session keeps the name its lead gave it");
+  }
   if (!isSessionId(sessionId))
     throw new Error(`"${sessionId}" is not a session id`);
   const name = cleanSessionName(raw);
@@ -25574,6 +25580,8 @@ function namingNote(sessionId, current) {
 function sessionName(context) {
   const { project, input, event, env } = context;
   if (project.config?.sessionNames !== true)
+    return SILENT;
+  if (crewIdOf(env) !== null)
     return SILENT;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
@@ -29905,16 +29913,19 @@ function tellStep() {
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
+  "<agent-message",
   "Stop hook feedback:"
 ];
 var RESUME_START = "The wait is over: ";
 var RESUME_PHASE = ". Go on with phase ";
 var RESUME_END = ", then hand it back as usual.";
 var ANSWER_RESUME_MS = 60000;
-function isPersonPrompt(record, prompt2, nowMs) {
+function isPersonPrompt(record, prompt2, briefFile, nowMs) {
   if (NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix)))
     return false;
   if (prompt2.startsWith(reportStep()))
+    return false;
+  if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
   if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
     return false;
@@ -29923,12 +29934,18 @@ function isPersonPrompt(record, prompt2, nowMs) {
     return false;
   return !isAnswerResume(record, prompt2, nowMs);
 }
+function withoutOneLineEnd(text) {
+  return text.replace(/\r?\n$/, "");
+}
+function isLaunchPrompt(record, prompt2, briefFile) {
+  const launch = firstPrompt(record.name, record.leadName, briefFile);
+  return withoutOneLineEnd(prompt2) === withoutOneLineEnd(launch);
+}
 function isAnswerResume(record, prompt2, nowMs) {
-  const bare = (text) => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (bare(asked.answer) !== bare(prompt2))
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt2))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -30063,7 +30080,8 @@ async function personPromptAnswer(input, id, repo, paths, options) {
     return found.result;
   const record = found.record;
   const nowMs = options.nowMs ?? Date.now();
-  if (!isPersonPrompt(record, prompt2, nowMs))
+  const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
+  if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
     return SILENT;
   const line = personLine(prompt2);
   if (line === "")
@@ -32002,6 +32020,7 @@ function launchArgs(spec) {
     spec.mcpFile,
     "--settings",
     spec.settingsFile,
+    "--",
     spec.prompt
   ];
 }
@@ -33134,7 +33153,7 @@ function resumeArgs(launch, files, text) {
     args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
   args.push("--settings", files.settingsFile);
   if (text !== null)
-    args.push(text);
+    args.push("--", text);
   return args;
 }
 async function resumeSession(ctx, record, text) {
@@ -33449,7 +33468,7 @@ async function plan(args, ctx) {
   }
   let name;
   try {
-    name = crewName(lead.tag, args.phase, args.slug);
+    name = crewName(lead.tag, lead.plan, args.phase, args.slug);
   } catch (error) {
     throw refusal(reasonOf3(error), undefined, 2);
   }
@@ -33500,7 +33519,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   const number = records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name;
   try {
-    name = crewName(lead.tag, old.phase, old.slug, number);
+    name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
   } catch (error) {
     throw refusal(reasonOf3(error), undefined, 2);
   }
@@ -35984,7 +36003,7 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
+var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -36022,6 +36041,7 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
+  let ranKit = false;
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
@@ -36042,8 +36062,10 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
         const inside = prefixDrop(innerKitPrefix(program, operands), program);
         judgeKitCommand(kit, here ?? inside, found);
       }
-      if (invocation.computed && KIT_WORD.test(ctx.text))
+      if (invocation.computed && (kit !== null || ctx.namesKit || ranKit)) {
         found.asks.add(COMPUTED_KIT_ASK);
+      }
+      ranKit ||= isKitWord(program);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
@@ -36080,8 +36102,9 @@ function judgeShell(input, paths, platform, crew) {
     return SILENT;
   const found = { denials: new Set, asks: new Set };
   const ctx = {
-    paths,
     cwd: stringField(input.cwd),
+    namesKit: KIT_WORD.test(command),
+    paths,
     platform,
     text: command
   };
@@ -39393,7 +39416,8 @@ async function runCrewRm(ref, ctx) {
   }
   if (record.shortId !== null) {
     const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
-    if (rm !== null) {
+    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    if (rm !== null && !goneAlready) {
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
       ctx.error(`  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`);
@@ -39411,7 +39435,7 @@ async function runCrewRm(ref, ctx) {
       }
       return 1;
     }
-    ctx.print(`removed session ${record.shortId}`);
+    ctx.print(goneAlready ? `session ${record.shortId} was gone already` : `removed session ${record.shortId}`);
   }
   const stored = await markState(record, "removed", "removed", ctx);
   ctx.print(`removed ${record.name}`);
@@ -40207,7 +40231,7 @@ Commands:
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
                  Starts one crew session: a background Claude Code session named
-                 C <tag> <phase> <slug>, in its own worktree on the branch
+                 C <tag> <plan> <phase> <slug>, in its own worktree on the branch
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
                  returns at once: started, queued (the caps, the free memory, or
                  the phases it waits for), or failed, with the reason.
@@ -48538,7 +48562,7 @@ function worktreesAnswerOf(paths, env, cwd, now) {
     return none(error instanceof Error ? error.message : String(error));
   }
 }
-async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2) {
+async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2, hold = holdCleanLock) {
   const { error, print } = sinks;
   if (options.remove !== null && options.remove === "") {
     error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
@@ -48561,7 +48585,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
       error(`Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`);
       return 1;
     }
-    lock = await holdCleanLock();
+    lock = await hold();
     if (lock === null) {
       print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;

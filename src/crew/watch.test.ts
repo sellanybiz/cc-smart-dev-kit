@@ -1299,6 +1299,7 @@ describe("D42: the watch resumes a paused crew session", () => {
         crewMcpFile(world.paths.stateDir, world.repo, record.id),
         "--settings",
         crewSettingsFile(world.paths.stateDir, world.repo, record.id),
+        "--",
         "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
       ],
     ]);

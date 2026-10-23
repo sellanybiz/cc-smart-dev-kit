@@ -55,14 +55,22 @@ and no grouping by lead — the name is how a person, and the portal, groups the
 | Session | Name |
 |---|---|
 | a lead | `LEAD <tag> <plan>` |
-| a crew session | `C <tag> <phase> <slug>`, and ` 2`, ` 3` for a hand-off's next crew session |
+| a crew session | `C <tag> <plan> <phase> <slug>`, and ` 2`, ` 3` for a hand-off's next crew session |
 
-- **Role and phase first**, so a list that cuts a name still shows them. A tag is at most
-  `MAX_TAG` (12) characters and a phase `MAX_PHASE` (8), so `C <tag> <phase>` always fits in the
-  first `NAME_VIEW` (24) characters (the width agent view really shows is not proved live yet),
-  and the whole name fits in `MAX_SESSION_NAME` (60): the clean title every session's name goes
-  through (`cleanSessionName`, which moved here from the session-name hook). What a long name
-  loses is the end of its slug or plan, never the hand-off number.
+- **The plan is the lead's** (`lead.plan`, the same word `leadName` writes), so a person reading
+  agent view, `ListAgents` or the portal sees which lead a crew session belongs to: several
+  leads of one repository share the tag, and the name is how they are told apart.
+- **Role, tag and plan first**, so a list that cuts a name still shows whose crew session it is:
+  `C <tag>` always fits in the first `NAME_VIEW` (24) characters (the width agent view really
+  shows is not proved live yet), and usually the plan after it. The whole name fits in
+  `MAX_SESSION_NAME` (60): the clean title every session's name goes through
+  (`cleanSessionName`, which moved here from the session-name hook). The tag is at most
+  `MAX_TAG` (12) characters and the plan `MAX_CREW_PLAN` (16), so the phase (at most `MAX_PHASE`,
+  8) is always whole in the name, never cut: it is the crew session's identity. What a long name
+  loses is the end of its slug, never the phase or the hand-off number.
+- **A record keeps its name.** Crew records written by 1.1.1 and earlier say
+  `C <tag> <phase> <slug>`; nothing renames them, and `roleOf` and the store read both shapes.
+  Only a crew session started after the update gets the plan in its name.
 - **ASCII only, no brackets or quotes**, so a name is safe in a title bar, a shell line and a file
   name, and it **never ends in `]`**: the message guard drops the ` [ref]` ListAgents prints after
   a name before it looks the name up (`withoutListRef`, one home), so a name of ours that ended in
@@ -74,7 +82,9 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   letters only) is refused with the line to set the tag.
 - `roleOf(name)` reads the shape only — `lead`, `crew`, or null for any other name, a ListAgents
   ` [ref]` read past. A person may name a session in that shape by hand, so **the store, never the
-  name, is what anything that stops or removes a session goes by.**
+  name, is what anything that stops or removes a session goes by.** The commands, the board, the
+  message guard and the portal look a crew session up by its record, never by splitting its name,
+  so both shapes work there.
 
 **The store** (`src/crew/store.ts`) is what the kit knows of each lead and crew session, per
 repository, under the state folder:
@@ -166,7 +176,7 @@ a lead taking its role name: a title is set only when the session is not already
 the kit did not set it. So the first prompt after `crew lead` replaces whatever name the
 session had, and a person's own `/rename` made after that stays: the kit takes the name back
 only when the lead registers again with another plan. Two names never compete: one title has
-one owner, so `session-name` is silent in a recorded lead. A session id no naming record can be made for (not
+one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch name is its address; the command refuses there). A session id no naming record can be made for (not
 a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
@@ -277,7 +287,7 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
-   checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <phase> <slug>" --model <m> --effort
+   checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <plan> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
    --settings <settings.json> "<first line>"`. The
    first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
@@ -549,7 +559,7 @@ phase that ran out of room: the same phase and slug, cut from the **old crew ses
 the lead's branch), with the old brief and what the old crew session left behind as its brief — its
 report: the branch and the counts, the docs, the files outside the brief, what only the lead may
 do, what is open, and its own words (`summary`) — and the next number in its name (`C <tag>
-<phase> <slug> 2`, and ` 3` after that). Its branch and its worktree folder carry the same number
+<plan> <phase> <slug> 2`, and ` 3` after that). Its branch and its worktree folder carry the same number
 as a suffix (`crew/<phase>-<slug>-2`), so the next crew session never takes the branch or the folder of
 the one before it; its id keeps the one scheme (`<phase>-<slug>-<6 hex>`). It is a new launch, so
 it goes through the same launch policy a fresh start does (`chooseLaunch`): the old crew session's model
@@ -712,7 +722,7 @@ each is silent unless its own session is the one it is about, and neither reads
 - **`crew-role`** (`src/hooks/crew-role.ts`) is silent unless `CC_SMART_DEV_KIT_CREW` names a crew
   session in its environment (the settings file `crew start` launches the session with, L1a.1). At
   **SessionStart** (startup, resume, compact) it adds the **role card**: the name
-  (`C <tag> <phase> <slug>`), the phase and plan, the files the phase owns, the brief's path, the
+  (`C <tag> <plan> <phase> <slug>`), the phase and plan, the files the phase owns, the brief's path, the
   report line, the `crew tell` line, and the git rule (commit on its branch, never push). A
   resumed or compacted crew session gets it again, because its first prompt is gone from its
   context. **The input's `cwd` is checked against the record's worktree** (H101): inside it, a
@@ -731,12 +741,14 @@ each is silent unless its own session is the one it is about, and neither reads
   (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
   (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
   continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
-  the two prompts a transport gives a crew session **bare** —
-  `crew answer`'s resume of a stopped session (a question still open, or the answer the store
-  recorded) and the watch's `resumeText` of a paused one. A bare prompt none of those explain is
-  recorded as the person's: nothing else in the kit gives a crew session a prompt, and a stopped
-  crew session the person reopens by hand (`claude attach`) has no other way to be heard. One
-  the hook cannot read at all records nothing. It never blocks and never asks.
+  the three prompts a transport gives a crew session **bare** —
+  `crew start`'s launch line (its own name, lead and brief file, from `firstPrompt`; a hand-off's
+  next crew session gets its own), `crew answer`'s resume of a stopped session (a question still
+  open, or the answer the store recorded) and the watch's `resumeText` of a paused one. A bare
+  prompt none of those explain is recorded as the person's: nothing else in the kit gives a crew
+  session a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has
+  no other way to be heard. One the hook cannot read at all records nothing. It never blocks and
+  never asks.
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew

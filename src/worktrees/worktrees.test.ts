@@ -96,6 +96,9 @@ echo '[{"number":7,"headRefOid":"${head}"}]'
   return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
 }
 
+/** A machine-wide clean lock nobody else holds: the real port is never reached from a test. */
+const freeLock = async (): Promise<{ close(): void }> => ({ close: () => undefined });
+
 describe("the verdict on one worktree", () => {
   test("everything clean: finished", () => {
     expect(verdict(facts(), () => clean)).toEqual({ finished: true, note: null });
@@ -866,6 +869,8 @@ describe("the worktrees command", () => {
           { clean: true, json: false, noFetch: true, remove: null },
           cleanGitEnv(),
           worktree,
+          undefined,
+          freeLock,
         ),
       ).toBe(1);
     } finally {
@@ -991,6 +996,8 @@ describe("the worktrees command", () => {
           { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
+          undefined,
+          freeLock,
         ),
       ).toBe(0);
     } finally {
@@ -999,6 +1006,34 @@ describe("the worktrees command", () => {
     expect(out.join("\n")).toContain(`removing ${worktree} …`);
     expect(out.join("\n")).toContain("deleted branch fix/login");
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("another clean holds the machine-wide lock: nothing is removed, and it says so", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: false, noFetch: true, remove: worktree },
+          cleanGitEnv(),
+          main,
+          undefined,
+          async () => null,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(out).toEqual([
+      "No `worktrees.base` in .claude/cc-smart-dev-kit.json: judging against main.\n",
+      "Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.",
+    ]);
+    expect(existsSync(worktree)).toBe(true);
   });
 
   test("`--remove <path>` exits 1 when the removal was kept, and says why", async () => {
@@ -1016,6 +1051,8 @@ describe("the worktrees command", () => {
           { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
+          undefined,
+          freeLock,
         ),
       ).toBe(1);
     } finally {
@@ -1044,6 +1081,8 @@ describe("the worktrees command", () => {
           { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
+          undefined,
+          freeLock,
         ),
       ).toBe(1);
     } finally {
@@ -1079,6 +1118,8 @@ describe("the worktrees command", () => {
             { clean: false, json: false, noFetch: true, remove: worktree },
             cleanGitEnv(),
             main,
+            undefined,
+            freeLock,
           ),
         ).toBe(1);
       } finally {
@@ -1113,6 +1154,8 @@ describe("the worktrees command", () => {
           { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
+          undefined,
+          freeLock,
         ),
       ).toBe(0);
     } finally {
