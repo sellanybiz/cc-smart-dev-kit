@@ -105,6 +105,13 @@ spec's `onConfigProblem` and `outsideGit` judge on. It is still in `PLUGIN_HOOK_
 a project that runs its own Agent guard silences it through `ownHooks`, which is read on its
 own, before the file.
 
+**A registered lead's building launch is held by the crew queue** (D59), the one answer of this
+guard that reads a project's store: while a `crew start` from that lead would queue now, a launch
+that can change files is denied, naming the cap and the `crew start` step. It reads the lead
+record of the input's session and repository, so the paths without a checkout — a broken file, a
+folder outside git — judge model and effort alone and let the launch through, and a read-only
+subagent is never held.
+
 `session-escape-guard` is machine-wide in the same way, and **`alwaysOn`** (`HookSpec.alwaysOn`):
 the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out, because the
 project's file is one of the things it guards (a session could list the guard there first).

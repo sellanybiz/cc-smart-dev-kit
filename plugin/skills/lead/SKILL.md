@@ -38,7 +38,8 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 30 to 90 minutes each, contracts first and alone, then disjoint file sets. For crew sessions, also:
 
 - **A phase far under 30 minutes** joins a neighbour, or goes to a subagent: a crew session's start
-  and review cost more than it saves.
+  and review cost more than it saves. A whole phase is a crew session's job: § 7 says what the
+  guard does when the queue is full.
 - **The contracts phase is merged** before the wave that uses it starts.
 - **Each brief says the crew session never touches the shared files** that stay yours.
 - **Each phase gets a kind**, and the kind picks the model and the effort:
@@ -201,6 +202,11 @@ Routine phases on the worker slot run wide; the opus phases — the kinds that r
 so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
 Your own Opus subagents share the same usage window: at most 3 at once.
 
+**The guard holds a builder subagent while the queue holds a place.** Its line names which
+cap above is full and the `crew start` step, and it is a refusal rather than a question, because
+the step needs no person. Read-only subagents — a search, a review, an audit, a UI check — are
+never held, so nothing stops you asking one a question while the queue is full.
+
 ## 8. Hand-offs
 
 A crew session near its context line or its time cap commits its work in progress and reports
@@ -227,7 +233,8 @@ heavy cleanup, starts only once everything is verified live (`/cc-smart-dev-kit:
 
 - Wait, `sleep` or poll; ask a crew session whether it is done.
 - End a turn with a ready phase not started, or start the plan one wave at a time.
-- Build a phase yourself, or read a crew session's whole diff to check it.
+- Build a phase yourself, read a crew session's whole diff to check it, or hand a phase to a
+  builder subagent while the queue holds it (§ 7).
 - Start a crew session from a crew session, or a raw `claude --bg` in place of `crew start`.
 - Answer the person's decision for them, or a crew session's permission prompt.
 - Leave a merged crew session running.

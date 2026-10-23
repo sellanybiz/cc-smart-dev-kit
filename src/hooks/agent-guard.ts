@@ -128,7 +128,9 @@
  * The rule is a lead's, so it never answers for a crew session (`crewAgentAnswer` is unchanged),
  * for an ordinary session, or for a call the guard cannot judge: a lead record it cannot read, a
  * checkout it was not given (a broken project file, a folder outside git), a store or a caps file
- * that throws — each lets the launch through and nothing is recorded.
+ * that throws — each lets the launch through and nothing is recorded. The hook log
+ * (`guardFacts`) carries the model and effort verdict only: the queue refusal needs the store,
+ * and a logged run reads none of it.
  */
 
 import { COMMAND } from "../build-info/names";
@@ -1750,7 +1752,11 @@ export async function agentGuard(
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
   const ran = afterTheCall(input);
-  if (!ran) {
+  // The model and effort rules answer first: a launch they deny keeps their own words, and the
+  // queue rule is asked only about a launch that would otherwise run (allowed or asked).
+  const judgedDeny =
+    judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
+  if (!ran && !judgedDeny) {
     const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs);
     if (queued !== null) return toolDecision("deny", queued);
   }

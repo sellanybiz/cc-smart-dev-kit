@@ -26,6 +26,13 @@ you open it.
 - **The kit's builder and rules-maintainer agents get the task tools**, and one line each to
   keep a list for a multi-step brief. The read-only reviewer, auditor and ui-verifier stay as
   they are.
+- **A lead never routes a phase around the crew queue.** The queue exists for the machine and for
+  each lead's share of it, and a builder subagent runs outside every one of those counts — with
+  none of a crew phase's worktree, review, report gate or to-do list. So in a session registered
+  as a lead, the agent guard refuses a launch that can change files while a `crew start` from it
+  would queue right now, and names the cap that holds and the `crew start` step. A read-only
+  subagent — a search, a review, an audit, a UI check — is never held, and an ordinary session or
+  a crew session is judged exactly as before.
 
 **What to run:** nothing. The hooks come with the plugin update. A session that is already
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads

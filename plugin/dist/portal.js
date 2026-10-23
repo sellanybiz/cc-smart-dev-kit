@@ -26231,7 +26231,8 @@ async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout =
   if (judged === null)
     return SILENT;
   const ran = afterTheCall(input);
-  if (!ran) {
+  const judgedDeny = judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
+  if (!ran && !judgedDeny) {
     const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs);
     if (queued !== null)
       return toolDecision("deny", queued);

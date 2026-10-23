@@ -3002,6 +3002,33 @@ describe("D59: a recorded lead never routes a building phase around the crew que
     expect(crewAgentAnswer(building, crewEnv, made.world.paths, made.world.repo)).toEqual({});
   });
 
+  it("the model and effort rules answer first: a launch they deny keeps their own words", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    // `low` is refused by the guard's own rule, and a launch that never runs is not the queue's.
+    const low = denial(
+      await answer(
+        call(made.world, { effort: "low", model: "sonnet", subagent_type: "builder" }),
+        made,
+      ),
+    );
+    expect(low).toContain("This launch asks for effort `low`");
+    expect(low).not.toContain("crew queue");
+    // The same for a Workflow whose script denies a launch.
+    const script =
+      'const out = await agent("build", { model: "sonnet", effort: "low" });\nreturn out;';
+    const inline: HookInput = {
+      cwd: made.world.repo,
+      hook_event_name: "PreToolUse",
+      session_id: LEAD_SESSION,
+      tool_input: { script },
+      tool_name: "Workflow",
+    };
+    const refused = denial(await answer(inline, made));
+    expect(refused).toContain("asks for effort `low`");
+    expect(refused).not.toContain("crew queue");
+  });
+
   it("caps it cannot read let the launch through", async () => {
     const made = await leadWorld({ perLead: 1 });
     await stored(made.world, "B1", "working");
