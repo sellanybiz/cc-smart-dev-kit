@@ -19,7 +19,7 @@
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
-import type { ReadRunner } from "../portal/context";
+import type { CommandRunner } from "../update/apply";
 import { readMcpRecords } from "./records";
 import { overridingServer, readUserServers, sameConfig } from "./register";
 import { retiredChecks } from "./retired";
@@ -53,10 +53,10 @@ export interface McpDoctorDeps {
 /**
  * The machine's own `McpDoctorDeps`: `claude mcp get` run for real. One home for both
  * `cc-smart-dev-kit doctor` and the portal's Machine page, so the two judge a machine alike.
- * `read` (the portal's `ReadRunner`, `Bun.spawn`) runs it without blocking the server; left
+ * `read` (the portal's own runner, `Bun.spawn`) runs it without blocking the server; left
  * out, the command line's own synchronous spawn answers where it stands.
  */
-export function realMcpDoctorDeps(read?: ReadRunner): McpDoctorDeps {
+export function realMcpDoctorDeps(read?: CommandRunner): McpDoctorDeps {
   return {
     run: async (argv, extraEnv) => {
       if (read !== undefined) {

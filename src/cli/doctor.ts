@@ -53,7 +53,7 @@ import {
 } from "../setup/launcher-cmd";
 import { formatKeyPath, getKey, ownedRecords, ownership } from "../setup/managed-json";
 import {
-  canReadGitRemote,
+  canReadGitRemoteAsync,
   canReadHttp,
   type GitFailureCause,
   gitFailureCause,
@@ -347,7 +347,7 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
       let cause: GitFailureCause = "unknown";
       let repo: string | null = null;
       for (const url of source.urls) {
-        const result = canReadGitRemote(url, env);
+        const result = await canReadGitRemoteAsync(url, env);
         if (result.ok) return { ok: true, text: `can read the marketplace at ${redactUrl(url)}` };
         failures.push(`${redactUrl(url)}: ${result.detail}`);
         // The cause comes from EVERYTHING git said (`output`): the line that names it —
@@ -980,7 +980,12 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
  * `restore` takes it out. Both lines are information (`·`), never failures: tmux is
  * optional, and so is this.
  */
-function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
+async function checkTmux(
+  paths: CliPaths,
+  env: Env,
+  machine: Machine,
+  read: CommandRunner,
+): Promise<Check[]> {
   // Windows has no tmux, and setup manages `~/.tmux.conf` only where it is installed:
   // information, never a failure (`docs/windows-setup.md`).
   if (machine.platform === "win32") {
@@ -1002,7 +1007,7 @@ function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
       text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`,
     });
   }
-  if ((env.TMUX ?? "") !== "" && tmuxPassthroughOf(machine.run) !== "all") {
+  if ((env.TMUX ?? "") !== "" && (await tmuxPassthroughOf(read)) !== "all") {
     checks.push({
       info: true,
       ok: true,
@@ -1273,9 +1278,9 @@ function doctorGroups(
     { group: "browser", run: () => (browser == null ? [] : browserChecks(paths, browser)) },
     {
       group: "alerts",
-      run: () => [
+      run: async () => [
         checkUserNotifyHook(paths),
-        ...checkTmux(paths, env, machine),
+        ...(await checkTmux(paths, env, machine, readCommand)),
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths),
       ],

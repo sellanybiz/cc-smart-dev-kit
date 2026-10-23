@@ -221,14 +221,21 @@ export async function startPortal(
    * is on PATH, GitHub itself (`detectFacts`), so the answers for one file's text are computed
    * once and kept until that file changes: a form change on the Project card is a plan, not a
    * network read. The key is the file's text — the moment it changes, the next reader is fresh.
+   *
+   * **The read itself is remembered, not its answer**: two reads at once (a page and an action)
+   * run the detection once, and a failed read is not kept, so the next one tries again.
    */
-  let remembered: { defaults: ProjectInitDefaults; key: string } | null = null;
+  let remembered: { key: string; promise: Promise<ProjectInitDefaults> } | null = null;
   async function projectDefaults(input: { env: Env; root: string }): Promise<ProjectInitDefaults> {
     const key = `${input.root}\u0000${projectFileTexts(input.root).existing ?? ""}`;
     if (remembered === null || remembered.key !== key) {
-      remembered = { defaults: await workflow.projectInitDefaults(input), key };
+      const promise = Promise.resolve(workflow.projectInitDefaults(input)).catch((error) => {
+        if (remembered !== null && remembered.promise === promise) remembered = null;
+        throw error;
+      });
+      remembered = { key, promise };
     }
-    return remembered.defaults;
+    return await remembered.promise;
   }
 
   function actionContext(): ActionContext {

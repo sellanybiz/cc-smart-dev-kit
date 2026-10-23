@@ -17,6 +17,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { Runner } from "../gateway/service";
+import type { CommandRunner } from "../update/apply";
 import { applyManagedLine, type ManagedLineResult } from "./managed-line";
 
 /** The line setup adds to `~/.tmux.conf`: passthrough from every window, not only the visible one. */
@@ -63,10 +64,15 @@ export function tmuxServerRunning(run: Runner): boolean {
   }
 }
 
-/** The running server's `allow-passthrough` (`all`, `on`, `off`); null when it cannot be read. */
-export function tmuxPassthroughOf(run: Runner): null | string {
+/**
+ * The running server's `allow-passthrough` (`all`, `on`, `off`); null when it cannot be read.
+ * **Awaited**: a caller off the server's event loop (the portal's doctor pass) hands in its own
+ * asynchronous runner and never freezes a page on `tmux show-options`; `await` takes a
+ * synchronous answer as it is.
+ */
+export async function tmuxPassthroughOf(run: CommandRunner): Promise<null | string> {
   try {
-    const result = run(["tmux", "show-options", "-gv", "allow-passthrough"]);
+    const result = await run(["tmux", "show-options", "-gv", "allow-passthrough"]);
     if (result.exitCode !== 0) return null;
     const value = result.output.trim();
     return value === "" ? null : value;

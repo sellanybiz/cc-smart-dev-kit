@@ -97,6 +97,22 @@ describe("resolveProject", () => {
     expect((thrown as Error).message).not.toContain("$PATH");
   });
 
+  test("the awaited twin is told the same fact when there is no git", async () => {
+    // The same message on the portal's own path: `Bun.spawn` throws different words from
+    // `Bun.spawnSync`, and `gitNotFound` is what turns either into the fact a page can act on.
+    const repo = makeRepo();
+    const env = { HOME: tempDir("nogit-home"), PATH: "/nonexistent" };
+    let thrown: unknown = null;
+    try {
+      await resolveProjectAsync(repo, { env });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(GIT_NOT_FOUND);
+    expect((thrown as Error).message).not.toContain("$PATH");
+  });
+
   test("no cc-smart-dev-kit.json gives config null", () => {
     expect(resolveProject(makeRepo())?.config).toBeNull();
   });

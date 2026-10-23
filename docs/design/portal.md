@@ -447,7 +447,8 @@ same words.
 loop.** The Machine page runs the doctor's own pass (`doctor.run` is that same pass), and the
 pass's own reads go through `DoctorOptions.read` — the portal's `ReadRunner`: the launcher's own
 `version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher, Warp's package
-manager, the live record's `claude --version`, and the gateway's checks, `RouterService.stateAsync`
+manager, the live record's `claude --version`, the marketplace's own source (`canReadGitRemoteAsync`: `git ls-remote`, up
+to 10 s a check) and tmux's `show-options`, and the gateway's checks, `RouterService.stateAsync`
 (does it run, and its state, in one awaited ask with the same words the synchronous pair gives)
 and `portHolderCheck`. `claude mcp get` runs through the mcp deps' own runner
 (`realMcpDoctorDeps(runRead)`), which is also how its child gets `MCP_TIMEOUT`; the 0.3.0
@@ -459,7 +460,9 @@ card, `realRunnerAsync` (`runGitAsync`, and `gh api` spawned the same way) for t
 defaults, and `projectChecks`' own git reads (the checkout, `check-ignore`, the default branch,
 `git --version`). **Still on the loop**, named so the rule is never read as already true
 everywhere: the actions' changing commands (`ctx.runner`) and the lock's `ps` on every action
-that writes — the actions paragraph above has both.
+that writes — the actions paragraph above has both — and the Browser card's Windows-only
+registry read (`reg query` through `realBrowserSetupDeps`' own `run`, tens of ms, no other
+platform).
 
 ### The pages' facts and actions (B6d)
 

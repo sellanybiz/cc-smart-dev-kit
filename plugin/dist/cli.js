@@ -16543,8 +16543,8 @@ function hasOwnSshCommand(env) {
     return false;
   }
 }
-function canReadGitRemote(url, baseEnv = process.env) {
-  const result = lsRemote(url, "HEAD", baseEnv);
+async function canReadGitRemoteAsync(url, baseEnv = process.env) {
+  const result = await lsRemoteAsync(url, "HEAD", baseEnv);
   return result.ok ? { ok: true, detail: "" } : result;
 }
 function gitAccessEnv(baseEnv) {
@@ -16577,19 +16577,48 @@ function lsRemote(url, ref, baseEnv) {
     });
     if (result.exitCode === 0)
       return { ok: true, stdout: result.stdout.toString() };
-    const said = redactUrlsIn(result.stderr.toString().trim());
-    const detail = result.signalCode ? "timed out" : (said.split(`
-`).at(-1) ?? "").trim();
-    const output = said || `git exited with ${result.exitCode}`;
-    return {
-      detail: detail || `git exited with ${result.exitCode}`,
-      ok: false,
-      output
-    };
+    return lsRemoteFailure(result.exitCode, Boolean(result.signalCode), result.stderr.toString());
   } catch (error) {
-    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
-    return { detail: said, ok: false, output: said };
+    return lsRemoteUnspawned(error);
   }
+}
+async function lsRemoteAsync(url, ref, baseEnv) {
+  const env = gitAccessEnv(baseEnv);
+  try {
+    const child = Bun.spawn(["git", "ls-remote", url, ref], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: ACCESS_TIMEOUT_MS
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const timedOut = child.signalCode !== null;
+    if (!timedOut && code === 0)
+      return { ok: true, stdout };
+    return lsRemoteFailure(timedOut ? null : code, timedOut, stderr);
+  } catch (error) {
+    return lsRemoteUnspawned(error);
+  }
+}
+function lsRemoteFailure(exitCode, timedOut, stderrText) {
+  const said = redactUrlsIn(stderrText.trim());
+  const detail = timedOut ? "timed out" : (said.split(`
+`).at(-1) ?? "").trim();
+  const output = said || `git exited with ${exitCode}`;
+  return {
+    detail: detail || `git exited with ${exitCode}`,
+    ok: false,
+    output
+  };
+}
+function lsRemoteUnspawned(error) {
+  const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+  return { detail: said, ok: false, output: said };
 }
 async function canReadHttp(url) {
   try {
@@ -21031,9 +21060,9 @@ function tmuxServerRunning(run) {
     return false;
   }
 }
-function tmuxPassthroughOf(run) {
+async function tmuxPassthroughOf(run) {
   try {
-    const result = run(["tmux", "show-options", "-gv", "allow-passthrough"]);
+    const result = await run(["tmux", "show-options", "-gv", "allow-passthrough"]);
     if (result.exitCode !== 0)
       return null;
     const value = result.output.trim();
@@ -38124,7 +38153,7 @@ async function checkMarketplaceAccess(paths, env) {
       let cause = "unknown";
       let repo = null;
       for (const url of source.urls) {
-        const result = canReadGitRemote(url, env);
+        const result = await canReadGitRemoteAsync(url, env);
         if (result.ok)
           return { ok: true, text: `can read the marketplace at ${redactUrl(url)}` };
         failures.push(`${redactUrl(url)}: ${result.detail}`);
@@ -38604,7 +38633,7 @@ async function omnirouteCheck(paths, env, gateway) {
   });
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
 }
-function checkTmux(paths, env, machine) {
+async function checkTmux(paths, env, machine, read) {
   if (machine.platform === "win32") {
     return [
       {
@@ -38625,7 +38654,7 @@ function checkTmux(paths, env, machine) {
       text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`
     });
   }
-  if ((env.TMUX ?? "") !== "" && tmuxPassthroughOf(machine.run) !== "all") {
+  if ((env.TMUX ?? "") !== "" && await tmuxPassthroughOf(read) !== "all") {
     checks.push({
       info: true,
       ok: true,
@@ -38768,9 +38797,9 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     { group: "browser", run: () => browser == null ? [] : browserChecks(paths, browser) },
     {
       group: "alerts",
-      run: () => [
+      run: async () => [
         checkUserNotifyHook(paths),
-        ...checkTmux(paths, env, machine),
+        ...await checkTmux(paths, env, machine, readCommand),
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths)
       ]

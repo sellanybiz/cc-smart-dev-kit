@@ -8,7 +8,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
-import { legacyBrowserFacts, legacyBrowserPaths, processCommandLines } from "./legacy";
+import {
+  legacyBrowserFacts,
+  legacyBrowserPaths,
+  processCommandLines,
+  processCommandLinesAsync,
+} from "./legacy";
 
 interface LegacyWorld {
   deps: {
@@ -248,6 +253,29 @@ describe("legacyBrowserFacts", () => {
 });
 
 describe("processCommandLines", () => {
+  test("the awaited twin asks the same argv and reads the same lines", async () => {
+    // The portal's Machine page reads this listing off its loop (`processCommandLinesAsync`,
+    // `Bun.spawn`): the same commands and the same parse as the blocking reader, on every
+    // platform, and `null` where this plugin cannot list processes at all.
+    const output = "  123 /usr/bin/thing --user-data-dir=/Users/me/x\n7 /usr/bin/other\n";
+    const answer = () => ({ exitCode: 0, output });
+    for (const platform of ["darwin", "win32"] as const) {
+      const syncAsked: string[][] = [];
+      const awaitedAsked: string[][] = [];
+      const sync = processCommandLines(platform, (argv) => {
+        syncAsked.push(argv);
+        return answer();
+      });
+      const awaited = await processCommandLinesAsync(platform, async (argv) => {
+        awaitedAsked.push(argv);
+        return answer();
+      });
+      expect(awaited).toEqual(sync);
+      expect(awaitedAsked).toEqual(syncAsked);
+    }
+    expect(await processCommandLinesAsync("aix", async () => answer())).toBe(null);
+  });
+
   test("macOS asks ps for every command line, and reads its own shape", () => {
     const asked: string[][] = [];
     const lines = processCommandLines("darwin", (argv) => {
