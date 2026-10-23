@@ -16,7 +16,7 @@
  * hooks' own quoting), which is also why the crew session's settings go in a FILE, never inline JSON —
  * a `"` has no escape on that line.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN } from "../build-info/names";
 import { windowsRun } from "../hooks/detached";
@@ -228,6 +228,8 @@ export function launchArgs(spec: CrewLaunchSpec): string[] {
 export interface PluginRow {
   enabled: boolean;
   id: string;
+  /** The folder the plugin loads from, which holds its `.claude-plugin/plugin.json`; null when the row names none. */
+  installPath?: null | string;
 }
 
 /**
@@ -245,11 +247,95 @@ export function parsePluginList(output: string): null | PluginRow[] {
   const rows: PluginRow[] = [];
   for (const row of parsed) {
     if (typeof row !== "object" || row === null) continue;
-    const { enabled, id } = row as { enabled?: unknown; id?: unknown };
+    const { enabled, id, installPath } = row as {
+      enabled?: unknown;
+      id?: unknown;
+      installPath?: unknown;
+    };
     if (typeof id !== "string" || id === "") continue;
-    rows.push({ enabled: enabled === true, id });
+    rows.push({
+      enabled: enabled === true,
+      id,
+      installPath: typeof installPath === "string" && installPath !== "" ? installPath : null,
+    });
   }
   return rows;
+}
+
+/**
+ * The plugin ids a manifest's `dependencies` names, in Claude Code's forms: `"name"` (in the
+ * declaring plugin's own marketplace), `"name@marketplace"`, or `{ "name", "marketplace"? }`.
+ * An entry in any other shape names nothing.
+ */
+export function dependencyIds(raw: unknown, marketplace: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const ids: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string" && entry !== "") {
+      ids.push(entry.includes("@") ? entry : `${entry}@${marketplace}`);
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null) continue;
+    const { name, marketplace: other } = entry as { marketplace?: unknown; name?: unknown };
+    if (typeof name !== "string" || name === "") continue;
+    ids.push(`${name}@${typeof other === "string" && other !== "" ? other : marketplace}`);
+  }
+  return ids;
+}
+
+/** The marketplace part of a plugin id (`name@marketplace`); "" when it has none. */
+function marketplaceOf(id: string): string {
+  const at = id.lastIndexOf("@");
+  return at < 0 ? "" : id.slice(at + 1);
+}
+
+/** Reads a plugin's `dependencies` from its folder; undefined when the manifest cannot be read. */
+export type ReadDependencies = (installPath: string) => unknown;
+
+/** The `dependencies` of `<installPath>/.claude-plugin/plugin.json`, or undefined. */
+export function readInstalledDependencies(installPath: string): unknown {
+  try {
+    const manifest: unknown = JSON.parse(
+      readFileSync(join(installPath, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    return typeof manifest === "object" && manifest !== null
+      ? (manifest as { dependencies?: unknown }).dependencies
+      : undefined;
+  } catch {
+    // A manifest that cannot be read names no dependency: the plugin's own load says why.
+    return undefined;
+  }
+}
+
+/**
+ * Every plugin a kept plugin needs, whatever depth: Claude Code does not load a plugin whose
+ * dependency is turned off (proved live on 2.1.309, `docs/claude-code-contract.md`), so a lean
+ * start that turned one off would drop the plugin it meant to keep. `own` is this plugin's own
+ * list, from its manifest at build time, so it holds even when its installed copy cannot be read.
+ */
+export function neededByKept(
+  kept: ReadonlySet<string>,
+  rows: readonly PluginRow[],
+  own: readonly string[],
+  read: ReadDependencies,
+): Set<string> {
+  const needed = new Set<string>(own);
+  const queue = [...kept, ...own];
+  const seen = new Set<string>();
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    // One plugin can have an install record per scope, each its own copy: what any of them
+    // needs stays on, so the copy this session loads finds its dependencies whichever it is.
+    for (const row of rows) {
+      if (row.id !== id || !row.installPath) continue;
+      for (const dependency of dependencyIds(read(row.installPath), marketplaceOf(id))) {
+        needed.add(dependency);
+        queue.push(dependency);
+      }
+    }
+  }
+  return needed;
 }
 
 /**
@@ -288,6 +374,10 @@ export function leanLaunch(input: {
   enabled: null | readonly PluginRow[];
   keep: readonly string[];
   kind: null | CrewKind;
+  /** This plugin's own dependencies, as plugin ids (`DEPENDENCIES`, from its manifest). */
+  own: readonly string[];
+  /** How a kept plugin's `dependencies` is read; its installed manifest by default. */
+  readDependencies?: ReadDependencies;
 }): { lean: LeanLaunch; ok: true } | { ok: false; why: string } {
   const keptPlugins = new Set<string>();
   const keptServers = new Set<ServerName>(serversFor(input.kind));
@@ -319,15 +409,30 @@ export function leanLaunch(input: {
     }
     keptServers.add(parsed.name as ServerName);
   }
+  const enabled = input.enabled;
+  // What the kept plugins need stays on too: this plugin's own dependencies always, and the
+  // dependencies of every kept plugin, read from its installed manifest.
+  const needed =
+    enabled === null
+      ? new Set<string>()
+      : neededByKept(
+          new Set([
+            ...keptPlugins,
+            ...enabled.filter((row) => row.id.startsWith(`${PLUGIN}@`)).map((row) => row.id),
+          ]),
+          enabled,
+          input.own,
+          input.readDependencies ?? readInstalledDependencies,
+        );
   const off =
-    input.enabled === null
+    enabled === null
       ? []
       : [
           ...new Set(
-            input.enabled
+            enabled
               .filter((row) => row.enabled && !row.id.startsWith(`${PLUGIN}@`))
               .map((row) => row.id)
-              .filter((id) => !keptPlugins.has(id)),
+              .filter((id) => !keptPlugins.has(id) && !needed.has(id)),
           ),
         ].sort();
   const servers: Record<string, unknown> = {};

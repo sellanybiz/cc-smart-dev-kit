@@ -3,6 +3,24 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.1.1
+
+**A fix for every crew session, and Claude Code's retry watchdog on by default.**
+
+- **A crew session loads the kit again.** 1.1.0 started each crew session lean, with your other
+  plugins turned off for it, claude-mem among them. The kit lists claude-mem as a dependency,
+  and Claude Code does not load a plugin whose dependency is off, so those crew sessions ran
+  with no kit at all: no guard, no crew skill, no report check. A crew session now keeps on
+  every plugin the kit, or a plugin `crew.keep` names, depends on.
+- **The retry watchdog is on by default.** `setup` now turns on Claude Code's retry watchdog
+  without asking: a session that meets a usage limit or an overloaded model waits and retries
+  instead of failing. A limit that resets more than 24 hours away ends the wait, so a
+  `claude -p` script never waits for days. A "no" you gave before, or a value you set
+  yourself, is kept; `setup --no-retry-watchdog` turns it off.
+
+**What to run:** `cc-smart-dev-kit setup` (it turns the watchdog on), then restart your Claude
+Code sessions. Stop any crew session started by 1.1.0 and start it again: it ran without the kit.
+
 ## 1.1.0
 
 **Most of this release is the portal and the crew.** The portal is now the page the kit runs

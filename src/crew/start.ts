@@ -38,7 +38,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { DEPENDENCIES } from "../build-info";
+import { COMMAND, MARKETPLACE } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
@@ -80,6 +81,7 @@ import {
   agentRow,
   CREW_PERMISSION_MODE,
   callClaude,
+  dependencyIds,
   findClaude,
   type LeanLaunch,
   launchArgs,
@@ -384,7 +386,13 @@ function leanOf(
         ? { key: false, reason: "no Tavily key" }
         : { key: true },
   };
-  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  const lean = leanLaunch({
+    context,
+    enabled,
+    keep: keep.value,
+    kind,
+    own: dependencyIds(DEPENDENCIES, MARKETPLACE),
+  });
   if (!lean.ok) {
     throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
   }

@@ -8,6 +8,7 @@ import {
   agentRow,
   callClaude,
   claudeArgv,
+  dependencyIds,
   findClaude,
   launchArgs,
   leanLaunch,
@@ -15,6 +16,7 @@ import {
   parseAgents,
   parseBackgrounded,
   parsePluginList,
+  readInstalledDependencies,
   realRunProgram,
   refusedUntrusted,
 } from "./claude";
@@ -200,7 +202,13 @@ describe("the plugins this machine runs", () => {
   test("claude plugin list --json: the rows a lean start reads", () => {
     const rows = parsePluginList(
       JSON.stringify([
-        { id: "cc-smart-dev-kit@cc-smart-dev-kit", enabled: true, scope: "user", version: "1.0.1" },
+        {
+          enabled: true,
+          id: "cc-smart-dev-kit@cc-smart-dev-kit",
+          installPath: "/home/user/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/1.0.1",
+          scope: "user",
+          version: "1.0.1",
+        },
         { enabled: true, id: "claude-mem@thedotmack" },
         { enabled: false, id: "stripe@claude-plugins-official" },
         // A row with no id names nothing to turn off, and an `enabled` that is not a boolean is off.
@@ -210,10 +218,14 @@ describe("the plugins this machine runs", () => {
       ]),
     );
     expect(rows).toEqual([
-      { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
-      { enabled: true, id: "claude-mem@thedotmack" },
-      { enabled: false, id: "stripe@claude-plugins-official" },
-      { enabled: false, id: "frontend-design@claude-plugins-official" },
+      {
+        enabled: true,
+        id: "cc-smart-dev-kit@cc-smart-dev-kit",
+        installPath: "/home/user/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/1.0.1",
+      },
+      { enabled: true, id: "claude-mem@thedotmack", installPath: null },
+      { enabled: false, id: "stripe@claude-plugins-official", installPath: null },
+      { enabled: false, id: "frontend-design@claude-plugins-official", installPath: null },
     ]);
   });
 
@@ -221,6 +233,49 @@ describe("the plugins this machine runs", () => {
     for (const output of ["", "not json", "{}", '"x"', "null"]) {
       expect(parsePluginList(output)).toBeNull();
     }
+  });
+});
+
+describe("what a plugin depends on", () => {
+  test("every form Claude Code takes: a name, name@marketplace, an object with or without its marketplace", () => {
+    expect(
+      dependencyIds(
+        [
+          "audit-logger",
+          "secrets-vault@other",
+          { name: "claude-mem", marketplace: "thedotmack", version: ">=13.36.0" },
+          { name: "same-place", version: "~2.1.0" },
+          // Shapes that name nothing.
+          "",
+          { marketplace: "x" },
+          { name: "" },
+          42,
+          null,
+        ],
+        "home",
+      ),
+    ).toEqual([
+      "audit-logger@home",
+      "secrets-vault@other",
+      "claude-mem@thedotmack",
+      "same-place@home",
+    ]);
+    expect(dependencyIds(undefined, "home")).toEqual([]);
+    expect(dependencyIds({ name: "x" }, "home")).toEqual([]);
+  });
+
+  test("the installed manifest's dependencies are read; a missing or broken one names none", () => {
+    const dir = tempDir("plugin-manifest");
+    mkdirSync(join(dir, "good", ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(dir, "good", ".claude-plugin", "plugin.json"),
+      JSON.stringify({ dependencies: ["core"], name: "good" }),
+    );
+    mkdirSync(join(dir, "broken", ".claude-plugin"), { recursive: true });
+    writeFileSync(join(dir, "broken", ".claude-plugin", "plugin.json"), "{ not json");
+    expect(readInstalledDependencies(join(dir, "good"))).toEqual(["core"]);
+    expect(readInstalledDependencies(join(dir, "broken"))).toBeUndefined();
+    expect(readInstalledDependencies(join(dir, "missing"))).toBeUndefined();
   });
 });
 
@@ -245,9 +300,14 @@ const PLAYWRIGHT_REGISTRATION = {
   command: "/home/user/.local/bin/cc-smart-dev-kit",
 };
 
+/** A manifest reader that finds no dependency anywhere. */
+const noDependencies = (): undefined => undefined;
+
 describe("a lean start", () => {
   test("every enabled plugin but this one goes off; one already off is left alone", () => {
     const lean = leanLaunch({
+      own: [],
+      readDependencies: noDependencies,
       context: MCP_CONTEXT,
       enabled: [
         { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
@@ -267,6 +327,8 @@ describe("a lean start", () => {
 
   test("this plugin is never turned off, whatever origin it loads from", () => {
     const lean = leanLaunch({
+      own: [],
+      readDependencies: noDependencies,
       context: MCP_CONTEXT,
       enabled: [
         { enabled: true, id: "cc-smart-dev-kit@skills-dir" },
@@ -278,8 +340,94 @@ describe("a lean start", () => {
     expect(lean.ok ? lean.lean.off : lean).toEqual(["claude-mem@thedotmack"]);
   });
 
+  test("a plugin this plugin depends on stays on: turning it off would drop this plugin too", () => {
+    const lean = leanLaunch({
+      context: MCP_CONTEXT,
+      enabled: [
+        { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+        { enabled: true, id: "claude-mem@thedotmack" },
+        { enabled: true, id: "frontend-design@claude-plugins-official" },
+        { enabled: true, id: "stripe@claude-plugins-official" },
+      ],
+      keep: [],
+      kind: "build",
+      own: ["claude-mem@thedotmack", "frontend-design@claude-plugins-official"],
+      readDependencies: noDependencies,
+    });
+    expect(lean.ok ? lean.lean.off : lean).toEqual(["stripe@claude-plugins-official"]);
+  });
+
+  test("what a kept plugin, or this plugin's installed copy, depends on stays on, at any depth", () => {
+    const manifests: Record<string, unknown> = {
+      "/plugins/acme-tools": ["acme-core"],
+      "/plugins/acme-core": [{ marketplace: "shared", name: "shared-lib" }],
+      "/plugins/kit": ["kit-helper@helpers"],
+    };
+    const lean = leanLaunch({
+      context: MCP_CONTEXT,
+      enabled: [
+        { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", installPath: "/plugins/kit" },
+        { enabled: true, id: "acme-tools@acme", installPath: "/plugins/acme-tools" },
+        { enabled: true, id: "acme-core@acme", installPath: "/plugins/acme-core" },
+        { enabled: true, id: "shared-lib@shared", installPath: null },
+        { enabled: true, id: "kit-helper@helpers", installPath: null },
+        { enabled: true, id: "stripe@claude-plugins-official", installPath: "/plugins/stripe" },
+      ],
+      keep: ["plugin:acme-tools@acme"],
+      kind: "build",
+      own: [],
+      readDependencies: (installPath) => manifests[installPath],
+    });
+    expect(lean.ok ? lean.lean.off : lean).toEqual(["stripe@claude-plugins-official"]);
+  });
+
+  test("a kept plugin with an install record per scope keeps what every copy depends on", () => {
+    const manifests: Record<string, unknown> = {
+      "/plugins/acme-tools/1.0.0": ["old-dep"],
+      "/plugins/acme-tools/2.0.0": ["new-dep"],
+    };
+    const lean = leanLaunch({
+      context: MCP_CONTEXT,
+      enabled: [
+        { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", installPath: null },
+        { enabled: true, id: "acme-tools@acme", installPath: "/plugins/acme-tools/1.0.0" },
+        { enabled: true, id: "acme-tools@acme", installPath: "/plugins/acme-tools/2.0.0" },
+        { enabled: true, id: "old-dep@acme", installPath: null },
+        { enabled: true, id: "new-dep@acme", installPath: null },
+        { enabled: true, id: "stripe@claude-plugins-official", installPath: null },
+      ],
+      keep: ["plugin:acme-tools@acme"],
+      kind: "build",
+      own: [],
+      readDependencies: (installPath) => manifests[installPath],
+    });
+    expect(lean.ok ? lean.lean.off : lean).toEqual(["stripe@claude-plugins-official"]);
+  });
+
+  test("a plugin that only a turned-off plugin depends on still goes off", () => {
+    const lean = leanLaunch({
+      context: MCP_CONTEXT,
+      enabled: [
+        { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", installPath: null },
+        { enabled: true, id: "stripe@claude-plugins-official", installPath: "/plugins/stripe" },
+        { enabled: true, id: "stripe-core@claude-plugins-official", installPath: null },
+      ],
+      keep: [],
+      kind: "build",
+      own: [],
+      readDependencies: (installPath) =>
+        installPath === "/plugins/stripe" ? ["stripe-core"] : undefined,
+    });
+    expect(lean.ok ? lean.lean.off : lean).toEqual([
+      "stripe-core@claude-plugins-official",
+      "stripe@claude-plugins-official",
+    ]);
+  });
+
   test("a kept plugin stays on, and a kept server is added", () => {
     const lean = leanLaunch({
+      own: [],
+      readDependencies: noDependencies,
       context: MCP_CONTEXT,
       enabled: [
         { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
@@ -305,7 +453,14 @@ describe("a lean start", () => {
 
   test("a ui session keeps the browser; every kind keeps the search", () => {
     const of = (kind: null | "build" | "ui") => {
-      const lean = leanLaunch({ context: MCP_CONTEXT, enabled: [], keep: [], kind });
+      const lean = leanLaunch({
+        own: [],
+        readDependencies: noDependencies,
+        context: MCP_CONTEXT,
+        enabled: [],
+        keep: [],
+        kind,
+      });
       return lean.ok ? lean.lean.servers : lean;
     };
     expect(of("build")).toEqual({ "tavily-websearch": TAVILY_REGISTRATION });
@@ -319,6 +474,8 @@ describe("a lean start", () => {
 
   test("a Tavily with no key is not passed: the server would fail at every connect", () => {
     const lean = leanLaunch({
+      own: [],
+      readDependencies: noDependencies,
       context: { ...MCP_CONTEXT, tavily: { key: false, reason: "no Tavily key" } },
       enabled: [],
       keep: [],
@@ -330,6 +487,8 @@ describe("a lean start", () => {
   test("an entry naming a plugin this machine does not run is refused, with the reason", () => {
     expect(
       leanLaunch({
+        own: [],
+        readDependencies: noDependencies,
         context: MCP_CONTEXT,
         enabled: [{ enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" }],
         keep: ["plugin:acme-tools@acme"],
@@ -343,7 +502,14 @@ describe("a lean start", () => {
 
   test("an entry naming a server cc-smart-dev-kit does not register is refused, with the names it does", () => {
     expect(
-      leanLaunch({ context: MCP_CONTEXT, enabled: [], keep: ["server:supabase"], kind: "build" }),
+      leanLaunch({
+        own: [],
+        readDependencies: noDependencies,
+        context: MCP_CONTEXT,
+        enabled: [],
+        keep: ["server:supabase"],
+        kind: "build",
+      }),
     ).toEqual({
       ok: false,
       why: 'workflow.crew.keep names server "supabase"; a crew session can keep only the servers cc-smart-dev-kit registers (playwright, sequential-thinking, tavily-websearch)',
@@ -352,7 +518,14 @@ describe("a lean start", () => {
 
   test("an entry of neither shape is refused, with both shapes", () => {
     expect(
-      leanLaunch({ context: MCP_CONTEXT, enabled: [], keep: ["widget"], kind: "build" }),
+      leanLaunch({
+        own: [],
+        readDependencies: noDependencies,
+        context: MCP_CONTEXT,
+        enabled: [],
+        keep: ["widget"],
+        kind: "build",
+      }),
     ).toEqual({
       ok: false,
       why: 'workflow.crew.keep: "widget" is not "plugin:<id>" or "server:<name>"',
@@ -361,6 +534,8 @@ describe("a lean start", () => {
 
   test("a plugin list that cannot be read turns nothing off, and refuses no kept plugin", () => {
     const lean = leanLaunch({
+      own: [],
+      readDependencies: noDependencies,
       context: MCP_CONTEXT,
       enabled: null,
       keep: ["plugin:acme-tools@acme"],
