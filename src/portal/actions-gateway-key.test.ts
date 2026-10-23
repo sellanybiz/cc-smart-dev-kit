@@ -11,7 +11,7 @@
  * runner records every command, so a test sees that nothing reached `systemctl`.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
@@ -34,15 +34,21 @@ const MADE_KEY = "omni_MADE_by_dashboard_1r0q";
 /**
  * A fake OmniRoute: `/v1/models` accepts GOOD_KEY, MADE_KEY and OLD_KEY and answers 401 to any
  * other; the dashboard's login takes PASSWORD and sets the session cookie; `/api/keys` makes
- * MADE_KEY (which `/v1/models` refuses with `refuseMade`), and its DELETE is recorded.
+ * MADE_KEY (which `/v1/models` refuses with `refuseMade`, or answers 500 for with `madeDown`),
+ * and its DELETE is recorded. `onCheck` runs while `/v1/models` is being asked: a test that
+ * changes the config in the middle of the check. Each password the login got is recorded.
  */
-function fakeOmniroute(options: { refuseMade?: boolean } = {}): {
+function fakeOmniroute(
+  options: { madeDown?: boolean; onCheck?: () => void; refuseMade?: boolean } = {},
+): {
   deleted: string[];
+  passwords: string[];
   port: number;
   requests: string[];
   stop: () => void;
 } {
   const deleted: string[] = [];
+  const passwords: string[] = [];
   const requests: string[] = [];
   const keys = options.refuseMade === true ? [GOOD_KEY, OLD_KEY] : [GOOD_KEY, MADE_KEY, OLD_KEY];
   const accepted = new Set(keys.map((key) => `Bearer ${key}`));
@@ -51,6 +57,13 @@ function fakeOmniroute(options: { refuseMade?: boolean } = {}): {
       const url = new URL(request.url);
       requests.push(`${request.method} ${url.pathname}`);
       if (url.pathname === "/v1/models") {
+        options.onCheck?.();
+        if (
+          options.madeDown === true &&
+          request.headers.get("authorization") === `Bearer ${MADE_KEY}`
+        ) {
+          return new Response("down", { status: 500 });
+        }
         if (!accepted.has(request.headers.get("authorization") ?? "")) {
           return new Response("unauthorized", { status: 401 });
         }
@@ -58,6 +71,7 @@ function fakeOmniroute(options: { refuseMade?: boolean } = {}): {
       }
       if (url.pathname === "/api/auth/login" && request.method === "POST") {
         const body = (await request.json()) as { password?: string };
+        passwords.push(body.password ?? "");
         if (body.password !== PASSWORD) return new Response("no", { status: 401 });
         return new Response("{}", {
           headers: { "set-cookie": "auth_token=session-1; Path=/; HttpOnly" },
@@ -75,7 +89,7 @@ function fakeOmniroute(options: { refuseMade?: boolean } = {}): {
     hostname: "127.0.0.1",
     port: 0,
   });
-  return { deleted, port: server.port ?? 0, requests, stop: () => server.stop(true) };
+  return { deleted, passwords, port: server.port ?? 0, requests, stop: () => server.stop(true) };
 }
 
 /** A port nothing listens on: OmniRoute is down. */
@@ -224,6 +238,14 @@ describe("gateway.key.save: a key the person pastes", () => {
     expect(refused.ok).toBe(false);
     expect(refused.lines.join("\n")).toContain("could not ask omniroute at");
     expect(refused.lines.join("\n")).toContain("Nothing was saved");
+    // The way to try again names the page's own tick, and the config's path is the short one.
+    expect(refused.lines.join("\n")).toContain(
+      'Start omniroute and run again: paste it on the Machine page\'s OmniRoute card again, or tick "Save it even if OmniRoute does not answer now" there',
+    );
+    expect(refused.lines.join("\n")).toContain(
+      "the key in ~/.config/cc-smart-dev-kit/gateway.json is kept",
+    );
+    expect(refused.lines.join("\n")).not.toContain(w.home);
     expect(w.configText()).toBe(before);
 
     const saved = await runAction(
@@ -284,6 +306,60 @@ describe("gateway.key.save: a key the person pastes", () => {
   });
 });
 
+describe("the config changing while the key is checked", () => {
+  test("a config removed meanwhile (restore) is not made again", async () => {
+    let w: ReturnType<typeof world> | null = null;
+    const omniroute = fakeOmniroute({
+      onCheck: () => rmSync(w?.paths.gatewayConfigFile ?? "", { force: true }),
+    });
+    w = world({ backendPort: omniroute.port });
+    try {
+      const result = await runAction(
+        "gateway.key.save",
+        { confirm: true, key: GOOD_KEY },
+        w.action,
+      );
+      expect(result).toEqual({
+        lines: [
+          "The gateway is not set up on this machine yet, so there is no key to change: run cc-smart-dev-kit gateway setup in a terminal first.",
+        ],
+        ok: false,
+      });
+      expect(existsSync(w.paths.gatewayConfigFile)).toBe(false);
+    } finally {
+      omniroute.stop();
+    }
+  });
+
+  test("a key checked at one address is not saved for another one set meanwhile", async () => {
+    let w: ReturnType<typeof world> | null = null;
+    const omniroute = fakeOmniroute({
+      onCheck: () => {
+        const path = w?.paths.gatewayConfigFile ?? "";
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        config.backends.omniroute.baseUrl = "http://127.0.0.1:9";
+        saveConfig(path, config);
+      },
+    });
+    w = world({ backendPort: omniroute.port });
+    try {
+      const result = await runAction(
+        "gateway.key.save",
+        { confirm: true, key: GOOD_KEY },
+        w.action,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.lines[0]).toBe(
+        "OmniRoute's address in ~/.config/cc-smart-dev-kit/gateway.json changed while the key was checked. Nothing was saved: try again.",
+      );
+      expect(w.configText()).toContain(OLD_KEY);
+      expect(w.configText()).not.toContain(GOOD_KEY);
+    } finally {
+      omniroute.stop();
+    }
+  });
+});
+
 describe("gateway.key.make: a key made with OmniRoute's dashboard password", () => {
   test("makes a key in OmniRoute, tests and saves it, and stores no password", async () => {
     const omniroute = fakeOmniroute();
@@ -333,6 +409,39 @@ describe("gateway.key.make: a key made with OmniRoute's dashboard password", () 
       expect(w.configText()).toBe(before);
       expect(w.backups()).toEqual([]);
       expect(result.lines.join("\n")).not.toContain(MADE_KEY);
+    } finally {
+      omniroute.stop();
+    }
+  });
+
+  test("the password goes to OmniRoute as typed, spaces too", async () => {
+    const omniroute = fakeOmniroute();
+    const w = world({ backendPort: omniroute.port });
+    try {
+      await runAction("gateway.key.make", { confirm: true, password: ` ${PASSWORD} ` }, w.action);
+      expect(omniroute.passwords).toEqual([` ${PASSWORD} `]);
+    } finally {
+      omniroute.stop();
+    }
+  });
+
+  test("a made key OmniRoute cannot check is never saved untested, even when a POST asks", async () => {
+    const omniroute = fakeOmniroute({ madeDown: true });
+    const w = world({ backendPort: omniroute.port });
+    try {
+      const before = w.configText();
+      const result = await runAction(
+        "gateway.key.make",
+        { confirm: true, password: PASSWORD, saveUnchecked: true },
+        w.action,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.lines[0]).toStartWith("could not ask omniroute at");
+      expect(result.lines.join("\n")).toContain(
+        "Start omniroute and run again: make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+      );
+      expect(omniroute.deleted).toEqual(["key-1"]);
+      expect(w.configText()).toBe(before);
     } finally {
       omniroute.stop();
     }

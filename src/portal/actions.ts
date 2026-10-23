@@ -33,6 +33,7 @@ import {
 } from "../browser/token";
 import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
+import { tildify } from "../cli/paths";
 import { runUpdate } from "../cli/update";
 import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
@@ -1348,8 +1349,23 @@ async function claudeMemFollow(
 
 // ── The gateway's OmniRoute key (PK1) ──────────────────────────────────────────
 
-/** How to try again from the portal, in a refusal of setup's key path. */
-const KEY_AGAIN = "paste it on the Machine page's OmniRoute card again";
+/**
+ * How to try again from the portal, in a refusal of setup's key path: per action, since a made
+ * key is deleted again and was never seen, and only the paste field has the tick that saves an
+ * untested key (setup's `--save-unchecked`).
+ */
+const KEY_WORDS = {
+  key: {
+    again: "paste it on the Machine page's OmniRoute card again",
+    againUnchecked:
+      'paste it on the Machine page\'s OmniRoute card again, or tick "Save it even if OmniRoute does not answer now" there',
+  },
+  password: {
+    again: "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+    againUnchecked:
+      "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+  },
+} as const;
 const KEY_GIVE_INSTEAD = "paste it on the Machine page's OmniRoute card";
 
 /**
@@ -1370,8 +1386,11 @@ async function gatewayKeyAction(
   from: "key" | "password",
 ): Promise<ActionResult> {
   const field = from === "key" ? body.key : body.password;
-  const secret = typeof field === "string" ? field.trim() : "";
-  if (secret === "") {
+  // A key is trimmed, as setup trims one on stdin; a password is kept as typed, as setup's
+  // terminal prompt keeps it (a space can be part of one).
+  const text = typeof field === "string" ? field : "";
+  const secret = from === "key" ? text.trim() : text;
+  if (text.trim() === "") {
     return {
       lines: [
         from === "key"
@@ -1388,12 +1407,20 @@ async function gatewayKeyAction(
     const saved = await setOmnirouteKey(
       { apiFetch: healthFetch(portal), paths: portal.paths, print },
       from === "key" ? { key: secret } : { password: secret },
-      { again: KEY_AGAIN, giveKey: KEY_GIVE_INSTEAD, saveUnchecked: body.saveUnchecked === true },
+      {
+        ...KEY_WORDS[from],
+        giveKey: KEY_GIVE_INSTEAD,
+        // Only the paste field has the tick; a made key is saved checked or not at all.
+        saveUnchecked: from === "key" && body.saveUnchecked === true,
+      },
     );
     return saved.checked ? { lines, ok: true } : { lines, ok: true, tone: "warn" };
   } catch (error) {
-    // The refusal first: it is what the page shows, the lines before it are its details.
-    return { lines: [...messageOf(error).split("\n"), ...lines], ok: false };
+    // The refusal first: it is what the page shows, the lines before it are its details. The
+    // config's path as the success lines show it, `~/…`, not the home folder's full path.
+    const config = portal.paths.gatewayConfigFile;
+    const said = messageOf(error).replaceAll(config, tildify(config, portal.paths.home));
+    return { lines: [...said.split("\n"), ...lines], ok: false };
   }
 }
 

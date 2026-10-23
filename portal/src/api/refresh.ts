@@ -44,7 +44,8 @@ export const MACHINE_REFRESH: RefreshOn = (message) =>
   actionResult(message, "companion.") ||
   actionResult(message, "omniroute.") ||
   actionResult(message, "browser.") ||
-  actionResult(message, "claudemem.");
+  actionResult(message, "claudemem.") ||
+  actionResult(message, "gateway.key.");
 
 export const UPDATE_REFRESH: RefreshOn = (message) =>
   message.name === "update" || actionResult(message, "update.") || actionResult(message, "switch");

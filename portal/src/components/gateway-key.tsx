@@ -165,12 +165,11 @@ function MakeKey() {
   const id = useId();
   const [password, setPassword] = useState("");
   const [asking, setAsking] = useState(false);
-  // The password is dropped after every answer, kept or refused: it is typed again, never held.
-  const { run, state } = useAction("gateway.key.make", () => setPassword(""));
+  const { run, state } = useAction("gateway.key.make");
   const sending = state.phase === "sending";
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (password !== "") setAsking(true);
+    if (password.trim() !== "") setAsking(true);
   };
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
@@ -189,7 +188,7 @@ function MakeKey() {
           type="submit"
           size="sm"
           variant="outline"
-          disabled={sending || password === ""}
+          disabled={sending || password.trim() === ""}
           aria-busy={sending}
         >
           Make and save a key
@@ -208,6 +207,8 @@ function MakeKey() {
         onYes={() => {
           setAsking(false);
           run({ confirm: true, password });
+          // Dropped as soon as it is sent, whatever the answer: it is typed again, never held.
+          setPassword("");
         }}
       >
         The kit logs in to OmniRoute's dashboard with this password once, makes a key named after

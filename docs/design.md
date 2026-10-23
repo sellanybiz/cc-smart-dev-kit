@@ -794,7 +794,12 @@ renders without a gateway. `/api/machine` carries `gatewayKey`, one word (`set`,
 `keyFromPassword` (`createOmnirouteKey`), `checkKeyToSave` (`checkBackendKey`: a 401/403 throws
 `keyRefusedMessage`, an unanswered check throws `keyUncheckedMessage` unless `saveUnchecked`),
 `ensureConfig` under setup's lock (the backup when the key really changes), and
-`discardMadeKey` (a key made and not saved is deleted again in OmniRoute). Nothing else of
+`discardMadeKey` (a key made and not saved is deleted again in OmniRoute). Under the lock it
+checks again that the config is still there and that OmniRoute's address is the one the key
+was checked at: `restore` or a terminal's setup between the check and the write refuses the
+save instead of making a config or saving the key for an address it was not checked at. Only
+the paste field has the "save untested" tick; a made key is saved checked or not at all, and
+a password goes to OmniRoute as typed (a key is trimmed). Nothing else of
 setup runs: no router copy, no unit, no restart, no judge test — the router reads a changed
 config by itself (`watchConfig`). A machine with no config is refused in words
 (`NOT_SET_UP_FOR_KEY`): a first setup installs the service and asks about the port, which
@@ -803,7 +808,8 @@ belongs to the terminal. The refusals take the portal's own way to try again (`a
 secret then stays in this process's memory, and never reaches an argument list, the
 environment, a pipe or a child's log; the function is the CLI's own, so nothing is copied. A
 key saved without OmniRoute accepting it answers `tone: "warn"` with setup's warning words
-first, and the page draws it in the warning colour. The planted-secret test (`server.test.ts`
+first, and the page draws it in the warning colour and keeps it until the next try (as a
+failure stays), so it cannot be missed. The planted-secret test (`server.test.ts`
 › "PK1: …") runs both actions with a planted key and password and finds neither in an answer,
 the live stream, a console line, a page or a file under the home.
 

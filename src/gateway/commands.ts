@@ -492,12 +492,14 @@ async function keyFromPassword(
  * Tests a key before it is saved (`checkBackendKey`): a 401/403 throws `keyRefusedMessage`, a
  * check that could not be made throws `keyUncheckedMessage` unless `saveUnchecked`. Returns why
  * the key is saved unchecked, or "" when its backend accepted it (or has no address to ask).
+ * `again` / `againUnchecked`: how to try again after each refusal (the second defaults to the
+ * first).
  */
 async function checkKeyToSave(
   ctx: KeyContext,
   configPath: string,
   key: SetupKey,
-  options: { again?: string; saveUnchecked: boolean },
+  options: { again?: string; againUnchecked?: string; saveUnchecked: boolean },
 ): Promise<string> {
   const baseUrl =
     key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
@@ -526,7 +528,7 @@ async function checkKeyToSave(
           baseUrl,
           configPath,
           detail: check.detail,
-          ...again,
+          ...(options.againUnchecked === undefined ? again : { again: options.againUnchecked }),
         }),
       );
     }
@@ -586,13 +588,17 @@ const NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so th
 export async function setOmnirouteKey(
   ctx: KeyContext,
   given: { key: string } | { password: string },
-  options: { again: string; giveKey: string; saveUnchecked: boolean },
+  options: { again: string; againUnchecked: string; giveKey: string; saveUnchecked: boolean },
 ): Promise<{ checked: boolean }> {
   const { paths } = ctx;
   const configPath = paths.gatewayConfigFile;
   if (!existsSync(configPath)) throw new Error(NOT_SET_UP_FOR_KEY);
   // The config is read before OmniRoute is asked anything: one that cannot be used stops here.
   loadConfigFile(configPath);
+  /** The address the key is checked at: it must still be the config's when the key is saved. */
+  const omnirouteAt = (): string | undefined =>
+    backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute;
+  const checkedAt = omnirouteAt();
   let made: MadeKey | null = null;
   let key: SetupKey = { backend: "omniroute", value: "key" in given ? given.key : "" };
   if ("password" in given) {
@@ -603,11 +609,21 @@ export async function setOmnirouteKey(
   try {
     const unchecked = await checkKeyToSave(ctx, configPath, key, {
       again: options.again,
+      againUnchecked: options.againUnchecked,
       saveUnchecked: options.saveUnchecked,
     });
     await withLock(
       paths.stateDir,
       async () => {
+        // Again under the lock, where nothing else writes: a config `restore` removed meanwhile
+        // is not made again here (`ensureConfig` would create one), and a key checked at one
+        // address is never saved for another one a terminal's setup gave meanwhile.
+        if (!existsSync(configPath)) throw new Error(NOT_SET_UP_FOR_KEY);
+        if (omnirouteAt() !== checkedAt) {
+          throw new Error(
+            `OmniRoute's address in ${configPath} changed while the key was checked. Nothing was saved: try again.`,
+          );
+        }
         const backups = backupDir(paths.stateDir, configPath);
         const backupsBefore = backupCount(backups);
         const said = ensureConfig(configPath, key, { stateDir: paths.stateDir });

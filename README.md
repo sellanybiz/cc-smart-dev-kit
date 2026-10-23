@@ -1530,7 +1530,7 @@ Each asks first, then runs setup's own key steps, and nothing else of setup: Omn
 with the key first, and a key it refuses (401 or 403) changes nothing and says which key it
 wants. A check OmniRoute does not answer saves nothing, unless you tick **Save it even if
 OmniRoute does not answer now** (setup's `--save-unchecked`): then the key is saved untested,
-and the result says so in the warning colour. A key that replaces one is backed up first, and a
+and the result says so in the warning colour, and stays until you try again. A key that replaces one is backed up first, and a
 key made but not saved is deleted again in OmniRoute. The router reads the new key by itself:
 nothing restarts. A machine with no gateway yet is set up in a terminal first (`gateway setup`
 also installs the router), and the card says so. Neither the key nor the password is ever in
