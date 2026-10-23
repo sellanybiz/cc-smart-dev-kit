@@ -479,13 +479,21 @@ const POLL_MS = 500;
 const WAITING_LINE_EVERY_MS = 60_000;
 
 /**
+ * What the end line leads with: `run.ts` builds that line from this, and the first waiting
+ * line's hint points at it by this name. One home for the wording, so a rename cannot leave
+ * the hint naming a line that no longer exists.
+ */
+export const ENDED_LINE_LEAD = "Heavy job ended";
+
+/**
  * What the first waiting line carries besides the wait. A job whose output goes down a
  * pipe (`| tail`) reports the pipe's own status, so the person is told where the job's own
  * status shows up. Once per job, never again on the minute lines after it — and never for
- * a job that does not wait: those print nothing at all.
+ * a job that does not wait: those get no hint and no end line.
  */
-const PIPE_HINT =
-  'A pipe (| tail) hides this job\'s exit status: the "Heavy job ended" line carries it.';
+function pipeHint(): string {
+  return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
+}
 
 /** Thrown when `signal` stops a wait; everything taken so far is given back first. */
 export class WaitStoppedError extends Error {
@@ -569,7 +577,7 @@ export async function acquireFrom(
     waitStartedAt ??= at;
     lastLineAt = at;
     const waitedMs = at - waitStartedAt;
-    const waited = waitedMs < WAITING_LINE_EVERY_MS ? "" : ` (waiting ${durationText(waitedMs)})`;
+    const waited = first ? "" : ` (waiting ${durationText(waitedMs)})`;
     const budgets: string[] = [];
     const holders: string[] = [];
     // The report only describes. A store it cannot read is named so, and never stops the
@@ -591,7 +599,7 @@ export async function acquireFrom(
     options.onWaiting(
       `Heavy job waits for memory: ${job.what} ${wants}${waited}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
     );
-    if (first) options.onWaiting(PIPE_HINT);
+    if (first) options.onWaiting(pipeHint());
     for (const line of holders) options.onWaiting(line);
   };
 

@@ -26829,7 +26829,10 @@ function holderLines(held, store, now) {
 }
 var POLL_MS = 500;
 var WAITING_LINE_EVERY_MS = 60000;
-var PIPE_HINT = `A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.`;
+var ENDED_LINE_LEAD = "Heavy job ended";
+function pipeHint() {
+  return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
+}
 
 class WaitStoppedError extends Error {
   name = "WaitStoppedError";
@@ -26882,7 +26885,7 @@ async function acquireFrom(stores, job, options) {
     waitStartedAt ??= at;
     lastLineAt = at;
     const waitedMs = at - waitStartedAt;
-    const waited = waitedMs < WAITING_LINE_EVERY_MS ? "" : ` (waiting ${durationText(waitedMs)})`;
+    const waited = first ? "" : ` (waiting ${durationText(waitedMs)})`;
     const budgets = [];
     const holders = [];
     for (const each of stores) {
@@ -26901,7 +26904,7 @@ async function acquireFrom(stores, job, options) {
     }
     options.onWaiting(`Heavy job waits for memory: ${job.what} ${wants}${waited}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`);
     if (first)
-      options.onWaiting(PIPE_HINT);
+      options.onWaiting(pipeHint());
     for (const line of holders)
       options.onWaiting(line);
   };
@@ -41375,7 +41378,7 @@ function spawnAndWait(argv, signals = process, say = () => {
   return new Promise((resolve) => {
     const child = spawn2(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
-    const sentOn = new Set;
+    const sentSignals = new Set;
     const sendAll = (signal) => {
       if (pgid !== undefined) {
         if (windows)
@@ -41401,7 +41404,7 @@ function spawnAndWait(argv, signals = process, say = () => {
       signal,
       () => {
         if (!finished)
-          sentOn.add(signal);
+          sentSignals.add(signal);
         sendAll(signal);
       }
     ]);
@@ -41426,15 +41429,15 @@ function spawnAndWait(argv, signals = process, say = () => {
       }
       for (const [signal, listener] of listeners)
         signals.off(signal, listener);
-      const stoppedBy = end.signal !== null && sentOn.has(end.signal) ? "sent-on" : leftovers ? "leftovers" : null;
-      resolve({ ...end, stoppedBy });
+      const sentOn = end.signal !== null && sentSignals.has(end.signal);
+      resolve({ ...end, sentOn, leftovers });
     };
     child.once("error", (error) => {
       say(`could not start ${program}: ${error.code ?? error.message}`);
-      done({ code: 127, signal: null, stoppedBy: null });
+      done({ code: 127, leftovers: false, sentOn: false, signal: null });
     });
     child.once("exit", (code, signal) => {
-      done({ code: exitCodeOf(code, signal), signal, stoppedBy: null });
+      done({ code: exitCodeOf(code, signal), leftovers: false, sentOn: false, signal });
     });
   });
 }
@@ -41504,9 +41507,10 @@ function startedLine(what, gb, waitedMs) {
   return `Heavy job starts after ${durationText(waitedMs)}: ${what}${size}`;
 }
 function endedLine(what, end, ranMs) {
-  const how = end.signal === null ? `exit ${String(end.code)}` : `stopped by ${end.signal}${end.stoppedBy === "sent-on" ? " (sent on by job run)" : ""}`;
-  const leftovers = end.stoppedBy === "leftovers" ? " (its leftover processes were stopped)" : "";
-  return `Heavy job ended: ${what}, ${how} after ${durationText(ranMs)}${leftovers}`;
+  const how = end.signal === null ? `exit ${String(end.code)}` : `stopped by ${end.signal}`;
+  const sent = end.sentOn ? " (sent on by job run)" : "";
+  const leftovers = end.leftovers ? " (its leftover processes were stopped)" : "";
+  return `${ENDED_LINE_LEAD}: ${what}, ${how}${sent} after ${durationText(ranMs)}${leftovers}`;
 }
 function takesOptions(command) {
   const invocation = invocationOf([...command]);

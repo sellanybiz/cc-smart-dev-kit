@@ -19,7 +19,7 @@ import {
   unitName,
 } from "./launch";
 import { sliceChain } from "./memory";
-import { durationText, type QueuedJob, type Reservation } from "./queue";
+import { durationText, ENDED_LINE_LEAD, type QueuedJob, type Reservation } from "./queue";
 
 export interface JobRequest {
   /** The kind, or "" for a job with a name only (`--exclusive` without `--kind`). */
@@ -80,15 +80,14 @@ function startedLine(what: string, gb: number, waitedMs: number): string {
 
 /** The line `job run` says after a job that waited ended, however it ended. */
 function endedLine(what: string, end: JobEnd, ranMs: number): string {
-  // The signal, when one ended it, and the one the wrapper sent on named as the sender:
-  // the person's Ctrl+C at `job run`, or a stop that came from elsewhere (a `kill`, the
-  // kernel's OOM killer) and belongs to nobody here.
-  const how =
-    end.signal === null
-      ? `exit ${String(end.code)}`
-      : `stopped by ${end.signal}${end.stoppedBy === "sent-on" ? " (sent on by job run)" : ""}`;
-  const leftovers = end.stoppedBy === "leftovers" ? " (its leftover processes were stopped)" : "";
-  return `Heavy job ended: ${what}, ${how} after ${durationText(ranMs)}${leftovers}`;
+  // The signal, when one ended it, with the wrapper named as the sender when the signal it
+  // sent on is that same one: the person's Ctrl+C at `job run`, or a `kill` at it. A stop
+  // that came from elsewhere (the kernel's OOM killer, another process's `kill`) belongs to
+  // nobody here. Both notes are facts of their own, and one job can carry both.
+  const how = end.signal === null ? `exit ${String(end.code)}` : `stopped by ${end.signal}`;
+  const sent = end.sentOn ? " (sent on by job run)" : "";
+  const leftovers = end.leftovers ? " (its leftover processes were stopped)" : "";
+  return `${ENDED_LINE_LEAD}: ${what}, ${how}${sent} after ${durationText(ranMs)}${leftovers}`;
 }
 
 /** A shell line (`sh -c "…"`) takes no extra option at its end: it would land in `$0`. */
@@ -138,7 +137,7 @@ async function runTimed(running: Running, deps: JobDeps): Promise<Ran> {
 /**
  * The end line, for a job that waited: how it ended, and how long it ran. A piped run's
  * status is the pipe's own, so this is the line that carries the job's own (the first
- * waiting line says so once: `PIPE_HINT`).
+ * waiting line says so once: `pipeHint` in `queue.ts`).
  */
 function sayEnded(running: Running, ran: Ran, deps: JobDeps): void {
   if (running.waitedSince === null) return;

@@ -21,7 +21,6 @@ import {
   ceilingArgv,
   chooseLaunch,
   exitCodeOf,
-  type JobEnd,
   type LaunchFacts,
   launchArgv,
   oomKiller,
@@ -308,16 +307,18 @@ describe("spawnAndWait: real children", () => {
   test("returns the child's exit code, and no signal", async () => {
     expect(await spawnAndWait(["sh", "-c", "exit 3"], new EventEmitter())).toEqual({
       code: 3,
+      leftovers: false,
+      sentOn: false,
       signal: null,
-      stoppedBy: null,
     });
   });
 
   test("returns 128 + n for a child killed by a signal, and names it", async () => {
     expect(await spawnAndWait(["sh", "-c", "kill -TERM $$"], new EventEmitter())).toEqual({
       code: 143,
+      leftovers: false,
+      sentOn: false, // nobody here sent it on: the job killed itself
       signal: "SIGTERM",
-      stoppedBy: null, // nobody here sent it on: the job killed itself
     });
   });
 
@@ -327,7 +328,7 @@ describe("spawnAndWait: real children", () => {
       await spawnAndWait(["cc-smart-dev-kit-no-such-command-xyz"], new EventEmitter(), (line) =>
         said.push(line),
       ),
-    ).toEqual({ code: 127, signal: null, stoppedBy: null });
+    ).toEqual({ code: 127, leftovers: false, sentOn: false, signal: null });
     expect(said).toEqual(["could not start cc-smart-dev-kit-no-such-command-xyz: ENOENT"]);
   });
 
@@ -336,7 +337,7 @@ describe("spawnAndWait: real children", () => {
     const running = spawnAndWait(["sleep", "30"], signals);
     expect(signals.listenerCount("SIGTERM")).toBe(1);
     signals.emit("SIGTERM");
-    expect(await running).toEqual({ code: 143, signal: "SIGTERM", stoppedBy: "sent-on" });
+    expect(await running).toEqual({ code: 143, leftovers: false, sentOn: true, signal: "SIGTERM" });
     expect(signals.listenerCount("SIGTERM")).toBe(0);
     expect(signals.listenerCount("SIGHUP")).toBe(0);
     expect(signals.listenerCount("SIGINT")).toBe(0);
@@ -346,7 +347,7 @@ describe("spawnAndWait: real children", () => {
     const signals = new EventEmitter();
     const running = spawnAndWait(["sleep", "30"], signals);
     signals.emit("SIGHUP");
-    expect(await running).toEqual({ code: 129, signal: "SIGHUP", stoppedBy: "sent-on" });
+    expect(await running).toEqual({ code: 129, leftovers: false, sentOn: true, signal: "SIGHUP" });
   });
 
   // In its own session the job no longer gets the terminal's Ctrl+C: `job run` sends it
@@ -356,7 +357,7 @@ describe("spawnAndWait: real children", () => {
     const running = spawnAndWait(["sleep", "30"], signals);
     expect(signals.listenerCount("SIGINT")).toBe(1);
     signals.emit("SIGINT");
-    expect(await running).toEqual({ code: 130, signal: "SIGINT", stoppedBy: "sent-on" });
+    expect(await running).toEqual({ code: 130, leftovers: false, sentOn: true, signal: "SIGINT" });
   });
 
   test("starts the job in a process group of its own", async () => {
@@ -387,7 +388,30 @@ describe("spawnAndWait: real children", () => {
     );
     const worker = await waitForPid(pidFile);
     signals.emit("SIGTERM");
-    expect(await running).toEqual({ code: 143, signal: "SIGTERM", stoppedBy: "sent-on" });
+    expect(await running).toEqual({ code: 143, leftovers: false, sentOn: true, signal: "SIGTERM" });
+    expect(isRunning(worker)).toBe(false);
+  });
+
+  test("a job that died of the signal it was sent, and left a process behind: both facts", async () => {
+    const dir = tempDir("group");
+    const pidFile = join(dir, "worker");
+    const signals = new EventEmitter();
+    // The job's own process dies of the SIGTERM sent on to its group; the child that
+    // ignores SIGTERM lives on, so the memory is only free once it is stopped too. A short
+    // grace: only the leftover stop can end this test in time.
+    const running = spawnAndWait(
+      [
+        "sh",
+        "-c",
+        `sh -c 'trap "" TERM; while :; do sleep 1; done' & echo $! > "${pidFile}"; exec sleep 30`,
+      ],
+      signals,
+      () => undefined,
+      { leftoverGraceMs: 100, killWaitMs: 2_000 },
+    );
+    const worker = await waitForPid(pidFile);
+    signals.emit("SIGTERM");
+    expect(await running).toEqual({ code: 143, leftovers: true, sentOn: true, signal: "SIGTERM" });
     expect(isRunning(worker)).toBe(false);
   });
 
@@ -402,7 +426,7 @@ describe("spawnAndWait: real children", () => {
       (line) => said.push(line),
       { leftoverGraceMs: 100, killWaitMs: 2_000 },
     );
-    expect(end).toEqual({ code: 0, signal: null, stoppedBy: "leftovers" });
+    expect(end).toEqual({ code: 0, leftovers: true, sentOn: false, signal: null });
     expect(isRunning(Number(readFileSync(pidFile, "utf8")))).toBe(false);
     expect(said).toEqual(["the job left processes running: stopping them, so its memory is free"]);
   });
@@ -425,7 +449,7 @@ describe("spawnAndWait: real children", () => {
     await Bun.sleep(300);
     expect(finished).toBe(false);
     empty = true;
-    expect(await running).toEqual({ code: 129, signal: "SIGHUP", stoppedBy: "sent-on" });
+    expect(await running).toEqual({ code: 129, leftovers: false, sentOn: true, signal: "SIGHUP" });
   });
 });
 
@@ -487,7 +511,12 @@ describe("spawnAndWait on Windows", () => {
       // 137: the job ended by SIGKILL, which is what every Windows stop is (128 + 9). The
       // sender is not named: what ended the tree is `taskkill`'s SIGKILL, not the signal
       // that arrived (`endJobTree` in windows.ts).
-      expect(await running).toEqual({ code: 137, signal: "SIGKILL", stoppedBy: null });
+      expect(await running).toEqual({
+        code: 137,
+        leftovers: false,
+        sentOn: false,
+        signal: "SIGKILL",
+      });
       expect(killed).toEqual([pid]);
     }
   });
@@ -507,7 +536,7 @@ describe("spawnAndWait on Windows", () => {
     );
     const worker = Number(readFileSync(pidFile, "utf8"));
     try {
-      expect(end).toEqual({ code: 0, signal: null, stoppedBy: null });
+      expect(end).toEqual({ code: 0, leftovers: false, sentOn: false, signal: null });
       expect(said).toEqual([]);
       expect(killed).toEqual([]);
       expect(isRunning(worker)).toBe(true);
@@ -583,15 +612,27 @@ function deps(
     code?: number;
     /** The signal that ended the job, when one did. */
     signal?: NodeJS.Signals;
-    /** Who stopped it, beyond the job's own exit: this wrapper, or its leftover stop. */
-    stoppedBy?: JobEnd["stoppedBy"];
+    /** That signal was this wrapper's own stop: it sent on the one it caught. */
+    sentOn?: boolean;
+    /** The wrapper had to stop processes the job left behind. */
+    leftovers?: boolean;
     /** How long the job's first wait lasted, in ms. Left out: it never waited. */
     waitedMs?: number;
     /** How long the job runs, in ms: the fake clock moves by this much as it runs. */
     ranMs?: number;
   } = {},
 ): JobDeps {
-  const { code = 0, oom, limitHits, signal, stoppedBy, waitedMs, ranMs = 0, ...rest } = overrides;
+  const {
+    code = 0,
+    oom,
+    limitHits,
+    signal,
+    sentOn,
+    leftovers,
+    waitedMs,
+    ranMs = 0,
+    ...rest
+  } = overrides;
   const oomReads = oom === undefined ? [] : [...oom];
   const hitReads = limitHits === undefined ? [] : [...limitHits];
   const clock = { now: CLOCK_START };
@@ -631,7 +672,12 @@ function deps(
       r.runs.push(argv);
       r.events.push(scopeUnit === null ? "run" : `run in ${scopeUnit}`);
       clock.now += ranMs;
-      return Promise.resolve({ code, signal: signal ?? null, stoppedBy: stoppedBy ?? null });
+      return Promise.resolve({
+        code,
+        leftovers: leftovers ?? false,
+        sentOn: sentOn ?? false,
+        signal: signal ?? null,
+      });
     },
     say: (line) => r.said.push(line),
     slice: {
@@ -754,7 +800,7 @@ describe("runJob", () => {
       "Heavy job ended: vitest run src/a.test.ts, stopped by SIGTERM after 2 min",
     ]);
     const sent = recorder();
-    await runJob(request, deps(sent, { ...end, stoppedBy: "sent-on" }));
+    await runJob(request, deps(sent, { ...end, sentOn: true }));
     expect(sent.said[2]).toBe(
       "Heavy job ended: vitest run src/a.test.ts, stopped by SIGTERM (sent on by job run) after 2 min",
     );
@@ -762,10 +808,26 @@ describe("runJob", () => {
 
   test("a leftover stop is said too, after the job's own code", async () => {
     const r = recorder();
-    const end = { code: 0, ranMs: 60_000, stoppedBy: "leftovers" as const, waitedMs: 60_000 };
+    const end = { code: 0, leftovers: true, ranMs: 60_000, waitedMs: 60_000 };
     expect(await runJob(request, deps(r, end))).toBe(0);
     expect(r.said[2]).toBe(
       "Heavy job ended: vitest run src/a.test.ts, exit 0 after 1 min (its leftover processes were stopped)",
+    );
+  });
+
+  test("a job the wrapper stopped and whose leftovers it had to stop says both", async () => {
+    const r = recorder();
+    const end = {
+      code: 143,
+      leftovers: true,
+      ranMs: 2 * 60_000,
+      sentOn: true,
+      signal: "SIGTERM" as const,
+      waitedMs: 60_000,
+    };
+    expect(await runJob(request, deps(r, end))).toBe(143);
+    expect(r.said[2]).toBe(
+      "Heavy job ended: vitest run src/a.test.ts, stopped by SIGTERM (sent on by job run) after 2 min (its leftover processes were stopped)",
     );
   });
 

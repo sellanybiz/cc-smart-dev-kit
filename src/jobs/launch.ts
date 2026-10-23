@@ -190,11 +190,17 @@ export interface JobEnd {
    */
   signal: NodeJS.Signals | null;
   /**
-   * This wrapper's own stop, when it made one. `sent-on`: it sent on a signal it caught
-   * while the job still ran, and that signal is the one that ended the job. `leftovers`:
-   * it had to stop processes the job left behind, after the job's own process was gone.
+   * That signal was this wrapper's own stop: it sent on the one it caught, while the job
+   * still ran. False when the job shrugged the signal off and ended by itself, and false
+   * when another process sent the signal.
    */
-  stoppedBy: "sent-on" | "leftovers" | null;
+  sentOn: boolean;
+  /**
+   * This wrapper had to stop processes the job left behind, after the job's own process was
+   * gone. A fact of its own: a job can die of the wrapper's signal and still leave a
+   * process that has to be stopped.
+   */
+  leftovers: boolean;
 }
 
 /** One count in a cgroup's `memory.events`, or null when it is not there. */
@@ -361,7 +367,7 @@ export function spawnAndWait(
     const child = spawn(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
     /** The signals this wrapper sent on while the job still ran: its own stops. */
-    const sentOn = new Set<NodeJS.Signals>();
+    const sentSignals = new Set<NodeJS.Signals>();
     const sendAll = (signal: NodeJS.Signals) => {
       if (pgid !== undefined) {
         if (windows) endJobTree(pgid, windowsFacts);
@@ -389,7 +395,7 @@ export function spawnAndWait(
           () => {
             // The job was still running: this stop is the wrapper's own. A signal that
             // arrives while the leftovers end is not — the job itself is over already.
-            if (!finished) sentOn.add(signal);
+            if (!finished) sentSignals.add(signal);
             sendAll(signal);
           },
         ] as const,
@@ -413,18 +419,18 @@ export function spawnAndWait(
         }
       }
       for (const [signal, listener] of listeners) signals.off(signal, listener);
-      // A signal the wrapper sent on counts as its own stop only when the job died of
-      // that same one: a job that shrugged it off and ended by itself ended by itself.
-      const stoppedBy: JobEnd["stoppedBy"] =
-        end.signal !== null && sentOn.has(end.signal) ? "sent-on" : leftovers ? "leftovers" : null;
-      resolve({ ...end, stoppedBy });
+      // A signal the wrapper sent on counts as its own stop only when the job died of that
+      // same one: a job that shrugged it off and ended by itself ended by itself. The
+      // leftover stop is a fact of its own, true even then.
+      const sentOn = end.signal !== null && sentSignals.has(end.signal);
+      resolve({ ...end, sentOn, leftovers });
     };
     child.once("error", (error: NodeJS.ErrnoException) => {
       say(`could not start ${program}: ${error.code ?? error.message}`);
-      void done({ code: 127, signal: null, stoppedBy: null });
+      void done({ code: 127, leftovers: false, sentOn: false, signal: null });
     });
     child.once("exit", (code, signal) => {
-      void done({ code: exitCodeOf(code, signal), signal, stoppedBy: null });
+      void done({ code: exitCodeOf(code, signal), leftovers: false, sentOn: false, signal });
     });
   });
 }

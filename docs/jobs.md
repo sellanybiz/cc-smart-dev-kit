@@ -66,7 +66,7 @@ flowchart TD
 
 The job's output is the job's: stdout and stderr are passed through untouched, so anything
 `job run` itself has to say goes to stderr, each line prefixed `[cc-smart-dev-kit job]`. A
-job that never waits says nothing at all: a free machine gets no noise.
+job that never waits prints none of the three lines below: a free machine gets no noise.
 
 A job that waited says three things, around its own output:
 
@@ -88,7 +88,9 @@ A job that waited says three things, around its own output:
   min:` what the job is, then `(8 GB)`, what it reserved. A job with no memory to reserve
   (its name alone, `--exclusive`) leaves the GB out.
 - **The end line** says how the job ended, and how long it ran. It is said last: after
-  "killed for memory" (§ The launch) when the kernel stopped the job.
+  "killed for memory" (§ The launch) when the kernel stopped the job. A job a signal stops
+  **while it waits** never starts, so it gets neither this line nor the start line: the
+  wait's own lines are all it prints.
   - `exit 0` is the job's own exit code — the one a pipe hides. A job a signal ended says
     `stopped by SIGTERM` instead, and `job run` itself exits with 128 + that signal's
     number, as a shell would (step 4 above).
@@ -96,9 +98,10 @@ A job that waited says three things, around its own output:
     or a `kill` at it) is also the one that ended the job, so the line names the sender. A
     signal from somewhere else — the kernel's OOM killer, another process's `kill` — is
     named without a sender.
-  - `(its leftover processes were stopped)` says the job's memory was freed by force: the
-    job's own process was gone, but the processes it left behind had to be stopped
-    (§ The launch).
+  - `(its leftover processes were stopped)`: the job's own process was gone, but the
+    processes it left behind had to be stopped (§ The launch), so its memory was freed by
+    force. One line can carry both notes: a job that died of the signal `job run` sent on
+    and left a process behind says both.
 
 ## Kinds
 
@@ -267,6 +270,7 @@ How a waiting job decides, every half second:
 
 ```text
 [cc-smart-dev-kit job] Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free. Why: only 2 GB of this machine's budget is free.
+[cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
 [cc-smart-dev-kit job]   this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
 ```
 

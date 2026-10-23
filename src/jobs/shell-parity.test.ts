@@ -152,7 +152,7 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     },
     run: async (argv) => {
       started = argv;
-      return { code: 0, signal: null, stoppedBy: null };
+      return { code: 0, leftovers: false, sentOn: false, signal: null };
     },
     say: () => {},
   };
