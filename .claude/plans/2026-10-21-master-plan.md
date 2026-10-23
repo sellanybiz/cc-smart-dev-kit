@@ -457,6 +457,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **CC7 merged** (`809e97d`, bundles `857d498`): `crew-role` on `UserPromptSubmit` records the person's own prompt in a crew session and the lead's watch prints it; proved live that a `SendMessage` and a background task's event arrive wrapped, a typed prompt bare, and the input has no source field. Three more crew sessions stopped on a question only the person could answer (CC3: `git checkout -- plugin/dist`; CC8's reviewer: a script naming the portal's port); each continues as a new round from its head (`briefs/cc3-2.md`, `briefs/cc8-2.md`) — CC6's crew deny ends this once 1.1.0 is installed.
 
+- 2026-10-23 (overnight): **CC4 merged** (`3f4acc4`): the self-watch gauge reads the window from Claude Code's own status-line report per model id, then one table (the current families and `[1m]` → 1M, Haiku 4.5 → 200k), then a backend's listed window mapped from the bare name the transcript records; the 1M note to Opus crew sessions stops being needed once 1.1.0 is installed.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
@@ -464,7 +466,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 3. Live proofs the crew sessions could not run: BR1 — close Chrome, then run `cc-smart-dev-kit browser check` from a terminal (it should start Chrome in the `claude-code` profile and connect); CR1's probe (its report names the exact `!` commands) for how a `--bg -w` session comes back in its worktree.
 4. After 1.1.0 is installed: remove `crew.max` 12 / `crew.maxOpus` 4 from this machine's own workflow file (now the machine-wide ceiling); turn the status line on (`cc-smart-dev-kit setup --statusline`) so the opus usage guard holds.
 5. Any crew session still waiting on a permission prompt (`claude attach <name>`).
-6. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
+6. CC4's live proof, after 1.1.0 is installed: reply once in an interactive session, then `cat ~/.claude/cc-smart-dev-kit/context-window.json` — it must hold the session's model with `"size": 1000000` for claude-opus-5-5.
+7. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
 
 ### Decided overnight (for the owner's review)
 
