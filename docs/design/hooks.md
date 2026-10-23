@@ -514,7 +514,11 @@ CLAUDECODE bun test` — the usual way to start a nested session — are not tou
 Bash tool keeps no `export` or `unset` from one call to the next (seen live 2026-10-22: an
 `unset CLAUDECODE` in one call, `CLAUDECODE=1` again in the next), so a line is the unit. A
 program the line works out when it runs (`$(which <kit>)`, `$KIT`) cannot be named: when the
-line names the kit command, the guard **asks** instead of staying silent.
+line names the kit command, the guard **asks** instead of staying silent. **A path that only
+passes through a folder of that name (`…/cc-smart-dev-kit/src/x.test.ts`) names no command**;
+a launcher the line names by its path (`/…/bin/cc-smart-dev-kit`, `cc-smart-dev-kit.cmd`), an
+assignment that binds it to a variable, a substitution that runs it, and a bundle among the
+computed program's own words each still ask.
 
 **How an edit is matched.** The path the call names is taken as written and as a real path (an
 Edit follows a link, so `notes.txt` linking to `workflow.json` changes `workflow.json`);

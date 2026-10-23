@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
-import { runCrewAnswer } from "./answer";
+import { resumeArgs, runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
@@ -226,6 +226,7 @@ describe("crew answer", () => {
         mcp,
         "--settings",
         settings,
+        "--",
         "the port is 3210",
       ],
     ]);
@@ -300,6 +301,36 @@ describe("crew answer", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("working");
+  });
+
+  test("FU2: a resume text that starts with `-` goes after `--`, so claude reads it as the prompt", () => {
+    // `claude -p "-1 is wrong: use 2"` answers `error: unknown option '-1 is wrong: use 2'`;
+    // with `--` before it the fake Anthropic's log held the text as the prompt (2.1.309).
+    const args = resumeArgs(
+      {
+        effort: "high",
+        model: "sonnet",
+        permissionMode: "auto",
+        sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      },
+      { mcpFile: "/home/user/mcp.json", settingsFile: "/home/user/settings.json" },
+      "-1 is wrong: use 2",
+    );
+    expect(args.slice(-3)).toEqual(["/home/user/settings.json", "--", "-1 is wrong: use 2"]);
+  });
+
+  test("FU2: a resume with no text carries no `--`", () => {
+    const args = resumeArgs(
+      {
+        effort: "high",
+        model: "sonnet",
+        permissionMode: "auto",
+        sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      },
+      { mcpFile: null, settingsFile: "/home/user/settings.json" },
+      null,
+    );
+    expect(args.at(-1)).toBe("/home/user/settings.json");
   });
 
   test("D36: a question and its answer, through the two commands", async () => {

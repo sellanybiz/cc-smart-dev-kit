@@ -206,6 +206,10 @@ export function sessionFlags(
  * **`--mcp-config` comes before `--settings`, never last:** it takes any number of files, so a
  * prompt after it would be read as another config file (proved live on 2.1.309: `Say ok` became
  * `MCP config file not found: …/Say ok`). `--settings` takes one value and ends the list.
+ *
+ * **The first line comes after a bare `--`**, like a resume's text (`resumeArgs`): a first line
+ * that starts with `-` would be read as a flag, and `claude -p` refuses such a prompt with
+ * `unknown option` (proved live on 2.1.309, `docs/claude-code-contract.md`).
  */
 export function launchArgs(spec: CrewLaunchSpec): string[] {
   return [
@@ -220,6 +224,7 @@ export function launchArgs(spec: CrewLaunchSpec): string[] {
     spec.mcpFile,
     "--settings",
     spec.settingsFile,
+    "--",
     spec.prompt,
   ];
 }

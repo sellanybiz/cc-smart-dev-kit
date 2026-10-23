@@ -88,7 +88,21 @@ describe("the argv", () => {
       "/home/user/.claude/cc-smart-dev-kit/crew/k/files/x/mcp.json",
       "--settings",
       "/home/user/.claude/cc-smart-dev-kit/crew/k/files/x/settings.json",
+      // A first line that starts with `-` would be read as a flag; `--` ends the options
+      // (proved live on 2.1.309, `docs/claude-code-contract.md`).
+      "--",
       "You are crew session C kit B6b portal-live for lead LEAD kit plan.",
+    ]);
+  });
+
+  test("FU2: a first line that starts with `-` is sent after `--`, never read as a flag", () => {
+    // `claude -p "-1 is wrong: use 2"` answers `error: unknown option '-1 is wrong: use 2'`;
+    // with `--` before it the fake Anthropic's log held the text as the prompt (2.1.309).
+    const args = launchArgs({ ...spec, prompt: "-1 is wrong: use 2" });
+    expect(args.slice(-3)).toEqual([
+      "/home/user/.claude/cc-smart-dev-kit/crew/k/files/x/settings.json",
+      "--",
+      "-1 is wrong: use 2",
     ]);
   });
 
@@ -115,7 +129,7 @@ describe("the argv", () => {
         "/s",
         "/v:off",
         "/c",
-        String.raw`""C:\Program Files\nodejs\claude.cmd" "--bg" "-w" "crew-B6b-portal-live" "--name" "C kit B6b portal-live" "--model" "sonnet" "--effort" "max" "--permission-mode" "auto" "--autocompact" "auto" "--strict-mcp-config" "--mcp-config" "C:\Users\u\.claude\cc-smart-dev-kit\crew sessions\k\files\x\mcp.json" "--settings" "C:\Users\u\.claude\cc-smart-dev-kit\crew sessions\k\files\x\settings.json" "You are crew session C kit B6b portal-live for lead LEAD kit plan.""`,
+        String.raw`""C:\Program Files\nodejs\claude.cmd" "--bg" "-w" "crew-B6b-portal-live" "--name" "C kit B6b portal-live" "--model" "sonnet" "--effort" "max" "--permission-mode" "auto" "--autocompact" "auto" "--strict-mcp-config" "--mcp-config" "C:\Users\u\.claude\cc-smart-dev-kit\crew sessions\k\files\x\mcp.json" "--settings" "C:\Users\u\.claude\cc-smart-dev-kit\crew sessions\k\files\x\settings.json" "--" "You are crew session C kit B6b portal-live for lead LEAD kit plan.""`,
       ],
       verbatim: true,
     });
