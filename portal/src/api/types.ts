@@ -232,7 +232,7 @@ export type WaitingFor =
 /** `src/crew/store.ts` › `CrewRecord` (the fields a page reads). */
 export interface CrewRecord {
   id: string;
-  /** `C <tag> <phase> <slug>` (`crewName`, `src/crew/names.ts`). */
+  /** `C <tag> <plan> <phase> <slug>`, or `C <tag> <phase> <slug>` before 1.1.2 (`crewName`, `src/crew/names.ts`). */
   name: string;
   sessionId: null | string;
   shortId: null | string;

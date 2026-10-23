@@ -29,14 +29,13 @@
  *   without the field), the remote's default branch (`origin/HEAD`), else `main` — with one
  *   line saying which was used.
  */
-import type { Server } from "node:net";
 import { basename, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
-import { canGo, cleanFinished, forgottenLine, holdCleanLock } from "./clean";
+import { type CleanLock, canGo, cleanFinished, forgottenLine, holdCleanLock } from "./clean";
 import {
   deleteMergedBranch,
   fetchBase,
@@ -267,6 +266,9 @@ export async function runWorktrees(
   env: Env,
   cwd: string = process.cwd(),
   sinks: WorktreesSinks = CONSOLE_SINKS,
+  // The machine-wide lock: a test hands in its own, so it never reaches the real port a running
+  // clean may hold (`LOCK_PORTS.worktreesClean`), as `auto-clean.ts` takes `deps.hold`.
+  hold: () => Promise<null | CleanLock> = holdCleanLock,
 ): Promise<number> {
   const { error, print } = sinks;
 
@@ -286,7 +288,7 @@ export async function runWorktrees(
     print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`);
   }
 
-  let lock: null | Server = null;
+  let lock: null | CleanLock = null;
   if (options.clean || options.remove !== null) {
     if (!samePath(cwd, repo)) {
       error(
@@ -294,7 +296,7 @@ export async function runWorktrees(
       );
       return 1;
     }
-    lock = await holdCleanLock();
+    lock = await hold();
     if (lock === null) {
       print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;

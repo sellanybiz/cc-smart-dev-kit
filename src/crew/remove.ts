@@ -57,6 +57,7 @@ import {
   reasonOf,
   refuse,
   relative,
+  sessionUnknown,
   stopSession,
 } from "./end";
 import { appendCrewEvent } from "./store";
@@ -294,7 +295,11 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   // 8. Last, `claude rm`: it refuses a worktree that is still there.
   if (record.shortId !== null) {
     const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
-    if (rm !== null) {
+    // A job Claude Code no longer has cannot be removed again: `claude rm` fails on it ("No job
+    // matching") however often it runs. When agent view does not list the session at all, it is
+    // gone already — the state this step wants — so the record goes too.
+    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    if (rm !== null && !goneAlready) {
       // What is left is said as it is: a branch git keeps is not called gone.
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
@@ -320,7 +325,11 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
       }
       return 1;
     }
-    ctx.print(`removed session ${record.shortId}`);
+    ctx.print(
+      goneAlready
+        ? `session ${record.shortId} was gone already`
+        : `removed session ${record.shortId}`,
+    );
   }
   const stored = await markState(record, "removed", "removed", ctx);
   ctx.print(`removed ${record.name}`);

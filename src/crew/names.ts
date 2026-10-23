@@ -2,17 +2,22 @@
  * Session names: the clean title every session's name goes through, and the names that show a
  * lead's or a crew session's role (the owner's ask; the scheme is decision D26):
  *
- *   LEAD <tag> <plan>           the lead of one plan
- *   C <tag> <phase> <slug>      one crew phase; a hand-off's next crew session adds ` 2`, ` 3`
+ *   LEAD <tag> <plan>                 the lead of one plan
+ *   C <tag> <plan> <phase> <slug>     one crew phase; a hand-off's next crew session adds ` 2`, ` 3`
  *
  * Agent view has no parent link and no grouping by lead, so the name is how a person (and the
- * portal) groups them. **Role and phase come first**, so a list that cuts a name still shows
- * them: `C <tag> <phase>` always fits in `NAME_VIEW` characters, and the whole name in
- * `MAX_SESSION_NAME` — the slug or the plan is what a long name loses. **ASCII only, no
- * brackets or quotes**, so a name is safe in a title bar, a shell line and a file name, and it
- * **never ends in `]`**: the message guard reads a trailing ` [ref]` as the one ListAgents
- * prints after a name and drops it (`withoutListRef`), so a name of ours that ended in `]` would
- * not match itself there. State never goes into a name: the name is the address.
+ * portal) groups them. **Role, tag and the lead's plan come first**, so a list that cuts a
+ * name still shows whose crew session it is: `C <tag>` always fits in `NAME_VIEW` characters,
+ * and the whole name in `MAX_SESSION_NAME` — the plan is cut at `MAX_CREW_PLAN` so the phase
+ * always fits whole, and the slug is what a long name loses. **ASCII only, no brackets or
+ * quotes**, so a name is safe in a title bar, a shell line and a file name, and it **never ends
+ * in `]`**: the message guard reads a trailing ` [ref]` as the one ListAgents prints after a
+ * name and drops it (`withoutListRef`), so a name of ours that ended in `]` would not match
+ * itself there. State never goes into a name: the name is the address.
+ *
+ * A crew record keeps the name it was given: one written by 1.1.1 or earlier says
+ * `C <tag> <phase> <slug>`, and every reader takes both shapes (`roleOf`, and the store,
+ * which is what the commands go by).
  *
  * `<tag>` names the repository: the main checkout's folder name, or `workflow.crew.tag` when
  * the person sets one (`crewTag`). One home for these rules: the launcher, the session-name
@@ -25,16 +30,26 @@ import { basename } from "node:path";
 export const MAX_SESSION_NAME = 60;
 
 /**
- * The start of a name a narrow list shows (agent view's name column, a tab): the role, the tag
- * and a crew session's phase always fit in it. The width agent view really shows is not proved live
- * yet; until it is, this is the plan's number.
+ * The start of a name a narrow list shows (agent view's name column, a tab): the role and the
+ * tag always fit in it, and usually the lead's plan after them. The width agent view really
+ * shows is not proved live yet; until it is, this is the plan's number.
  */
 export const NAME_VIEW = 24;
 
-/** The longest tag: `C <tag> <phase>` stays inside `NAME_VIEW`. */
+/** The longest tag: `C <tag>` stays inside `NAME_VIEW`. */
 export const MAX_TAG = 12;
 
-/** The longest phase (`K`, `W1a`, `D17b`, `E1a-E1b`): `C <tag> <phase>` stays inside `NAME_VIEW`. */
+/**
+ * The longest plan a crew session's name carries. With the longest tag and phase the name still
+ * fits `MAX_SESSION_NAME` with room for the slug and its hand-off number, so a long plan never
+ * crowds out the phase.
+ */
+export const MAX_CREW_PLAN = 16;
+
+/**
+ * The longest phase (`K`, `W1a`, `D17b`, `E1a-E1b`): always whole in a name, whatever the tag
+ * and the plan are, because both are cut to their own limit first.
+ */
 export const MAX_PHASE = 8;
 
 /**
@@ -172,19 +187,28 @@ export function leadName(tag: string, plan: string): string {
 }
 
 /**
- * `C <tag> <phase> <slug>`, and ` <n>` for a hand-off's next crew session (`n` 2 or more). The phase
- * must already be clean (`isPhase`): it is the crew session's identity, so it is refused rather than
- * changed. The slug is cut, never the suffix, so two crew sessions of one phase never share a name.
+ * `C <tag> <plan> <phase> <slug>`, and ` <n>` for a hand-off's next crew session (`n` 2 or more).
+ * The plan is the lead's (`leadName`), so the two names line up. The phase must already be clean
+ * (`isPhase`): it is the crew session's identity, so it is refused rather than changed. The plan
+ * is cut at `MAX_CREW_PLAN` so the phase always fits whole, and the slug is cut to what is left,
+ * never the suffix, so two crew sessions of one phase never share a name.
  */
-export function crewName(tag: string, phase: string, slug: string, n?: number): string {
+export function crewName(
+  tag: string,
+  plan: string,
+  phase: string,
+  slug: string,
+  n?: number,
+): string {
   const cleanTag = requiredPart(tag, MAX_TAG, "tag");
+  const cleanPlan = requiredPart(plan, MAX_CREW_PLAN, "plan");
   if (!isPhase(phase)) {
     throw new SessionNameError(
       `the phase "${phase}" cannot be part of a name: a phase is ${PHASE_RULE}`,
     );
   }
   const suffix = handoffSuffix(n);
-  const head = `${CREW_ROLE} ${cleanTag} ${phase} `;
+  const head = `${CREW_ROLE} ${cleanTag} ${cleanPlan} ${phase} `;
   return `${head}${requiredPart(slug, MAX_SESSION_NAME - head.length - suffix.length, "slug")}${suffix}`;
 }
 
@@ -199,11 +223,20 @@ export function withoutListRef(name: string): string {
 /** One word of a name of ours. */
 const PART = "[A-Za-z0-9._-]+";
 
+/** A hand-off's number: a whole number of 2 or more, as `handoffSuffix` writes it. */
+const HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
+
 /** A lead's name, whole or cut after its tag. */
 const LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
 
-/** A crew session's name, whole or cut after its phase, with or without a hand-off number. */
-const CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
+/**
+ * A crew session's name, with or without a hand-off number, whole or cut after its phase, as a
+ * narrow list shows it. It takes both shapes: `C <tag> <plan> <phase> <slug>` (1.1.2 on) and
+ * `C <tag> <phase> <slug>` (1.1.1 and earlier, whose records keep their names). A fifth word is
+ * read only as a hand-off number, so a person's `C …` name with five words is not ours; every
+ * cut of a name of ours keeps at most four words before the number.
+ */
+const CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 /**
  * The role a name shows: `lead`, `crew`, or null for any other name (a person's own). It reads
