@@ -62,7 +62,7 @@ export interface Metric {
  * What the window holds overall: its requests, and how many of them no price could be given
  * (`HistoryPoint.unpriced`). From the same points the chart draws, so the two never disagree.
  */
-export function totalsOf(history: ChartHistory): { requests: number; unpriced: number } {
+function totalsOf(history: ChartHistory): { requests: number; unpriced: number } {
   let requests = 0;
   let unpriced = 0;
   for (const series of history.series) {

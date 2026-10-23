@@ -824,6 +824,11 @@ export function mockData(empty: boolean): MockData {
       fallbacks: fallbackRows,
       limits,
       fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
+      // The model requests the history holds: fewer than the router's own count, which also
+      // counts Claude Code's pings to it.
+      requests: empty
+        ? { perMinute: null, sinceRouterStart: null }
+        : { perMinute: 21.6, sinceRouterStart: 892 },
       switches: slots.switches,
       crewRunning: empty ? 0 : 3,
       jobs: {

@@ -39,10 +39,18 @@ import {
 } from "@/lib/format";
 import { rangeOf } from "@/lib/history";
 
-/** Requests a minute over the last five minutes of the router's list. */
-function perMinute(recent: readonly RecentRequest[], now: number): number {
-  const since = now - 5 * 60_000;
-  return recent.filter((request) => request.at >= since).length / 5;
+/**
+ * The Overview's model-request headline: the count, or the reason there is none. Both numbers
+ * of `OverviewRequests` are null for different reasons, and each is said in its own words
+ * rather than a number the machine cannot give.
+ */
+function modelRequestsWords(requests: OverviewData["requests"]): string {
+  if (requests.sinceRouterStart !== null) {
+    return `${count(requests.sinceRouterStart)} model requests since the router started`;
+  }
+  return requests.perMinute === null
+    ? "The history has logged no request, or cannot be read"
+    : "The router does not answer, so nothing is counted from its start";
 }
 
 const fallbackColumn = columnsFor<FallbackRow>();
@@ -338,8 +346,7 @@ function OverviewPage({ data }: { data: OverviewData }) {
   // The page's clock, read when it draws: a new request draws it again.
   const now = Date.now();
   const state = useHistoryState("target");
-  const { health } = data;
-  const rpm = perMinute(health.recent, now);
+  const { health, requests } = data;
   const breakers = Object.entries(health.breakers);
   const restingCount = Object.keys(health.cooling).length;
   const limit = data.limits[0];
@@ -349,11 +356,11 @@ function OverviewPage({ data }: { data: OverviewData }) {
     <>
       <SectionCards columns={5}>
         <StatCard
-          label="Requests a minute"
-          value={rpm.toFixed(1)}
+          label="Model requests a minute"
+          value={requests.perMinute === null ? "—" : requests.perMinute.toFixed(1)}
           badge={<TonePill tone="info">last 5 min</TonePill>}
-          headline={`${count(health.requests)} since the router started`}
-          detail={`Up for ${duration(health.uptimeSec * 1000)}`}
+          headline={modelRequestsWords(requests)}
+          detail={`The router counted ${count(health.requests)} requests in all, pings included; up for ${duration(health.uptimeSec * 1000)}`}
         />
         <StatCard
           label="Fallbacks"

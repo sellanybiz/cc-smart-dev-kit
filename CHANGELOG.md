@@ -38,6 +38,60 @@ you open it.
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
 started after the update are held to the list or reminded.
 
+**The portal's usage and cost numbers now say the truth.** You reported that the portal does
+not report usage and cost correctly. Every number was then measured against the router's
+history database, its log and its state files on a live machine, and each finding was fixed at
+its cause. Where a number cannot be given, the page now says so instead of showing a number
+that is not one.
+
+- **A request with no price is counted, never added as $0.** In one measured day 62 % of the
+  rows — every affordable-backend request: 17,373 of them, with real tokens and no cost — were
+  added as $0, so the Usage page's cost card, "Where the cost goes" and "Top sessions by cost",
+  and the Overview's cost chart and its "$X in the last day" line, all read low and said
+  nothing. A sum now says what it leaves out — "$12.40 + 1,234 requests with no price" — and a
+  sum made only of unpriced requests reads "no price", never "$0", the words
+  `cc-smart-dev-kit usage` already used. A chart whose rows exist but carry no price says that,
+  never "nothing matches".
+- **A backend's price list in OmniRoute's shape was read 1,000,000× too high.** OmniRoute's
+  `/v1/models` gives `pricing` in **dollars per million tokens**, as numbers
+  (`{"input":5,"cached":0.5,"output":25}` for a $5 / $25 model); the reader took those for
+  per-token prices and multiplied by a million, and never read `cached`, the cache-read price.
+  Both real shapes are now read, each in its own unit: OpenRouter's per-token `prompt`,
+  `completion`, `input_cache_read` and `input_cache_write`, and OmniRoute's per-million
+  `input`, `output`, `cached` and `cache_creation`.
+- **Claude Sonnet 5.5's cache read was half its list price.** The table held $0.10 a million
+  where Anthropic charges $0.20 — a tenth of its $2 input rate, as Sonnet 5's own row has. A
+  test now holds every row's cache read to its family's published share (Opus 5.5's a
+  twentieth, Fable 5.1's a fortieth, the rest a tenth). **A row already in the history keeps
+  the estimate it was written with**; only new rows use the corrected price.
+- **About a nine-hundredth of a translated stream's input tokens were recorded.** A backend
+  that translates an OpenAI stream (OmniRoute) knows the prompt's usage only at the end: it
+  sends zeros in `message_start` and the real counts in the last `message_delta`. The reader
+  took input and cache from `message_start` alone, so 1,040 calls that had spent 242M input and
+  235M cache-read tokens were logged as about 270K. Each usage field is now taken from the last
+  event that reports it, and the two are never added together. Anthropic's own streams keep
+  their counts, except where its `message_delta` carries the cumulative input count its docs
+  describe. **A row already logged keeps the count it was written with.**
+- **The Overview's "Requests a minute" could never pass 40.0**, because it was read off the
+  router's capped list of the last 200 routed requests — 85 of them, in one measured hour,
+  Claude Code's own health pings. It is now the history's **model** requests over the last five
+  minutes, one query against the database. The router's own counter is still shown, labelled
+  for what it holds, and the Health page's "N requests since start" gets the same label.
+- **The Usage page left out auto mode's safety checks without saying so.** They are kept out of
+  the history on purpose, so they were in none of its numbers and nothing said so. The page now
+  says they are counted apart, and shows the file's own count for the local days the range
+  covers — read through the reader `cc-smart-dev-kit usage` prints, so the two can never
+  disagree.
+- **Two smaller wrong claims.** The "Cache share" card said a cache read costs a tenth of a new
+  token, which is wrong for Opus 5.5 (a twentieth) and Fable 5.1 (a fortieth), and it no longer
+  names a number. And the Requests table ignored the range switch: it showed rows from outside
+  the window the charts drew, and its rows are now bounded by the range, as the dev mock
+  already was.
+
+**What to run:** `cc-smart-dev-kit gateway setup`. The reader and the price table live in the
+router bundle, so a machine updates the copy it runs; setup says what the restart costs and
+asks first.
+
 ## 1.1.2
 
 - **A crew session's name says whose it is.** With several leads in one project, every crew

@@ -193,6 +193,12 @@ export interface PlanWindow {
   resetsAt: null | string;
 }
 
+/** `src/portal/views.ts` › `OverviewRequests`: the history's model requests, not the router's. */
+export interface OverviewRequests {
+  perMinute: null | number;
+  sinceRouterStart: null | number;
+}
+
 export interface OverviewAnswer extends NotSetUp {
   backends: BackendRow[];
   dashboardUrl: null | string;
@@ -201,6 +207,7 @@ export interface OverviewAnswer extends NotSetUp {
   jobs: { budgetGb: number; heldGb: number; waiting: number };
   limits: LimitRow[];
   limitsRead: boolean;
+  requests: OverviewRequests;
   router: RouterFacts;
   slots: SlotRow[];
   switches: SwitchFacts;
@@ -858,6 +865,12 @@ export interface HistorySeries {
 }
 
 /** `GET /api/history?range=…&by=…&…`: one series per key, every bucket of the window. */
+/** `src/portal/api/types.ts` › `SafetyChecks`: auto mode's checks, counted apart (F6). */
+export interface SafetyChecks {
+  checks: null | number;
+  days: number;
+}
+
 export interface HistoryAnswer {
   available: boolean;
   by: HistoryBy;
@@ -865,6 +878,7 @@ export interface HistoryAnswer {
   from: number;
   note: null | string;
   range: HistoryRange;
+  safetyChecks: SafetyChecks;
   series: HistorySeries[];
   to: number;
 }

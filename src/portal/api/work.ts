@@ -37,6 +37,7 @@ import {
 } from "../../gateway/history-read";
 import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
+import { readSafetyChecks, safetyCheckWindow } from "../../gateway/safety-checks-read";
 import { askLogFile } from "../../hooks/ask-log";
 import { locateCheckout, locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
@@ -821,7 +822,13 @@ export function historyFilters(query: URLSearchParams): HistoryFilters {
   return filters;
 }
 
-/** `/api/history`: requests over time, one series per key, from the history's own reader. */
+/**
+ * `/api/history`: requests over time, one series per key, from the history's own reader.
+ *
+ * Beside the series: auto mode's safety checks, which the history leaves out on purpose. They
+ * are counted by local day, so the days the range covers are read through the same reader the
+ * CLI's `usage` prints (`safety-checks-read.ts`); a file that is not there is null, never 0.
+ */
 export function historyAnswer(
   deps: PageDataDeps,
   range: HistoryRange,
@@ -831,6 +838,8 @@ export function historyAnswer(
   const now = deps.action.portal.now();
   const file = deps.action.portal.paths.historyDbFile;
   const answer = historySeries(file, { by, filters, now, range });
+  const state = readSafetyChecks(deps.action.portal.paths.safetyChecksFile);
+  const checks = safetyCheckWindow(state, { nowMs: now, windowMs: HISTORY_RANGES[range] });
   return {
     available: true,
     by,
@@ -838,6 +847,10 @@ export function historyAnswer(
     from: now - HISTORY_RANGES[range],
     note: historyDbExists(file) ? null : NO_HISTORY_YET,
     range,
+    safetyChecks: {
+      checks: state === null ? null : checks.checks,
+      days: checks.days.length,
+    },
     series: answer.series,
     to: now,
   };

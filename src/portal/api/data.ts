@@ -28,6 +28,7 @@ import {
   healthData,
   machineData,
   overviewData,
+  overviewRequests,
   type PageDataDeps,
   settingsPageData,
   slotsData,
@@ -114,6 +115,9 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
+      // The history may still hold rows from before the config went: the rate is real, while
+      // the count since a router started is not (there is no router to name).
+      requests: overviewRequests(deps, NO_ROUTER, deps.action.portal.now()),
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,

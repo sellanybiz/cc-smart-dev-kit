@@ -141,6 +141,7 @@ export function overviewOf(answer: OverviewAnswer, work: WorkAnswer | null): Ove
           },
     jobs: answer.jobs,
     limits: answer.limits,
+    requests: answer.requests,
     switches: answer.switches,
   };
 }

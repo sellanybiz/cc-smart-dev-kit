@@ -8860,6 +8860,15 @@ function localDay(ms, timeZone) {
     year: "numeric"
   }).format(new Date(ms));
 }
+function dayBefore(day, days) {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(Date.UTC(year ?? 0, (month ?? 1) - 1, date ?? 1) - days * 86400000).toISOString().slice(0, 10);
+}
+function recentCheckDays(state, nowMs, count, timeZone) {
+  const today = localDay(nowMs, timeZone);
+  const wanted = new Set(Array.from({ length: count }, (_, back) => dayBefore(today, back)));
+  return Object.entries(state.days).filter(([day]) => wanted.has(day)).sort(([a], [b]) => a < b ? 1 : -1);
+}
 function dayRecord(state, day) {
   const existing = state.days[day];
   if (existing !== undefined)
@@ -13836,6 +13845,17 @@ function pointsOf(buckets, first, last, bucketMs) {
     });
   }
   return points;
+}
+function requestsSince(file, options) {
+  const db = openReadonly(file);
+  if (db === null)
+    return 0;
+  try {
+    const row = db.query("SELECT count(*) AS n FROM requests WHERE at >= ?").get(options.from);
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
 }
 function recentRequests(file, options = {}) {
   const limit = Math.min(RECENT_PAGE_MAX, Math.max(1, Math.trunc(options.limit ?? RECENT_PAGE_DEFAULT)));
@@ -33382,7 +33402,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync64 } from "fs";
+import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync65 } from "fs";
 import { basename as basename10, dirname as dirname23, relative as relative6 } from "path";
 
 // src/portal/facts.ts
@@ -34504,8 +34524,34 @@ function planWindow(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync63 } from "fs";
+import { readFileSync as readFileSync64 } from "fs";
 import { join as join66 } from "path";
+
+// src/gateway/safety-checks-read.ts
+import { readFileSync as readFileSync63 } from "fs";
+var DAY_MS = 86400000;
+function readSafetyChecks(file) {
+  try {
+    return parseSafetyCheckState(readFileSync63(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function windowDays(nowMs, windowMs, timeZone) {
+  const first = Date.parse(localDay(nowMs - windowMs, timeZone));
+  const last = Date.parse(localDay(nowMs, timeZone));
+  return Math.max(1, Math.round((last - first) / DAY_MS) + 1);
+}
+function safetyCheckWindow(state, options) {
+  const days = state === null ? [] : recentCheckDays(state, options.nowMs, windowDays(options.nowMs, options.windowMs, options.timeZone), options.timeZone);
+  const total = (side) => days.reduce((sum, [, day]) => sum + day[side].checks, 0);
+  return {
+    anthropic: total("anthropic"),
+    checks: days.reduce((sum, [, day]) => sum + day.checks, 0),
+    days,
+    fallback: total("fallback")
+  };
+}
 
 // src/sessions/flow.ts
 var FLOW_DAYS_KEPT = 8;
@@ -34687,6 +34733,16 @@ async function machineData(deps) {
     warp: warpRow(deps.action.portal)
   };
 }
+var OVERVIEW_RATE_WINDOW_MS = 5 * 60000;
+function overviewRequests(deps, router, now) {
+  const file = deps.action.portal.paths.historyDbFile;
+  if (!historyDbExists(file))
+    return { perMinute: null, sinceRouterStart: null };
+  return {
+    perMinute: requestsSince(file, { from: now - OVERVIEW_RATE_WINDOW_MS }) / (OVERVIEW_RATE_WINDOW_MS / 60000),
+    sinceRouterStart: router.up ? requestsSince(file, { from: now - router.uptimeSec * 1000 }) : null
+  };
+}
 async function overviewData(deps, config) {
   const ctx = deps.action.portal;
   const router = await routerFacts(ctx, config.port);
@@ -34699,6 +34755,7 @@ async function overviewData(deps, config) {
     fallbacks: limits.fallbacks,
     limits: limits.limits,
     limitsRead: limits.read,
+    requests: overviewRequests(deps, router, ctx.now()),
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),
@@ -35065,7 +35122,7 @@ async function crewAnswerFor(deps, ref) {
   }));
   let brief = null;
   try {
-    brief = readFileSync63(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
+    brief = readFileSync64(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
     byFile: [],
@@ -35224,7 +35281,7 @@ async function needsAnswer(deps) {
 async function breakersOf2(deps, now) {
   let text;
   try {
-    text = readFileSync63(deps.action.portal.paths.gatewayStateFile, "utf8");
+    text = readFileSync64(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -35269,7 +35326,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync63(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync64(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -35392,6 +35449,8 @@ function historyAnswer(deps, range, by, filters = {}) {
   const now = deps.action.portal.now();
   const file = deps.action.portal.paths.historyDbFile;
   const answer = historySeries(file, { by, filters, now, range });
+  const state = readSafetyChecks(deps.action.portal.paths.safetyChecksFile);
+  const checks = safetyCheckWindow(state, { nowMs: now, windowMs: HISTORY_RANGE_MS[range] });
   return {
     available: true,
     by,
@@ -35399,6 +35458,10 @@ function historyAnswer(deps, range, by, filters = {}) {
     from: now - HISTORY_RANGE_MS[range],
     note: historyDbExists(file) ? null : NO_HISTORY_YET,
     range,
+    safetyChecks: {
+      checks: state === null ? null : checks.checks,
+      days: checks.days.length
+    },
     series: answer.series,
     to: now
   };
@@ -35474,7 +35537,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync64(paths.portalProjectsFile, "utf8");
+    text = readFileSync65(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -37009,6 +37072,7 @@ async function overviewAnswer(deps) {
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
+      requests: overviewRequests(deps, NO_ROUTER, deps.action.portal.now()),
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,
@@ -38619,7 +38683,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync65 } from "fs";
+import { readFileSync as readFileSync66 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -38659,7 +38723,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync65(file, "utf8");
+      return readFileSync66(file, "utf8");
     } catch {
       return null;
     }
@@ -38738,7 +38802,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync65(file);
+      bytes = readFileSync66(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -38821,7 +38885,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync55, readFileSync as readFileSync66, statSync as statSync19 } from "fs";
+import { existsSync as existsSync55, readFileSync as readFileSync67, statSync as statSync19 } from "fs";
 import { extname, join as join69, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -38873,7 +38937,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync66(join69(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync67(join69(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -38920,7 +38984,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync66(file);
+        const bytes = readFileSync67(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);

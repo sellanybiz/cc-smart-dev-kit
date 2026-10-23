@@ -18,6 +18,7 @@ import {
   NO_SLOT_KEY,
   percentiles,
   recentRequests,
+  requestsSince,
 } from "./history-read";
 
 /** 10:00 UTC, aligned to every bucket size (a day, an hour, 15, 5 and 1 minute). */
@@ -324,6 +325,23 @@ describe("the recent-requests pages", () => {
       4,
     );
     seeded.close();
+  });
+});
+
+describe("how many requests a window holds", () => {
+  it("counts the rows at or after the window's start, and nothing older", () => {
+    const seeded = seed();
+    // The four rows of the last hour, and not the 30-day-old one.
+    expect(requestsSince(seeded.file, { from: NOW - HOUR })).toBe(4);
+    expect(requestsSince(seeded.file, { from: NOW - 30 * 24 * HOUR })).toBe(5);
+    expect(requestsSince(seeded.file, { from: NOW })).toBe(0);
+    seeded.close();
+  });
+
+  it("a missing database is none, and the read makes no file", () => {
+    const path = file();
+    expect(requestsSince(path, { from: 0 })).toBe(0);
+    expect(historyDbExists(path)).toBe(false);
   });
 });
 

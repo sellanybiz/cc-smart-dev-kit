@@ -7,8 +7,9 @@
  * schema would refuse cannot slip in. No portal is started.
  */
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { cliPaths } from "../../cli/paths";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { type CliPaths, cliPaths } from "../../cli/paths";
 import {
   addCrewQuestion,
   type CrewRecord,
@@ -17,6 +18,7 @@ import {
   type NewCrew,
   writeLead,
 } from "../../crew/store";
+import { localDay } from "../../gateway/safety-checks";
 import type { OpenWait } from "../../sessions/flow";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
@@ -24,7 +26,7 @@ import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { testPortalContext } from "./test-context";
-import { crewAnswerFor, needsAnswer, permissionWaitOf, workAnswer } from "./work";
+import { crewAnswerFor, historyAnswer, needsAnswer, permissionWaitOf, workAnswer } from "./work";
 
 const NOW = Date.UTC(2026, 9, 23, 12, 0, 0);
 
@@ -177,6 +179,56 @@ function world() {
   };
   return { deps, home, paths, repoA: makeRepo("work-a"), repoB: makeRepo("work-b") };
 }
+
+describe("auto mode's safety checks beside the history (F6)", () => {
+  /**
+   * A file the router wrote, holding `checks` checks today and `oldChecks` three local days
+   * back. The days are keyed by `localDay` with no zone — as the router keys them and the
+   * portal reads them — so the same zone is used on both sides, whatever the test machine is.
+   */
+  function seedChecks(paths: CliPaths, checks: number, oldChecks = 0): void {
+    const side = (count: number) => ({
+      cacheRead: 0,
+      cacheWrite: 0,
+      checks: count,
+      input: 0,
+      output: 0,
+    });
+    const day = (count: number) => ({ anthropic: side(count), checks: count, fallback: side(0) });
+    mkdirSync(dirname(paths.safetyChecksFile), { recursive: true });
+    writeFileSync(
+      paths.safetyChecksFile,
+      JSON.stringify({
+        days: {
+          [localDay(NOW)]: day(checks),
+          [localDay(NOW - 3 * 24 * 3_600_000)]: day(oldChecks),
+        },
+        version: 1,
+      }),
+    );
+  }
+
+  test("the count of the local days the range covers travels with the history", () => {
+    const w = world();
+    seedChecks(w.paths, 9, 100);
+    // One hour, one day: today's nine checks, and not the hundred of three days back.
+    expect(historyAnswer(w.deps, "1h", "target").safetyChecks).toEqual({ checks: 9, days: 1 });
+    // A day reaches back past one midnight but not three days: still today's day alone. The
+    // days are the ones the count covers, not the width of the range.
+    expect(historyAnswer(w.deps, "1d", "target").safetyChecks).toEqual({ checks: 9, days: 1 });
+    // A week holds both counted days, and adds them.
+    expect(historyAnswer(w.deps, "7d", "target").safetyChecks).toEqual({ checks: 109, days: 2 });
+    // No request was ever logged in this temp HOME: the checks still travel, and it says so.
+    const hour = historyAnswer(w.deps, "1h", "target");
+    expect(hour.available).toBe(true);
+    expect(hour.note).toContain("no request has been logged yet");
+  });
+
+  test("no file counted anything yet: the count is unknown, never 0", () => {
+    const w = world();
+    expect(historyAnswer(w.deps, "1d", "target").safetyChecks).toEqual({ checks: null, days: 0 });
+  });
+});
 
 describe("Work from a folder that is no git project", () => {
   test("the crew sessions and leads of every repository are shown, each with its own repository", async () => {

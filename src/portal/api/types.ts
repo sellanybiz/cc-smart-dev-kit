@@ -578,8 +578,26 @@ export interface HistoryRequest {
 }
 
 /**
+ * Auto mode's safety checks, which the request history leaves out on purpose (`docs/gateway.md`
+ * § The safety-check counts). The router counts them by local day in `safety-checks.json`, read
+ * through the same reader the CLI's `usage` prints (`safety-checks-read.ts`, F6).
+ */
+export interface SafetyChecks {
+  /** Every check of the local days the range covers. Null when the file is not there. */
+  checks: null | number;
+  /**
+   * Those days: how many the window covers that the file still holds (it keeps
+   * `SAFETY_CHECK_DAYS`), so a longer range says how far back the count reaches.
+   */
+  days: number;
+}
+
+/**
  * `GET /api/history?range=…&by=…&…`: requests over time, one series per key (D51, phase H1).
  * A bucket is `HistoryPoint` from the reader, and every bucket of the window is there.
+ *
+ * `safetyChecks` travels here because this is the one answer that already knows the range the
+ * Usage page asks with, and the checks are counted by local day over exactly that window (F6).
  */
 export interface HistoryAnswer {
   /** True: the request reader answered (H1); every answer the route serves sets it. */
@@ -592,6 +610,7 @@ export interface HistoryAnswer {
   /** A line about an empty answer (no request logged yet), or null. */
   note: null | string;
   range: HistoryRange;
+  safetyChecks: SafetyChecks;
   series: HistorySeries[];
   to: number;
 }

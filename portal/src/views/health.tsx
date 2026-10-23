@@ -227,7 +227,7 @@ function HealthPage({ data }: { data: HealthData }) {
             )
           }
           headline={`In the last ${log.length} log lines`}
-          detail={`${count(router.fallbacks)} fallbacks, ${count(router.requests)} requests since start`}
+          detail={`${count(router.fallbacks)} fallbacks, ${count(router.requests)} requests since start, Claude Code's pings included`}
         />
       </SectionCards>
       {!router.up && <RouterDown data={data} />}

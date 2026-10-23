@@ -199,6 +199,19 @@ function sessionRows(history: History | null, keys: HistoryKeys | null): Session
   });
 }
 
+/**
+ * What the page says about auto mode's safety checks. The router counts them by local day and
+ * keeps them out of the history on purpose, so they are in none of the numbers above; a machine
+ * whose file is not there has counted none (F6).
+ */
+function checksWords(safety: History["safetyChecks"]): string {
+  if (safety.checks === null) {
+    return "Auto mode's safety checks are counted apart from this history, by local day, and none is recorded yet. The gateway must be set up, and a session must have run with auto mode on.";
+  }
+  const days = safety.days === 1 ? "1 day" : `${count(safety.days)} days`;
+  return `Auto mode's safety checks are counted apart from this history, by local day: ${count(safety.checks)} over the ${days} the router counted. Their tokens are in none of the numbers above.`;
+}
+
 /** Usage: tokens and estimated cost, by slot, target, model and session, over time. */
 export function UsageView() {
   const state = useHistoryState("target");
@@ -268,6 +281,9 @@ export function UsageView() {
       </SectionCards>
       <FilterBar state={state} />
       <PagePad className="flex flex-col gap-4 md:gap-6">
+        {ready && (
+          <p className="text-sm text-muted-foreground">{checksWords(byTarget.data.safetyChecks)}</p>
+        )}
         <HistoryChart
           title={metric === "cost" ? "Estimated cost over time" : "Tokens over time"}
           description={`By target, in ${words}${metric === "cost" ? ", from list prices" : ""}`}

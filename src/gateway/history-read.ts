@@ -13,6 +13,7 @@
  *     ones as zeros, so a chart needs no filling in.
  *   - `recentRequests` pages the newest rows first, by id (`cursor` is the last id of the
  *     page before), with the same filters.
+ *   - `requestsSince` counts the rows of a window that a caller names.
  *
  * Filters: `slot`, `target`, `model`, `session` (exact), and `status: "error"` (an HTTP status
  * of 400 or more). A row with no slot or no session is grouped under `(no slot)` /
@@ -421,6 +422,28 @@ function pointsOf(
     });
   }
   return points;
+}
+
+/**
+ * How many requests the history holds at or after `from`. **Model** requests by construction:
+ * the history is the model calls, never auto mode's safety checks (counted apart in
+ * `safety-checks.ts`) and never Claude Code's own pings to the router — which is why the
+ * Overview's rate is a model-request rate and not the router's own counter (F4, F5).
+ *
+ * One query, read-only; a missing file is none. The caller names the window's start, so a rate
+ * over the last few minutes and a count since the router started are the same reader.
+ */
+export function requestsSince(file: string, options: { from: number }): number {
+  const db = openReadonly(file);
+  if (db === null) return 0;
+  try {
+    const row = db.query("SELECT count(*) AS n FROM requests WHERE at >= ?").get(options.from) as {
+      n: number;
+    } | null;
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
 }
 
 /**
