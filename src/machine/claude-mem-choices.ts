@@ -316,6 +316,17 @@ function fallbackProviderFor(route: string): string {
 }
 
 /**
+ * The keys the person set by hand in claude-mem's file, by name, in one order. These are what a
+ * choice refuses now, and what a take-over records. One home, so the card, the command and the
+ * take-over always agree on the same keys.
+ */
+function handSetKeys(read: ClaudeMemSettings): string[] {
+  return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter(
+    (one) => sourceOf(read, one) === "hand",
+  );
+}
+
+/**
  * The keys each choice may write, so a value set by hand names the choices it refuses. The
  * compat four belong to the route while the route is on that provider and to the fallback
  * otherwise (`fallbackProviderFor`), so one hand-set value refuses one of the two — never both
@@ -325,7 +336,9 @@ function fallbackProviderFor(route: string): string {
 function keysPerChoice(route: string): Record<"fallback" | "key" | "route", readonly string[]> {
   return {
     fallback: [
-      ...(route === OPENAI_COMPATIBLE ? OPENROUTER_KEYS : ([PRESET, BASE_URL, MODEL, API_KEY] as const)),
+      ...(route === OPENAI_COMPATIBLE
+        ? OPENROUTER_KEYS
+        : ([PRESET, BASE_URL, MODEL, API_KEY] as const)),
       FALLBACK_MODEL,
       FALLBACK_PROVIDER,
     ],
@@ -370,12 +383,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
       ? `${openRouterBackend.name}:${openRouterModel}`
       : null;
   // The keys the person set by hand, and so the choices a change to which is refused now.
-  const handKeys: string[] = [
-    ...PROVIDER_KEYS,
-    ...OPENROUTER_KEYS,
-    FALLBACK_PROVIDER,
-    FALLBACK_MODEL,
-  ].filter((one) => sourceOf(read, one) === "hand");
+  const handKeys: string[] = handSetKeys(read);
   const refused = keysPerChoice(provider);
   const refusedByHand = (keys: readonly string[]): boolean =>
     keys.some((one) => handKeys.includes(one));
@@ -384,8 +392,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
     blocked: null,
     current: {
       fallback: {
-        claudeModel:
-          fallback === CLAUDE_PROVIDER ? fallbackModel || claudeModel || null : null,
+        claudeModel: fallback === CLAUDE_PROVIDER ? fallbackModel || claudeModel || null : null,
         idle:
           fallback === provider && fallback !== FALLBACK_OFF
             ? "It is the same provider as the route, so claude-mem has no fallback: it waits for the route's provider."
@@ -411,12 +418,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
       route: {
         address: kind === "claude" || baseUrl === "" ? null : backendAddress(baseUrl),
         kind,
-        model:
-          kind === "claude"
-            ? claudeModel || null
-            : compatModel === ""
-              ? null
-              : compatModel,
+        model: kind === "claude" ? claudeModel || null : compatModel === "" ? null : compatModel,
         provider,
         refusedByHand: refusedByHand(refused.route),
         source: sourceOf(read, kind === "backend" ? MODEL : PROVIDER),
@@ -443,10 +445,15 @@ function keyFor(
 ): { key: string; set: boolean } {
   const current = textOf(read, keyName);
   const source = sourceOf(read, keyName);
+  // A key the kit took over holds a value it never wrote (`takeOver`), so it stays the person's:
+  // a route change must not send their key away, nor replace it with a backend's own.
+  const taken = read.records.some(
+    (record) => record.taken === true && samePath(record.path, read.at(keyName)),
+  );
   if (
     current !== "" &&
     !gatewayKeys.includes(current) &&
-    (source === "portal" || source === "hand")
+    (taken || source === "portal" || source === "hand")
   ) {
     return { key: current, set: false };
   }
@@ -460,11 +467,7 @@ interface ProviderKeys {
 }
 
 /** The keys that point claude-mem's OpenAI-compatible provider at one gateway backend's model. */
-function compatKeys(
-  read: ClaudeMemSettings,
-  backend: GatewayBackend,
-  model: string,
-): ProviderKeys {
+function compatKeys(read: ClaudeMemSettings, backend: GatewayBackend, model: string): ProviderKeys {
   const baseUrl = compatBaseUrl(backend.baseUrl);
   const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys);
   return {
@@ -889,6 +892,115 @@ export async function followSetup(
       ...plan.notes.map((note) => note.trim()),
       ...changeLines(result, short),
     ],
+    ok: true,
+  };
+}
+
+/**
+ * **The take-over** (D63, owner 2026-10-24): records the values the person set by hand in
+ * claude-mem's file as cc-smart-dev-kit's own, so the route, the key and the fallback may change
+ * from the kit or the portal. It is the person's to ask for, never part of a `setup` run: a
+ * value by hand that cc-smart-dev-kit never wrote is theirs until they give it up (`handRefusal`).
+ *
+ * - **Nothing in claude-mem's file changes.** Each value stays exactly as it is until the person
+ *   picks another; the writer records the claim alone (`applyManagedJson`'s `claim`), with the
+ *   value the key held, so `restore` puts that value back (`restoreTakenOver`) rather than
+ *   removing a value cc-smart-dev-kit never wrote.
+ * - **A key is never written down**, `owned.json` keeping only its hash: a taken-over key has no
+ *   value to put back, so `restore` removes it as it removes any other key of ours.
+ * - **The keys it takes are the ones that refuse a choice now** (`handSetKeys`): the route's five,
+ *   claude-mem's OpenRouter three, and the quota fallback's two. A key that already holds
+ *   cc-smart-dev-kit's own value, or claude-mem's own default, is left alone.
+ */
+export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {
+  const ready = readReady(paths);
+  if ("blocked" in ready) return { lines: [ready.blocked.text], ok: false };
+  const { read } = ready;
+  const claims: Array<readonly [KeyPath, unknown]> = [];
+  for (const key of handSetKeys(read)) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found) continue;
+    claims.push([path, current.value]);
+  }
+  if (claims.length === 0) {
+    return {
+      lines: [
+        `Nothing to take over: every value claude-mem holds in ${read.short} is cc-smart-dev-kit's own, or claude-mem's own default.`,
+      ],
+      ok: true,
+    };
+  }
+  return withLock(paths.stateDir, () => {
+    // The writer checks each value under the lock and skips one that moved meanwhile: a value
+    // that is not the one read is never claimed, so nothing is taken over unseen.
+    const result = applyManagedJson({
+      claim: claims,
+      file: paths.claudeMemSettingsFile,
+      secret: isSecretPath,
+      stateDir: paths.stateDir,
+      unchosen,
+    });
+    const taken: KeyPath[] = [];
+    const moved: string[] = [];
+    for (const [path] of claims) {
+      if (result.skipped.some((one) => samePath(one.path, path))) moved.push(formatKeyPath(path));
+      else taken.push(path);
+    }
+    if (taken.length === 0) return { lines: [CHANGED_MEANWHILE], ok: false };
+    const short = tildify(paths.claudeMemSettingsFile, paths.home);
+    return {
+      lines: [
+        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as cc-smart-dev-kit's: each stays exactly as it is until you pick another.`,
+        ...taken.map(
+          (path) =>
+            `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`,
+        ),
+        "restore puts them back.",
+        ...moved.map(
+          (key) =>
+            `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`,
+        ),
+      ],
+      ok: true,
+    };
+  });
+}
+
+/**
+ * Puts a take-over back, and nothing else: what `runRestore` calls **before** its own pass
+ * (`src/cli/restore.ts`). For each key the take-over recorded, the file gets the value it held
+ * then and the claim goes (`applyManagedJson`'s `release`), so the value is the person's again
+ * and `restore` leaves it: a value cc-smart-dev-kit never wrote is not its to remove. It runs
+ * first because `restore` takes the records out with the keys, and the value to put back lives
+ * in the record.
+ *
+ * A key's value is never kept (only its hash), so a taken-over key has nothing to put back and
+ * is still cc-smart-dev-kit's when `restore` runs: `restore` removes it, as it removes any other
+ * key of ours. A key is never written down, and no backup is the place for one.
+ *
+ * Returns the lines it wrote; none when there was nothing to put back.
+ */
+export async function restoreTakenOver(paths: CliPaths): Promise<ChoiceResult> {
+  const file = paths.claudeMemSettingsFile;
+  const taken = ownedRecords(paths.stateDir, realTarget(file)).filter(
+    (record) => record.was !== undefined,
+  );
+  if (taken.length === 0) return { lines: [], ok: true };
+  const short = tildify(file, paths.home);
+  // No lock of its own: `runRestore` calls this inside the lock it already holds, and a second
+  // `withLock` on the same state folder would wait for the first and give up.
+  const result = applyManagedJson({
+    file,
+    release: taken.map((record) => [record.path, record.was] as const),
+    stateDir: paths.stateDir,
+    unchosen,
+  });
+  return {
+    lines: result.changes.map(
+      (change) =>
+        `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`,
+    ),
     ok: true,
   };
 }

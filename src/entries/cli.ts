@@ -9,6 +9,7 @@ import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
+import { runClaudeMem } from "../cli/claude-mem";
 import { DOCTOR_FLAGS, runDoctor } from "../cli/doctor";
 import {
   asksForHelp,
@@ -828,6 +829,14 @@ async function main(argv: string[]): Promise<number> {
         process.env,
       );
     }
+    case "claude-mem":
+      return await runClaudeMem(rest, {
+        confirm: ask,
+        out: createOut(currentTerminal(process.env)),
+        paths,
+        // The key comes on stdin, never as an argument (the card's own rule).
+        read: () => Bun.stdin.text(),
+      });
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "omniroute":

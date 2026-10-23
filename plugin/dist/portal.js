@@ -12071,6 +12071,10 @@ function toRecord(entry, file) {
       record.value = entry.value;
     if (typeof entry.sha256 === "string")
       record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (entry.taken === true)
+      record.taken = true;
     return record;
   }
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
@@ -12213,7 +12217,16 @@ function applyOnce(file, options, owned) {
   const skipped = [];
   const updated = [];
   const dropped = [];
+  const released = [];
   let setsSecret = false;
+  const recordFor = (path, value) => {
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    return {
+      ...recordOf(path, value, isSecret(path)),
+      ...held?.was !== undefined && { was: held.was },
+      ...held?.taken === true && { taken: true }
+    };
+  };
   for (const [path, value] of options.set ?? []) {
     if (path.length === 0)
       throw new Error("applyManagedJson: an empty key path");
@@ -12231,7 +12244,7 @@ function applyOnce(file, options, owned) {
         });
         dropped.push(path);
       } else {
-        updated.push(recordOf(path, value, isSecret(path)));
+        updated.push(recordFor(path, value));
       }
       continue;
     }
@@ -12243,7 +12256,33 @@ function applyOnce(file, options, owned) {
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
-    updated.push(recordOf(path, value, isSecret(path)));
+    updated.push(recordFor(path, value));
+  }
+  for (const [path, value] of options.claim ?? []) {
+    const current = getKey(data, path);
+    if (!current.found || !Bun.deepEquals(current.value, value, true)) {
+      skipped.push({ path, reason: "not the value it was taken over with; left alone" });
+      continue;
+    }
+    const record = recordFor(path, value);
+    record.taken = true;
+    if (!isSecret(path))
+      record.was = value;
+    updated.push(record);
+  }
+  for (const [path, value] of options.release ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    released.push(path);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      skipped.push({
+        path,
+        reason: "already holds that value; cc-smart-dev-kit's claim is dropped"
+      });
+      continue;
+    }
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);
@@ -12280,7 +12319,7 @@ function applyOnce(file, options, owned) {
       delete next[file];
     return next;
   };
-  const changedPaths = changes.filter((change) => change.after !== undefined);
+  const changedPaths = changes.filter((change) => change.after !== undefined && !released.some((path) => samePath(path, change.path)));
   if (changedPaths.length > 0) {
     const pending = [
       ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
@@ -35201,6 +35240,9 @@ function routeProvider(read) {
 function fallbackProviderFor(route) {
   return route === OPENAI_COMPATIBLE ? OPENROUTER : OPENAI_COMPATIBLE;
 }
+function handSetKeys(read) {
+  return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter((one) => sourceOf2(read, one) === "hand");
+}
 function keysPerChoice(route) {
   return {
     fallback: [
@@ -35238,12 +35280,7 @@ function readClaudeMemFacts(paths) {
   const openRouterBackend = backendAt(config, textOf(read, OPENROUTER_BASE_URL));
   const openRouterModel = textOf(read, OPENROUTER_MODEL);
   const openRouterTarget = openRouterBackend !== null && openRouterModel !== "" ? `${openRouterBackend.name}:${openRouterModel}` : null;
-  const handKeys = [
-    ...PROVIDER_KEYS,
-    ...OPENROUTER_KEYS,
-    FALLBACK_PROVIDER,
-    FALLBACK_MODEL
-  ].filter((one) => sourceOf2(read, one) === "hand");
+  const handKeys = handSetKeys(read);
   const refused = keysPerChoice(provider);
   const refusedByHand = (keys) => keys.some((one) => handKeys.includes(one));
   return {
@@ -35282,7 +35319,8 @@ function readClaudeMemFacts(paths) {
 function keyFor(read, keyName, gatewayKey, gatewayKeys) {
   const current = textOf(read, keyName);
   const source = sourceOf2(read, keyName);
-  if (current !== "" && !gatewayKeys.includes(current) && (source === "portal" || source === "hand")) {
+  const taken = read.records.some((record) => record.taken === true && samePath(record.path, read.at(keyName)));
+  if (current !== "" && !gatewayKeys.includes(current) && (taken || source === "portal" || source === "hand")) {
     return { key: current, set: false };
   }
   return { key: gatewayKey, set: true };

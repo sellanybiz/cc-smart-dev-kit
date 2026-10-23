@@ -6590,6 +6590,10 @@ function toRecord(entry, file) {
       record.value = entry.value;
     if (typeof entry.sha256 === "string")
       record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (entry.taken === true)
+      record.taken = true;
     return record;
   }
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);

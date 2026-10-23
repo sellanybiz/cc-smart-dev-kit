@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import type { HealthProbe } from "../gateway/health";
 import { setGatewayBaseUrl } from "../gateway/settings";
 import { CHOICES_FILE, TODO_TOOLS_KEY } from "../machine/claude-mem";
+import { takeOver } from "../machine/claude-mem-choices";
 import { mcpRecordsFile, recordMcpServer } from "../mcp/records";
 import { applyManagedJson } from "../setup/managed-json";
 import { writeManagedFile } from "../setup/write";
@@ -126,6 +127,63 @@ describe("restore: claude-mem's keys and the task tools (D23)", () => {
     expect(existsSync(paths.settingsFile)).toBe(false);
     expect(printed.join("\n")).toContain(
       "~ ~/.claude-mem/settings.json: removed CLAUDE_MEM_WORK_STATE_ENABLED, CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED; everything else kept",
+    );
+  });
+});
+
+describe("restore: a value cc-smart-dev-kit took over (MS1)", () => {
+  test("MS1: the value the person had goes back, and a taken-over key goes with the rest", async () => {
+    const { options, paths } = machine();
+    const file = paths.claudeMemSettingsFile;
+    mkdirSync(dirname(file), { recursive: true });
+    // claude-mem itself, as its own install: the take-over reads its version.
+    const installPath = join(paths.home, "plugins", "claude-mem");
+    mkdirSync(installPath, { recursive: true });
+    mkdirSync(dirname(paths.installedPluginsFile), { recursive: true });
+    writeFileSync(
+      paths.installedPluginsFile,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "claude-mem@thedotmack": [{ installPath, scope: "user", version: "13.40.0" }],
+        },
+      }),
+    );
+    writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+          CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "sk-own-0001",
+          CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "http://127.0.0.1:18434/v1",
+          CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
+          CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
+          CLAUDE_MEM_PROVIDER: "openai-compatible",
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+    expect((await takeOver(paths)).ok).toBe(true);
+    // The kit changes the model, as a route change would: the value it held stays in the record.
+    applyManagedJson({
+      file,
+      set: [[["CLAUDE_MEM_OPENAI_COMPAT_MODEL"], "glm/flash"]],
+      stateDir: paths.stateDir,
+    });
+    expect(JSON.parse(readFileSync(file, "utf8")).CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("glm/flash");
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    // The person's own model is back, and so is the rest of what they set.
+    expect(after.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("their-model");
+    expect(after.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL).toBe("http://127.0.0.1:18434/v1");
+    expect(after.CLAUDE_MEM_PROVIDER).toBe("openai-compatible");
+    // A key's value is never written down, so restore removes the key with the rest.
+    expect(after.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBeUndefined();
+    expect(printed.join("\n")).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model" (yours again)',
     );
   });
 });

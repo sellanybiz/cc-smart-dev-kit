@@ -667,7 +667,11 @@ export function shownClaudeMemValue(path: KeyPath, value: unknown): string {
   }
   // An address can carry a user name and password, or a key in its query: never shown.
   const key = path.at(-1);
-  if ((key === BASE_URL || key === OPENROUTER_BASE_URL) && typeof value === "string" && value !== "") {
+  if (
+    (key === BASE_URL || key === OPENROUTER_BASE_URL) &&
+    typeof value === "string" &&
+    value !== ""
+  ) {
     return JSON.stringify(backendAddress(value) ?? "(an address that is not a URL)");
   }
   return JSON.stringify(value);

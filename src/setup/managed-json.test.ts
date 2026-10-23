@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -585,5 +586,92 @@ describe("formatKeyPath", () => {
       'extraKnownMarketplaces["my-marketplace"].autoUpdate',
     );
     expect(formatKeyPath(["two words"])).toBe('["two words"]');
+  });
+});
+
+describe("a key cc-smart-dev-kit takes over, and one it gives back", () => {
+  test("claim: the key becomes ours with the value it holds, and the file is not written", () => {
+    const { file, stateDir } = setup({ a: "theirs", b: "ours" });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      claim: [
+        [["a"], "theirs"],
+        [["missing"], "gone"],
+      ],
+    });
+    // Nothing was written: no change, no backup, and the file is byte for byte the same.
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(result.backup).toBe(null);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(result.skipped).toEqual([
+      { path: ["missing"], reason: "not the value it was taken over with; left alone" },
+    ]);
+    // The record keeps the value it held, which is what restore writes back, and says the key
+    // is a taken-over one: its value is the person's, never replaced by another.
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["a"], value: "theirs", was: "theirs", taken: true }],
+    });
+  });
+
+  test("claim: a key that holds another value is left alone, and not owned", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    const result = applyManagedJson({ file, stateDir, claim: [[["a"], "someone-elses"]] });
+    expect(result.skipped).toEqual([
+      { path: ["a"], reason: "not the value it was taken over with; left alone" },
+    ]);
+    expect(read(file).a).toBe("theirs");
+    // Nothing was claimed, so there is no owned.json at all: no record proves nothing.
+    expect(existsSync(join(stateDir, "owned.json"))).toBe(false);
+  });
+
+  test("claim: a secret keeps its hash alone, so there is no value to put back", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    applyManagedJson({
+      file,
+      stateDir,
+      claim: [[["key"], "sk-planted-0001"]],
+      secret: (path) => path.at(-1) === "key",
+    });
+    const owned = readFileSync(join(stateDir, "owned.json"), "utf8");
+    expect(owned).not.toContain("PLANTED");
+    expect(read(join(stateDir, "owned.json"))).toMatchObject({
+      [file]: [{ path: ["key"] }],
+    });
+    // The record keeps the hash and nothing else: no `was`, so restore removes the key.
+    expect(Object.keys(read(join(stateDir, "owned.json"))[file][0]).sort()).toEqual([
+      "path",
+      "sha256",
+      "taken",
+    ]);
+  });
+
+  test("claim, then a write: the value it held then is kept, and restore can put it back", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    applyManagedJson({ file, stateDir, set: [[["a"], "ours"]] });
+    expect(read(file).a).toBe("ours");
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["a"], value: "ours", was: "theirs", taken: true }],
+    });
+    // And `release` writes that value back and gives the key up.
+    applyManagedJson({ file, stateDir, release: [[["a"], "theirs"]] });
+    expect(read(file).a).toBe("theirs");
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+    // A second restore has nothing of ours left in it.
+    expect(restore(stateDir)).toEqual([{ action: "unchanged", details: [], file }]);
+  });
+
+  test("release: a key that already holds the value is given up, with no write", () => {
+    const { file, stateDir } = setup();
+    applyManagedJson({ file, stateDir, set: [[["a"], "ours"]] });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({ file, stateDir, release: [[["a"], "ours"]] });
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
   });
 });
