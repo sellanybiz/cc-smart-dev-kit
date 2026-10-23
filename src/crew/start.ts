@@ -653,7 +653,7 @@ function inUse(planned: Plan, records: readonly CrewRecord[], ctx: CrewContext):
   if (sameName !== undefined) {
     return refusal(
       `${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`,
-      `pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`,
+      `pick a shorter --slug, another plan or another tag, so this name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`,
     );
   }
   if (

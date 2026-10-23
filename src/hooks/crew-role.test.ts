@@ -1314,6 +1314,30 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: ");
   });
 
+  test("a store that cannot be written still gets the name back", async () => {
+    // `titleToSet` records the name as the kit's the moment it answers with it, so a turn that
+    // answered the error alone would never set it again: the address would stay lost, which is
+    // the bug the title is set for. The line and the title go out in the one answer.
+    const world = await crewWorld();
+    const log = crewEventsFile(world.stateDir, world.repo);
+    rmSync(log);
+    mkdirSync(log);
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(world.repo, "a word", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
+      world.env,
+    );
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: ");
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput).toEqual({
+      hookEventName: "UserPromptSubmit",
+      sessionTitle: "C app W2 hooks",
+    });
+  });
+
   test("crew answer's resume of a stopped session: silent, before and after the answer is recorded", async () => {
     // Before: the resume runs before the answer is written, so the record is still `stopped` —
     // and a question with no answer is what says the answer is on its way.

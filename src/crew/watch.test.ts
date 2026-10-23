@@ -1163,6 +1163,37 @@ describe("crew watch", () => {
     expect(world.out).toEqual([`${NAME}: committed`]);
   });
 
+  test("D60: the person's own switch, turned off mid-run, starts nothing", async () => {
+    // `readCaller` refuses the same way for a file it cannot use and for the switch the person
+    // owns (`crew.enabled` off; a session in bypass mode). Neither is a reason to start a crew
+    // session on a cap nobody could read: the pass says what happened, once, and holds the queue.
+    const world = await leadWorld();
+    world.writeConfig({ max: 2 });
+    await holderCrew(world);
+    const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
+    let passes = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        passes += 1;
+        if (passes > 1) {
+          await stepEvent(world);
+          return;
+        }
+        // Crew sessions are turned off, and the wait clears: only the switch holds it back now.
+        world.writeConfig({ enabled: false, max: 2 });
+        await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+      },
+    });
+    expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(queuedState(world)).toBe("queued");
+    expect(world.err).toEqual([
+      "crew watch: crew sessions are off in this project: turn them on with workflow.crew.enabled",
+      "Fix: cc-smart-dev-kit workflow set crew.enabled true --project (this project), or the same without --project (every project of yours)",
+    ]);
+    expect(world.out).toEqual([`${NAME}: committed`]);
+  });
+
   test("D25: a queued crew session waits for the merge of its phase, not for its report", async () => {
     const world = await leadWorld();
     const first = await addCrew(world, "done", {

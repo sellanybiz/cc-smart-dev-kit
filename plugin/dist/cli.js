@@ -30022,7 +30022,9 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
       type: "person"
     }, nowMs);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    const problem = storeProblem(reasonOf2(error));
+    const only = titleOnly(title);
+    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
   }
   return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
 }
@@ -33556,7 +33558,7 @@ function inUse(planned, records, ctx) {
   }
   const sameName = records.find((one) => one.repo === caller.repo && one.name === name && holdsName(one));
   if (sameName !== undefined) {
-    return refusal(`${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`, `pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`);
+    return refusal(`${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`, `pick a shorter --slug, another plan or another tag, so this name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`);
   }
   if (gitOut(caller.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env) !== null) {
     return refusal(`the branch ${branch} is there already, for ${name}`, "delete it, or pick another --slug");
@@ -34627,7 +34629,8 @@ async function watchPass(state, ctx, scope) {
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) {
-    await startQueued(record, ctx, resolved);
+    if (scope.mayStart !== false)
+      await startQueued(record, ctx, resolved);
     const waitKey = `${record.id}:wait`;
     const stuck = stuckWaitLine(record, here);
     if (stuck !== null && said[waitKey] !== stuck) {
@@ -34682,15 +34685,19 @@ async function runCrewWatch(args, ctx) {
   const deadline = args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;; ) {
     const reread = readCaller("watch", ctx, { session: "optional" });
+    let mayStart = true;
     if (reread.ok) {
       caps = reread.caller.resolved;
       capsSaid = false;
-    } else if (!capsSaid) {
-      for (const line of reread.lines)
-        ctx.error(line);
-      capsSaid = true;
+    } else {
+      mayStart = false;
+      if (!capsSaid) {
+        for (const line of reread.lines)
+          ctx.error(line);
+        capsSaid = true;
+      }
     }
-    const scope = { leadSessionId, mergeInto, repo, resolved: caps };
+    const scope = { leadSessionId, mergeInto, mayStart, repo, resolved: caps };
     let pass;
     try {
       pass = await watchPass(state, ctx, scope);

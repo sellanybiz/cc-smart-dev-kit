@@ -242,10 +242,10 @@ const CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
  * the name's shape only — a ListAgents ` [ref]` read past — so a person may name a session in
  * that shape by hand.
  *
- * **Nothing that acts reads it.** No crew command calls this: the store is what every command
- * goes by, and the name is only what the message guard looks a target up by
- * (`withoutListRef`). It is the shape check the tests hold the names to, and it is here for a
- * caller that must tell our names from a person's without a store to read.
+ * **Nothing reads a name's shape to act on it.** No crew command calls this: the commands
+ * resolve a name through the store's records (`findNamed`, which matches the name and the ids),
+ * and the message guard does the same after `withoutListRef` drops the ` [ref]`. It is the shape
+ * check the tests hold the names to, and the check a caller with no store to read would need.
  */
 export function roleOf(name: string): SessionRole | null {
   const plain = withoutListRef(name);

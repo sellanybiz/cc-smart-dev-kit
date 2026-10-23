@@ -26354,7 +26354,9 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
       type: "person"
     }, nowMs);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    const problem = storeProblem(reasonOf2(error));
+    const only = titleOnly(title);
+    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
   }
   return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
 }

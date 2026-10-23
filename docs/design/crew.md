@@ -493,7 +493,15 @@ the store records — a session the kit does not know is the person's own:
 
 - it **starts the queued crew sessions** of this lead when a place frees — through the launcher's own
   path (`startQueued`, in `start.ts`: the same `launch` that `crew start` runs, never a second
-  launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
+  launcher). **The workflow is read again at each pass** (`readCaller`, the reader `crew start`
+  itself uses), so a cap, a threshold or the `crew.enabled` switch the person changes while a
+  lead's watch runs reaches it within one pass; reading it once, before the loop, meant the
+  owner's `crew.max 16` on 2026-10-23 never reached a running watch, which went on starting
+  queued phases up to the old 24. A pass that **cannot** read it — a broken or too new file, and
+  equally the person's own switch (`crew.enabled` off, a session in bypass mode, which
+  `readCaller` refuses the same way) — **starts nothing**, keeps the last good caps for that
+  pass's read-only decisions (the quiet and idle thresholds) and says why, once: a cap nobody
+  could read is no licence to start a session. A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one. A queued crew session held by a
   phase that was **removed before its work was merged** never starts by itself, and the watch

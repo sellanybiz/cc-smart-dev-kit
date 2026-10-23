@@ -504,8 +504,8 @@ function titleOnly(title: null | string): HookResult {
  *
  * Whatever the turn is — the person's, the lead's, a subagent's — the name goes back with it
  * when the session's title says something else (`titleAnswer`): the name is the address every
- * other part of the kit reaches this crew session by, so it is put right on every turn, not
- * only on the turns the person types.
+ * other part of the kit reaches this crew session by, so it is put right on the lead's turns
+ * too, not only on the turns the person types.
  */
 async function personPromptAnswer(
   input: HookInput,
@@ -542,7 +542,12 @@ async function personPromptAnswer(
       nowMs,
     );
   } catch (error) {
-    return storeProblem(reasonOf(error));
+    // The event could not be written, and the name still goes out: `titleToSet` has already
+    // recorded this name as the kit's, so a turn that dropped it would never set it again — the
+    // address would stay lost for good, which is the very bug this is here to fix.
+    const problem = storeProblem(reasonOf(error));
+    const only = titleOnly(title);
+    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
   }
   return title === null
     ? addContext("UserPromptSubmit", personWroteLine())

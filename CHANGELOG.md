@@ -36,13 +36,13 @@ you open it.
   shorter `--slug`.
 - **A crew session renamed in 1.1.1 gets its name back.** 1.1.2 stopped new renames but nothing
   set the title back, so such a session kept a task name while its lead, `crew answer` and the
-  message guard went on addressing it by its record's name. Its next turn sets the record's name
-  again — on every turn, including the ones the lead drives.
+  message guard went on addressing it by its record's name. Its next turn puts the record's name
+  back — on the lead's turns too, not only the person's.
 - **A cap you change now reaches a running lead's watch.** `crew watch` read the workflow once
   and kept that value for its whole run: `crew.max 16` set while it ran never reached it, and a
   lead's watch went on starting queued phases up to the old 24 (seen live on 2026-10-23, with
-  the machine five times overloaded). Each pass reads the workflow again, and a file that cannot
-  be read keeps the last good value for that pass and says so once.
+  the machine five times overloaded). Each pass reads the workflow again, and a pass that cannot
+  read it — a broken file, or crew sessions turned off — starts nothing and says so once.
 
 **What to run:** nothing. The hooks come with the plugin update. A session that is already
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads

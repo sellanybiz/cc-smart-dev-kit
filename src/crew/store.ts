@@ -315,7 +315,7 @@ const crewFields = z.object({
   leadName: text,
   /** The repository: its main checkout's folder (the store's key). */
   repo: text,
-  /** The plan file the phase belongs to. */
+  /** The plan the phase belongs to: the lead's plan's word (`lead.plan`), the one the name carries too. */
   plan: text,
   /** The phase and the slug its name and branch carry. */
   phase: text,

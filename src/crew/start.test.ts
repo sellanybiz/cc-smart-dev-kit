@@ -1136,7 +1136,7 @@ describe("a name already in use", () => {
     expect(await runCrew(args("review-fixes-for-the-merge"), world.ctx())).toBe(1);
     expect(world.err).toEqual([
       `crew start: ${held} is recorded already, starting, on crew/E1a-E1b-review-fixes-for-the-guard`,
-      `Fix: pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${held}")`,
+      `Fix: pick a shorter --slug, another plan or another tag, so this name is not cut to the same words, or remove it first (${COMMAND} crew rm "${held}")`,
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
   });

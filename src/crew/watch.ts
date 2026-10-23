@@ -327,6 +327,14 @@ export interface WatchScope {
   repo: string;
   resolved: ResolvedWorkflow;
   /**
+   * False: this pass starts no queued crew session (`startQueued`). The watch sets it for a pass
+   * whose workflow it could not read again — a file it cannot use, **and the person's own
+   * switch**: `readCaller` refuses the same way for `crew.enabled` off and for a session in
+   * bypass mode. A cap nobody could read, or a feature the person just turned off, is no licence
+   * to start a session: the pass says why once and holds everything in the queue. Default: true.
+   */
+  mayStart?: boolean;
+  /**
    * What the gateway says at a moment (D42), for the paused crew sessions. Left out, one pass
    * reads the state file, the config and the router's health page. A test hands in its own: no
    * test reaches a real router's port.
@@ -685,7 +693,7 @@ export async function watchPass(
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) {
-    await startQueued(record, ctx, resolved);
+    if (scope.mayStart !== false) await startQueued(record, ctx, resolved);
     // A phase that was removed before its work was merged releases nothing, so this one never
     // starts by itself: say it once, with the way to drop the wait (a phase that was merged
     // before its removal started it, and the start's own state event is its line).
@@ -782,23 +790,30 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
   // phases up to the old 24. `readCaller` is the reader the start itself uses, so the project's
   // file, the person's `workflow.json` and the schema are all read again — once a pass, cheap
-  // against the agent view a pass already runs. A read that fails in one pass keeps the last
-  // good value for that pass and says so once, so a file broken mid-run never stops a watch and
-  // never quietly widens a cap either.
+  // against the agent view a pass already runs. A read that fails in one pass says so once, keeps
+  // the last good value for that pass's read-only decisions, and starts nothing (see below).
   let caps = resolved;
   let capsSaid = false;
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
     const reread = readCaller("watch", ctx, { session: "optional" });
+    let mayStart = true;
     if (reread.ok) {
       caps = reread.caller.resolved;
       capsSaid = false;
-    } else if (!capsSaid) {
-      for (const line of reread.lines) ctx.error(line);
-      capsSaid = true;
+    } else {
+      // The last good caps stand for this pass's read-only decisions (the quiet and idle
+      // thresholds), and **no crew session starts on them**: `readCaller` refuses the same way
+      // for a file it cannot use and for the person's own switch (`crew.enabled` off, a session
+      // in bypass), and neither is a reason to start a session on a cap nobody could read.
+      mayStart = false;
+      if (!capsSaid) {
+        for (const line of reread.lines) ctx.error(line);
+        capsSaid = true;
+      }
     }
-    const scope: WatchScope = { leadSessionId, mergeInto, repo, resolved: caps };
+    const scope: WatchScope = { leadSessionId, mergeInto, mayStart, repo, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
