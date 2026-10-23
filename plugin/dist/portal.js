@@ -18727,6 +18727,19 @@ function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+function parseCrewKeep(entry) {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -18749,6 +18762,7 @@ var workflowSchema = strictObject({
   }).optional(),
   crew: strictObject({
     enabled: boolean2().optional(),
+    keep: array(crewKeepSchema).optional(),
     idleStopMinutes: numberField("crew.idleStopMinutes"),
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
@@ -18785,6 +18799,7 @@ var workflowDefaults = {
   },
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     maxOpus: null,
@@ -18817,6 +18832,7 @@ var POLICY_KEYS = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -18872,6 +18888,19 @@ function parseWorkflowValue(key, text) {
     return parseNumber(key, value);
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
+  }
+  if (key === "crew.keep") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0)
+      return { ok: false, why: `crew.keep is a list of ${CREW_KEEP_RULE}` };
+    const unknown = named.filter((entry) => parseCrewKeep(entry) === null);
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why: `crew.keep: unknown ${unknown.join(", ")} (an entry is ${CREW_KEEP_RULE})`
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
   }
   if (key === "reviewAgents") {
     const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
@@ -28229,6 +28258,7 @@ var RESOLVED = {
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "crew.enabled": (r) => r.crew.enabled,
+  "crew.keep": (r) => r.crew.keep,
   "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
@@ -28277,6 +28307,7 @@ function resolveWorkflow(paths, projectConfig) {
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of("crew.idleStopMinutes", crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes),
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),

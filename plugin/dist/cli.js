@@ -2358,7 +2358,7 @@ function oldBunRefusal(command, version, path) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync56, readFileSync as readFileSync66 } from "fs";
-import { dirname as dirname22, join as join67 } from "path";
+import { dirname as dirname23, join as join67 } from "path";
 
 // src/gateway/config.ts
 import { createHash as createHash2 } from "crypto";
@@ -21296,6 +21296,19 @@ function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+function parseCrewKeep(entry) {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -21318,6 +21331,7 @@ var workflowSchema = strictObject({
   }).optional(),
   crew: strictObject({
     enabled: boolean2().optional(),
+    keep: array(crewKeepSchema).optional(),
     idleStopMinutes: numberField("crew.idleStopMinutes"),
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
@@ -21354,6 +21368,7 @@ var workflowDefaults = {
   },
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     maxOpus: null,
@@ -21388,6 +21403,7 @@ var POLICY_KEYS = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -21452,6 +21468,19 @@ function parseWorkflowValue(key, text) {
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
+  if (key === "crew.keep") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0)
+      return { ok: false, why: `crew.keep is a list of ${CREW_KEEP_RULE}` };
+    const unknown = named.filter((entry) => parseCrewKeep(entry) === null);
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why: `crew.keep: unknown ${unknown.join(", ")} (an entry is ${CREW_KEEP_RULE})`
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
   if (key === "reviewAgents") {
     const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
     if (named.length === 0) {
@@ -21486,7 +21515,7 @@ function showValue(key, value) {
   if (key === "crew.maxOpus" && value === null)
     return `(${CREW_MAX_OPUS_UNSET})`;
   if (Array.isArray(value))
-    return value.join(", ");
+    return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }
 
@@ -31557,10 +31586,82 @@ function launchArgs(spec) {
     CREW_PERMISSION_MODE,
     "--autocompact",
     CREW_AUTOCOMPACT,
+    "--strict-mcp-config",
+    "--mcp-config",
+    spec.mcpFile,
     "--settings",
     spec.settingsFile,
     spec.prompt
   ];
+}
+function parsePluginList(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed))
+    return null;
+  const rows = [];
+  for (const row of parsed) {
+    if (typeof row !== "object" || row === null)
+      continue;
+    const { enabled, id } = row;
+    if (typeof id !== "string" || id === "")
+      continue;
+    rows.push({ enabled: enabled === true, id });
+  }
+  return rows;
+}
+function serversFor(kind) {
+  const names = [TAVILY_SERVER_NAME];
+  if (kind === "ui")
+    names.push("playwright");
+  return names;
+}
+function leanLaunch(input) {
+  const keptPlugins = new Set;
+  const keptServers = new Set(serversFor(input.kind));
+  for (const entry of input.keep) {
+    const parsed = parseCrewKeep(entry);
+    if (parsed === null) {
+      return { ok: false, why: `workflow.crew.keep: "${entry}" is not ${CREW_KEEP_RULE}` };
+    }
+    if (parsed.kind === "plugin") {
+      if (parsed.id.startsWith(`${PLUGIN}@`))
+        continue;
+      if (input.enabled !== null && !input.enabled.some((row) => row.enabled && row.id === parsed.id)) {
+        return {
+          ok: false,
+          why: `workflow.crew.keep names plugin "${parsed.id}", which is not enabled in this Claude Code`
+        };
+      }
+      keptPlugins.add(parsed.id);
+      continue;
+    }
+    if (!SERVER_NAMES.includes(parsed.name)) {
+      return {
+        ok: false,
+        why: `workflow.crew.keep names server "${parsed.name}"; a crew session can keep only the servers cc-smart-dev-kit registers (${SERVER_NAMES.join(", ")})`
+      };
+    }
+    keptServers.add(parsed.name);
+  }
+  const off = input.enabled === null ? [] : [
+    ...new Set(input.enabled.filter((row) => row.enabled && !row.id.startsWith(`${PLUGIN}@`)).map((row) => row.id).filter((id) => !keptPlugins.has(id)))
+  ].sort();
+  const servers = {};
+  for (const one of mcpServers(input.context)) {
+    if (!keptServers.has(one.name) || one.skipped !== undefined)
+      continue;
+    servers[one.name] = JSON.parse(one.json);
+  }
+  return { lean: { off, servers }, ok: true };
+}
+function mcpConfigText(servers) {
+  return `${JSON.stringify({ mcpServers: servers }, null, 2)}
+`;
 }
 var BACKGROUNDED = /^\s*backgrounded\s+\u00B7\s+([0-9a-f]{8})\s+\u00B7\s+(\S.*?)\s*$/m;
 function parseBackgrounded(output) {
@@ -31794,6 +31895,7 @@ var RESOLVED = {
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "crew.enabled": (r) => r.crew.enabled,
+  "crew.keep": (r) => r.crew.keep,
   "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
@@ -31842,6 +31944,7 @@ function resolveWorkflow(paths, projectConfig) {
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of("crew.idleStopMinutes", crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes),
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
@@ -32153,7 +32256,7 @@ function memoryMbOf(pid) {
 
 // src/crew/start.ts
 import { existsSync as existsSync52, readFileSync as readFileSync62 } from "fs";
-import { basename as basename10, join as join61, resolve as resolve8 } from "path";
+import { basename as basename10, dirname as dirname21, join as join61, resolve as resolve8 } from "path";
 
 // src/worktrees/include.ts
 import { copyFileSync, existsSync as existsSync50, mkdirSync as mkdirSync23 } from "fs";
@@ -32448,6 +32551,23 @@ async function readBrief(args, ctx) {
     throw refusal("the brief is empty", undefined, 2);
   return text;
 }
+function keepFileOf(source, paths) {
+  return source === "personal" ? tildify(personalWorkflowFile(paths), paths.home) : CONFIG_PATH;
+}
+function leanOf(kind, keep, ctx, claude, repo) {
+  const listed = callClaude(claudeDeps(ctx), claude, ["plugin", "list", "--json"], repo);
+  const enabled = listed.ok && listed.run.exitCode === 0 ? parsePluginList(listed.run.stdout) : null;
+  const context = {
+    bunx: ctx.which("bunx") ?? "bunx",
+    launcher: launcherArgv(ctx.paths.binDir, ctx.platform),
+    tavily: readTavilyKey(ctx.paths, ctx.env, ctx.platform).source === "none" ? { key: false, reason: "no Tavily key" } : { key: true }
+  };
+  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  if (!lean.ok) {
+    throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
+  }
+  return lean.lean;
+}
 async function plan(args, ctx) {
   const read = readCaller("start", ctx);
   if (!read.ok)
@@ -32476,6 +32596,7 @@ async function plan(args, ctx) {
   const chosen = chooseLaunch(args.kind, args, ctx);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
   const baseRef = args.base ?? currentRef(root, ctx.env);
   const baseSha = baseRef === null ? null : commitOf(root, baseRef, ctx.env);
@@ -32505,6 +32626,7 @@ async function plan(args, ctx) {
     files: args.files,
     kind: args.kind,
     lead,
+    lean,
     name,
     phase: args.phase,
     slug: args.slug,
@@ -32534,6 +32656,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const number = records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name;
   try {
@@ -32561,6 +32684,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
     files: old.files,
     kind: old.kind,
     lead,
+    lean,
     name,
     phase: old.phase,
     slug: old.slug,
@@ -32644,8 +32768,31 @@ async function failed(record, reason, ctx, change = {}) {
   ctx.print(`failed ${record.name}: ${reason}`);
   return 1;
 }
+function crewSettingsText(id, off) {
+  const settings = {
+    env: {
+      [CREW_ENV]: id,
+      [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
+      [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS)
+    }
+  };
+  if (off.length > 0) {
+    settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
+  }
+  settings.disableClaudeAiConnectors = true;
+  return `${JSON.stringify(settings, null, 2)}
+`;
+}
 async function launch(spec, record, ctx) {
   const { worktree } = spec;
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
+  const mcpFile = join61(dirname21(settingsFile), "mcp.json");
+  try {
+    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
+  } catch (error) {
+    return await failed(record, `its settings could not be written: ${reasonOf3(error)}`, ctx);
+  }
   const added = runGit(spec.repo, ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha], ctx.env, WORKTREE_ADD_TIMEOUT_MS);
   if (!added.ok)
     return await failed(record, `git worktree add failed: ${lastLine2(added.err)}`, ctx);
@@ -32658,10 +32805,11 @@ async function launch(spec, record, ctx) {
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
   const args = launchArgs({
     effort: spec.effort,
+    mcpFile,
     model: spec.model,
     name: record.name,
     prompt: firstPrompt(record.name, spec.leadName, briefFile),
-    settingsFile: crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id),
+    settingsFile,
     worktreeName: basename10(worktree)
   });
   const nothingStarted = async (reason) => {
@@ -32934,14 +33082,6 @@ async function startPlanned(planned, ctx) {
       crewName: record.name,
       worktree: planned.worktree
     }));
-    writeStoreFile(crewSettingsFile(ctx.paths.stateDir, caller.repo, record.id), `${JSON.stringify({
-      env: {
-        [CREW_ENV]: record.id,
-        [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
-        [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS)
-      }
-    }, null, 2)}
-`);
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf3(error)}`, ctx);
   }
@@ -32968,6 +33108,7 @@ function specOf(planned) {
     claude: planned.claude,
     effort: planned.chosen.effort,
     leadName: planned.lead.name,
+    lean: planned.lean,
     model: planned.chosen.model,
     repo: planned.caller.repo,
     resolved: modelText(planned.chosen.model, planned.chosen.real.model),
@@ -33021,12 +33162,20 @@ async function startQueued(record, ctx, resolved) {
     await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet);
     return;
   }
+  let lean;
+  try {
+    lean = leanOf(isCrewKind(record.kind) ? record.kind : null, resolved.crew.keep, ctx, claude, record.repo);
+  } catch (error) {
+    await failed(record, error instanceof Refusal ? error.lines.join("; ") : reasonOf3(error), quiet);
+    return;
+  }
   await launch({
     baseSha: sha,
     branch: record.branch,
     claude,
     effort: record.effort,
     leadName: record.leadName,
+    lean,
     model: record.model.named,
     repo: record.repo,
     resolved: modelText(record.model.named, record.model.resolved),
@@ -34676,7 +34825,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname21, isAbsolute as isAbsolute7, posix as posix3, relative as relative3, resolve as resolve10, win32 as win324 } from "path";
+import { dirname as dirname22, isAbsolute as isAbsolute7, posix as posix3, relative as relative3, resolve as resolve10, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -34938,7 +35087,7 @@ function movedTo2(invocation, folder, ctx, dialect) {
   return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname21(paths.workflowConfigFile);
+  const settings = dirname22(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative3(paths.home, folder);
@@ -35087,7 +35236,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname21);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname22);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
@@ -37308,7 +37457,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname22(dir)) {
+  for (let dir = cwd;; dir = dirname23(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join67(dir, name);
       if (from === join67(paths.claudeConfigDir, "CLAUDE.md") || !existsSync56(from))
@@ -37324,7 +37473,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname22(dir) === dir)
+    if (dirname23(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -41431,7 +41580,7 @@ ${PORTAL_USAGE}`);
 
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync26 } from "fs";
-import { dirname as dirname23 } from "path";
+import { dirname as dirname24 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -41507,7 +41656,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync26(dirname23(file), { mode: 448, recursive: true });
+  mkdirSync26(dirname24(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -41950,7 +42099,7 @@ ${WORKFLOW_USAGE}`);
 
 // src/sessions/flow.ts
 import { closeSync as closeSync9, mkdirSync as mkdirSync27, openSync as openSync9, readFileSync as readFileSync71, readSync as readSync5, statSync as statSync23 } from "fs";
-import { dirname as dirname24, join as join72 } from "path";
+import { dirname as dirname25, join as join72 } from "path";
 
 // src/cli/usage.ts
 import { existsSync as existsSync64, readdirSync as readdirSync23, readFileSync as readFileSync70, statSync as statSync22 } from "fs";
@@ -43220,7 +43369,7 @@ function openWaitsOf(flow, session, context) {
 }
 function writeCache(file, cache) {
   try {
-    mkdirSync27(dirname24(file), { recursive: true, mode: 448 });
+    mkdirSync27(dirname25(file), { recursive: true, mode: 448 });
     atomicWrite(file, `${JSON.stringify(cache)}
 `, 384);
   } catch {}
@@ -43597,7 +43746,7 @@ import {
   writeFileSync as writeFileSync13
 } from "fs";
 import { platform as platform2 } from "os";
-import { dirname as dirname25, join as join73, resolve as resolve12 } from "path";
+import { dirname as dirname26, join as join73, resolve as resolve12 } from "path";
 var PIN_HOURS = 48;
 var RESTORE_HOURS = 12;
 var TAIL_BYTES2 = 512 * 1024;
@@ -43748,7 +43897,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
 function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
-  const dir = dirname25(openedMarkerFile(stateDir, id));
+  const dir = dirname26(openedMarkerFile(stateDir, id));
   for (const name of readdirSync24(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
@@ -43821,7 +43970,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync65(dirname25(tabDir))
+    warpDataFolder: existsSync65(dirname26(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -44428,7 +44577,7 @@ function topLevelHelp() {
 
 // src/cli/migrate.ts
 import { existsSync as existsSync67, readdirSync as readdirSync25, readFileSync as readFileSync74, renameSync as renameSync5, rmSync as rmSync16, statSync as statSync25 } from "fs";
-import { basename as basename12, dirname as dirname26, join as join75 } from "path";
+import { basename as basename12, dirname as dirname27, join as join75 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
   name: "anymodel",
@@ -44455,7 +44604,7 @@ function oldGatewayEnv(port) {
 }
 function migrateUnits(paths, overrides = {}) {
   return {
-    dir: overrides.dir ?? dirname26(paths.routerUnitFile),
+    dir: overrides.dir ?? dirname27(paths.routerUnitFile),
     oldUnit: overrides.oldUnit ?? OLD.unit,
     oldSocket: overrides.oldSocket ?? OLD.socket,
     unit: overrides.unit ?? basename12(paths.routerUnitFile),
@@ -45281,7 +45430,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync68, rmSync as rmSync17 } from "fs";
-import { dirname as dirname27, join as join76 } from "path";
+import { dirname as dirname28, join as join76 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -45305,7 +45454,7 @@ function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   if (existsSync68(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  const bunfig = bunConfigPath(dirname27(dirname27(cliBundle)));
+  const bunfig = bunConfigPath(dirname28(dirname28(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
   return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
@@ -45467,7 +45616,7 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync69, mkdirSync as mkdirSync29 } from "fs";
-import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute8, join as join78, relative as relative7 } from "path";
+import { basename as basename13, delimiter, dirname as dirname29, isAbsolute as isAbsolute8, join as join78, relative as relative7 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join77 } from "path";
@@ -45590,7 +45739,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyFile !== null) {
     const mark = existsSync69(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
-      mkdirSync29(dirname28(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync29(dirname29(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
