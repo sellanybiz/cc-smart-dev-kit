@@ -83,7 +83,7 @@ import {
 } from "./api/projects";
 import type { LivePublish } from "./api/types";
 import { runCliChild } from "./cli-child";
-import type { PortalContext } from "./context";
+import { healthFetch, type PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
   projectFilesHash,
@@ -191,12 +191,16 @@ function collector(onLine?: (line: string) => void): {
 function gatewayContext(
   action: ActionContext,
   print: (line: string) => void,
+  stdin = "",
 ): { ctx: GatewayContext } | { error: string } {
   const { portal } = action;
   const folder = portal.pluginFolder();
   if ("error" in folder) return folder;
   return {
     ctx: {
+      // The portal's own network: the key check and OmniRoute's dashboard reach a backend
+      // through it, as every other request of the portal does.
+      apiFetch: healthFetch(portal),
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
       bundle: join(folder.folder, "dist", "router.js"),
@@ -205,7 +209,9 @@ function gatewayContext(
       paths: portal.paths,
       print,
       probe: portal.probe,
-      readStdin: () => Promise.resolve(""),
+      // A secret the page sent (the key actions): handed over in memory, as a terminal's stdin
+      // would hand it, never on an argument list or in the environment.
+      readStdin: () => Promise.resolve(stdin),
       runner: portal.runner,
       // The portal's own service kind: systemd's units, or a Windows Scheduled Task.
       service: portal.systemd ? "systemd" : "none",
@@ -218,14 +224,24 @@ function gatewayContext(
 /**
  * Runs a gateway command with the person's yes already given. The plugin's folder is resolved
  * here, at the moment of the action: `gateway setup` reads the router bundle from it, and a
- * folder that is gone is the whole answer, in words.
+ * folder that is gone is the whole answer, in words. A refusal the command throws (setup's
+ * "nothing was saved") is its last line, after the lines it printed before it.
  */
-async function gateway(action: ActionContext, args: string[]): Promise<ActionResult> {
+async function gateway(
+  action: ActionContext,
+  args: string[],
+  stdin?: string,
+): Promise<ActionResult> {
   const { lines, print } = collector();
-  const context = gatewayContext(action, print);
+  const context = gatewayContext(action, print, stdin);
   if ("error" in context) return { lines: [context.error], ok: false };
-  const code = await runGateway(args, context.ctx);
-  return { lines, ok: code === 0 };
+  try {
+    const code = await runGateway(args, context.ctx);
+    return { lines, ok: code === 0 };
+  } catch (error) {
+    print(messageOf(error));
+    return { lines, ok: false };
+  }
 }
 
 // ── Slots ───────────────────────────────────────────────────────────────────────
@@ -1340,6 +1356,61 @@ async function claudeMemFollow(
   return claudeMemWrite(() => followSetup(action.portal.paths));
 }
 
+// ── The gateway's OmniRoute key (PK1) ──────────────────────────────────────────
+
+/**
+ * `gateway.key.save` (a key the person pasted) and `gateway.key.make` (a key made with
+ * OmniRoute's dashboard password, `createOmnirouteKey`): `gateway setup` itself, with the secret
+ * as its stdin (`--backend-key-stdin omniroute`, `--omniroute-password-stdin`) and
+ * `--save-unchecked` when the person ticked that choice. So setup's key path is the one home:
+ * the key is tested first (`checkBackendKey`), a 401/403 refuses it in setup's own words and
+ * keeps the key in the file, an unanswered check saves only with the choice and its `!` line, a
+ * key that changes is backed up first, a key made and not saved is deleted again in OmniRoute,
+ * and the password is never stored.
+ *
+ * It runs in the portal's process, as the router restart runs setup: the secret stays in this
+ * process's memory (`gatewayContext`'s stdin) and never reaches an argument list, the
+ * environment or a child. Setup prints the key masked (`maskKey`), and every refusal it throws
+ * names no key and no password, so the lines are safe to answer and to send on the stream.
+ *
+ * A machine with no gateway yet is sent to the terminal: there setup also installs the router's
+ * service and asks about its port, which is a first setup, not a key change.
+ */
+async function gatewayKeyAction(
+  action: ActionContext,
+  body: Record<string, unknown>,
+  from: "key" | "password",
+): Promise<ActionResult> {
+  const field = from === "key" ? body.key : body.password;
+  const secret = typeof field === "string" ? field.trim() : "";
+  if (secret === "") {
+    return {
+      lines: [
+        from === "key"
+          ? "Paste the OmniRoute API key first."
+          : "Type OmniRoute's dashboard password first.",
+      ],
+      ok: false,
+    };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  if (!existsSync(action.portal.paths.gatewayConfigFile)) {
+    return {
+      lines: [
+        `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`,
+      ],
+      ok: false,
+    };
+  }
+  const args = [
+    "setup",
+    "--yes",
+    ...(from === "key" ? ["--backend-key-stdin", "omniroute"] : ["--omniroute-password-stdin"]),
+    ...(body.saveUnchecked === true ? ["--save-unchecked"] : []),
+  ];
+  return gateway(action, args, secret);
+}
+
 // ── The crew, and the worktrees (D52) ───────────────────────────────────────────
 
 /** The longest answer a page may send to a crew session: a message, not a document. */
@@ -1452,6 +1523,8 @@ export const ACTION_NAMES = [
   "crew.rm",
   "crew.stop",
   "doctor.run",
+  "gateway.key.make",
+  "gateway.key.save",
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
@@ -1533,6 +1606,10 @@ export async function runAction(
       return updateInstall(action);
     case "companion.enable":
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
+    case "gateway.key.save":
+      return gatewayKeyAction(action, body, "key");
+    case "gateway.key.make":
+      return gatewayKeyAction(action, body, "password");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
     case "omniroute.update":
