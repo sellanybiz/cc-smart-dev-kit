@@ -303,6 +303,11 @@ export interface OtherSession {
 
 export interface WorkData {
   leads: { lead: LeadRecord; crew: CrewRecord[]; lastStep: Record<string, CrewEvent> }[];
+  /**
+   * Why the machine's crew store, or this folder's own sessions, could not be read; null when
+   * they were. Shown once on the page, so an empty list is never left unexplained.
+   */
+  note: null | string;
   others: OtherSession[];
   /** Why no session can say it waits on a prompt (the flow report did not run); null when it ran. */
   waitsNote: null | string;

@@ -510,6 +510,7 @@ export interface CrewSummary {
     question: string;
     recommended: null | number;
   };
+  repo: string;
   shortId: null | string;
   slug: string;
   state: string;
@@ -533,6 +534,7 @@ export interface LeadSummary {
   name: string;
   pausedAgents: string[];
   plan: string;
+  repo: string;
   sessionId: string;
   tag: string;
   updatedAt: string;
@@ -550,7 +552,7 @@ export interface SessionSummary {
 
 export interface WorkAnswer {
   crew: CrewSummary[];
-  lead: null | LeadSummary;
+  leads: LeadSummary[];
   note: null | string;
   repo: null | string;
   sessions: SessionSummary[];

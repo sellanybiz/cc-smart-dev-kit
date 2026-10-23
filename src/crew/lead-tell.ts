@@ -20,6 +20,10 @@
  * event's text is the note's first line without the tag, and the line the watch prints names
  * the sending lead. Then the command prints one `SendMessage` line per receiver: only a session
  * holds that tool, so it sends them.
+ *
+ * **A store write that fails part-way is never hidden.** The receivers recorded before it keep
+ * their note and get their lines printed; the one whose note is missing is named, and the exit
+ * code is 1. A bad name is still refused before anything is written ("all or none").
  */
 import { COMMAND } from "../build-info/names";
 import { sendMessageLine } from "./answer";
@@ -61,6 +65,41 @@ function findLead(
         ],
       };
   }
+}
+
+/**
+ * Records the note for each receiver, and prints each one's `SendMessage` line as soon as its
+ * event is in the store. **A failure never hides what was recorded:** the receivers before it
+ * hold the note and their lines are printed, so the note still reaches them; the receiver whose
+ * note is missing is named, and the exit code is 1.
+ */
+export async function recordLeadNotes(
+  receivers: readonly LeadRecord[],
+  record: (one: LeadRecord) => Promise<unknown>,
+  message: string,
+  sinks: { error: (line: string) => void; print: (line: string) => void },
+): Promise<number> {
+  const recorded: LeadRecord[] = [];
+  for (const one of receivers) {
+    try {
+      await record(one);
+    } catch (error) {
+      sinks.error(
+        `crew lead tell: the store could not record the note for ${one.name}: ${reasonOf(error)}`,
+      );
+      if (recorded.length > 0) {
+        const names = recorded.map((done) => done.name).join(", ");
+        sinks.error(
+          `The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${one.name} again.`,
+        );
+        for (const done of recorded) sinks.print(sendMessageLine(done.name, message));
+      }
+      return 1;
+    }
+    recorded.push(one);
+  }
+  for (const one of recorded) sinks.print(sendMessageLine(one.name, message));
+  return 0;
 }
 
 /** `crew lead tell`; the exit code. */
@@ -117,8 +156,10 @@ export async function runLeadTell(args: TellArgs, ctx: CrewContext): Promise<num
     }
   }
   const to = receivers.map((one) => one.name);
-  for (const one of receivers) {
-    try {
+  const message = leadTellMessage(sender.name, args.kind, args.text);
+  return await recordLeadNotes(
+    receivers,
+    async (one) => {
       await appendCrewEvent(
         ctx.paths.stateDir,
         repo,
@@ -133,12 +174,8 @@ export async function runLeadTell(args: TellArgs, ctx: CrewContext): Promise<num
         },
         ctx.now(),
       );
-    } catch (error) {
-      ctx.error(`crew lead tell: the store could not record the note: ${reasonOf(error)}`);
-      return 1;
-    }
-  }
-  const message = leadTellMessage(sender.name, args.kind, args.text);
-  for (const one of receivers) ctx.print(sendMessageLine(one.name, message));
-  return 0;
+    },
+    message,
+    { error: ctx.error, print: ctx.print },
+  );
 }

@@ -7,7 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { runCrew } from "./command";
-import { type LeadRecord, listLeads, readCrewEvents, writeLead } from "./store";
+import { recordLeadNotes } from "./lead-tell";
+import { type LeadRecord, leadRecordSchema, listLeads, readCrewEvents, writeLead } from "./store";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const SELF_NAME = "LEAD my-app master-plan";
@@ -47,6 +48,83 @@ function notes(world: ReturnType<typeof crewWorld>) {
     (one) => one.type === "lead-tell",
   );
 }
+
+/** One lead record, through the store's own schema. */
+function leadRecord(name: string, sessionId: string): LeadRecord {
+  return leadRecordSchema.parse({
+    createdAt: "2026-10-21T10:00:00.000Z",
+    cwd: "/home/user/my-app",
+    name,
+    plan: "other-plan",
+    repo: "/home/user/my-app",
+    sessionId,
+    tag: "my-app",
+    updatedAt: "2026-10-21T10:00:00.000Z",
+    version: 1,
+  });
+}
+
+describe("recordLeadNotes", () => {
+  const MESSAGE = "[LEAD my-app master-plan] CONTRACT: x.ts:y is gone";
+
+  test("every receiver recorded: one line each, in the order given", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const second = leadRecord("LEAD my-app third-plan", "e22fbc7d-9999-aaaa-bbbb-cccccccccccc");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes([first, second], async () => undefined, MESSAGE, {
+      error: (line) => err.push(line),
+      print: (line) => out.push(line),
+    });
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    expect(out).toEqual([
+      `SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`,
+      'SendMessage {"to":"LEAD my-app third-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone"}',
+    ]);
+  });
+
+  test("a store failure part-way prints the lines of the leads already recorded, and names the missing one", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const second = leadRecord("LEAD my-app third-plan", "e22fbc7d-9999-aaaa-bbbb-cccccccccccc");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes(
+      [first, second],
+      async (one) => {
+        if (one.sessionId === second.sessionId) throw new Error("the disk is full");
+      },
+      MESSAGE,
+      { error: (line) => err.push(line), print: (line) => out.push(line) },
+    );
+    expect(code).toBe(1);
+    // The first lead's note is in the store: its line is printed, so the note still reaches it.
+    expect(out).toEqual([`SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`]);
+    expect(err).toEqual([
+      "crew lead tell: the store could not record the note for LEAD my-app third-plan: the disk is full",
+      "The note is recorded for LEAD my-app other-plan: send the line below, and tell LEAD my-app third-plan again.",
+    ]);
+  });
+
+  test("the first receiver failing prints no line: nothing was recorded", async () => {
+    const first = leadRecord(PEER_NAME, OTHER_SESSION);
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await recordLeadNotes(
+      [first],
+      async () => {
+        throw new Error("no space left");
+      },
+      MESSAGE,
+      { error: (line) => err.push(line), print: (line) => out.push(line) },
+    );
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toEqual([
+      `crew lead tell: the store could not record the note for ${PEER_NAME}: no space left`,
+    ]);
+  });
+});
 
 describe("crew lead tell", () => {
   test("a contract note is recorded for the other lead, and printed as the line to send", async () => {

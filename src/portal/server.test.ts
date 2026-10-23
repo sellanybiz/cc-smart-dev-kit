@@ -21,6 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
@@ -155,6 +156,23 @@ const registry = (): Response =>
     time: { "3.9.0": new Date(Date.now() - 4 * 86_400_000).toISOString() },
     versions: { "3.9.0": {} },
   });
+
+/**
+ * The plugin folder an action's child runs, with **the repo's own CLI source** as its
+ * `dist/cli.js`: a test that runs a CLI child (`cli-child.ts`) then runs the code under test,
+ * not the bundle a release builds (`build:check` is what proves the bundle current).
+ */
+function sourceCliFolder(): () => PluginFolder {
+  const folder = tempDir("plugin-source");
+  mkdirSync(join(folder, "dist"), { recursive: true });
+  writeFileSync(join(folder, "bunfig.toml"), "");
+  writeFileSync(
+    join(folder, "dist", "cli.js"),
+    // A `file:` URL, so the import resolves on Windows too (a `C:\…` specifier does not).
+    `import ${JSON.stringify(pathToFileURL(join(import.meta.dir, "..", "entries", "cli.ts")).href)};\n`,
+  );
+  return () => ({ folder });
+}
 
 /** A portal on a free port, with a temp home, a temp project and a fake backend. */
 async function open(options: {
@@ -3925,7 +3943,7 @@ describe("the JSON API", () => {
       );
       const work = JSON.parse((await world.call("/api/work")).body) as {
         crew: { id: string; question: { options: string[]; recommended: number } | null }[];
-        lead: null;
+        leads: unknown[];
         sessions: unknown[];
       };
       expect(work.crew).toHaveLength(1);
@@ -3955,10 +3973,12 @@ describe("the JSON API", () => {
       expect(crew.report).toBe(null);
       expect(crew.reviews).toEqual([]);
 
-      // A crew session the store does not know is a typed 404.
+      // A crew session the store does not know is a typed 404, in the machine-wide words.
       const missing = await world.call("/api/crew/nobody");
       expect(missing.status).toBe(404);
-      expect(JSON.parse(missing.body).error).toContain("no crew session");
+      expect(JSON.parse(missing.body).error).toBe(
+        'No crew session on this machine is "nobody": the Work page lists them.',
+      );
     } finally {
       world.portal.stop();
       backend.stop();
@@ -5208,15 +5228,16 @@ describe("the new actions (D52)", () => {
     }
   });
 
-  test("a crew command runs the CLI's own code: an unknown crew session is its refusal", async () => {
+  test("an unknown crew session is refused before the CLI runs", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port, projectFiles: {} });
     try {
       const csrf = await world.csrfOf();
-      const stopped = await world.post("crew.stop", { crew: "nobody" }, csrf);
+      const stopped = await world.post("crew.stop", { confirm: true, crew: "nobody" }, csrf);
       expect(stopped.status).toBe(400);
+      // The record is found on the machine (`listAllCrew`), not in the portal's own folder.
       expect(JSON.parse(stopped.body).lines.join(" ")).toContain(
-        'no crew session of this repository is "nobody"',
+        'No crew session on this machine has the id "nobody"',
       );
     } finally {
       world.portal.stop();
@@ -5228,6 +5249,7 @@ describe("the new actions (D52)", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({
       backendPort: backend.port,
+      pluginFolder: sourceCliFolder(),
       projectFiles: { config: JSON.stringify({ workflow: { crew: { enabled: true } } }) },
     });
     try {

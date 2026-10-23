@@ -258,6 +258,8 @@ export interface CrewSummary {
     /** The 1-based option the crew session recommends; null for none. */
     recommended: null | number;
   };
+  /** The repository (its main checkout) the record belongs to: the store's own key. */
+  repo: string;
   shortId: null | string;
   slug: string;
   state: string;
@@ -277,7 +279,7 @@ export interface CrewSummary {
   worktree: string;
 }
 
-/** The lead of this repository, with its crew nested. */
+/** The lead of one repository, with its crew nested. */
 export interface LeadSummary {
   /** The crew sessions it leads, newest first. */
   crew: CrewSummary[];
@@ -286,6 +288,8 @@ export interface LeadSummary {
   name: string;
   pausedAgents: string[];
   plan: string;
+  /** The repository (its main checkout) the lead belongs to. */
+  repo: string;
   sessionId: string;
   tag: string;
   updatedAt: string;
@@ -309,13 +313,18 @@ export interface SessionSummary {
   state: "ended" | "idle" | "waiting" | "working";
 }
 
-/** `GET /api/work`: the lead, its crew nested, and the other sessions. */
+/** `GET /api/work`: every lead on the machine, its crew nested, and the other sessions. */
 export interface WorkAnswer {
-  /** Every crew session of this repository, newest first. */
+  /**
+   * Every crew session on the machine, newest first. The crew store is the machine's, so a
+   * portal started in any folder shows them all; each summary names its own `repo`.
+   */
   crew: CrewSummary[];
-  lead: null | LeadSummary;
+  /** Every lead on the machine, newest first; each names its own `repo` and nests its crew. */
+  leads: LeadSummary[];
+  /** Why the crew store or this folder's sessions could not be read; null when they were. */
   note: null | string;
-  /** The repository (its main checkout); null outside a git project. */
+  /** The repository of the folder the portal runs in; null outside a git project. */
   repo: null | string;
   sessions: SessionSummary[];
   /**

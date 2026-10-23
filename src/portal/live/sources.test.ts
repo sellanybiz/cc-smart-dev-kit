@@ -56,7 +56,7 @@ function queued(): NewCrew {
 }
 
 /** A poller on a temp home, with a fake router and a collector. */
-function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
+function world(options: { now?: () => number; recent?: () => unknown[]; routerUp?: boolean } = {}) {
   const home = tempDir("live");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
@@ -69,7 +69,6 @@ function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
     weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
   };
   const sources = createLiveSources({
-    cwd: home,
     fetch: async () =>
       options.routerUp === false
         ? Response.json({ error: "down" }, { status: 503 })
@@ -80,7 +79,7 @@ function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
             uptimeSec: 1,
           }),
     jobs: async () => jobs,
-    now: () => Date.now(),
+    now: options.now ?? (() => Date.now()),
     paths,
     pollMs: 3_600_000,
     publish: (event, data) => published.push({ data, event }),
@@ -163,7 +162,7 @@ describe("the live stream's sources", () => {
     expect(Object.keys(after.breakers)).toEqual(["cc-smart-dev-kit-worker"]);
   });
 
-  test("the guard log: each new ask once, and a cut-back log starts again", async () => {
+  test("the guard log: the first poll is a baseline, then each new ask once, and a cut-back log starts again", async () => {
     const world1 = world({ routerUp: false });
     mkdirSync(join(world1.paths.stateDir), { recursive: true });
     const ask = (at: number) => ({
@@ -175,17 +174,19 @@ describe("the live stream's sources", () => {
     });
     writeFileSync(askLogFile(world1.paths.stateDir), `${JSON.stringify(ask(1))}\n`);
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1)]);
+    // The asks before the portal started are history, not news: the first poll only records
+    // the log's place.
+    expect(world1.of("guard-ask")).toEqual([]);
     writeFileSync(
       askLogFile(world1.paths.stateDir),
       `${JSON.stringify(ask(1))}\n${JSON.stringify(ask(2))}\n`,
     );
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1), ask(2)]);
+    expect(world1.of("guard-ask")).toEqual([ask(2)]);
     // The frame keeps the newer half after the size limit: a smaller file is read from its start.
     writeFileSync(askLogFile(world1.paths.stateDir), `${JSON.stringify(ask(3))}\n`);
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1), ask(2), ask(3)]);
+    expect(world1.of("guard-ask")).toEqual([ask(2), ask(3)]);
   });
 
   test("the heavy-job queue: a lease that appears, then goes, is one event each time", async () => {
@@ -220,12 +221,12 @@ describe("the live stream's sources", () => {
     expect(world1.of("jobs")).toHaveLength(before + 3);
   });
 
-  test("the crew log: a created event, then only the step added after it", async () => {
+  test("the crew log: the first poll is a baseline, then only the step added after it", async () => {
     const world1 = world({ routerUp: false });
     await createCrew(world1.paths.stateDir, queued(), Date.now());
     await world1.sources.pollOnce();
-    const first = world1.of("crew") as { type: string }[];
-    expect(first.map((one) => one.type)).toEqual(["created"]);
+    // The whole history before the portal started is not sent as live events.
+    expect(world1.of("crew")).toEqual([]);
     await appendCrewEvent(
       world1.paths.stateDir,
       REPO,
@@ -241,9 +242,53 @@ describe("the live stream's sources", () => {
     );
     await world1.sources.pollOnce();
     const all = world1.of("crew") as { text: null | string; type: string }[];
-    expect(all.map((one) => one.type)).toEqual(["created", "step"]);
-    expect(all[1]?.text).toBe("step 1");
+    expect(all.map((one) => one.type)).toEqual(["step"]);
+    expect(all[0]?.text).toBe("step 1");
     expect(crewStoreDir(world1.paths.stateDir, REPO)).toContain("crew");
+  });
+
+  test("a repository that appears after the first poll publishes its own events", async () => {
+    // A new project's first crew session is news: the baseline covers the store as the portal
+    // found it, not a log that did not exist then.
+    let clock = Date.now();
+    const world1 = world({ now: () => clock, routerUp: false });
+    await createCrew(world1.paths.stateDir, queued(), clock);
+    await world1.sources.pollOnce();
+    expect(world1.of("crew")).toEqual([]);
+    await createCrew(
+      world1.paths.stateDir,
+      {
+        ...queued(),
+        branch: "crew/K-other",
+        id: "crew-K-other",
+        name: "C other-app K other",
+        repo: "/home/user/other-app",
+        worktree: "/home/user/other-app/.claude/worktrees/crew-K-other",
+      },
+      clock,
+    );
+    // The repository list is trusted for 30 s: a new repository is seen at the next walk.
+    clock += 31_000;
+    await world1.sources.pollOnce();
+    expect(world1.of("crew").map((one) => (one as { type: string }).type)).toEqual(["created"]);
+  });
+
+  test("a guard log that appears after the first poll publishes its first ask", async () => {
+    // No log at the start is no history to skip: the first ask written later is news.
+    const world1 = world({ routerUp: false });
+    mkdirSync(world1.paths.stateDir, { recursive: true });
+    const ask = (at: number) => ({
+      at,
+      hook: "session-escape-guard",
+      reason: "the portal's port",
+      session: "s1",
+      tool: "Bash",
+    });
+    await world1.sources.pollOnce();
+    expect(world1.of("guard-ask")).toEqual([]);
+    writeFileSync(askLogFile(world1.paths.stateDir), `${JSON.stringify(ask(1))}\n`);
+    await world1.sources.pollOnce();
+    expect(world1.of("guard-ask")).toEqual([ask(1)]);
   });
 
   test("the last update check: one event when its record appears or changes", async () => {

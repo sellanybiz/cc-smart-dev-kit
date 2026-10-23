@@ -52,9 +52,11 @@ const NEVER_DOES = CREW_NEVER_DOES;
 /** How the command reads the session that runs it. */
 export interface CallerOptions {
   /**
-   * True: the person acted through the portal (D52). The portal is not a Claude Code session,
-   * and its environment may carry the crew session that happened to start it, so neither
-   * check applies; the workflow and project checks stay.
+   * True: the person acted through the portal (D52), and no Claude Code session runs this
+   * command. The session lookup and the "no session" refusal are skipped; **the crew-session
+   * refusal stays** — the portal's child clears `CC_SMART_DEV_KIT_CREW` (`src/portal/cli-child.ts`),
+   * so the person's click passes it, and a crew session that gives the flag itself is still
+   * refused. The workflow and project checks stay too.
    */
   asPerson?: boolean;
   /**
@@ -78,7 +80,9 @@ export function readCaller(
         : [`crew ${command}: ${line}`, `Fix: ${fix}`],
     ok: false,
   });
-  const crew = options.asPerson === true ? null : crewIdOf(ctx.env);
+  // A crew session never runs this, whoever gave the flags: a crew session's environment says
+  // what it is (`CC_SMART_DEV_KIT_CREW`), and the portal's child clears it (D52).
+  const crew = crewIdOf(ctx.env);
   if (crew !== null) {
     return refuse(
       `this session is the crew session ${crew}, and a crew session never ${NEVER_DOES[command]}`,

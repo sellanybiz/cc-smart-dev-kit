@@ -264,7 +264,7 @@ export function projectOf(answer: ProjectAnswer, settings: SettingsData | null):
 }
 
 /** A crew session's record, from its summary: the fields the summary does not hold are empty. */
-function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
+function crewRecordOf(crew: CrewSummary): CrewRecord {
   return {
     baseRef: crew.base?.ref ?? "",
     branch: crew.branch,
@@ -283,7 +283,7 @@ function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
     phase: crew.phase,
     plan: crew.plan,
     pr: crew.pr,
-    repo,
+    repo: crew.repo,
     sessionId: null,
     shortId: crew.shortId,
     slug: crew.slug,
@@ -306,31 +306,26 @@ function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
 }
 
 /**
- * Work: each lead with its crew, and the person's other sessions. The answer names the newest
- * lead in full; a crew session of another lead (an older one, or one whose record is gone) is
- * shown under its own lead's name and id, which its record carries, so none is left out.
+ * Work: every lead on the machine with its crew, and the person's other sessions. Each lead
+ * and each crew session carries its own repository (the server reads the machine's crew store),
+ * so a group of another repository is labelled with that repository, never the portal's.
  */
 export function workOf(answer: WorkAnswer): WorkData {
-  const repo = answer.repo ?? "";
-  const lead = answer.lead;
-  const groups: WorkData["leads"] = [];
-  if (lead !== null) {
-    groups.push({
-      crew: lead.crew.map((crew) => crewRecordOf(crew, repo)),
-      lastStep: {},
-      lead: {
-        createdAt: lead.createdAt,
-        cwd: lead.cwd,
-        name: lead.name,
-        plan: lead.plan,
-        repo,
-        sessionId: lead.sessionId,
-        tag: lead.tag,
-        updatedAt: lead.updatedAt,
-      },
-    });
-  }
-  const shown = new Set(lead?.crew.map((crew) => crew.id) ?? []);
+  const groups: WorkData["leads"] = answer.leads.map((lead) => ({
+    crew: lead.crew.map((crew) => crewRecordOf(crew)),
+    lastStep: {},
+    lead: {
+      createdAt: lead.createdAt,
+      cwd: lead.cwd,
+      name: lead.name,
+      plan: lead.plan,
+      repo: lead.repo,
+      sessionId: lead.sessionId,
+      tag: lead.tag,
+      updatedAt: lead.updatedAt,
+    },
+  }));
+  const shown = new Set(answer.leads.flatMap((lead) => lead.crew.map((crew) => crew.id)));
   for (const crew of answer.crew) {
     if (shown.has(crew.id)) continue;
     let group = groups.find((one) => one.lead.sessionId === crew.leadSessionId);
@@ -343,7 +338,7 @@ export function workOf(answer: WorkAnswer): WorkData {
           cwd: "",
           name: crew.leadName,
           plan: crew.plan,
-          repo,
+          repo: crew.repo,
           sessionId: crew.leadSessionId,
           tag: "",
           updatedAt: crew.updatedAt,
@@ -351,7 +346,7 @@ export function workOf(answer: WorkAnswer): WorkData {
       };
       groups.push(group);
     }
-    group.crew.push(crewRecordOf(crew, repo));
+    group.crew.push(crewRecordOf(crew));
   }
   const lastStep: Record<string, CrewEvent> = {};
   const memory: WorkData["memory"] = {};
@@ -373,6 +368,8 @@ export function workOf(answer: WorkAnswer): WorkData {
   return {
     leads: groups,
     memory,
+    // A store or a folder the server could not read: the page says why, never an empty list.
+    note: answer.note,
     waitsNote:
       answer.waitsError === null
         ? null
@@ -477,7 +474,7 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
               recommended: crew.question.recommended,
             },
           ],
-    record: crewRecordOf(crew, ""),
+    record: crewRecordOf(crew),
     report: answer.report,
     reviews: answer.reviews,
   };

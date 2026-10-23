@@ -14,9 +14,15 @@
  *   - **A ping on every stream** every `PING_MS`, so a proxy, a laptop's sleep or a closed
  *     window is noticed, and the page can show "reconnecting" instead of old values.
  *   - **`Last-Event-ID` resumes.** Every event carries `<boot>:<sequence>`, and the last
- *     `BUFFER_MAX` events are kept: a reconnect replays what it missed. A page whose id is from
- *     another run of the portal (a restart, a new version) is sent one `reset`, and fetches its
- *     pages again — ids from a stopped process mean nothing to this one.
+ *     `BUFFER_MAX` events are kept: a reconnect replays what it missed. **Only real events are
+ *     kept**: `ping`, `hello` and `reset` take a sequence number (so no two ids are the same)
+ *     but no buffer entry, or pings alone would fill the buffer in about 16 minutes and a
+ *     reconnect would get `reset` instead of what it missed. A page whose id is from another
+ *     run of the portal (a restart, a new version) is sent one `reset`, and fetches its pages
+ *     again — ids from a stopped process mean nothing to this one.
+ *   - **A stream that falls behind is closed.** A tab that stops reading its socket grows the
+ *     stream's queue without end; past `STREAM_QUEUE_MAX_BYTES` the stream is closed, and the
+ *     page reconnects and resumes from its last id (or is reset).
  *   - **`closing` when the server stops** (a new version taking over): every stream is told,
  *     then closed, and the page reloads onto the new portal. It is written before the close, so
  *     a client that reads to the end still sees it.
@@ -35,6 +41,13 @@ export const PING_MS = 15_000;
 
 /** How many events a reconnect may replay. */
 export const BUFFER_MAX = 512;
+
+/**
+ * How many bytes one stream may have queued and unread before it is closed: a slow or stopped
+ * reader must not grow the server's memory without end. Well above a full replay (512 short
+ * events), so a normal reconnect never hits it.
+ */
+export const STREAM_QUEUE_MAX_BYTES = 1_048_576;
 
 /** One event as the buffer keeps it. */
 interface BufferedEvent {
@@ -74,9 +87,12 @@ export class LiveHub {
   private readonly streams = new Set<Stream>();
   private nextSeq = 1;
   private closed = false;
+  /** The newest sequence the buffer dropped: a page that saw only up to here missed events. */
+  private droppedThrough = 0;
 
   constructor(
     private readonly options: {
+      maxQueueBytes?: number;
       maxStreams?: number;
       now?: () => number;
       pingMs?: number;
@@ -119,6 +135,13 @@ export class LiveHub {
       },
       write: (text: string): boolean => {
         if (ended) return false;
+        // A queue that fell past the bound means a reader that stopped reading: close it, so
+        // its tab's memory stays bounded and the page reconnects and resumes.
+        const room = controller?.desiredSize;
+        if (room !== undefined && room !== null && room < 0) {
+          stream.close();
+          return false;
+        }
         try {
           controller?.enqueue(encoder.encode(text));
           return true;
@@ -129,31 +152,38 @@ export class LiveHub {
         }
       },
     };
-    const body = new ReadableStream<Uint8Array>({
-      start: (started) => {
-        controller = started;
-        this.streams.add(stream);
-        timer = setInterval(() => {
-          stream.write(frame(this.boot, this.event("ping", { at: this.now() })));
-        }, this.options.pingMs ?? PING_MS);
-        // The replay, then a hello: a page that reconnects learns what it missed and which
-        // run of the portal it is talking to. A page from another run is told to reset.
-        const last = request.headers.get("last-event-id");
-        if (last !== null) {
-          const resumed = this.resume(last);
-          if (resumed === null) {
-            if (!stream.write(frame(this.boot, this.event("reset", { boot: this.boot })))) return;
-          } else {
-            for (const entry of resumed) {
-              if (!stream.write(frame(this.boot, entry))) return;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start: (started: ReadableStreamDefaultController<Uint8Array>) => {
+          controller = started;
+          this.streams.add(stream);
+          timer = setInterval(() => {
+            stream.write(frame(this.boot, this.next("ping", { at: this.now() })));
+          }, this.options.pingMs ?? PING_MS);
+          // The replay, then a hello: a page that reconnects learns what it missed and which
+          // run of the portal it is talking to. A page from another run is told to reset.
+          const last = request.headers.get("last-event-id");
+          if (last !== null) {
+            const resumed = this.resume(last);
+            if (resumed === null) {
+              if (!stream.write(frame(this.boot, this.next("reset", { boot: this.boot })))) return;
+            } else {
+              for (const entry of resumed) {
+                if (!stream.write(frame(this.boot, entry))) return;
+              }
             }
           }
-        }
-        stream.write(frame(this.boot, this.event("hello", { at: this.now(), boot: this.boot })));
-        request.signal.addEventListener("abort", () => stream.close());
+          stream.write(frame(this.boot, this.next("hello", { at: this.now(), boot: this.boot })));
+          request.signal.addEventListener("abort", () => stream.close());
+        },
+        cancel: () => stream.close(),
       },
-      cancel: () => stream.close(),
-    });
+      // The queue is measured in bytes, so the bound above is a byte count.
+      {
+        highWaterMark: this.options.maxQueueBytes ?? STREAM_QUEUE_MAX_BYTES,
+        size: (chunk?: Uint8Array) => chunk?.byteLength ?? 0,
+      },
+    );
     return {
       kind: "opened",
       response: new Response(body, {
@@ -201,12 +231,28 @@ export class LiveHub {
     this.streams.clear();
   }
 
-  /** One buffered event, in order. */
+  /**
+   * One event kept for a reconnect, in order. The buffer holds real events only, so a ping
+   * never takes a page's replay away.
+   */
   private event(event: string, data: unknown): BufferedEvent {
+    const entry = this.next(event, data);
+    this.buffer.push(entry);
+    if (this.buffer.length > BUFFER_MAX) {
+      const gone = this.buffer.shift();
+      if (gone !== undefined) this.droppedThrough = gone.seq;
+    }
+    return entry;
+  }
+
+  /**
+   * One frame's place in the sequence, kept nowhere: `ping`, `hello` and `reset` are this
+   * stream's own words, not events a reconnect replays. They still take a number, so two
+   * frames never carry one id.
+   */
+  private next(event: string, data: unknown): BufferedEvent {
     const entry: BufferedEvent = { data, event, seq: this.nextSeq };
     this.nextSeq += 1;
-    this.buffer.push(entry);
-    if (this.buffer.length > BUFFER_MAX) this.buffer.shift();
     return entry;
   }
 
@@ -220,9 +266,8 @@ export class LiveHub {
     if (last.slice(0, at) !== this.boot) return null;
     const seq = Number(last.slice(at + 1));
     if (!Number.isInteger(seq) || seq < 0) return null;
-    const first = this.buffer[0];
     // A gap: the oldest event kept is already newer than the page's place.
-    if (first !== undefined && seq < first.seq - 1) return null;
+    if (seq < this.droppedThrough) return null;
     return this.buffer.filter((entry) => entry.seq > seq);
   }
 

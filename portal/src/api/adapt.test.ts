@@ -144,6 +144,7 @@ const CREW: CrewSummary = {
   plan: "plan.md",
   pr: null,
   question: null,
+  repo: "/home/user/my-app",
   shortId: "abc123",
   slug: "slots",
   state: "working",
@@ -195,7 +196,7 @@ describe("the adapters", () => {
     };
     const work: WorkAnswer = {
       crew: [CREW, { ...CREW, id: "crew-2", state: "done" }],
-      lead: null,
+      leads: [],
       note: null,
       repo: "/home/user/my-app",
       waitsError: null,
@@ -250,17 +251,20 @@ describe("the adapters", () => {
   test("Work: the lead's crew, and each other session's state and model as the server read them", () => {
     const data = workOf({
       crew: [CREW],
-      lead: {
-        createdAt: "2026-10-22T09:00:00.000Z",
-        crew: [CREW],
-        cwd: "/home/user/my-app",
-        name: "LEAD my-app plan",
-        pausedAgents: [],
-        plan: "plan.md",
-        sessionId: "lead-1",
-        tag: "my-app",
-        updatedAt: "2026-10-22T10:00:00.000Z",
-      },
+      leads: [
+        {
+          createdAt: "2026-10-22T09:00:00.000Z",
+          crew: [CREW],
+          cwd: "/home/user/my-app",
+          name: "LEAD my-app plan",
+          pausedAgents: [],
+          plan: "plan.md",
+          repo: "/home/user/my-app",
+          sessionId: "lead-1",
+          tag: "my-app",
+          updatedAt: "2026-10-22T10:00:00.000Z",
+        },
+      ],
       note: null,
       repo: "/home/user/my-app",
       waitsError: null,
@@ -304,7 +308,7 @@ describe("the adapters", () => {
   test("Work: a crew session of another lead is shown under that lead's own name", () => {
     const data = workOf({
       crew: [{ ...CREW, id: "crew-9", leadName: "LEAD my-app old", leadSessionId: "lead-0" }],
-      lead: null,
+      leads: [],
       note: null,
       repo: "/home/user/my-app",
       waitsError: null,
@@ -313,6 +317,21 @@ describe("the adapters", () => {
     expect(data.leads.map((group) => [group.lead.name, group.crew.map((one) => one.id)])).toEqual([
       ["LEAD my-app old", ["crew-9"]],
     ]);
+  });
+
+  test("Work: the server's note about what could not be read reaches the page", () => {
+    // An empty list must say why: a store that could not be read, or a folder that is no
+    // project (the portal's normal start in the home folder).
+    const data = workOf({
+      crew: [],
+      leads: [],
+      note: "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
+      repo: null,
+      sessions: [],
+      waitsError: null,
+    });
+    expect(data.note).toContain("not in a git project");
+    expect(data.leads).toEqual([]);
   });
 
   test("a crew page: the verdict in full, the diff per file, memory, reviews, the question", () => {
@@ -968,7 +987,7 @@ describe("the flow report that did not run (B6e)", () => {
   });
 
   test("Work says no session can show a wait, and why; none when the report ran", () => {
-    const answer = { crew: [], lead: null, note: null, repo: "/home/user/my-app", sessions: [] };
+    const answer = { crew: [], leads: [], note: null, repo: "/home/user/my-app", sessions: [] };
     expect(workOf({ ...answer, waitsError: "the plugin is not installed" }).waitsNote).toBe(
       "No session can show that it waits on a prompt: the plugin is not installed",
     );

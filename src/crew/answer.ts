@@ -44,7 +44,10 @@ import {
 export interface AnswerArgs {
   /** The crew session's name (or its id). */
   crew: string;
-  /** The person acted through the portal (D52): no Claude Code session runs this command. */
+  /**
+   * The person acted through the portal (D52): no Claude Code session runs this command. The
+   * portal's child passes `--as-person` (`parseAnswerArgs`).
+   */
   asPerson?: boolean;
   /** The answer. */
   text: string;

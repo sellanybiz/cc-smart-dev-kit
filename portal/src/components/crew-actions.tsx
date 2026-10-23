@@ -45,7 +45,9 @@ export function CrewActions({
     crew.state !== "removed" &&
     crew.state !== "queued";
   const removable = REMOVABLE_STATES.includes(crew.state);
-  const body = { crew: crew.id };
+  // The page's own yes: each button asks in its dialog first, and the server refuses a stop or
+  // a removal whose body does not carry it (`confirm: true`, as `worktrees.clean` does).
+  const body = { confirm: true, crew: crew.id };
   const [last, setLast] = useState<null | { action: ActionName; result: ActionResult }>(null);
   const shown: Record<string, boolean> = {
     "crew.rm": removable,

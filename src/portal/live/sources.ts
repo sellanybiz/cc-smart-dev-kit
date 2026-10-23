@@ -25,7 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../../cli/paths";
-import { listAllCrew, readCrewEvents } from "../../crew/store";
+import { eventsEndOffset, listAllCrew, readCrewEvents } from "../../crew/store";
 import { type HealthFetch, routerHealth } from "../../gateway/health";
 import { parseLimitState } from "../../gateway/limit-state";
 import { askLogFile, type GuardAsk } from "../../hooks/ask-log";
@@ -42,8 +42,6 @@ const REPOS_TTL_MS = 30_000;
 
 /** What the poller needs: the portal's own context, the one reader per source, and a sink. */
 export interface LiveSourcesDeps {
-  /** The portal's folder: the project whose crew store is read. */
-  cwd: string;
   fetch: HealthFetch;
   now: () => number;
   paths: CliPaths;
@@ -105,8 +103,12 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
   let stateText: null | string = null;
   let updateText: null | string = null;
   let jobsText: null | string = null;
+  /** The ask log's place, and whether the first poll has taken its baseline yet. */
   let guardOffset = 0;
+  let guardSeeded = false;
+  /** Each repository's crew log place; `seeded` says the first poll took every baseline. */
   const offsets = new Map<string, number>();
+  let crewSeeded = false;
   let repos: { at: number; list: string[] } | null = null;
 
   /** A file's text, or null when it is not there or cannot be read. */
@@ -156,29 +158,49 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     });
   }
 
-  function crewRepos(): string[] {
+  /** Every repository with a crew store, or null when the store cannot be read (not a "none"). */
+  function crewRepos(): null | string[] {
     const now = deps.now();
     if (repos !== null && now - repos.at < REPOS_TTL_MS) return repos.list;
     let list: string[] = [];
     try {
       list = [...new Set(listAllCrew(deps.paths.stateDir).records.map((record) => record.repo))];
     } catch {
-      // A store that cannot be read is doctor's to report: no crew events this poll.
+      // A store that cannot be read is doctor's to report: no crew events this poll, and the
+      // first poll has not taken its baseline.
+      return null;
     }
     repos = { at: now, list };
     return list;
   }
 
+  /**
+   * The crew logs, tailed by offset. **The first poll only records where each log ends**: the
+   * history before the portal started is not news, and publishing it as a burst of live events
+   * would make every page read the whole store again. A repository seen for the first time
+   * *after* that baseline reads from its start, because its log is news (a new project's first
+   * crew session); `pollRouter` seeds its own baseline the same way.
+   */
   function pollCrew(): void {
-    for (const repo of crewRepos()) {
+    const list = crewRepos();
+    if (list === null) return;
+    const seeding = !crewSeeded;
+    for (const repo of list) {
       try {
-        const read = readCrewEvents(deps.paths.stateDir, repo, offsets.get(repo) ?? 0);
+        // No log yet reads as 0, which is its end: the first event there is news.
+        const offset = seeding
+          ? eventsEndOffset(deps.paths.stateDir, repo)
+          : (offsets.get(repo) ?? 0);
+        offsets.set(repo, offset);
+        if (seeding) continue;
+        const read = readCrewEvents(deps.paths.stateDir, repo, offset);
         offsets.set(repo, read.offset);
         for (const event of read.events) deps.publish("crew", event);
       } catch {
         // One repository's log cannot be read: the next poll tries again.
       }
     }
+    crewSeeded = true;
   }
 
   function pollGuard(): void {
@@ -187,6 +209,18 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     try {
       bytes = readFileSync(file);
     } catch {
+      // No log yet: its first line is news when it appears, so the baseline is its start.
+      if (!guardSeeded) {
+        guardSeeded = true;
+        guardOffset = 0;
+      }
+      return;
+    }
+    // The first read only records the place: a portal start publishes the asks from now on,
+    // never the whole log.
+    if (!guardSeeded) {
+      guardSeeded = true;
+      guardOffset = bytes.length;
       return;
     }
     // A cut-back log (the frame keeps its newer half) starts again: the offset would be past
