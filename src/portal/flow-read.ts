@@ -10,12 +10,13 @@
  * `<stateDir>/flow/`, so the page and the command can never disagree.
  *
  * Requests that ask the same window at once share one child, and an answer stays good for
- * `FLOW_FRESH_MS`: the sidebar's Needs count, the Work page and the Needs page all ask within
- * a moment of each other.
+ * `FLOW_FRESH_MS` from its arrival (`shortCache`, `cli-child.ts`, the one home for the rule):
+ * the sidebar's Needs count, the Work page and the Needs page all ask within a moment of each
+ * other.
  */
 
 import type { FlowReport, OpenWait } from "../sessions/flow";
-import { runCliChildText } from "./cli-child";
+import { runCliChildText, shortCache } from "./cli-child";
 import type { PortalContext } from "./context";
 
 /** How long the child may take: a cold cache on a big machine took 10 s. */
@@ -30,33 +31,13 @@ const HOUR_MS = 3_600_000;
 /** The report, or why it could not be read, in words a page can show. */
 export type FlowRead = { error: string } | { report: FlowReport };
 
-interface Kept {
-  at: number;
-  read: Promise<FlowRead>;
-}
-
-/** One entry per portal context and window: what is running, or what answered last. */
-const kept = new WeakMap<PortalContext, Map<number, Kept>>();
+/** One report per window, kept for `FLOW_FRESH_MS` (`shortCache`'s rules). */
+const reports = shortCache<number, FlowRead>(FLOW_FRESH_MS);
 
 /** The report over the last `windowMs`, from the CLI's own `report --json` in a child. */
 export function readFlowOffLoop(ctx: PortalContext, windowMs: number): Promise<FlowRead> {
   const hours = windowMs / HOUR_MS;
-  let byWindow = kept.get(ctx);
-  if (byWindow === undefined) {
-    byWindow = new Map();
-    kept.set(ctx, byWindow);
-  }
-  const now = ctx.now();
-  const last = byWindow.get(hours);
-  if (last !== undefined && now - last.at < FLOW_FRESH_MS) return last.read;
-  const read = runReport(ctx, hours);
-  const entry: Kept = { at: now, read };
-  byWindow.set(hours, entry);
-  // A failure is not kept: the next request tries again.
-  void read.then((answer) => {
-    if ("error" in answer && byWindow.get(hours) === entry) byWindow.delete(hours);
-  });
-  return read;
+  return reports.read(ctx, hours, () => runReport(ctx, hours));
 }
 
 /** The open permission prompts of the last `windowMs` (`openWaits`, off the loop). */
@@ -70,19 +51,10 @@ export async function openWaitsOffLoop(
 
 async function runReport(ctx: PortalContext, hours: number): Promise<FlowRead> {
   const run = await runCliChildText(ctx, ["report", "--hours", String(hours), "--json"], {
+    subject: "the flow report",
     timeoutMs: FLOW_CHILD_TIMEOUT_MS,
   });
-  if (run.kind !== "ran") {
-    return {
-      error: run.kind === "folder" ? run.error : `the flow report did not run: ${run.error}`,
-    };
-  }
-  if (run.exitCode !== 0) {
-    const why = run.errors.trim().split("\n").at(-1)?.trim() ?? "";
-    return {
-      error: `the flow report did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`,
-    };
-  }
+  if ("error" in run) return run;
   const report = reportOf(run.output);
   return report === null
     ? { error: "the flow report's answer was not one this portal reads" }

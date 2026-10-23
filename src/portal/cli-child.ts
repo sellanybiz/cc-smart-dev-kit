@@ -48,10 +48,10 @@ export interface CliChild {
  * Why a child never ran: `folder` is the plugin's folder saying why in its own words (a page
  * shows them as they are), `spawn` is `Bun.spawn` failing (the caller names its own subject).
  */
-export type CliStartFailure = { error: string; kind: "folder" | "spawn" };
+type CliStartFailure = { error: string; kind: "folder" } | { error: string; kind: "spawn" };
 
 /** A child that runs, off the server's loop, and when it started. */
-export interface CliStart {
+interface CliStart {
   child: Bun.Subprocess<"ignore", "pipe", "pipe">;
   kind: "started";
   startedAt: number;
@@ -205,30 +205,91 @@ export async function runCliChild(
 }
 
 /**
- * One CLI child's whole output, as text: for a reader that parses its JSON answer (`report
- * --json`, `worktrees --json`). A reader words its own failure — its own subject, its own exit
- * sentence — so the two say what each read was.
+ * One CLI child's whole output, as text, for a reader that parses its JSON answer (`report
+ * --json`, `worktrees --json`): the output when it exited 0, else why not, in the words of the
+ * reader's own `subject` ("the flow report", "the worktrees scan"). A plugin folder that is gone
+ * says so in its own words. Never throws.
  */
-export type CliTextRun =
-  | CliStartFailure
-  | { errors: string; exitCode: null | number; kind: "ran"; output: string };
-
-/** Runs one CLI child and hands back everything it printed; never throws. */
 export async function runCliChildText(
   ctx: PortalContext,
   args: string[],
-  options: { cwd?: null | string; timeoutMs?: number } = {},
-): Promise<CliTextRun> {
+  options: { cwd?: null | string; subject: string; timeoutMs?: number },
+): Promise<{ error: string } | { output: string }> {
   const start = spawnCliChild(ctx, args, options);
-  if (start.kind !== "started") return start;
+  if (start.kind === "folder") return { error: start.error };
+  if (start.kind === "spawn") return { error: `${options.subject} did not run: ${start.error}` };
   try {
     const [output, errors, exitCode] = await Promise.all([
       new Response(start.child.stdout).text(),
       new Response(start.child.stderr).text(),
       start.child.exited,
     ]);
-    return { errors, exitCode, kind: "ran", output };
+    if (exitCode === 0) return { output };
+    const why = errors.trim().split("\n").at(-1)?.trim() ?? "";
+    return {
+      error: `${options.subject} did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`,
+    };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error), kind: "spawn" };
+    return {
+      error: `${options.subject} did not run: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
+}
+
+/** One key's entry: the read, and when its answer arrived (null while the child is on its way). */
+interface Kept<Answer> {
+  at: null | number;
+  read: Promise<Answer>;
+}
+
+/** What `shortCache` hands back. */
+export interface ShortCache<Key, Answer> {
+  /** Drops this portal's kept answers: an action changed what they are about. */
+  forget: (ctx: PortalContext) => void;
+  /** The kept read for `key`, or the one `start` makes. */
+  read: (ctx: PortalContext, key: Key, start: () => Promise<Answer>) => Promise<Answer>;
+}
+
+/**
+ * A short cache for a read that runs the CLI in a child, kept per portal context and key: the
+ * flow report by window, the worktrees scan by folder. The sidebar's count, the Work page and
+ * the Needs page ask the same question within a moment of each other, and each ask would
+ * otherwise pay a child that can take seconds. Three rules, one home:
+ *
+ * - A child still on its way is shared whatever its age: it may take up to its timeout, and a
+ *   second full read beside it helps nobody.
+ * - An answer is reused for `freshMs` from the moment it **arrives**, not from the spawn: one
+ *   that took longer than `freshMs` would be stale as it landed, and every poll would start
+ *   another child.
+ * - A failure — an answer with an `error`, or a read that threw — is not kept: the next request
+ *   tries again.
+ */
+export function shortCache<Key, Answer extends object>(freshMs: number): ShortCache<Key, Answer> {
+  const kept = new WeakMap<PortalContext, Map<Key, Kept<Answer>>>();
+  return {
+    forget: (ctx) => {
+      kept.delete(ctx);
+    },
+    read: (ctx, key, start) => {
+      let byKey = kept.get(ctx);
+      if (byKey === undefined) {
+        byKey = new Map();
+        kept.set(ctx, byKey);
+      }
+      const last = byKey.get(key);
+      if (last !== undefined && (last.at === null || ctx.now() - last.at < freshMs)) {
+        return last.read;
+      }
+      const entry: Kept<Answer> = { at: null, read: start() };
+      byKey.set(key, entry);
+      const dropIfStill = (): void => {
+        if (byKey.get(key) === entry) byKey.delete(key);
+      };
+      entry.read.then((answer) => {
+        if ("error" in answer) dropIfStill();
+        else entry.at = ctx.now();
+      }, dropIfStill);
+      return entry.read;
+    },
+  };
 }

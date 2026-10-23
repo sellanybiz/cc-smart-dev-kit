@@ -425,7 +425,11 @@ running sessions, the programs and the Docker containers synchronously, so the p
 CLI's own `worktrees --json` in a child — the one builder (`worktreesAnswerOf`,
 `src/worktrees/command.ts`) whose answer the page shows — shared by requests at once and reused
 for 5 s; a failure is not kept, and the page shows the child's reason in its `note`. The argv,
-the environment, the spawn and the timeout verdict live once, in `cli-child.ts`.
+the environment, the spawn, the failure's words and the timeout verdict live once, in
+`cli-child.ts`, and so does the short cache both readers keep (`shortCache`): a child still on its
+way is shared whatever its age, an answer is fresh for 5 s **from its arrival** (a cold read that
+took longer than that would otherwise be stale as it landed, and every poll would start another
+child), a failure is not kept, and `worktrees.clean` and the crew actions drop the kept answers.
 **The router's journal and its port holder are reads too.** `journalctl --user` (20–65 ms on a
 Health or Overview load) and `systemctl --user is-active` (about 6 ms) are awaited through
 `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never `Bun.spawnSync`, in the

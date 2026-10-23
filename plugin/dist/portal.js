@@ -34610,46 +34610,72 @@ async function runCliChild(ctx, args, options) {
     };
   }
 }
-async function runCliChildText(ctx, args, options = {}) {
+async function runCliChildText(ctx, args, options) {
   const start = spawnCliChild(ctx, args, options);
-  if (start.kind !== "started")
-    return start;
+  if (start.kind === "folder")
+    return { error: start.error };
+  if (start.kind === "spawn")
+    return { error: `${options.subject} did not run: ${start.error}` };
   try {
     const [output, errors, exitCode] = await Promise.all([
       new Response(start.child.stdout).text(),
       new Response(start.child.stderr).text(),
       start.child.exited
     ]);
-    return { errors, exitCode, kind: "ran", output };
+    if (exitCode === 0)
+      return { output };
+    const why = errors.trim().split(`
+`).at(-1)?.trim() ?? "";
+    return {
+      error: `${options.subject} did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
+    };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error), kind: "spawn" };
+    return {
+      error: `${options.subject} did not run: ${error instanceof Error ? error.message : String(error)}`
+    };
   }
+}
+function shortCache(freshMs) {
+  const kept = new WeakMap;
+  return {
+    forget: (ctx) => {
+      kept.delete(ctx);
+    },
+    read: (ctx, key, start) => {
+      let byKey = kept.get(ctx);
+      if (byKey === undefined) {
+        byKey = new Map;
+        kept.set(ctx, byKey);
+      }
+      const last = byKey.get(key);
+      if (last !== undefined && (last.at === null || ctx.now() - last.at < freshMs)) {
+        return last.read;
+      }
+      const entry = { at: null, read: start() };
+      byKey.set(key, entry);
+      const dropIfStill = () => {
+        if (byKey.get(key) === entry)
+          byKey.delete(key);
+      };
+      entry.read.then((answer) => {
+        if ("error" in answer)
+          dropIfStill();
+        else
+          entry.at = ctx.now();
+      }, dropIfStill);
+      return entry.read;
+    }
+  };
 }
 
 // src/portal/flow-read.ts
 var FLOW_CHILD_TIMEOUT_MS = 120000;
 var FLOW_FRESH_MS = 5000;
 var HOUR_MS = 3600000;
-var kept = new WeakMap;
+var reports = shortCache(FLOW_FRESH_MS);
 function readFlowOffLoop(ctx, windowMs) {
   const hours = windowMs / HOUR_MS;
-  let byWindow = kept.get(ctx);
-  if (byWindow === undefined) {
-    byWindow = new Map;
-    kept.set(ctx, byWindow);
-  }
-  const now = ctx.now();
-  const last = byWindow.get(hours);
-  if (last !== undefined && now - last.at < FLOW_FRESH_MS)
-    return last.read;
-  const read = runReport(ctx, hours);
-  const entry = { at: now, read };
-  byWindow.set(hours, entry);
-  read.then((answer) => {
-    if ("error" in answer && byWindow.get(hours) === entry)
-      byWindow.delete(hours);
-  });
-  return read;
+  return reports.read(ctx, hours, () => runReport(ctx, hours));
 }
 async function openWaitsOffLoop(ctx, windowMs) {
   const read = await readFlowOffLoop(ctx, windowMs);
@@ -34657,20 +34683,11 @@ async function openWaitsOffLoop(ctx, windowMs) {
 }
 async function runReport(ctx, hours) {
   const run = await runCliChildText(ctx, ["report", "--hours", String(hours), "--json"], {
+    subject: "the flow report",
     timeoutMs: FLOW_CHILD_TIMEOUT_MS
   });
-  if (run.kind !== "ran") {
-    return {
-      error: run.kind === "folder" ? run.error : `the flow report did not run: ${run.error}`
-    };
-  }
-  if (run.exitCode !== 0) {
-    const why = run.errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-    return {
-      error: `the flow report did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`
-    };
-  }
+  if ("error" in run)
+    return run;
   const report = reportOf(run.output);
   return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
 }
@@ -34842,51 +34859,21 @@ function settingsPageData(deps) {
 // src/portal/worktrees-read.ts
 var WORKTREES_CHILD_TIMEOUT_MS = 120000;
 var WORKTREES_FRESH_MS = 5000;
+var scans = shortCache(WORKTREES_FRESH_MS);
 function forgetWorktrees(ctx) {
-  kept2.delete(ctx);
+  scans.forget(ctx);
 }
-var kept2 = new WeakMap;
 function readWorktreesOffLoop(ctx, cwd) {
-  let byFolder = kept2.get(ctx);
-  if (byFolder === undefined) {
-    byFolder = new Map;
-    kept2.set(ctx, byFolder);
-  }
-  const last = byFolder.get(cwd);
-  if (last !== undefined) {
-    if (last.at === null || ctx.now() - last.at < WORKTREES_FRESH_MS)
-      return last.read;
-  }
-  const read = runWorktrees(ctx, cwd);
-  const entry = { at: null, read };
-  byFolder.set(cwd, entry);
-  read.then((answer) => {
-    if ("error" in answer) {
-      if (byFolder.get(cwd) === entry)
-        byFolder.delete(cwd);
-      return;
-    }
-    entry.at = ctx.now();
-  });
-  return read;
+  return scans.read(ctx, cwd, () => runWorktrees(ctx, cwd));
 }
 async function runWorktrees(ctx, cwd) {
   const run = await runCliChildText(ctx, ["worktrees", "--json"], {
     cwd,
+    subject: "the worktrees scan",
     timeoutMs: WORKTREES_CHILD_TIMEOUT_MS
   });
-  if (run.kind !== "ran") {
-    return {
-      error: run.kind === "folder" ? run.error : `the worktrees scan did not run: ${run.error}`
-    };
-  }
-  if (run.exitCode !== 0) {
-    const why = run.errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-    return {
-      error: `the worktrees scan did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`
-    };
-  }
+  if ("error" in run)
+    return run;
   const answer = worktreesOf(run.output);
   return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
 }

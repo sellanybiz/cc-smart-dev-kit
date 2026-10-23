@@ -173,6 +173,23 @@ describe("the flow report, off the server's loop", () => {
     expect(runsOf(w.plugin.log)).toHaveLength(2);
   });
 
+  test("a slow report is shared past the fresh time, and its answer is fresh from its arrival", async () => {
+    // A cold read on a big machine takes seconds. The clock moves past `FLOW_FRESH_MS` while the
+    // child is out: a second request must wait on the same child (not start a second full scan
+    // of the transcripts), and the answer that lands then is good for `FLOW_FRESH_MS` from
+    // its arrival, not from the spawn — or it would be stale as it came and every poll would
+    // start another child.
+    const w = world("slow");
+    const first = readFlowOffLoop(w.ctx, DAY_MS);
+    w.clock.now += FLOW_FRESH_MS + 1;
+    const second = readFlowOffLoop(w.ctx, DAY_MS);
+    expect(second).toBe(first);
+    expect("report" in (await first)).toBe(true);
+    w.clock.now += FLOW_FRESH_MS - 1;
+    await readFlowOffLoop(w.ctx, DAY_MS);
+    expect(runsOf(w.plugin.log)).toHaveLength(1);
+  });
+
   test("the server's loop stays free while a slow report runs", async () => {
     const w = world("slow");
     const started = performance.now();

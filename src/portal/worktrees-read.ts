@@ -11,12 +11,13 @@
  * and the command can never disagree.
  *
  * Requests that ask the same folder at once share one child, and an answer stays good for
- * `WORKTREES_FRESH_MS`: the sidebar and the Work page both ask within a moment of each other.
- * A failure is not kept, so the next request tries again.
+ * `WORKTREES_FRESH_MS` from its arrival (`shortCache`, `cli-child.ts`, the one home for the
+ * rule): the sidebar and the Work page both ask within a moment of each other. A failure is
+ * not kept, so the next request tries again.
  */
 
 import type { WorktreeItem, WorktreesAnswer } from "../worktrees/command";
-import { runCliChildText } from "./cli-child";
+import { runCliChildText, shortCache } from "./cli-child";
 import type { PortalContext } from "./context";
 
 /** How long the child may take: the scan fetches nothing, but a cold cache on a big repo is slow. */
@@ -28,69 +29,31 @@ export const WORKTREES_FRESH_MS = 5_000;
 /** The answer, or why it could not be read, in words a page can show. */
 export type WorktreesRead = { answer: WorktreesAnswer } | { error: string };
 
+/** One answer per folder, kept for `WORKTREES_FRESH_MS` (`shortCache`'s rules). */
+const scans = shortCache<string, WorktreesRead>(WORKTREES_FRESH_MS);
+
 /**
  * Drops this portal's kept answers: an action that adds or removes a worktree (`crew rm`,
  * `worktrees.clean`) makes them stale, and the page's next read must scan again instead of
  * showing the list from before the action for up to `WORKTREES_FRESH_MS`.
  */
 export function forgetWorktrees(ctx: PortalContext): void {
-  kept.delete(ctx);
+  scans.forget(ctx);
 }
-
-interface Kept {
-  /** When the answer arrived; a child still running has none. */
-  at: null | number;
-  read: Promise<WorktreesRead>;
-}
-
-/** One entry per portal context and folder: what is running, or what answered last. */
-const kept = new WeakMap<PortalContext, Map<string, Kept>>();
 
 /** The worktrees of the folder `cwd`, from the CLI's own `worktrees --json` in a child. */
 export function readWorktreesOffLoop(ctx: PortalContext, cwd: string): Promise<WorktreesRead> {
-  let byFolder = kept.get(ctx);
-  if (byFolder === undefined) {
-    byFolder = new Map();
-    kept.set(ctx, byFolder);
-  }
-  const last = byFolder.get(cwd);
-  if (last !== undefined) {
-    // A child still on its way is shared whatever its age: a scan may take up to
-    // `WORKTREES_CHILD_TIMEOUT_MS`, and a second full scan beside it helps nobody.
-    if (last.at === null || ctx.now() - last.at < WORKTREES_FRESH_MS) return last.read;
-  }
-  const read = runWorktrees(ctx, cwd);
-  const entry: Kept = { at: null, read };
-  byFolder.set(cwd, entry);
-  void read.then((answer) => {
-    // A failure is not kept: the next request tries again. A kept answer's clock starts when
-    // it arrives, not when the child started.
-    if ("error" in answer) {
-      if (byFolder.get(cwd) === entry) byFolder.delete(cwd);
-      return;
-    }
-    entry.at = ctx.now();
-  });
-  return read;
+  return scans.read(ctx, cwd, () => runWorktrees(ctx, cwd));
 }
 
 async function runWorktrees(ctx: PortalContext, cwd: string): Promise<WorktreesRead> {
   // The folder the page asks about is the child's own: the repository the answer is about.
   const run = await runCliChildText(ctx, ["worktrees", "--json"], {
     cwd,
+    subject: "the worktrees scan",
     timeoutMs: WORKTREES_CHILD_TIMEOUT_MS,
   });
-  if (run.kind !== "ran") {
-    return {
-      error: run.kind === "folder" ? run.error : `the worktrees scan did not run: ${run.error}`,
-    };
-  }
-  if (run.exitCode !== 0) {
-    const why = run.errors.trim().split("\n").at(-1)?.trim() ?? "";
-    return {
-      error: `the worktrees scan did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`,
-    };
-  }
+  if ("error" in run) return run;
   const answer = worktreesOf(run.output);
   return answer === null
     ? { error: "the worktrees scan's answer was not one this portal reads" }
