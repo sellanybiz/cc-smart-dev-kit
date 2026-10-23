@@ -1455,6 +1455,16 @@ because a rule written into a prompt is a rule an agent follows. A deliberate re
 `scripts/check-duplicates.allow.json` with its reason. It cannot see the same rule said in
 other words; that stays a review job.
 
+**What `core.md` keeps.** Every session on every machine loads it, and every subagent but
+`Explore` and `Plan`, so each line costs every turn. It keeps the rules a session needs on
+every turn and points to the skill that holds each procedure: the research steps live in
+`research-first`, the model and effort detail in `subagent-decision`, the gateway's slots in
+`gateway`. `bun run check:core-lines` holds it to a line budget (`scripts/check-core-lines.ts`;
+1.1.0 cut it from 190 lines to 125), and `check:context-budget` estimates its tokens. It and
+the skills say which model and effort fit which job, never what the agent guard blocks or asks
+or which line a launch needs: the guard's own message says that, at the launch it judges (the
+owner's D12).
+
 **The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
 one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to
 refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the
@@ -1467,8 +1477,8 @@ review's judgment; the audit's verifier is `opus` because the auditors are only 
 Because a literal cannot depend on the change set, the script writes both fixed launch sets and
 the caller picks one: a second script would repeat every prompt, which `check:duplicates` fails.
 `sonnet` at `max` is the one ordinary-tier literal an affordable worker slot also allows (its
-effort must be `max`), so on Claude it runs at the higher of the two efforts the core
-instructions name. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
+effort must be `max`), so on Claude it runs above the `high` the core instructions give a
+review. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
 lists by default, so the run's return records the review for the merge guard
 (`src/workflows/review-split.test.ts` fails when that link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every

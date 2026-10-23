@@ -1,12 +1,15 @@
 /**
  * The general instructions' line budget: `plugin/instructions/core.md` fails this check
- * past 200 lines, and warns once above 190.
+ * past 135 lines, and warns once above 125.
  *
  * That file is loaded into every Claude Code session on every machine that has the plugin,
  * so its size is paid on every turn, by everyone. The budget is a line count, because a
  * line is one rule a reader keeps in mind. Over the limit, trim it — or move a part into a
- * skill, which loads only when it is used (`.claude/skills/`, `docs/design.md` §
+ * skill, which loads only when it is used (`plugin/skills/`, `docs/design.md` §
  * Instructions, skills and agents).
+ *
+ * The warning line is the file's size after its last trim (1.1.0: 190 lines down to 125),
+ * so the next rule that adds lines warns, and the fail line leaves ten lines of room.
  *
  *   bun scripts/check-core-lines.ts
  */
@@ -15,9 +18,9 @@ import { join } from "node:path";
 
 export const CORE_MD = "plugin/instructions/core.md";
 /** Over this, the check fails. */
-export const CORE_LINES_MAX = 200;
+export const CORE_LINES_MAX = 135;
 /** Above this, the check warns and still passes. */
-export const CORE_LINES_WARN = 190;
+export const CORE_LINES_WARN = 125;
 
 export interface CoreLinesResult {
   /** The lines the file holds. */
