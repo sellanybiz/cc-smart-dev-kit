@@ -28,8 +28,9 @@ export function resultWords(result: ActionResult): { first: string; rest: string
 
 /**
  * Runs one action of the portal and follows it: while it runs, its newest line from the live
- * stream; when it ends, its result in place (no page reload). A failure keeps its words until
- * the person tries again; a success clears itself after `DONE_SHOWN_MS`.
+ * stream; when it ends, its result in place (no page reload). A failure, and a success with a
+ * warning (`tone: "warn"`), keep their words until the person tries again; a plain success clears
+ * itself after `DONE_SHOWN_MS`.
  */
 export function useAction(action: ActionName, onDone?: (result: ActionResult) => void) {
   const [state, setState] = useState<ActionState>({ phase: "idle" });
@@ -45,7 +46,8 @@ export function useAction(action: ActionName, onDone?: (result: ActionResult) =>
     }
   });
   useEffect(() => {
-    if (state.phase !== "done" || !state.result.ok) return;
+    // A warning stays, as a failure does, until the person tries again: it must be read.
+    if (state.phase !== "done" || !state.result.ok || state.result.tone === "warn") return;
     const timer = window.setTimeout(() => setState({ phase: "idle" }), DONE_SHOWN_MS);
     return () => window.clearTimeout(timer);
   }, [state]);
@@ -97,10 +99,12 @@ export function ActionResultLine({
   }
   const { first, rest } = resultWords(state.result);
   const ok = state.result.ok;
+  // Done, but with a warning to read: a key saved without its backend accepting it.
+  const warn = ok && state.result.tone === "warn";
   return (
     <div role="status" className={cn("flex flex-col gap-1 text-sm", className)}>
-      <p className={cn("text-pretty", ok ? "text-ok" : "text-bad")}>
-        <span aria-hidden="true">{ok ? "✓ " : "✗ "}</span>
+      <p className={cn("text-pretty", warn ? "text-warn" : ok ? "text-ok" : "text-bad")}>
+        <span aria-hidden="true">{warn ? "! " : ok ? "✓ " : "✗ "}</span>
         {ok ? "" : "Not done: "}
         {first}
       </p>

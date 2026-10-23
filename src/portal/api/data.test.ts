@@ -19,7 +19,7 @@ import { type ActionContext, portalOmnirouteContext, runAction } from "../action
 import type { PortalContext } from "../context";
 import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
 import type { PageDataDeps } from "../page-data";
-import { overviewAnswer, settingsAnswer } from "./data";
+import { gatewayKeyState, overviewAnswer, settingsAnswer } from "./data";
 import { testPortalContext } from "./test-context";
 import { SESSION_WORKING_MS, sessionStateOf, workAnswer } from "./work";
 
@@ -201,6 +201,28 @@ describe("the plan's 5-hour window", () => {
     const answer = await overviewAnswer(depsOf(ctx));
     expect(answer.configured).toBe(false);
     expect(answer.fiveHour).toEqual({ percent: 12, resetsAt: null });
+  });
+});
+
+describe("the gateway's own OmniRoute key on the Machine page (PK1)", () => {
+  const config = (apiKey: null | string) => ({
+    config: {
+      aliases: {},
+      anthropicBaseUrl: "https://api.anthropic.com" as const,
+      backends: apiKey === null ? {} : { omniroute: { apiKey, baseUrl: "http://127.0.0.1:20128" } },
+      port: 20_197,
+      slots: {},
+      timeouts: { firstByteMs: 60_000 },
+      version: 1 as const,
+    },
+  });
+
+  test("a word for each state, and never the key", () => {
+    expect(gatewayKeyState(config("omni_PLANTED_key"), true)).toBe("set");
+    expect(gatewayKeyState(config(""), true)).toBe("none");
+    expect(gatewayKeyState(config(null), true)).toBe("none");
+    expect(gatewayKeyState({ error: "no config" }, false)).toBe("not-set-up");
+    expect(gatewayKeyState({ error: "not JSON" }, true)).toBe("unreadable");
   });
 });
 

@@ -1326,6 +1326,8 @@ show its size. [docs/gateway.md](docs/gateway.md) § The request history.
    of the input, so typing it also needs Ctrl-D. A key as an argument would land in the
    shell history and the process list, so setup refuses one there. No key yet:
    `cc-smart-dev-kit gateway setup --no-backend-key` (every slot off: every model plain Claude).
+   Once the gateway is set up, the [portal](#the-gateways-key-from-the-portal) changes this key
+   too, both ways, with the same checks.
 3. **The key is tested before it is saved.** setup makes one cheap authenticated request to the
    backend (`GET /v1/models`, a 5-second timeout):
    - **HTTP 401 or 403: refused.** Nothing is saved, the key already in the file stays, and the
@@ -1513,6 +1515,27 @@ crash is brought back by the next session start; two sessions that start togethe
 once. If another program holds port 20150, nothing is started and the portal's log
 (`~/.claude/cc-smart-dev-kit/portal.log`) says so once. `doctor` has one line about it.
 
+### The gateway's key from the portal
+
+The Machine page's OmniRoute card holds the gateway's own OmniRoute key: the key the gateway's
+requests to OmniRoute carry. It says whether a key is set, never the key, and changes it two
+ways, as `gateway setup` does on a terminal:
+
+- **Paste a key** into the masked field and **Save this key**.
+- **Make a key from your OmniRoute password**: the portal logs in to OmniRoute's dashboard with
+  it once, makes a key named `cc-smart-dev-kit-router-<machine>`, and saves that. The password
+  is never stored.
+
+Each asks first, then runs setup's own key steps, and nothing else of setup: OmniRoute is asked
+with the key first, and a key it refuses (401 or 403) changes nothing and says which key it
+wants. A check OmniRoute does not answer saves nothing, unless you tick **Save it even if
+OmniRoute does not answer now** (setup's `--save-unchecked`): then the key is saved untested,
+and the result says so in the warning colour, and stays until you try again. A key that replaces one is backed up first, and a
+key made but not saved is deleted again in OmniRoute. The router reads the new key by itself:
+nothing restarts. A machine with no gateway yet is set up in a terminal first (`gateway setup`
+also installs the router), and the card says so. Neither the key nor the password is ever in
+an answer, a log line or the live stream; both fields are emptied after a save.
+
 ### Open the portal from another computer (SSH)
 
 The portal binds `127.0.0.1` only, so another computer never reaches it directly — that is the
@@ -1572,7 +1595,7 @@ The pages, each following the design the owner approved (2026-10-16):
 | **Slots** | One card per slot. **Who answers**: Claude or Custom, both named (`gateway slot <slot> claude\|custom`); Custom stays unavailable, with its reason, until a chain is saved (the judge: until every backend target passed the force-push test). **The chain**: the one in use, or the one saved while Claude answers ("Saved, not in use"); drag a target or use its arrows, add one from the backends' live model list, or type one, which the server checks with the command line's own rule before it joins (`✗ "omnirout:glm-5.3": backend "omnirout" is not in the config`). Edits stay a draft until **Save**, which asks first and runs `gateway slot <slot> <targets>` (in Claude mode it says that saving puts the chain in use). A save over a chain that changed since the page read it (another tab, the command line) is refused, and the card offers **Load it** or **Keep mine**. **Test each target** marks each one (one tiny chat to an affordable model, the force-push test for a judge). **Fallback** and **Breaker** save at once, after a confirmation (`gateway fallback`, `gateway breaker`; the judge has no breaker). Each target shows its last day from the request history. |
 | **Health** | The router's counters, what holds its port across restarts (the socket unit, or the Windows task) in `doctor`'s own words with its fix, each backend and whether it answers, the targets resting, latency and errors over time, and its journal. When the router does not answer: why, the commands that show its state and its log, and **Restart the router** (`gateway setup --yes`), asked first. |
 | **Guard log** | What each guard asked you or refused, newest first and paged by the server: pick a range, a guard or a session; the asks per guard over the range are charted, and the two menus offer what the range holds. |
-| **Machine** | The kit's version; Claude Code's (`claude --version`) and whether `doctor --live` proved it; the Bun the portal runs on against the one the kit needs; `doctor` with each failure's fix and **Run doctor**; the heavy-job queue with its CPU and I/O weights; Updates (installed, newest, last check, **Check now**, a held major); the companion plugins (**Turn it on** for one turned off); the MCP servers setup registers; the **Browser card** (**Set up the browser**, the steps, and a masked field that saves the extension's token: the stored value is never on the page); OmniRoute (**Update** and **Roll back**, each saying what the restart costs); the [claude-mem card](#claude-mem-from-the-portal) (where its summaries go, its key, its fallback, and who set each); the project's auto-mode trust rules with **Write them**; Warp; and the worktrees with **Clean finished now**. |
+| **Machine** | The kit's version; Claude Code's (`claude --version`) and whether `doctor --live` proved it; the Bun the portal runs on against the one the kit needs; `doctor` with each failure's fix and **Run doctor**; the heavy-job queue with its CPU and I/O weights; Updates (installed, newest, last check, **Check now**, a held major); the companion plugins (**Turn it on** for one turned off); the MCP servers setup registers; the **Browser card** (**Set up the browser**, the steps, and a masked field that saves the extension's token: the stored value is never on the page); OmniRoute (**Update** and **Roll back**, each saying what the restart costs, and [the gateway's key](#the-gateways-key-from-the-portal): paste one, or make one with your OmniRoute password); the [claude-mem card](#claude-mem-from-the-portal) (where its summaries go, its key, its fallback, and who set each); the project's auto-mode trust rules with **Write them**; Warp; and the worktrees with **Clean finished now**. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), the switches (the status line, the session names, the heavy-job queue, the update hold), and the **crew caps** (crew sessions per lead, of those on Opus, the machine's ceiling, and the share of the 5-hour window past which a new Opus crew session waits). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here. Its **Projects** tab lists every project you work in, with each one's page (below). |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 

@@ -33,10 +33,16 @@ import {
 } from "../browser/token";
 import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
+import { tildify } from "../cli/paths";
 import { runUpdate } from "../cli/update";
 import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
-import { chainProblem, type GatewayContext, runGateway } from "../gateway/commands";
+import {
+  chainProblem,
+  type GatewayContext,
+  runGateway,
+  setOmnirouteKey,
+} from "../gateway/commands";
 import {
   type GatewayConfig,
   keptChain,
@@ -83,7 +89,7 @@ import {
 } from "./api/projects";
 import type { LivePublish } from "./api/types";
 import { runCliChild } from "./cli-child";
-import type { PortalContext } from "./context";
+import { healthFetch, type PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
   projectFilesHash,
@@ -126,10 +132,11 @@ export interface ActionResult {
   lines: string[];
   /**
    * How the page shows the lines. `"info"`: a fact, not a failure — the token field's
-   * "nothing was pasted, so the saved token is unchanged" is the one case. Left out, a
-   * refusal is an alarm, as every other one is.
+   * "nothing was pasted, so the saved token is unchanged" is the one case. `"warn"`: done, with a
+   * warning the page must show as one — a gateway key saved without OmniRoute accepting it
+   * (PK1). Left out, a refusal is an alarm, as every other one is.
    */
-  tone?: "info";
+  tone?: "info" | "warn";
   /**
    * `project.preview` only: the plan the Project card's boxes draw — the same pure
    * `planProjectInit` the write runs, so what the page shows is exactly what will be written.
@@ -1340,6 +1347,83 @@ async function claudeMemFollow(
   return claudeMemWrite(() => followSetup(action.portal.paths));
 }
 
+// ── The gateway's OmniRoute key (PK1) ──────────────────────────────────────────
+
+/**
+ * How to try again from the portal, in a refusal of setup's key path: per action, since a made
+ * key is deleted again and was never seen, and only the paste field has the tick that saves an
+ * untested key (setup's `--save-unchecked`).
+ */
+const KEY_WORDS = {
+  key: {
+    again: "paste it on the Machine page's OmniRoute card again",
+    againUnchecked:
+      'paste it on the Machine page\'s OmniRoute card again, or tick "Save it even if OmniRoute does not answer now" there',
+  },
+  password: {
+    again: "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+    againUnchecked:
+      "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+  },
+} as const;
+const KEY_GIVE_INSTEAD = "paste it on the Machine page's OmniRoute card";
+
+/**
+ * `gateway.key.save` (a key the person pasted) and `gateway.key.make` (a key made with
+ * OmniRoute's dashboard password): `setOmnirouteKey`, setup's own key steps, so a page can never
+ * save a key the command line would refuse. The key is tested first, a 401/403 refuses it and
+ * keeps the key in the file, a check OmniRoute does not answer saves only with `saveUnchecked`
+ * (the page's tick, `--save-unchecked`) and its `!` line, a key that changes is backed up first,
+ * a key made and not saved is deleted again in OmniRoute, and the password is never stored.
+ *
+ * It runs in the portal's process: the secret stays in this process's memory, and never reaches
+ * an argument list, the environment or a child. Every line and refusal names neither the key
+ * (masked, `maskKey`) nor the password, so they are safe to answer and to send on the stream.
+ */
+async function gatewayKeyAction(
+  action: ActionContext,
+  body: Record<string, unknown>,
+  from: "key" | "password",
+): Promise<ActionResult> {
+  const field = from === "key" ? body.key : body.password;
+  // A key is trimmed, as setup trims one on stdin; a password is kept as typed, as setup's
+  // terminal prompt keeps it (a space can be part of one).
+  const text = typeof field === "string" ? field : "";
+  const secret = from === "key" ? text.trim() : text;
+  if (text.trim() === "") {
+    return {
+      lines: [
+        from === "key"
+          ? "Paste the OmniRoute API key first."
+          : "Type OmniRoute's dashboard password first.",
+      ],
+      ok: false,
+    };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const { portal } = action;
+  const { lines, print } = collector();
+  try {
+    const saved = await setOmnirouteKey(
+      { apiFetch: healthFetch(portal), paths: portal.paths, print },
+      from === "key" ? { key: secret } : { password: secret },
+      {
+        ...KEY_WORDS[from],
+        giveKey: KEY_GIVE_INSTEAD,
+        // Only the paste field has the tick; a made key is saved checked or not at all.
+        saveUnchecked: from === "key" && body.saveUnchecked === true,
+      },
+    );
+    return saved.checked ? { lines, ok: true } : { lines, ok: true, tone: "warn" };
+  } catch (error) {
+    // The refusal first: it is what the page shows, the lines before it are its details. The
+    // config's path as the success lines show it, `~/…`, not the home folder's full path.
+    const config = portal.paths.gatewayConfigFile;
+    const said = messageOf(error).replaceAll(config, tildify(config, portal.paths.home));
+    return { lines: [...said.split("\n"), ...lines], ok: false };
+  }
+}
+
 // ── The crew, and the worktrees (D52) ───────────────────────────────────────────
 
 /** The longest answer a page may send to a crew session: a message, not a document. */
@@ -1452,6 +1536,8 @@ export const ACTION_NAMES = [
   "crew.rm",
   "crew.stop",
   "doctor.run",
+  "gateway.key.make",
+  "gateway.key.save",
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
@@ -1533,6 +1619,10 @@ export async function runAction(
       return updateInstall(action);
     case "companion.enable":
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
+    case "gateway.key.save":
+      return gatewayKeyAction(action, body, "key");
+    case "gateway.key.make":
+      return gatewayKeyAction(action, body, "password");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
     case "omniroute.update":

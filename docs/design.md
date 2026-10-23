@@ -784,6 +784,35 @@ asked first in the page's own dialog and refused by the server without `confirm:
 writers are the person's own, owned and recorded as theirs, so setup leaves them and `restore`
 takes them out: § claude-mem from the portal.
 
+**The gateway's key (PK1).** The owner asked (2026-10-23) to set the gateway's own OmniRoute key
+from the portal, and to make one from OmniRoute's dashboard password, as `gateway setup` does.
+It sits on the Machine page's OmniRoute card, where the person goes for OmniRoute and which
+renders without a gateway. `/api/machine` carries `gatewayKey`, one word (`set`, `none`,
+`not-set-up`, `unreadable`), never the key. The two actions, `gateway.key.save` and
+`gateway.key.make`, each refused without `confirm: true`, call `setOmnirouteKey`
+(`src/gateway/commands.ts`): **setup's own key steps, which setup itself calls too** —
+`keyFromPassword` (`createOmnirouteKey`), `checkKeyToSave` (`checkBackendKey`: a 401/403 throws
+`keyRefusedMessage`, an unanswered check throws `keyUncheckedMessage` unless `saveUnchecked`),
+`ensureConfig` under setup's lock (the backup when the key really changes), and
+`discardMadeKey` (a key made and not saved is deleted again in OmniRoute). Under the lock it
+checks again that the config is still there and that OmniRoute's address is the one the key
+was checked at: `restore` or a terminal's setup between the check and the write refuses the
+save instead of making a config or saving the key for an address it was not checked at. Only
+the paste field has the "save untested" tick; a made key is saved checked or not at all, and
+a password goes to OmniRoute as typed (a key is trimmed). Nothing else of
+setup runs: no router copy, no unit, no restart, no judge test — the router reads a changed
+config by itself (`watchConfig`). A machine with no config is refused in words
+(`NOT_SET_UP_FOR_KEY`): a first setup installs the service and asks about the port, which
+belongs to the terminal. The refusals take the portal's own way to try again (`again`,
+`giveKey`) instead of the stdin flag. **Why in the portal's process, not a CLI child:** the
+secret then stays in this process's memory, and never reaches an argument list, the
+environment, a pipe or a child's log; the function is the CLI's own, so nothing is copied. A
+key saved without OmniRoute accepting it answers `tone: "warn"` with setup's warning words
+first, and the page draws it in the warning colour and keeps it until the next try (as a
+failure stays), so it cannot be missed. The planted-secret test (`server.test.ts`
+› "PK1: …") runs both actions with a planted key and password and finds neither in an answer,
+the live stream, a console line, a page or a file under the home.
+
 **It stays up until it is stopped** (D10): no idle clock, so it is there whenever the person
 opens it. `cc-smart-dev-kit portal stop` ends it, and a plugin update replaces it at the next
 session start. The trade-off is D9's: the page is open to every program and account on this

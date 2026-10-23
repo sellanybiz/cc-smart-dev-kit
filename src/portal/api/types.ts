@@ -162,6 +162,12 @@ export interface MachineAnswer extends MachineData {
   bun: BunFacts;
   claudeCode: ClaudeCodeFacts;
   claudeMem: ClaudeMemFacts;
+  /**
+   * The gateway's own OmniRoute key, as the OmniRoute card's key field shows it (PK1): `set`,
+   * `none` (a config with no OmniRoute key), `not-set-up` (no gateway config at all), or
+   * `unreadable` (a config that cannot be read; `configError` says why). Never the key.
+   */
+  gatewayKey: "none" | "not-set-up" | "set" | "unreadable";
   mcp: McpServerRow[];
 }
 

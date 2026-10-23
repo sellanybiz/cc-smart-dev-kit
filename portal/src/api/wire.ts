@@ -399,6 +399,8 @@ export interface MachineAnswer {
   bun: BunFacts;
   claudeCode: ClaudeCodeFacts;
   claudeMem: ClaudeMemFacts;
+  /** The gateway's own OmniRoute key: whether one is set, never the key (PK1). */
+  gatewayKey: "none" | "not-set-up" | "set" | "unreadable";
   mcp: McpServerRow[];
   autoMode: null | {
     added: string[];
@@ -984,6 +986,8 @@ export const ACTION_NAMES = [
   "crew.rm",
   "crew.stop",
   "doctor.run",
+  "gateway.key.make",
+  "gateway.key.save",
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
@@ -1009,7 +1013,7 @@ export type ActionName = (typeof ACTION_NAMES)[number];
 export interface ActionResult {
   ok: boolean;
   lines: string[];
-  tone?: "info";
+  tone?: "info" | "warn";
   preview?: ProjectInitPlan;
   filesHash?: string;
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];

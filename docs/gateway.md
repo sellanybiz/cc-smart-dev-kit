@@ -1179,7 +1179,10 @@ open), the router binds the config's port itself, as before.
    (`src/gateway/setup-questions.ts`): OmniRoute's address, its API key (the secret read; Enter
    keeps the saved one), a chain per model slot from the live model list (the judge is not
    asked), and whether to turn the gateway on. Ctrl+C at one exits 130 with nothing changed. A
-   key or address the backend refuses stops setup at the key check, before any write;
+   key or address the backend refuses stops setup at the key check, before any write. The key
+   steps (`keyFromPassword`, `checkKeyToSave`, the save under the lock, `discardMadeKey`) are
+   the same functions the portal's OmniRoute card calls through `setOmnirouteKey`, which runs
+   them alone: no copy, no unit, no restart (`docs/design.md` § The portal);
 3. checks everything and writes nothing: the config, the copy, the two units;
 4. when the router is running and the copy or a unit changed (or an earlier setup did not
    finish), says what the restart does and asks (`--yes` skips the question; without a

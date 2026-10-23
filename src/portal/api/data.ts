@@ -13,6 +13,7 @@ import { readClaudeMemFacts } from "../../machine/claude-mem-choices";
 import { jobContext } from "../actions";
 import {
   bunFacts,
+  type ConfigRead,
   claudeCodeFacts,
   configExists,
   type FallbackRow,
@@ -172,6 +173,21 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
   };
 }
 
+/**
+ * Whether the gateway has its own OmniRoute key, for the OmniRoute card's key field: read from
+ * the same config read as the rest of the answer, and only ever as a word.
+ */
+export function gatewayKeyState(
+  found: ConfigRead,
+  fileThere: boolean,
+): MachineAnswer["gatewayKey"] {
+  if ("error" in found) return fileThere ? "unreadable" : "not-set-up";
+  const omniroute = Object.hasOwn(found.config.backends, "omniroute")
+    ? found.config.backends.omniroute
+    : undefined;
+  return omniroute !== undefined && omniroute.apiKey.trim() !== "" ? "set" : "none";
+}
+
 /** `/api/machine`: the Machine page. Needs no gateway config. */
 export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> {
   const ctx = deps.action.portal;
@@ -181,6 +197,7 @@ export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> 
     bun: bunFacts(ctx),
     claudeCode,
     claudeMem: readClaudeMemFacts(ctx.paths),
+    gatewayKey: gatewayKeyState(deps.found, configExists(ctx)),
     mcp: mcpRows(ctx),
   };
   if ("error" in deps.found && configExists(ctx)) {

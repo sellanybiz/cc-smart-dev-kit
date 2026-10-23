@@ -65,7 +65,8 @@ repository (the installed plugin does not carry the docs).
    already in the file, saying which key that backend wants. A backend that cannot be asked
    (down, a 5xx) saves nothing either unless you add `--save-unchecked`, which saves it with a
    warning line (`!`). The file as it was is kept in the state folder's `backups/` whenever a key really
-   changes.
+   changes. Once the gateway is set up, the portal's Machine page (the OmniRoute card) does both
+   too — paste a key, or make one with the dashboard password — with the same checks.
    No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot Claude: every model
    plain Claude).
    Setup stops, writing nothing, when another program holds the router's port (an older

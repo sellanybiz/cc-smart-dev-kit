@@ -179,6 +179,7 @@ export function machineOf(answer: MachineAnswer, facts: PortalFacts): MachineDat
     doctor: (answer.doctor?.checks ?? []).map(doctorLine),
     doctorAt: answer.doctor?.at ?? null,
     facts,
+    gatewayKey: answer.gatewayKey,
     mcp: answer.mcp,
     omniroute: answer.omniroute,
     warp: answer.warp,

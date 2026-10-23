@@ -8,7 +8,7 @@
  *
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -825,6 +825,82 @@ describe("every answer", () => {
     } finally {
       world.portal.stop();
       backend.stop();
+    }
+  });
+
+  test("PK1: the two key actions put no key and no password in an answer, an event, a log line or a page", async () => {
+    // A fake OmniRoute that accepts any key and makes one with the dashboard password: every
+    // path through setup's key code that writes something runs here.
+    const NEW_KEY = "omni_PLANTED_NEW_key_c3d4";
+    const MADE_KEY = "omni_PLANTED_MADE_key_e5f6";
+    const PASSWORD = "PLANTED_dashboard_password";
+    const omniroute = Bun.serve({
+      fetch: async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/v1/models")
+          return Response.json({ data: [{ id: "glm-5.3-flash" }] });
+        if (url.pathname === "/api/auth/login") {
+          return new Response("{}", { headers: { "set-cookie": "auth_token=s1; Path=/" } });
+        }
+        if (url.pathname === "/api/keys") return Response.json({ id: "k1", key: MADE_KEY });
+        return new Response("not here", { status: 404 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+    const plugin = tempDir("portal-plugin");
+    mkdirSync(join(plugin, "dist"), { recursive: true });
+    writeFileSync(join(plugin, "dist", "router.js"), "// the router bundle\n");
+    const world = await open({
+      backendPort: omniroute.port ?? 0,
+      pluginFolder: () => ({ folder: plugin }),
+      systemd: true,
+    });
+    // Every line the portal's process prints while the actions run: the portal's log.
+    const logged: string[] = [];
+    const spies = (["log", "error", "warn", "info"] as const).map((name) =>
+      spyOn(console, name).mockImplementation((...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      }),
+    );
+    const base = `http://127.0.0.1:${world.portal.port}`;
+    try {
+      const csrf = await world.csrfOf();
+      const stream = await fetch(`${base}/events`, {
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+      const reader = stream.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      const answers = [
+        await world.post("gateway.key.save", { confirm: true, key: NEW_KEY }, csrf),
+        await world.post("gateway.key.make", { confirm: true, password: PASSWORD }, csrf),
+        // Refused before anything runs: no yes from the page.
+        await world.post("gateway.key.save", { key: NEW_KEY }, csrf),
+        await world.post("gateway.key.make", { password: PASSWORD }, csrf),
+      ];
+      expect(answers.map((one) => JSON.parse(one.body).ok)).toEqual([true, true, false, false]);
+      const events = await readToEnd(reader, 300);
+      expect(events).toContain("gateway.key.make");
+      const pages = [];
+      for (const path of ["/", "/machine", ...Object.keys(API_READS)]) {
+        pages.push((await world.call(path)).body);
+      }
+      const seen = [...answers.map((one) => one.body), events, ...logged, ...pages].join("\n");
+      for (const planted of [KEY, NEW_KEY, MADE_KEY, PASSWORD]) {
+        expect(seen).not.toContain(planted);
+      }
+      // The Machine answer says a key is set, in a word.
+      expect(JSON.parse((await world.call("/api/machine")).body).gatewayKey).toBe("set");
+      // The key made is the one saved; the password is in no file under the home.
+      expect(readFileSync(world.paths.gatewayConfigFile, "utf8")).toContain(MADE_KEY);
+      for (const name of readdirSync(world.home, { recursive: true }) as string[]) {
+        const path = join(world.home, name);
+        if (statSync(path).isFile()) expect(readFileSync(path, "utf8")).not.toContain(PASSWORD);
+      }
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      world.portal.stop();
+      omniroute.stop(true);
     }
   });
 
@@ -3849,6 +3925,7 @@ describe("the JSON API", () => {
         "claudeMem",
         "companions",
         "doctor",
+        "gatewayKey",
         "jobs",
         "mcp",
         "omniroute",
@@ -3856,6 +3933,8 @@ describe("the JSON API", () => {
         "updates",
         "warp",
       ]);
+      // No gateway: the OmniRoute card's key field says so, in a word (PK1).
+      expect(machine.gatewayKey).toBe("not-set-up");
       // claude-mem's card (PM1) without a gateway or claude-mem: what is missing, and the fix.
       expect(machine.claudeMem).toEqual({
         backends: null,

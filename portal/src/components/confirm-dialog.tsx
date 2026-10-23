@@ -62,11 +62,14 @@ export function ConfirmDialog({
           </div>
         )}
         <div className="mt-2 flex flex-wrap justify-end gap-2">
-          {/* The safe answer has the focus first: Enter never confirms a change by accident. */}
-          <Button variant="outline" size="sm" onClick={onCancel} autoFocus>
+          {/* The safe answer has the focus first: Enter never confirms a change by accident.
+              Both are plain buttons: a dialog inside a form (a key field's) must never submit it,
+              or the form's own submit opens the question again. */}
+          <Button type="button" variant="outline" size="sm" onClick={onCancel} autoFocus>
             Cancel
           </Button>
           <Button
+            type="button"
             size="sm"
             variant={tone === "destructive" ? "destructive" : "default"}
             onClick={onYes}

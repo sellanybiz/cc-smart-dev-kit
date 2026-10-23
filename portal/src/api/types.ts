@@ -497,6 +497,8 @@ export interface MachineData {
   mcp: McpServerRow[];
   browser: BrowserCardData;
   omniroute: OmnirouteRow;
+  /** The gateway's own OmniRoute key, in a word: never the key (PK1). */
+  gatewayKey: MachineAnswer["gatewayKey"];
   warp: WarpRow;
   doctor: DoctorLine[];
   /** When the doctor pass these lines came from ran (ms); null before the first. */
