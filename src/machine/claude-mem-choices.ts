@@ -379,6 +379,30 @@ function changeLines(result: ManagedJsonResult, short: string): string[] {
 }
 
 /**
+ * The refusal of a write over a value the person set by hand (theirs: the kit never
+ * overwrites it), in their words; null when every key may be set. Each chooser asks it before
+ * its tiny chat, so a refused write sends no request at all.
+ */
+function handRefusal(
+  read: ClaudeMemSettings,
+  set: ReadonlyArray<readonly [string, string]>,
+): ChoiceResult | null {
+  for (const [key, value] of set) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (current.found && current.value !== value && sourceOf(read, key) === "hand") {
+      return {
+        lines: [
+          `Nothing was saved: ${key} is ${shownClaudeMemValue(path, current.value)} in ${read.short}, set by hand. Change it there, or remove it there to set it here.`,
+        ],
+        ok: false,
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * Writes the person's choice under setup's lock: the settings again (another program may have
  * changed them since the check), `applyManagedJson`, then the choices file. A key the person
  * set by hand stops it in words, with nothing written.
@@ -396,19 +420,9 @@ async function save(
       read.at(key),
       value,
     ]);
-    // A value the person set by hand is theirs: said in their words, before any write.
-    for (const [key, value] of set) {
-      const path = read.at(key);
-      const current = getKey(read.data, path);
-      if (current.found && current.value !== value && sourceOf(read, key) === "hand") {
-        return {
-          lines: [
-            `Nothing was saved: ${key} is ${shownClaudeMemValue(path, current.value)} in ${read.short}, set by hand. Change it there, or remove it there to set it here.`,
-          ],
-          ok: false,
-        };
-      }
-    }
+    // Again under the lock: the file may have changed since the chooser looked.
+    const theirs = handRefusal(read, set);
+    if (theirs !== null) return theirs;
     let result: ManagedJsonResult;
     try {
       result = applyManagedJson({
@@ -489,13 +503,12 @@ export async function chooseRoute(
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found) return { lines: [found.why], ok: false };
   const keys = compatKeys(ready.read, found.backend, choice.model);
+  const set = [[PROVIDER, OPENAI_COMPATIBLE] as const, ...keys.set];
+  const theirs = handRefusal(ready.read, set);
+  if (theirs !== null) return theirs;
   const problem = await check(keys.target);
   if (problem !== null) return { lines: [`Nothing was saved: ${problem}.`], ok: false };
-  return save(
-    paths,
-    [[PROVIDER, OPENAI_COMPATIBLE], ...keys.set],
-    routeLine(`${choice.model} on ${choice.backend}`),
-  );
+  return save(paths, set, routeLine(`${choice.model} on ${choice.backend}`));
 }
 
 /**
@@ -543,11 +556,14 @@ export async function chooseKey(
     }
   }
   const name = backend?.name ?? "claude-mem's backend";
+  const set = [[API_KEY, key] as const];
+  const theirs = handRefusal(read, set);
+  if (theirs !== null) return theirs;
   const problem = await check({ apiKey: key, backend: name, baseUrl, model });
   if (problem !== null) return { lines: [`The key was not saved: ${problem}.`], ok: false };
   return save(
     paths,
-    [[API_KEY, key]],
+    set,
     choice.kind === "gateway"
       ? `claude-mem uses the gateway's own key for ${name}.`
       : `claude-mem uses the key you pasted for ${name}. It is in claude-mem's file, readable only by you, and never shown again.`,
@@ -605,11 +621,14 @@ export async function chooseFallback(
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found) return { lines: [found.why], ok: false };
   const keys = compatKeys(read, found.backend, choice.model);
+  const set = [...keys.set, [FALLBACK_PROVIDER, OPENAI_COMPATIBLE] as const];
+  const theirs = handRefusal(read, set);
+  if (theirs !== null) return theirs;
   const problem = await check(keys.target);
   if (problem !== null) return { lines: [`Nothing was saved: ${problem}.`], ok: false };
   return save(
     paths,
-    [...keys.set, [FALLBACK_PROVIDER, OPENAI_COMPATIBLE]],
+    set,
     `While its route's provider is limited, claude-mem sends its summaries to ${choice.model} on ${choice.backend}.`,
   );
 }

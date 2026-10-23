@@ -357,6 +357,9 @@ describe("PM1: the route", () => {
       ],
       ok: false,
     });
+    // A refused write sends no request at all: the refusal comes before the tiny chat.
+    expect(keyed.checks).toEqual([]);
+    expect(w.checks).toEqual([]);
   });
 
   test("PM1: the person's own key stays when the route moves, and the chat uses it", async () => {
