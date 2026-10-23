@@ -20,6 +20,10 @@ belongs — inline, a subagent or a crew session — is in the core instructions
   from your own workflow file).
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
+- **Keep your own task list** (`TaskCreate`, after a `ToolSearch` for the task tools):
+  the person's asks and your open work — each phase to start, each question to answer, each
+  branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
+  so it never goes stale unseen; you are never held back by it.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
   names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
   itself (no setting; it replaces the name the session had, and a name the person gives it

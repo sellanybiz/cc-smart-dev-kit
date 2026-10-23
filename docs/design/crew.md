@@ -422,7 +422,13 @@ record does not hold** is refused — so the lead's gate (D22) never has to doub
 ends the crew session's phase: its state becomes the status, and the report file, the record and the
 `report` event are written under one hold. **Only a `blocked` report carries a question** — the
 one it waits on, or else the newest the crew session asked that nobody answered; a `done` report with
-an old open question in it would tell the lead the crew session is blocked.
+an old open question in it would tell the lead the crew session is blocked. **A `done` report waits
+for the task list** (D23): while any task on the session's own list is `pending` or `in_progress`
+the report is refused, with each open task named (`#3 "Part 3" (pending)`), and the fix is to finish
+it with `TaskUpdate status completed`, or to delete it (`status deleted`) and say why under `open` in the report — a deleted task's file is gone, so a reason written in the task would vanish with it (proved live, `docs/claude-code-contract.md` § The to-do list). A
+`handoff`, `blocked` or `failed` report is never held: those exist because the phase could not be
+finished. No list at all — a session that never got the tools, or one whose folder cannot be read —
+lets the report through with one `note:` line on stdout, so the lead can tell the two apart.
 
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
@@ -733,6 +739,20 @@ each is silent unless its own session is the one it is about, and neither reads
   `crew report --question …` step (D36): a crew session never asks the person. The deny reads no
   store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
   one, and outside git.
+  At **PreToolUse** on `Edit`, `Write` and `NotebookEdit` it **denies a crew session's first
+  edit until its task list exists** (D23): while the session's task folder holds no task file, the
+  call is refused with the step — look the task tools up (`ToolSearch
+  select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per part of the brief, each with
+  its done-check — and the card names the same step at the start. The list is Claude Code's own
+  (`src/crew/tasks.ts`: `<config dir>/tasks/<CLAUDE_CODE_TASK_LIST_ID or the input's session id>/`,
+  proved live in `docs/claude-code-contract.md` § The to-do list), a subagent's edit is judged
+  against the same folder, and the first answer that sees a task file is cached in the crew
+  session's store folder (`files/<crew id>/task-gate.json`), so an edit costs one small file read
+  and never lists the folder again for that list. Every answer that cannot be made lets the edit
+  through: no session id names no folder, a folder or a record the hook cannot read is one line on
+  stderr, and a gate it cannot write is only a slower next call. The step also says what to do when
+  `ToolSearch` finds no task tools (the legacy `TodoWrite`, a deny rule): tell the lead, who tells
+  the person — otherwise a refusal nobody can satisfy would hold every edit for good.
   At **UserPromptSubmit** it hears the person (D55): a prompt typed into the crew session is one
   `person` event (its first line, masked and clipped) and one line of context — their word wins
   over the brief, a change of scope or files is said in the report, and a word to stop still gets
@@ -775,4 +795,8 @@ each is silent unless its own session is the one it is about, and neither reads
   mark on a report line uses the built-in review agents: this hook reads no project file, and the
   watch's own line is the one that resolves a project's list. At a prompt it also sets the lead's
   name (`sessionTitle`, beside the note in the same answer), through `titleToSet`, the one rule and
-  record `session-name` keeps (§ The lead and the launch › The lead's name).
+  record `session-name` keeps (§ The lead and the launch › The lead's name). **At a prompt it also
+  reminds a lead with no to-do list** (D23): while the lead's own task folder (`taskListId`, the
+  same reader the crew session's gate uses) holds no task file, one more line of context — put the
+  person's asks and the lead's open work on the list, and keep it true as they move — said before
+  the news, and gone the moment a task exists. **Never a block**: a lead is reminded, never held.

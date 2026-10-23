@@ -3,6 +3,34 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.1.3
+
+**Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
+this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
+Claude Code leaves the task tools out until a session looks them up and the crew skill only
+asked. The list is what a crew session resumes from after a compaction, and what you read when
+you open it.
+
+- **A crew session's first edit waits for its list.** Until the session's task folder holds one
+  task, the `crew-role` hook refuses its `Edit`, `Write` and `NotebookEdit` with the step: look
+  the task tools up, then one `TaskCreate` per part of the brief, each with its done-check. The
+  role card names the same first step. Once a task exists the hook answers from its own cache
+  and reads nothing more, so an edit costs one small file.
+- **A `done` report waits for the list to be finished.** `crew report --status done` refuses
+  while any task is still open, and names each one: finish it, or delete it and say why in the
+  report. A `handoff`, `blocked` or `failed` report is never held, and a session with no list at
+  all reports with one `note:` line saying nothing was checked.
+- **A lead is reminded, never blocked.** While your session has no to-do list, each prompt
+  carries one line: put the person's asks and your open work on it. It goes silent the moment a
+  task exists.
+- **The kit's builder and rules-maintainer agents get the task tools**, and one line each to
+  keep a list for a multi-step brief. The read-only reviewer, auditor and ui-verifier stay as
+  they are.
+
+**What to run:** nothing. The hooks come with the plugin update. A session that is already
+running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
+started after the update are held to the list or reminded.
+
 ## 1.1.2
 
 - **A crew session's name says whose it is.** With several leads in one project, every crew

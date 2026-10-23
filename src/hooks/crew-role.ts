@@ -18,6 +18,18 @@
  *   the person. The answer is a **deny**, not an ask: the fix is mechanical, and asking the person
  *   here would be the very thing the hook prevents. **No store read**, so the answer is the same
  *   when the project's file is broken or too new, and outside git.
+ * - **PreToolUse on `Edit`, `Write` and `NotebookEdit`**: the session's **first edit waits for
+ *   its task list** (D23). While the session's task folder holds no task file, the call is
+ *   **denied** with the step — look the task tools up, then one `TaskCreate` per part of the
+ *   brief, each with its done-check. Nobody watches a crew session, and its list is what it
+ *   resumes from after a compaction and what the person reads; the crew skill asked for one and
+ *   17 of 24 live sessions still skipped it, because Claude Code leaves the task tools out until
+ *   a session looks them up. Once a task file exists the hook answers from its own cache
+ *   (`taskGateFile`, `src/crew/tasks.ts`) and never lists the folder again for that list. A
+ *   subagent's edit is judged too: its `TaskCreate` writes into its parent session's folder, one
+ *   list for the whole session (proved live, `docs/claude-code-contract.md` § The to-do list).
+ *   A store or a folder the hook cannot read lets the edit through: a check that cannot be made
+ *   is no denial.
  * - **UserPromptSubmit (D55)**: the person typed into the crew session. Their word wins over the
  *   brief, so the lead has to hear it: one `person` event (the first line, masked and clipped)
  *   and one short line of context telling the session whose word it is. Only the person's own
@@ -67,6 +79,13 @@ import {
   updateCrewIfState,
   writeStopState,
 } from "../crew/store";
+import {
+  readSessionTasks,
+  readTaskGate,
+  sessionTasksDir,
+  taskListId,
+  writeTaskGate,
+} from "../crew/tasks";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
 import { isInside, realPath } from "./git";
@@ -83,12 +102,37 @@ import type { Env } from "./run";
 /** The two tools a crew session never calls: each one asks the person (D36). */
 export const CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
 
+/** The tools whose call waits for a crew session's task list: every edit it makes (D23). */
+export const CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
+
 /** The longest piece of a line a record keeps: the session's last line, the person's first line. */
 export const LAST_LINE_MAX = 120;
 
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+}
+
+/**
+ * The one step that makes a crew session's to-do list: look the task tools up (Claude Code
+ * leaves them out until a session does, so a session that skips this cannot make one at all),
+ * then one task per part of the brief, each with its done-check. The deny of the first edit
+ * and the role card both say it, from here.
+ */
+function taskListStep(): string {
+  return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+}
+
+/**
+ * The deny of a crew session's first edit, while its task folder holds no task file (D23). A
+ * deny and not an ask: the step is mechanical and the session can take it alone, and nobody is
+ * at the machine to answer a question (`.claude/rules/hooks-guards.md` § Fail safe). The last
+ * sentence is the way out for a session Claude Code gave no task tools (the legacy `TodoWrite`
+ * instead, a deny rule): it tells its lead, who tells the person, because the refusal would
+ * otherwise hold every edit it makes for good.
+ */
+function taskListRefusal(): string {
+  return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep()}\``;
 }
 
 /** The line a crew session gets instead of asking the person (D36). */
@@ -237,6 +281,7 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
     `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
@@ -467,8 +512,52 @@ async function personPromptAnswer(
 }
 
 /**
+ * The first edit of a crew session waits for its task list (D23): while the session's task
+ * folder holds no task file, the call is denied with the step. The list is the session's own —
+ * `CLAUDE_CODE_TASK_LIST_ID` when the environment names one, else the input's `session_id`,
+ * which is the parent session's for a subagent's call too — and a subagent's `TaskCreate`
+ * writes into that same folder, so every edit of the session is judged against the one list
+ * it keeps (proved live, `docs/claude-code-contract.md` § The to-do list).
+ *
+ * Once a task file has been seen, the gate's own file answers (`taskGateFile`) and the folder
+ * is not read again for that list. **Every answer that cannot be made lets the edit through**:
+ * no session id names no folder, a folder the hook cannot read says nothing about the list, and
+ * a gate file it cannot write is one line on stderr — a denial on a guess would hold the
+ * session's work for nothing. Outside git (`repo` null) the gate has no store folder to
+ * remember in, so the folder is read on each call.
+ */
+function taskListGate(
+  input: HookInput,
+  id: string,
+  repo: null | string,
+  paths: CliPaths,
+  env: Env,
+): HookResult {
+  const listId = taskListId(env, stringField(input.session_id));
+  if (listId === "") return SILENT;
+  if (repo !== null && readTaskGate(paths.stateDir, repo, id)?.listId === listId) return SILENT;
+  const tasks = readSessionTasks(paths.claudeConfigDir, listId);
+  if (tasks.state === "unreadable") {
+    return storeProblem(
+      `the task folder ${sessionTasksDir(paths.claudeConfigDir, listId)} cannot be read, so the edit is not held for the task list`,
+    );
+  }
+  if (tasks.state === "none" || tasks.files === 0) {
+    return toolDecision("deny", taskListRefusal());
+  }
+  if (repo === null) return SILENT;
+  try {
+    writeTaskGate(paths.stateDir, repo, id, { listId });
+  } catch (error) {
+    // Only a cache: the next edit lists the folder again. The edit itself goes on.
+    return storeProblem(`the task list gate could not be recorded: ${reasonOf(error)}`);
+  }
+  return SILENT;
+}
+
+/**
  * Every answer of the hook, for every event it is wired for. `repo` is null outside a git checkout
- * (the PreToolUse answer needs none; a card, a stop, a pause and the person's prompt need the
+ * (the PreToolUse answers need none; a card, a stop, a pause and the person's prompt need the
  * store, so they stay silent there). Async because the Stop, the StopFailure and the
  * UserPromptSubmit answers write the store: `onConfigProblem` and `outsideGit` call it too, so a
  * broken or too new project file never changes an answer.
@@ -485,9 +574,12 @@ export async function crewRoleAnswer(
   if (id === null) return SILENT;
   if (event === "PreToolUse") {
     const tool = stringField(input.tool_name);
-    return tool !== null && (CREW_ASK_TOOLS as readonly string[]).includes(tool)
-      ? toolDecision("deny", questionStep())
-      : SILENT;
+    if (tool === null) return SILENT;
+    if ((CREW_ASK_TOOLS as readonly string[]).includes(tool))
+      return toolDecision("deny", questionStep());
+    if ((CREW_EDIT_TOOLS as readonly string[]).includes(tool))
+      return taskListGate(input, id, repo, paths, env);
+    return SILENT;
   }
   if (repo === null) return SILENT;
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);

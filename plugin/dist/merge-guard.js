@@ -13387,8 +13387,91 @@ var RUNNING_STATES = [
   "quiet"
 ];
 
+// src/crew/tasks.ts
+import { readdirSync as readdirSync7, readFileSync as readFileSync19 } from "fs";
+import { join as join21 } from "path";
+var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
+function sessionTasksDir(claudeConfigDir, listId) {
+  return join21(claudeConfigDir, "tasks", listId);
+}
+function taskListId(env, sessionId) {
+  const named = env[TASK_LIST_ENV]?.trim() ?? "";
+  return named === "" ? sessionId?.trim() ?? "" : named;
+}
+function byNumber(a, b) {
+  const one = Number(a.id);
+  const other = Number(b.id);
+  if (Number.isInteger(one) && Number.isInteger(other))
+    return one - other;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+function taskOf(file, name) {
+  let value;
+  try {
+    value = JSON.parse(readFileSync19(file, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
+  const fields = value;
+  const status = typeof fields.status === "string" ? fields.status : "";
+  if (status === "")
+    return null;
+  return {
+    id: typeof fields.id === "string" && fields.id !== "" ? fields.id : name.replace(/\.json$/, ""),
+    status,
+    subject: typeof fields.subject === "string" ? fields.subject : ""
+  };
+}
+function readSessionTasks(claudeConfigDir, listId) {
+  if (listId === "")
+    return { state: "none" };
+  const folder = sessionTasksDir(claudeConfigDir, listId);
+  let names;
+  try {
+    names = readdirSync7(folder, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { state: "none" };
+    return { state: "unreadable" };
+  }
+  const tasks = [];
+  for (const name of names) {
+    const task = taskOf(join21(folder, name), name);
+    if (task !== null)
+      tasks.push(task);
+  }
+  return { files: names.length, state: "read", tasks: tasks.sort(byNumber) };
+}
+function taskGateFile(stateDir, repo, id) {
+  return join21(crewFilesDir(stateDir, repo, id), "task-gate.json");
+}
+function readTaskGate(stateDir, repo, id) {
+  let text;
+  try {
+    text = readFileSync19(taskGateFile(stateDir, repo, id), "utf8");
+  } catch {
+    return null;
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
+  const listId = value.listId;
+  return typeof listId === "string" && listId !== "" ? { listId } : null;
+}
+function writeTaskGate(stateDir, repo, id, gate) {
+  writeStoreFile(taskGateFile(stateDir, repo, id), `${JSON.stringify({ version: 1, ...gate })}
+`);
+}
+
 // src/crew/wait.ts
-import { readFileSync as readFileSync19 } from "fs";
+import { readFileSync as readFileSync20 } from "fs";
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -13528,7 +13611,7 @@ function pausesCrew(error) {
 }
 function readState(file) {
   try {
-    return parseLimitState(readFileSync19(file, "utf8")) ?? emptyLimitState();
+    return parseLimitState(readFileSync20(file, "utf8")) ?? emptyLimitState();
   } catch {
     return emptyLimitState();
   }
@@ -13608,9 +13691,16 @@ function pauseText(waiting, error, nowMs, timeZone) {
 
 // src/hooks/crew-role.ts
 var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
+var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
 function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+}
+function taskListStep() {
+  return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+}
+function taskListRefusal() {
+  return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep()}\``;
 }
 function questionStep() {
   return `${REPORT_COMMAND} --question "<q>" --option "<a>" --option "<b>" --recommend <n>`;
@@ -13675,6 +13765,7 @@ function roleCard(record, briefFile) {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
     `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
@@ -13808,13 +13899,41 @@ async function personPromptAnswer(input, id, repo, paths, options) {
   }
   return addContext("UserPromptSubmit", personWroteLine());
 }
+function taskListGate(input, id, repo, paths, env) {
+  const listId = taskListId(env, stringField(input.session_id));
+  if (listId === "")
+    return SILENT;
+  if (repo !== null && readTaskGate(paths.stateDir, repo, id)?.listId === listId)
+    return SILENT;
+  const tasks = readSessionTasks(paths.claudeConfigDir, listId);
+  if (tasks.state === "unreadable") {
+    return storeProblem(`the task folder ${sessionTasksDir(paths.claudeConfigDir, listId)} cannot be read, so the edit is not held for the task list`);
+  }
+  if (tasks.state === "none" || tasks.files === 0) {
+    return toolDecision("deny", taskListRefusal());
+  }
+  if (repo === null)
+    return SILENT;
+  try {
+    writeTaskGate(paths.stateDir, repo, id, { listId });
+  } catch (error) {
+    return storeProblem(`the task list gate could not be recorded: ${reasonOf2(error)}`);
+  }
+  return SILENT;
+}
 async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   const id = crewIdOf(env);
   if (id === null)
     return SILENT;
   if (event === "PreToolUse") {
     const tool = stringField(input.tool_name);
-    return tool !== null && CREW_ASK_TOOLS.includes(tool) ? toolDecision("deny", questionStep()) : SILENT;
+    if (tool === null)
+      return SILENT;
+    if (CREW_ASK_TOOLS.includes(tool))
+      return toolDecision("deny", questionStep());
+    if (CREW_EDIT_TOOLS.includes(tool))
+      return taskListGate(input, id, repo, paths, env);
+    return SILENT;
   }
   if (repo === null)
     return SILENT;
@@ -13851,7 +13970,7 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
 
 // src/hooks/fable-session.ts
 import { existsSync as existsSync13, mkdirSync as mkdirSync13, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname9, join as join21 } from "path";
+import { dirname as dirname9, join as join22 } from "path";
 function fableSessionMessage(named) {
   return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
 }
@@ -13859,7 +13978,7 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join21(namesDir(env), `${sessionId}.fable`);
+  return join22(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
@@ -13907,7 +14026,7 @@ function fableSession(input, env, paths) {
 }
 
 // src/jobs/classify.ts
-import { isAbsolute as isAbsolute4, join as join22, normalize } from "path";
+import { isAbsolute as isAbsolute4, join as join23, normalize } from "path";
 function runOf(source) {
   return { source, folder: source?.folder ?? null, cache: new Map };
 }
@@ -13948,7 +14067,7 @@ function folderAfter(program, args, folder) {
   const target = folderWord(args);
   if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
     return null;
-  return isAbsolute4(target) ? normalize(target) : normalize(join22(folder, target));
+  return isAbsolute4(target) ? normalize(target) : normalize(join23(folder, target));
 }
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
@@ -14237,12 +14356,12 @@ function classifyRoutableLine(bashCommand, kinds, source) {
 }
 
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync20 } from "fs";
-import { join as join23 } from "path";
+import { readFileSync as readFileSync21 } from "fs";
+import { join as join24 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync20(join23(folder, "package.json"), "utf8");
+    text = readFileSync21(join24(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -14762,8 +14881,8 @@ function routeFacts(input, context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync21, readlinkSync as readlinkSync3 } from "fs";
-import { join as join24 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync8, readFileSync as readFileSync22, readlinkSync as readlinkSync3 } from "fs";
+import { join as join25 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -14782,8 +14901,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join24(worktree, relative);
-    const there = join24(mainCheckout, relative);
+    const here = join25(worktree, relative);
+    const there = join25(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -14791,9 +14910,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync7(here).every((entry) => same(join24(relative, entry)));
+        return b.isDirectory() && readdirSync8(here).every((entry) => same(join25(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync21(here).equals(readFileSync21(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync22(here).equals(readFileSync22(there));
     } catch {
       return false;
     }
@@ -14815,22 +14934,22 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync14, readFileSync as readFileSync22, statSync as statSync11 } from "fs";
-import { basename as basename5, isAbsolute as isAbsolute5, join as join25, resolve as resolve6 } from "path";
+import { existsSync as existsSync14, readFileSync as readFileSync23, statSync as statSync11 } from "fs";
+import { basename as basename5, isAbsolute as isAbsolute5, join as join26, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync22(join25(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync23(join26(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
   if (!isAbsolute5(admin))
     admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join25("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join26("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync11(join25(admin, file)).mtimeMs);
+      last = Math.max(last, statSync11(join26(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -14969,7 +15088,7 @@ function worktreeLeftovers(context) {
 // src/workflow/review-cover.ts
 import { mkdtempSync, rmSync as rmSync2 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -15070,7 +15189,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join26(tmpdir3(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join27(tmpdir3(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -15090,7 +15209,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join26(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join27(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -15247,12 +15366,12 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync15, readFileSync as readFileSync23 } from "fs";
+import { existsSync as existsSync15, readFileSync as readFileSync24 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join27 } from "path";
+import { join as join28 } from "path";
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join27(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join28(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/workflow/resolve.ts
@@ -15267,7 +15386,7 @@ function loadWorkflow(file) {
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync23(file, "utf8"));
+    raw = JSON.parse(readFileSync24(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -15318,7 +15437,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync23(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync24(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -15566,10 +15685,26 @@ function notesLine(lines) {
 function leadTitle(input, event, env, sessionId, name) {
   return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
 }
-function answered(event, note, title) {
+function taskListReminder() {
+  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+}
+function reminderFor(paths, env, sessionId, event) {
+  if (event !== "UserPromptSubmit")
+    return null;
+  const listId = taskListId(env, sessionId);
+  if (listId === "")
+    return null;
+  const read = readSessionTasks(paths.claudeConfigDir, listId);
+  if (read.state === "unreadable")
+    return null;
+  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+}
+function answered(event, lines, title) {
+  const text = lines.length === 0 ? null : lines.join(`
+`);
   if (title === null)
-    return note === null ? SILENT : addContext(event, note);
-  return addContextAndTitle(event, note, title);
+    return text === null ? SILENT : addContext(event, text);
+  return addContextAndTitle(event, text, title);
 }
 function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;
@@ -15578,12 +15713,13 @@ function leadNotesAnswer(input, event, paths, repo, env) {
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null)
     return SILENT;
+  const reminder = reminderFor(paths, env, sessionId, event);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo)
     });
-    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
+    return answered(event, reminder === null ? [] : [reminder], leadTitle(input, event, env, sessionId, lead.name));
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
@@ -15599,7 +15735,8 @@ function leadNotesAnswer(input, event, paths, repo, env) {
       lines.push(line);
   }
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
+  const note = notesLine(lines);
+  return answered(event, [...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
 }
 
 // src/hooks/main-folder-guard.ts
@@ -16916,7 +17053,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync24 } from "fs";
+import { readFileSync as readFileSync25 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -17014,7 +17151,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync24(transcript, "utf8");
+    text = readFileSync25(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -17347,10 +17484,11 @@ var crewRoleHook = {
     if (event !== "" && event !== "PreToolUse")
       return SILENT;
     const tool = input === null ? null : stringField(input.tool_name);
-    if (input !== null && (tool === null || !CREW_ASK_TOOLS.includes(tool))) {
+    const edits = tool !== null && CREW_EDIT_TOOLS.includes(tool);
+    if (input !== null && !edits && (tool === null || !CREW_ASK_TOOLS.includes(tool))) {
       return SILENT;
     }
-    return toolDecision("ask", cannotCheck("whether this crew session asks the person itself", why));
+    return toolDecision("ask", cannotCheck(edits ? "whether this crew session keeps its task list" : "whether this crew session asks the person itself", why));
   },
   run: ({ input, event, project, env, paths }) => crewRoleAnswer(input, event, env, paths, project.mainCheckout ?? project.root)
 };

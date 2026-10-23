@@ -37,6 +37,7 @@ import {
   readNotesState,
   writeNotesState,
 } from "../crew/store";
+import { readSessionTasks, taskListId } from "../crew/tasks";
 import { eventLine, phasesWaitingFor } from "../crew/watch";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
@@ -75,10 +76,34 @@ function leadTitle(
     : null;
 }
 
-/** The answer for this turn: the note, the lead's name, both, or silence. */
-function answered(event: string, note: null | string, title: null | string): HookResult {
-  if (title === null) return note === null ? SILENT : addContext(event, note);
-  return addContextAndTitle(event, note, title);
+/**
+ * The one line a lead gets at a prompt while it has no task list (D23): a reminder, never a
+ * block. The person's asks and the lead's open work — the merges, the questions, the phases to
+ * start — belong on the list, not in a context a compaction takes away.
+ */
+export function taskListReminder(): string {
+  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+}
+
+/**
+ * The reminder this prompt adds, or null: only a prompt, only a recorded lead, and only while
+ * its own list holds no task file. A folder the hook cannot read says nothing either way, so it
+ * says nothing: a wrong list is worse than no nudge.
+ */
+function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string): null | string {
+  if (event !== "UserPromptSubmit") return null;
+  const listId = taskListId(env, sessionId);
+  if (listId === "") return null;
+  const read = readSessionTasks(paths.claudeConfigDir, listId);
+  if (read.state === "unreadable") return null;
+  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+}
+
+/** The answer for this turn: its lines for Claude, the lead's name, both, or silence. */
+function answered(event: string, lines: readonly string[], title: null | string): HookResult {
+  const text = lines.length === 0 ? null : lines.join("\n");
+  if (title === null) return text === null ? SILENT : addContext(event, text);
+  return addContextAndTitle(event, text, title);
 }
 
 /**
@@ -96,13 +121,18 @@ export function leadNotesAnswer(
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null) return SILENT;
+  const reminder = reminderFor(paths, env, sessionId, event);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {
     // First turn in this lead: the log's history is what the lead already saw. From here on, new.
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo),
     });
-    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
+    return answered(
+      event,
+      reminder === null ? [] : [reminder],
+      leadTitle(input, event, env, sessionId, lead.name),
+    );
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter(
@@ -127,7 +157,13 @@ export function leadNotesAnswer(
   }
   // Past every event read, spoken or not: the next turn says only what is newer.
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  // The title last: its record is written as it is set, and a store that throws above leaves
-  // that record alone, so the next prompt tries the name again.
-  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
+  // The reminder first — it is about the prompt just typed — then the news. The title last: its
+  // record is written as it is set, and a store that throws above leaves that record alone, so
+  // the next prompt tries the name again.
+  const note = notesLine(lines);
+  return answered(
+    event,
+    [...(reminder === null ? [] : [reminder]), ...(note === null ? [] : [note])],
+    leadTitle(input, event, env, sessionId, lead.name),
+  );
 }

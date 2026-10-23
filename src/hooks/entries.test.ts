@@ -19,7 +19,7 @@ import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
-import { CREW_ASK_TOOLS } from "./crew-role";
+import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
@@ -102,9 +102,13 @@ describe("hooks.json", () => {
       const guard = event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler));
       expect(handler.onFailure).toBe(guard ? "block" : undefined);
     }
-    // And the list is not empty: the guards are wired.
+    // And the list is not empty: every guard's PreToolUse entry blocks, and one guard may have
+    // more than one (crew-role judges the two tools that ask the person, and the three edits
+    // that wait for its task list).
     expect(wired.filter(({ handler }) => handler.onFailure === "block").length).toBe(
-      GUARD_BUNDLES.size,
+      wired.filter(
+        ({ event, handler }) => event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler)),
+      ).length,
     );
   });
 
@@ -239,13 +243,13 @@ esac
     expect(matcher).toBe("Bash|PowerShell");
   });
 
-  test("the crew-role matcher is exactly the tools a crew session never calls", () => {
-    const matcher = wired.find(
-      ({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role",
-    )?.matcher;
-    expect(matcher).toBe(CREW_ASK_TOOLS.join("|"));
+  test("the crew-role matchers are exactly the tools it judges: the two that ask, and the three edits", () => {
+    const matchers = wired
+      .filter(({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role")
+      .map(({ matcher }) => matcher);
+    expect(matchers).toEqual([CREW_ASK_TOOLS.join("|"), CREW_EDIT_TOOLS.join("|")]);
     // Written by hand too, so a changed list is seen here and not only in the constant.
-    expect(matcher).toBe("AskUserQuestion|ExitPlanMode");
+    expect(matchers).toEqual(["AskUserQuestion|ExitPlanMode", "Edit|Write|NotebookEdit"]);
   });
 
   test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
