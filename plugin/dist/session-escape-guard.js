@@ -7228,6 +7228,17 @@ function addContext(event, text) {
     })
   };
 }
+function addContextAndTitle(event, text, title) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: event,
+        ...text === null ? {} : { additionalContext: text },
+        sessionTitle: title
+      }
+    })
+  };
+}
 function systemMessage(text) {
   return { stdout: JSON.stringify({ systemMessage: text }) };
 }
@@ -9970,6 +9981,30 @@ function writeAtomic(file, text) {
   writeFileSync3(partial, text);
   renameSync2(partial, file);
 }
+function appliedFile(env, sessionId) {
+  return join15(namesDir(env), sessionId);
+}
+function readAppliedName(env, sessionId) {
+  return readName(appliedFile(env, sessionId));
+}
+function rememberAppliedName(env, sessionId, title) {
+  mkdirSync8(namesDir(env), { recursive: true });
+  writeAtomic(appliedFile(env, sessionId), title);
+}
+function titleToSet(env, sessionId, wanted, current) {
+  if (wanted === readAppliedName(env, sessionId))
+    return null;
+  rememberAppliedName(env, sessionId, wanted);
+  return wanted === current ? null : wanted;
+}
+function recordedLead(context, sessionId) {
+  try {
+    const repo = context.project.mainCheckout ?? context.project.root;
+    return readLead(context.paths.stateDir, repo, sessionId) !== null;
+  } catch {
+    return false;
+  }
+}
 function namingNote(sessionId, current) {
   const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
   return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
@@ -9981,30 +10016,16 @@ function sessionName(context) {
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return SILENT;
-  const dir = namesDir(env);
-  const wanted = readName(join15(dir, `${sessionId}.name`));
+  if (recordedLead(context, sessionId))
+    return SILENT;
+  const wanted = readName(join15(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") {
-    return {
-      stdout: JSON.stringify({
-        hookSpecificOutput: { hookEventName: event, additionalContext: note }
-      })
-    };
-  }
-  const appliedFile = join15(dir, sessionId);
-  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
-  if (title !== null) {
-    mkdirSync8(dir, { recursive: true });
-    writeAtomic(appliedFile, title);
-    return {
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
-    };
-  }
-  return wanted === null ? {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: note }
-    })
-  } : SILENT;
+  if (event === "SessionStart")
+    return addContext(event, note);
+  const title = wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
+  if (title !== null)
+    return addContextAndTitle(event, null, title);
+  return wanted === null ? addContext(event, note) : SILENT;
 }
 
 // src/hooks/after-merge.ts
@@ -15490,7 +15511,15 @@ function notesLine(lines) {
   const more = lines.length - 1;
   return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
 }
-function leadNotesAnswer(input, event, paths, repo) {
+function leadTitle(input, event, env, sessionId, name) {
+  return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
+}
+function answered(event, note, title) {
+  if (title === null)
+    return note === null ? SILENT : addContext(event, note);
+  return addContextAndTitle(event, note, title);
+}
+function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId))
     return SILENT;
@@ -15502,7 +15531,7 @@ function leadNotesAnswer(input, event, paths, repo) {
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo)
     });
-    return SILENT;
+    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
@@ -15518,8 +15547,7 @@ function leadNotesAnswer(input, event, paths, repo) {
       lines.push(line);
   }
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  const note = notesLine(lines);
-  return note === null ? SILENT : addContext(event, note);
+  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
 }
 
 // src/hooks/main-folder-guard.ts
@@ -17277,9 +17305,9 @@ var crewRoleHook = {
 var leadNotesHook = {
   name: "lead-notes",
   events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (_message, input, event, checkout, context) => leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root),
+  onConfigProblem: (_message, input, event, checkout, context) => leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root, context.env),
   outsideGit: () => SILENT,
-  run: ({ input, event, project, paths }) => leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root)
+  run: ({ input, event, project, paths, env }) => leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env)
 };
 var agentGuardHook = {
   name: "agent-guard",

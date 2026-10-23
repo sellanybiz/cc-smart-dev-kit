@@ -21632,6 +21632,19 @@ function checkRetiredFields(where, raw) {
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
 }
+function readOwnHooks(file) {
+  if (!existsSync34(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync34(file))
     return null;
@@ -21789,6 +21802,15 @@ function locateCheckout(cwd, options = {}) {
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
   };
 }
+function ownHooksOf(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join32(root, ".claude", "cc-smart-dev-kit.json"));
+  if (own !== null)
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return [];
+  return readOwnHooks(join32(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+}
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
   const own = join32(root, ".claude", "cc-smart-dev-kit.json");
@@ -21913,6 +21935,17 @@ function addContext(event, text) {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: { hookEventName: event, additionalContext: text }
+    })
+  };
+}
+function addContextAndTitle(event, text, title) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: event,
+        ...text === null ? {} : { additionalContext: text },
+        sessionTitle: title
+      }
     })
   };
 }
@@ -25218,6 +25251,30 @@ function writeAtomic(file, text) {
   writeFileSync8(partial, text);
   renameSync3(partial, file);
 }
+function appliedFile(env, sessionId) {
+  return join42(namesDir(env), sessionId);
+}
+function readAppliedName(env, sessionId) {
+  return readName(appliedFile(env, sessionId));
+}
+function rememberAppliedName(env, sessionId, title) {
+  mkdirSync17(namesDir(env), { recursive: true });
+  writeAtomic(appliedFile(env, sessionId), title);
+}
+function titleToSet(env, sessionId, wanted, current) {
+  if (wanted === readAppliedName(env, sessionId))
+    return null;
+  rememberAppliedName(env, sessionId, wanted);
+  return wanted === current ? null : wanted;
+}
+function recordedLead(context, sessionId) {
+  try {
+    const repo = context.project.mainCheckout ?? context.project.root;
+    return readLead(context.paths.stateDir, repo, sessionId) !== null;
+  } catch {
+    return false;
+  }
+}
 function recordSessionName(sessionId, raw, env) {
   if (!isSessionId(sessionId))
     throw new Error(`"${sessionId}" is not a session id`);
@@ -25239,30 +25296,16 @@ function sessionName(context) {
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return SILENT;
-  const dir = namesDir(env);
-  const wanted = readName(join42(dir, `${sessionId}.name`));
+  if (recordedLead(context, sessionId))
+    return SILENT;
+  const wanted = readName(join42(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") {
-    return {
-      stdout: JSON.stringify({
-        hookSpecificOutput: { hookEventName: event, additionalContext: note }
-      })
-    };
-  }
-  const appliedFile = join42(dir, sessionId);
-  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
-  if (title !== null) {
-    mkdirSync17(dir, { recursive: true });
-    writeAtomic(appliedFile, title);
-    return {
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
-    };
-  }
-  return wanted === null ? {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: note }
-    })
-  } : SILENT;
+  if (event === "SessionStart")
+    return addContext(event, note);
+  const title = wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
+  if (title !== null)
+    return addContextAndTitle(event, null, title);
+  return wanted === null ? addContext(event, note) : SILENT;
 }
 
 // src/hooks/after-merge.ts
@@ -34311,7 +34354,15 @@ function notesLine(lines) {
   const more = lines.length - 1;
   return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
 }
-function leadNotesAnswer(input, event, paths, repo) {
+function leadTitle(input, event, env, sessionId, name) {
+  return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
+}
+function answered(event, note, title) {
+  if (title === null)
+    return note === null ? SILENT : addContext(event, note);
+  return addContextAndTitle(event, note, title);
+}
+function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId))
     return SILENT;
@@ -34323,7 +34374,7 @@ function leadNotesAnswer(input, event, paths, repo) {
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo)
     });
-    return SILENT;
+    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
@@ -34339,8 +34390,7 @@ function leadNotesAnswer(input, event, paths, repo) {
       lines.push(line);
   }
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  const note = notesLine(lines);
-  return note === null ? SILENT : addContext(event, note);
+  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
 }
 
 // src/hooks/main-folder-guard.ts
@@ -36194,9 +36244,9 @@ var crewRoleHook = {
 var leadNotesHook = {
   name: "lead-notes",
   events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (_message, input, event, checkout, context) => leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root),
+  onConfigProblem: (_message, input, event, checkout, context) => leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root, context.env),
   outsideGit: () => SILENT,
-  run: ({ input, event, project, paths }) => leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root)
+  run: ({ input, event, project, paths, env }) => leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env)
 };
 var agentGuardHook = {
   name: "agent-guard",
@@ -38697,8 +38747,17 @@ async function runCrewLead(args, ctx) {
       });
     } catch {}
   }
-  ctx.print(`lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; to show the name now, type the next line in this session`);
-  ctx.print(`/rename ${name}`);
+  const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;
+  const nameable = isSessionId(session.sessionId);
+  const ownNotes = ownHooksOf(checkout).includes("lead-notes");
+  if (!nameable || ownNotes) {
+    ctx.print(`${head}${ownNotes ? "this project runs its own lead-notes hook, so type the next line if the name does not appear" : "this session's id cannot carry a session name, so type the next line in this session"}`);
+    ctx.print(`/rename ${name}`);
+  } else if (readAppliedName(ctx.env, session.sessionId) === name) {
+    ctx.print(`${head}this session already took that name, and a name given with /rename stays`);
+  } else {
+    ctx.print(`${head}this session takes that name at its next prompt`);
+  }
   return 0;
 }
 
@@ -39752,7 +39811,7 @@ Commands:
   lead [--plan <slug>] [--tag <tag>]
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
-                 that leads; it prints the /rename line that shows the name.
+                 that leads: the session takes that name at its next prompt.
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as
