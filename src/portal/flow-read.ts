@@ -5,19 +5,17 @@
  * file reads: about 200 ms on a warm cache, and 10 s on a cold one on a machine with gigabytes
  * of transcripts (measured, 2026-10-23). Run in the server, that froze every page, every action
  * and the live stream for as long. So the portal never calls it: it runs the CLI's own
- * `report --json` in a child process (`Bun.spawn`, never `spawnSync`) and reads its answer —
- * the same reader, the same cache in `<stateDir>/flow/`, so the page and the command can never
- * disagree.
+ * `report --json` in a child process (`runCliChildText`, the portal's one spawn in
+ * `cli-child.ts`, never `spawnSync`) and reads its answer — the same reader, the same cache in
+ * `<stateDir>/flow/`, so the page and the command can never disagree.
  *
  * Requests that ask the same window at once share one child, and an answer stays good for
  * `FLOW_FRESH_MS`: the sidebar's Needs count, the Work page and the Needs page all ask within
  * a moment of each other.
  */
 
-import { join } from "node:path";
 import type { FlowReport, OpenWait } from "../sessions/flow";
-import { bunConfigArg } from "../setup/bun-config";
-import { commandContext } from "../update/apply";
+import { runCliChildText } from "./cli-child";
 import type { PortalContext } from "./context";
 
 /** How long the child may take: a cold cache on a big machine took 10 s. */
@@ -71,53 +69,24 @@ export async function openWaitsOffLoop(
 }
 
 async function runReport(ctx: PortalContext, hours: number): Promise<FlowRead> {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder) return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        "--no-env-file",
-        bunConfigArg(folder.folder),
-        join(folder.folder, "dist", "cli.js"),
-        "report",
-        "--hours",
-        String(hours),
-        "--json",
-      ],
-      {
-        cwd: context.cwd,
-        // The portal's own paths, whatever its environment says: the child reads the same
-        // folders the server does.
-        env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-        stderr: "pipe",
-        stdin: "ignore",
-        stdout: "pipe",
-        timeout: FLOW_CHILD_TIMEOUT_MS,
-        windowsHide: true,
-      },
-    );
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split("\n").at(-1)?.trim() ?? "";
-      return {
-        error: `the flow report did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`,
-      };
-    }
-    const report = reportOf(output);
-    return report === null
-      ? { error: "the flow report's answer was not one this portal reads" }
-      : { report };
-  } catch (error) {
+  const run = await runCliChildText(ctx, ["report", "--hours", String(hours), "--json"], {
+    timeoutMs: FLOW_CHILD_TIMEOUT_MS,
+  });
+  if (run.kind !== "ran") {
     return {
-      error: `the flow report did not run: ${error instanceof Error ? error.message : String(error)}`,
+      error: run.kind === "folder" ? run.error : `the flow report did not run: ${run.error}`,
     };
   }
+  if (run.exitCode !== 0) {
+    const why = run.errors.trim().split("\n").at(-1)?.trim() ?? "";
+    return {
+      error: `the flow report did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`,
+    };
+  }
+  const report = reportOf(run.output);
+  return report === null
+    ? { error: "the flow report's answer was not one this portal reads" }
+    : { report };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

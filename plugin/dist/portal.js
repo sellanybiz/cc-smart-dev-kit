@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join70 } from "path";
+import { join as join68 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -13502,7 +13502,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname24, join as join69 } from "path";
+import { dirname as dirname24, join as join67 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync48, readFileSync as readFileSync57 } from "fs";
@@ -32327,7 +32327,7 @@ function jobsFingerprint(home) {
 // src/portal/actions.ts
 import { createHash as createHash10 } from "crypto";
 import { existsSync as existsSync54, statSync as statSync18 } from "fs";
-import { isAbsolute as isAbsolute8, join as join67 } from "path";
+import { isAbsolute as isAbsolute8, join as join65 } from "path";
 
 // src/browser/setup.ts
 import { existsSync as existsSync49, mkdirSync as mkdirSync20, readdirSync as readdirSync17, readFileSync as readFileSync58 } from "fs";
@@ -34484,7 +34484,7 @@ function planWindow(ctx) {
 
 // src/portal/api/work.ts
 import { readFileSync as readFileSync62 } from "fs";
-import { join as join65 } from "path";
+import { join as join64 } from "path";
 
 // src/sessions/flow.ts
 var FLOW_DAYS_KEPT = 8;
@@ -34493,8 +34493,132 @@ var CHUNK_BYTES = 4 * 1024 * 1024;
 var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
-// src/portal/flow-read.ts
+// src/portal/cli-child.ts
 import { join as join63 } from "path";
+var CLI_CHILD_TIMEOUT_MS = 180000;
+function cliChildArgv(folder, args) {
+  return [
+    process.execPath,
+    "--no-env-file",
+    bunConfigArg(folder),
+    join63(folder, "dist", "cli.js"),
+    ...args
+  ];
+}
+function cliChildEnv(ctx, context) {
+  const env = {
+    ...context.env,
+    CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
+    HOME: ctx.paths.home
+  };
+  delete env.CC_SMART_DEV_KIT_CREW;
+  return env;
+}
+function spawnCliChild(ctx, args, options) {
+  const folder = ctx.pluginFolder();
+  if ("error" in folder)
+    return { error: folder.error, kind: "folder" };
+  const context = commandContext(ctx.env, ctx.paths.home);
+  try {
+    const child = Bun.spawn(cliChildArgv(folder.folder, args), {
+      cwd: options.cwd ?? context.cwd,
+      env: cliChildEnv(ctx, context),
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS,
+      windowsHide: true
+    });
+    return { child, kind: "started", startedAt: Date.now() };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      kind: "spawn"
+    };
+  }
+}
+function endCliChild(start, timeoutMs, code) {
+  const signal = start.child.signalCode ?? null;
+  if (signal === null)
+    return { error: null, exitCode: code, timedOut: false };
+  if (Date.now() - start.startedAt >= timeoutMs - 5000) {
+    return { error: null, exitCode: null, timedOut: true };
+  }
+  return {
+    error: `the command was ended by a signal (${String(signal)}) before it finished`,
+    exitCode: null,
+    timedOut: false
+  };
+}
+async function readLines(stream, push) {
+  if (stream === undefined || typeof stream === "number")
+    return;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder;
+  let rest = "";
+  for (;; ) {
+    const { done, value } = await reader.read();
+    if (done)
+      break;
+    rest += decoder.decode(value, { stream: true });
+    const parts = rest.split(`
+`);
+    rest = parts.pop() ?? "";
+    for (const line of parts)
+      push(line);
+  }
+  rest += decoder.decode();
+  if (rest !== "")
+    push(rest);
+}
+async function runCliChild(ctx, args, options) {
+  const start = spawnCliChild(ctx, args, options);
+  if (start.kind !== "started") {
+    return {
+      error: start.kind === "spawn" ? `the command did not start: ${start.error}` : start.error,
+      exitCode: null,
+      lines: [],
+      timedOut: false
+    };
+  }
+  const lines = [];
+  const push = (line) => {
+    const trimmed = line.replace(/\r$/, "");
+    if (trimmed.trim() === "")
+      return;
+    lines.push(trimmed);
+    options.onLine?.(trimmed);
+  };
+  try {
+    await Promise.all([readLines(start.child.stdout, push), readLines(start.child.stderr, push)]);
+    const code = await start.child.exited;
+    return { ...endCliChild(start, options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS, code), lines };
+  } catch (error) {
+    return {
+      error: `the command did not start: ${error instanceof Error ? error.message : String(error)}`,
+      exitCode: null,
+      lines,
+      timedOut: false
+    };
+  }
+}
+async function runCliChildText(ctx, args, options = {}) {
+  const start = spawnCliChild(ctx, args, options);
+  if (start.kind !== "started")
+    return start;
+  try {
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(start.child.stdout).text(),
+      new Response(start.child.stderr).text(),
+      start.child.exited
+    ]);
+    return { errors, exitCode, kind: "ran", output };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error), kind: "spawn" };
+  }
+}
+
+// src/portal/flow-read.ts
 var FLOW_CHILD_TIMEOUT_MS = 120000;
 var FLOW_FRESH_MS = 5000;
 var HOUR_MS = 3600000;
@@ -34524,48 +34648,23 @@ async function openWaitsOffLoop(ctx, windowMs) {
   return "error" in read ? read : { open: read.report.open };
 }
 async function runReport(ctx, hours) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder)
-    return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join63(folder.folder, "dist", "cli.js"),
-      "report",
-      "--hours",
-      String(hours),
-      "--json"
-    ], {
-      cwd: context.cwd,
-      env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: FLOW_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-      return {
-        error: `the flow report did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
-      };
-    }
-    const report = reportOf(output);
-    return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
-  } catch (error) {
+  const run = await runCliChildText(ctx, ["report", "--hours", String(hours), "--json"], {
+    timeoutMs: FLOW_CHILD_TIMEOUT_MS
+  });
+  if (run.kind !== "ran") {
     return {
-      error: `the flow report did not run: ${error instanceof Error ? error.message : String(error)}`
+      error: run.kind === "folder" ? run.error : `the flow report did not run: ${run.error}`
     };
   }
+  if (run.exitCode !== 0) {
+    const why = run.errors.trim().split(`
+`).at(-1)?.trim() ?? "";
+    return {
+      error: `the flow report did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`
+    };
+  }
+  const report = reportOf(run.output);
+  return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
 }
 function isObject4(value) {
   return typeof value === "object" && value !== null;
@@ -34732,7 +34831,6 @@ function settingsPageData(deps) {
 }
 
 // src/portal/worktrees-read.ts
-import { join as join64 } from "path";
 var WORKTREES_CHILD_TIMEOUT_MS = 120000;
 var WORKTREES_FRESH_MS = 5000;
 function forgetWorktrees(ctx) {
@@ -34764,46 +34862,24 @@ function readWorktreesOffLoop(ctx, cwd) {
   return read;
 }
 async function runWorktrees(ctx, cwd) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder)
-    return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join64(folder.folder, "dist", "cli.js"),
-      "worktrees",
-      "--json"
-    ], {
-      cwd,
-      env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: WORKTREES_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-      return {
-        error: `the worktrees scan did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
-      };
-    }
-    const answer = worktreesOf(output);
-    return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
-  } catch (error) {
+  const run = await runCliChildText(ctx, ["worktrees", "--json"], {
+    cwd,
+    timeoutMs: WORKTREES_CHILD_TIMEOUT_MS
+  });
+  if (run.kind !== "ran") {
     return {
-      error: `the worktrees scan did not run: ${error instanceof Error ? error.message : String(error)}`
+      error: run.kind === "folder" ? run.error : `the worktrees scan did not run: ${run.error}`
     };
   }
+  if (run.exitCode !== 0) {
+    const why = run.errors.trim().split(`
+`).at(-1)?.trim() ?? "";
+    return {
+      error: `the worktrees scan did not run (exit ${run.exitCode})${why === "" ? "" : `: ${why}`}`
+    };
+  }
+  const answer = worktreesOf(run.output);
+  return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
 }
 function isObject5(value) {
   return typeof value === "object" && value !== null;
@@ -34968,7 +35044,7 @@ async function workAnswer(deps) {
     const { repo } = found;
     const crewSessionIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
     const leadIds = new Set(leadRecords.map((one) => one.sessionId));
-    const others = savedSessions(join65(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
+    const others = savedSessions(join64(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
     const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
     sessions = others.map((session) => ({
@@ -35810,92 +35886,6 @@ async function projectsAnswerFor(deps) {
   return { current, note: list.note, projects: list.projects };
 }
 
-// src/portal/cli-child.ts
-import { join as join66 } from "path";
-var CLI_CHILD_TIMEOUT_MS = 180000;
-async function readLines(stream, push) {
-  if (stream === undefined || typeof stream === "number")
-    return;
-  const reader = stream.getReader();
-  const decoder = new TextDecoder;
-  let rest = "";
-  for (;; ) {
-    const { done, value } = await reader.read();
-    if (done)
-      break;
-    rest += decoder.decode(value, { stream: true });
-    const parts = rest.split(`
-`);
-    rest = parts.pop() ?? "";
-    for (const line of parts)
-      push(line);
-  }
-  rest += decoder.decode();
-  if (rest !== "")
-    push(rest);
-}
-async function runCliChild(ctx, args, options) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder) {
-    return { error: folder.error, exitCode: null, lines: [], timedOut: false };
-  }
-  const context = commandContext(ctx.env, ctx.paths.home);
-  const env = {
-    ...context.env,
-    CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
-    HOME: ctx.paths.home
-  };
-  delete env.CC_SMART_DEV_KIT_CREW;
-  const lines = [];
-  const push = (line) => {
-    const trimmed = line.replace(/\r$/, "");
-    if (trimmed.trim() === "")
-      return;
-    lines.push(trimmed);
-    options.onLine?.(trimmed);
-  };
-  try {
-    const startedAt = Date.now();
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join66(folder.folder, "dist", "cli.js"),
-      ...args
-    ], {
-      cwd: options.cwd ?? context.cwd,
-      env,
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    await Promise.all([readLines(child.stdout, push), readLines(child.stderr, push)]);
-    const code = await child.exited;
-    const signal = child.signalCode ?? null;
-    if (signal === null)
-      return { error: null, exitCode: code, lines, timedOut: false };
-    const limit = options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS;
-    if (Date.now() - startedAt >= limit - 5000) {
-      return { error: null, exitCode: null, lines, timedOut: true };
-    }
-    return {
-      error: `the command was ended by a signal (${String(signal)}) before it finished`,
-      exitCode: null,
-      lines,
-      timedOut: false
-    };
-  } catch (error) {
-    return {
-      error: `the command did not start: ${error instanceof Error ? error.message : String(error)}`,
-      exitCode: null,
-      lines,
-      timedOut: false
-    };
-  }
-}
-
 // src/portal/context.ts
 function healthFetch(ctx) {
   return (url, init) => ctx.fetch(url, init);
@@ -35942,7 +35932,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join67(folder.folder, "dist", "router.js"),
+      bundle: join65(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -38797,7 +38787,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync55, readFileSync as readFileSync65, statSync as statSync19 } from "fs";
-import { extname, join as join68, resolve as resolve11, sep as sep5 } from "path";
+import { extname, join as join66, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -38826,7 +38816,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve11(join68(folder, decoded));
+  const file = resolve11(join66(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
@@ -38848,7 +38838,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync65(join68(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync65(join66(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -38863,7 +38853,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve11(folder);
-  if (!existsSync55(join68(absolute, "index.html")))
+  if (!existsSync55(join66(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -39806,7 +39796,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join69(dirname24(import.meta.path), "portal-ui");
+  return join67(dirname24(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -40110,7 +40100,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join70(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join68(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -40165,16 +40155,16 @@ async function runServer(paths, options) {
       browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join70(folder, "dist", "router.js"),
+        bundle: join68(folder, "dist", "router.js"),
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join70(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join68(folder, "dist")) },
       mcp: realMcpDoctorDeps(),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join70(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join68(folder, "hooks", "hooks.json") }
     };
   };
   const portal = await startPortal(ctx, {
