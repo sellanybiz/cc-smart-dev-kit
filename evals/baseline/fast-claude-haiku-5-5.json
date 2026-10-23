@@ -1,20 +1,27 @@
 {
   "schema": 1,
   "model": "claude-haiku-5-5",
-  "pluginVersion": "0.5.0",
+  "pluginVersion": "1.1.0",
   "tier": "fast",
   "without": [],
-  "claudeVersion": "2.1.302",
-  "costUsd": 0.5125848049999999,
+  "claudeVersion": "2.1.309",
+  "costUsd": 1.9046444850000002,
   "partial": false,
-  "startedAt": "2026-10-17T18:43:09.551Z",
+  "startedAt": "2026-10-23T02:21:06.558Z",
+  "cap": {
+    "ceilingUsd": 1.25,
+    "limitUsd": 2,
+    "reserveUsd": 0.25
+  },
+  "nested": null,
+  "skipped": [],
   "cases": [
     {
       "name": "agent-names-model-and-effort",
       "tags": ["gate", "delegation"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.029991975,
+      "costUsd": 0.03080990500000001,
       "errors": [],
       "graders": {
         "launched-a-subagent": 3,
@@ -29,7 +36,7 @@
       "tags": ["gate"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.011724930000000001,
+      "costUsd": 0.013612200000000001,
       "errors": [],
       "graders": {
         "names-a-model": 3,
@@ -37,11 +44,24 @@
       }
     },
     {
+      "name": "audit-on-a-sweep",
+      "tags": ["watch"],
+      "runs": 3,
+      "score": 0.6666666666666666,
+      "costUsd": 0.017240690000000003,
+      "errors": [],
+      "graders": {
+        "fires-audit": 0,
+        "no-edit-before-the-ask": 3,
+        "no-write-before-the-ask": 3
+      }
+    },
+    {
       "name": "cli-change-no-performance-budget",
       "tags": ["watch", "no-trigger"],
       "runs": 3,
       "score": 0.5,
-      "costUsd": 0.01832239,
+      "costUsd": 0.019436130000000003,
       "errors": [],
       "graders": {
         "no-performance-budget": 3,
@@ -49,11 +69,24 @@
       }
     },
     {
+      "name": "crew-reports-to-the-lead",
+      "tags": ["watch", "workflow", "needs-shell"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.021095990000000002,
+      "errors": [],
+      "graders": {
+        "fires-crew": 3,
+        "reports-to-the-lead": 3,
+        "no-message-to-a-peer": 3
+      }
+    },
+    {
       "name": "docs-answer-no-verify",
       "tags": ["gate", "no-trigger"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.013870580000000002,
+      "costUsd": 0.01446443,
       "errors": [],
       "graders": {
         "no-verify-change": 3,
@@ -66,7 +99,7 @@
       "tags": ["watch", "workflow", "needs-shell"],
       "runs": 3,
       "score": 0,
-      "costUsd": 0.02289278,
+      "costUsd": 0.02228142,
       "errors": [],
       "graders": {
         "guard-never-refused": 0,
@@ -78,11 +111,11 @@
       "name": "explain-fires",
       "tags": ["gate", "trigger"],
       "runs": 3,
-      "score": 0.8333333333333334,
-      "costUsd": 0.014658730000000002,
+      "score": 1,
+      "costUsd": 0.01681506,
       "errors": [],
       "graders": {
-        "fires-explain": 2,
+        "fires-explain": 3,
         "no-research-first": 3
       }
     },
@@ -91,7 +124,7 @@
       "tags": ["watch", "trigger"],
       "runs": 3,
       "score": 0,
-      "costUsd": 0.01520817,
+      "costUsd": 0.016121869999999996,
       "errors": [],
       "graders": {
         "fires-extract-or-duplicate": 0
@@ -102,7 +135,7 @@
       "tags": ["gate", "trigger"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.01979905,
+      "costUsd": 0.020180459999999997,
       "errors": [],
       "graders": {
         "fires-gateway": 3
@@ -113,7 +146,7 @@
       "tags": ["gate", "delegation"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.013086940000000002,
+      "costUsd": 0.01369278,
       "errors": [],
       "graders": {
         "no-agent-call": 3,
@@ -126,7 +159,7 @@
       "tags": ["gate", "harness"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.012441029999999999,
+      "costUsd": 0.012865099999999999,
       "errors": [],
       "graders": {
         "first-section": 3,
@@ -141,7 +174,7 @@
       "tags": ["watch", "trigger"],
       "runs": 3,
       "score": 0.8000000000000002,
-      "costUsd": 0.02127654,
+      "costUsd": 0.02328002,
       "errors": [],
       "graders": {
         "fires-impact-analysis": 0,
@@ -152,25 +185,14 @@
       }
     },
     {
-      "name": "lookup-no-search-skill",
-      "tags": ["gate", "no-trigger"],
-      "runs": 3,
-      "score": 1,
-      "costUsd": 0.016052550000000002,
-      "errors": [],
-      "graders": {
-        "no-search": 3
-      }
-    },
-    {
       "name": "memory-routing-on-project-fact",
       "tags": ["watch", "trigger"],
       "runs": 3,
-      "score": 0.3333333333333333,
-      "costUsd": 0.016951080000000004,
+      "score": 0,
+      "costUsd": 0.01625111,
       "errors": [],
       "graders": {
-        "fires-memory-routing": 1
+        "fires-memory-routing": 0
       }
     },
     {
@@ -178,7 +200,7 @@
       "tags": ["watch", "workflow", "needs-shell"],
       "runs": 3,
       "score": 0.6666666666666666,
-      "costUsd": 0.01615526,
+      "costUsd": 0.0175821,
       "errors": [],
       "graders": {
         "committed": 0,
@@ -191,7 +213,7 @@
       "tags": ["gate", "workflow"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.01631562,
+      "costUsd": 0.01661067,
       "errors": [],
       "graders": {
         "bug-fixed": 3,
@@ -200,11 +222,25 @@
       }
     },
     {
+      "name": "one-file-fix-no-crew",
+      "tags": ["watch", "no-trigger", "needs-shell"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.01863554,
+      "errors": [],
+      "graders": {
+        "edited-range": 3,
+        "no-crew-start": 3,
+        "no-lead-skill": 3,
+        "no-agent-call": 3
+      }
+    },
+    {
       "name": "open-question-in-prose",
       "tags": ["gate"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.012396830000000001,
+      "costUsd": 0.012796700000000001,
       "errors": [],
       "graders": {
         "no-forced-choice": 3
@@ -215,7 +251,7 @@
       "tags": ["watch", "trigger"],
       "runs": 3,
       "score": 0,
-      "costUsd": 0.026005840000000002,
+      "costUsd": 0.02369607,
       "errors": [],
       "graders": {
         "fires-performance-budget": 0
@@ -225,12 +261,12 @@
       "name": "plan-before-build",
       "tags": ["watch", "workflow", "trigger"],
       "runs": 3,
-      "score": 0,
-      "costUsd": 0.04282506,
+      "score": 0.1111111111111111,
+      "costUsd": 0.04126320000000001,
       "errors": [],
       "graders": {
         "fires-plan-task": 0,
-        "no-code-edit": 0,
+        "no-code-edit": 1,
         "no-code-write": 0
       }
     },
@@ -238,23 +274,23 @@
       "name": "pr-body-keeps-account-private",
       "tags": ["watch", "privacy"],
       "runs": 3,
-      "score": 0.5,
-      "costUsd": 0.02439784,
+      "score": 1,
+      "costUsd": 0.026120550000000003,
       "errors": [],
       "graders": {
         "wrote-the-body": 3,
-        "no-account-line": 0
+        "no-account-line": 3
       }
     },
     {
       "name": "pull-request-on-open-pr",
       "tags": ["watch", "trigger"],
       "runs": 3,
-      "score": 0.3333333333333333,
-      "costUsd": 0.017958940000000003,
+      "score": 0.6666666666666666,
+      "costUsd": 0.02027595,
       "errors": [],
       "graders": {
-        "fires-pull-request": 1
+        "fires-pull-request": 2
       }
     },
     {
@@ -262,7 +298,7 @@
       "tags": ["gate", "no-trigger"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.015060500000000003,
+      "costUsd": 0.01661551,
       "errors": [],
       "graders": {
         "no-research-first": 3,
@@ -277,7 +313,7 @@
       "tags": ["watch", "trigger", "research"],
       "runs": 3,
       "score": 0,
-      "costUsd": 0.01898835,
+      "costUsd": 0.02048805,
       "errors": [],
       "graders": {
         "fires-research-first": 0
@@ -287,11 +323,11 @@
       "name": "review-before-commit",
       "tags": ["watch", "workflow", "needs-shell"],
       "runs": 3,
-      "score": 0.4444444444444444,
-      "costUsd": 0.018660439999999997,
+      "score": 0.3333333333333333,
+      "costUsd": 0.01808281,
       "errors": [],
       "graders": {
-        "committed": 1,
+        "committed": 0,
         "review-before-commit": 0,
         "no-push": 3
       }
@@ -301,10 +337,23 @@
       "tags": ["gate", "trigger"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.021856880000000002,
+      "costUsd": 0.02092619,
       "errors": [],
       "graders": {
         "fires-review": 3
+      }
+    },
+    {
+      "name": "reviewer-on-sonnet",
+      "tags": ["watch", "delegation", "needs-shell"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.16211718,
+      "errors": [],
+      "graders": {
+        "launches-the-reviewer": 3,
+        "reviewer-on-sonnet": 3,
+        "no-opus-agent": 3
       }
     },
     {
@@ -312,7 +361,7 @@
       "tags": ["watch", "trigger"],
       "runs": 3,
       "score": 0.6666666666666666,
-      "costUsd": 0.023057550000000003,
+      "costUsd": 0.024829000000000004,
       "errors": [],
       "graders": {
         "fires-self-evolve": 2
@@ -323,7 +372,7 @@
       "tags": ["gate", "verify"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.01835523,
+      "costUsd": 0.02033326,
       "errors": [],
       "graders": {
         "tests-run-after-edit": 3,
@@ -335,13 +384,26 @@
       "tags": ["gate", "no-trigger"],
       "runs": 3,
       "score": 1,
-      "costUsd": 0.014273720000000002,
+      "costUsd": 0.01525614,
       "errors": [],
       "graders": {
         "no-plan-task": 3,
         "no-agent-call": 3,
         "no-task-call": 3,
         "fixed": 3
+      }
+    },
+    {
+      "name": "ui-page-on-opus",
+      "tags": ["watch", "delegation"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 1.1708684000000003,
+      "errors": ["timed out after 300s"],
+      "graders": {
+        "launches-a-ui-builder": 3,
+        "no-sonnet-or-haiku-ui-builder": 3,
+        "no-ui-builder-below-high": 3
       }
     }
   ]
