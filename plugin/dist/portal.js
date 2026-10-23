@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join72 } from "path";
+import { join as join71 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -19,7 +19,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.0.1",
+  version: "1.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -13329,7 +13329,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname25, join as join71 } from "path";
+import { dirname as dirname24, join as join70 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync50, readFileSync as readFileSync58 } from "fs";
@@ -32911,8 +32911,8 @@ function jobsFingerprint(home) {
 
 // src/portal/actions.ts
 import { createHash as createHash10, randomBytes } from "crypto";
-import { existsSync as existsSync58, statSync as statSync22 } from "fs";
-import { isAbsolute as isAbsolute8, join as join69 } from "path";
+import { existsSync as existsSync57, statSync as statSync20 } from "fs";
+import { isAbsolute as isAbsolute8, join as join68 } from "path";
 
 // src/browser/setup.ts
 import { existsSync as existsSync51, mkdirSync as mkdirSync20, readdirSync as readdirSync19, readFileSync as readFileSync59 } from "fs";
@@ -34096,8 +34096,8 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync57, mkdirSync as mkdirSync24, readFileSync as readFileSync66 } from "fs";
-import { basename as basename13, dirname as dirname24, relative as relative7 } from "path";
+import { existsSync as existsSync56, mkdirSync as mkdirSync23, readFileSync as readFileSync64 } from "fs";
+import { basename as basename12, dirname as dirname23, relative as relative7 } from "path";
 
 // src/portal/facts.ts
 import { createHash as createHash8 } from "crypto";
@@ -35214,1054 +35214,116 @@ function planWindow(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync65 } from "fs";
-import { join as join68 } from "path";
-
-// src/sessions/flow.ts
-import { closeSync as closeSync8, mkdirSync as mkdirSync23, openSync as openSync8, readFileSync as readFileSync64, readSync as readSync5, statSync as statSync21 } from "fs";
-import { dirname as dirname23, join as join67 } from "path";
-
-// src/cli/usage.ts
-import { existsSync as existsSync56, readdirSync as readdirSync21, readFileSync as readFileSync63, statSync as statSync20 } from "fs";
-import { basename as basename12, join as join66, resolve as resolve12 } from "path";
-function entries(path) {
-  try {
-    const all = readdirSync21(path, { withFileTypes: true });
-    return {
-      dirs: all.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
-      files: all.filter((entry) => entry.isFile()).map((entry) => entry.name).sort()
-    };
-  } catch {
-    return { dirs: [], files: [] };
-  }
-}
-function matches(project, folder, cwd) {
-  if (project === null)
-    return true;
-  if (folder === project)
-    return true;
-  if (cwd === null)
-    return false;
-  return cwd === resolve12(project) || basename12(cwd) === project;
-}
+import { readFileSync as readFileSync63 } from "fs";
+import { join as join67 } from "path";
 
 // src/sessions/flow.ts
 var FLOW_DAYS_KEPT = 8;
-var CACHE_KEEP_DAYS = 30;
 var OPEN_WAIT_MAX_AGE_MS = 24 * 3600000;
-var GUARD_ASKS_FILE = "guard-asks.jsonl";
-var HOUR_MS = 3600000;
-var DAY_MS = 86400000;
-var CACHE_VERSION = 2;
 var CHUNK_BYTES = 4 * 1024 * 1024;
-var NO_ASKER = "Claude Code";
 var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
-var MERGE_COMMAND = /(^|[\s;&|()])gh\s+pr\s+merge\b/;
-var RULE_LABEL = /\[([A-Z][A-Za-z0-9'&.-]*(?: [A-Za-z0-9'&.-]+){0,4})\]/;
-function isJsonObject15(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function stringField2(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-function numberField2(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-function timeOf(record) {
-  const stamp = stringField2(record.timestamp);
-  if (stamp === null)
-    return null;
-  const ms = Date.parse(stamp);
-  return Number.isFinite(ms) ? ms : null;
-}
-function hourKey(ms) {
-  return String(Math.floor(ms / HOUR_MS));
-}
-function emptyBucket2() {
-  return {
-    askUserQuestion: 0,
-    autoMode: {},
-    backgroundByOrigin: {},
-    backgroundCount: 0,
-    backgroundMs: 0,
-    byAsker: {},
-    compactByTrigger: {},
-    compactPostTokens: 0,
-    compactPreTokens: 0,
-    compactions: 0,
-    durationMs: 0,
-    exitPlanMode: 0,
-    idleCount: 0,
-    idleMs: 0,
-    launches: 0,
-    launchesParallel: 0,
-    merges: 0,
-    mergesByAsker: {},
-    mergesByReason: {},
-    promptLongestMs: 0,
-    promptMs: 0,
-    prompts: 0,
-    replies: 0,
-    repliesParallel: 0
-  };
-}
-function emptySession() {
-  return {
-    cwd: null,
-    firstAt: null,
-    hours: {},
-    lastAt: null,
-    seen: { ask: false, compact: false, permission: false, turn: false, turnMs: false },
-    skipped: 0,
-    transcripts: {}
-  };
-}
-function emptyTranscript() {
-  return {
-    asks: {},
-    endAt: null,
-    inode: 0,
-    mtimeMs: 0,
-    offset: 0,
-    pending: {},
-    replyId: null,
-    replyLaunches: 0,
-    size: 0,
-    startAt: null,
-    turnEnd: null
-  };
-}
-function readCounts(record) {
-  const out = {};
-  for (const [key, value] of Object.entries(record)) {
-    const count = numberField2(value);
-    if (count !== null)
-      out[key] = count;
+
+// src/portal/flow-read.ts
+import { join as join66 } from "path";
+var FLOW_CHILD_TIMEOUT_MS = 120000;
+var FLOW_FRESH_MS = 5000;
+var HOUR_MS = 3600000;
+var kept = new WeakMap;
+function readFlowOffLoop(ctx, windowMs) {
+  const hours = windowMs / HOUR_MS;
+  let byWindow = kept.get(ctx);
+  if (byWindow === undefined) {
+    byWindow = new Map;
+    kept.set(ctx, byWindow);
   }
-  return out;
+  const now = ctx.now();
+  const last = byWindow.get(hours);
+  if (last !== undefined && now - last.at < FLOW_FRESH_MS)
+    return last.read;
+  const read = runReport(ctx, hours);
+  const entry = { at: now, read };
+  byWindow.set(hours, entry);
+  read.then((answer) => {
+    if ("error" in answer && byWindow.get(hours) === entry)
+      byWindow.delete(hours);
+  });
+  return read;
 }
-function readAskers(record) {
-  const out = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (!isJsonObject15(value))
-      continue;
-    const count = numberField2(value.count);
-    const ms = numberField2(value.ms);
-    if (count === null || ms === null)
-      continue;
-    out[key] = { count, ms };
-  }
-  return out;
+async function openWaitsOffLoop(ctx, windowMs) {
+  const read = await readFlowOffLoop(ctx, windowMs);
+  return "error" in read ? read : { open: read.report.open };
 }
-function readBucket(bucket) {
-  const out = emptyBucket2();
-  for (const key of Object.keys(out)) {
-    if (typeof out[key] === "number") {
-      const value = numberField2(bucket[key]);
-      if (value !== null)
-        out[key] = value;
-    }
-  }
-  for (const [key, record] of Object.entries(bucket)) {
-    if (!isJsonObject15(record))
-      continue;
-    if (key === "byAsker")
-      out.byAsker = readAskers(record);
-    if (key === "autoMode")
-      out.autoMode = readCounts(record);
-    if (key === "backgroundByOrigin")
-      out.backgroundByOrigin = readCounts(record);
-    if (key === "compactByTrigger")
-      out.compactByTrigger = readCounts(record);
-    if (key === "mergesByAsker")
-      out.mergesByAsker = readCounts(record);
-    if (key === "mergesByReason")
-      out.mergesByReason = readCounts(record);
-  }
-  return out;
-}
-function parseCache(text, project) {
-  const fresh = { project, sessions: {}, version: CACHE_VERSION };
-  let parsed;
+async function runReport(ctx, hours) {
+  const folder = ctx.pluginFolder();
+  if ("error" in folder)
+    return { error: folder.error };
+  const context = commandContext(ctx.env, ctx.paths.home);
   try {
-    parsed = JSON.parse(text);
-  } catch {
-    return fresh;
-  }
-  if (!isJsonObject15(parsed) || parsed.version !== CACHE_VERSION)
-    return fresh;
-  if (!isJsonObject15(parsed.sessions))
-    return fresh;
-  for (const [id, value] of Object.entries(parsed.sessions)) {
-    if (!isJsonObject15(value) || !isJsonObject15(value.hours) || !isJsonObject15(value.transcripts)) {
-      continue;
-    }
-    if (!isJsonObject15(value.seen))
-      continue;
-    const session = emptySession();
-    session.cwd = stringField2(value.cwd);
-    session.firstAt = numberField2(value.firstAt);
-    session.lastAt = numberField2(value.lastAt);
-    session.skipped = numberField2(value.skipped) ?? 0;
-    session.seen = {
-      ask: value.seen.ask === true,
-      compact: value.seen.compact === true,
-      permission: value.seen.permission === true,
-      turn: value.seen.turn === true,
-      turnMs: value.seen.turnMs === true
-    };
-    for (const [hour, bucket] of Object.entries(value.hours)) {
-      if (isJsonObject15(bucket))
-        session.hours[hour] = readBucket(bucket);
-    }
-    for (const [name, transcript] of Object.entries(value.transcripts)) {
-      if (!isJsonObject15(transcript))
-        continue;
-      const entry = emptyTranscript();
-      entry.offset = numberField2(transcript.offset) ?? 0;
-      entry.inode = numberField2(transcript.inode) ?? 0;
-      entry.size = numberField2(transcript.size) ?? 0;
-      entry.mtimeMs = numberField2(transcript.mtimeMs) ?? 0;
-      entry.startAt = numberField2(transcript.startAt);
-      entry.endAt = numberField2(transcript.endAt);
-      entry.replyId = stringField2(transcript.replyId);
-      entry.replyLaunches = numberField2(transcript.replyLaunches) ?? 0;
-      entry.turnEnd = isJsonObject15(transcript.turnEnd) ? {
-        at: numberField2(transcript.turnEnd.at) ?? 0,
-        background: numberField2(transcript.turnEnd.background) ?? 0
-      } : null;
-      if (isJsonObject15(transcript.pending)) {
-        for (const [toolId, tool] of Object.entries(transcript.pending)) {
-          if (!isJsonObject15(tool) || numberField2(tool.at) === null)
-            continue;
-          entry.pending[toolId] = {
-            at: numberField2(tool.at) ?? 0,
-            merge: tool.merge === true,
-            name: stringField2(tool.name) ?? "a tool"
-          };
-        }
-      }
-      if (isJsonObject15(transcript.asks)) {
-        for (const [toolId, ask] of Object.entries(transcript.asks)) {
-          if (!isJsonObject15(ask) || numberField2(ask.at) === null)
-            continue;
-          entry.asks[toolId] = {
-            at: numberField2(ask.at) ?? 0,
-            hook: stringField2(ask.hook) ?? NO_ASKER,
-            kind: stringField2(ask.kind)
-          };
-        }
-      }
-      session.transcripts[name] = entry;
-    }
-    fresh.sessions[id] = session;
-  }
-  return fresh;
-}
-function addTo(into, key, count = 1) {
-  into[key] = (into[key] ?? 0) + count;
-}
-function hookNameFromCommand(command) {
-  if (command === null)
-    return null;
-  const words = command.replace(/["']/g, "").trim().split(/\s+/);
-  for (let index = words.length - 1;index >= 0; index -= 1) {
-    const word = words[index];
-    if (word === undefined || word.startsWith("-"))
-      continue;
-    const base = word.split(/[\\/]/).pop() ?? "";
-    const name = base.replace(/\.(c?js|mjs|ts)$/, "");
-    if (name !== "" && name !== "bun" && name !== "cc-smart-dev-kit-bun.sh")
-      return name;
-  }
-  return null;
-}
-function readAskLog(file) {
-  const asks = new Map;
-  let skipped = 0;
-  let text;
-  try {
-    text = readFileSync64(file, "utf8");
-  } catch {
-    return { asks, skipped };
-  }
-  for (const line of text.split(`
-`)) {
-    if (line.trim() === "")
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      skipped += 1;
-      continue;
-    }
-    if (!isJsonObject15(entry)) {
-      skipped += 1;
-      continue;
-    }
-    const id = stringField2(entry.tool_use_id);
-    const hook = stringField2(entry.hook);
-    if (id === null || hook === null) {
-      skipped += 1;
-      continue;
-    }
-    let at = numberField2(entry.at);
-    if (at === null && typeof entry.at === "string") {
-      const parsed = Date.parse(entry.at);
-      if (Number.isFinite(parsed))
-        at = parsed;
-    }
-    asks.set(id, { at, hook, kind: stringField2(entry.kind) });
-  }
-  return { asks, skipped };
-}
-function blockLabel(result, record) {
-  const decision = record.permissionDecision;
-  const reasonType = isJsonObject15(decision) ? stringField2(decision.reasonType) : null;
-  const content = result.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject15(block) && block.type === "text").map((block) => isJsonObject15(block) ? String(block.text ?? "") : "").join(" ") : "";
-  const label = RULE_LABEL.exec(text);
-  if (label?.[1] !== undefined)
-    return label[1];
-  return reasonType ?? "config";
-}
-function place(record, session, transcript, context) {
-  const ts = timeOf(record);
-  if (ts === null) {
-    session.skipped += 1;
-    return null;
-  }
-  const cwd = stringField2(record.cwd);
-  if (cwd !== null && session.cwd === null)
-    session.cwd = cwd;
-  if (ts >= context.untilMs)
-    return ts;
-  session.lastAt = Math.max(session.lastAt ?? ts, ts);
-  session.firstAt = Math.min(session.firstAt ?? ts, ts);
-  transcript.startAt = Math.min(transcript.startAt ?? ts, ts);
-  transcript.endAt = Math.max(transcript.endAt ?? ts, ts);
-  return ts;
-}
-function apply(record, session, transcript, subagent, context) {
-  const ts = place(record, session, transcript, context);
-  if (ts === null)
-    return;
-  if (ts < context.nowMs - FLOW_DAYS_KEPT * DAY_MS || ts >= context.untilMs)
-    return;
-  const bucket = session.hours[hourKey(ts)] ?? emptyBucket2();
-  session.hours[hourKey(ts)] = bucket;
-  const type = record.type;
-  if (type === "assistant")
-    applyAssistant(record, session, transcript, bucket, subagent, ts);
-  else if (type === "user")
-    applyUser(record, session, transcript, bucket, context, ts);
-  else if (type === "system")
-    applySystem(record, session, transcript, bucket, ts);
-  else if (type === "attachment")
-    applyAttachment(record, session, transcript, ts);
-}
-function applyAssistant(record, session, transcript, bucket, subagent, ts) {
-  if (!subagent && record.isSidechain === true)
-    return;
-  const message = record.message;
-  if (!isJsonObject15(message)) {
-    session.skipped += 1;
-    return;
-  }
-  const content = message.content;
-  if (!Array.isArray(content)) {
-    session.skipped += 1;
-    return;
-  }
-  const id = stringField2(message.id) ?? stringField2(record.uuid);
-  let launches = 0;
-  for (const block of content) {
-    if (!isJsonObject15(block) || block.type !== "tool_use")
-      continue;
-    const name = stringField2(block.name);
-    if (name === null)
-      continue;
-    if (name === "AskUserQuestion")
-      bucket.askUserQuestion += 1;
-    else if (name === "ExitPlanMode")
-      bucket.exitPlanMode += 1;
-    if (LAUNCH_TOOLS.has(name))
-      launches += 1;
-    const toolId = stringField2(block.id);
-    if (toolId !== null) {
-      const input = isJsonObject15(block.input) ? block.input : {};
-      const command = stringField2(input.command);
-      transcript.pending[toolId] = {
-        at: ts,
-        merge: name === "Bash" && command !== null && MERGE_COMMAND.test(command),
-        name
+    const child = Bun.spawn([
+      process.execPath,
+      "--no-env-file",
+      bunConfigArg(folder.folder),
+      join66(folder.folder, "dist", "cli.js"),
+      "report",
+      "--hours",
+      String(hours),
+      "--json"
+    ], {
+      cwd: context.cwd,
+      env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: FLOW_CHILD_TIMEOUT_MS,
+      windowsHide: true
+    });
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    if (exitCode !== 0) {
+      const why = errors.trim().split(`
+`).at(-1)?.trim() ?? "";
+      return {
+        error: `the flow report did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
       };
     }
-  }
-  if (launches === 0) {
-    if (id !== null && transcript.replyId !== id) {
-      transcript.replyId = id;
-      transcript.replyLaunches = 0;
-      bucket.replies += 1;
-    }
-    return;
-  }
-  if (id === null) {
-    session.skipped += 1;
-    bucket.launches += launches;
-    return;
-  }
-  if (transcript.replyId !== id) {
-    transcript.replyId = id;
-    transcript.replyLaunches = 0;
-    bucket.replies += 1;
-  }
-  for (let index = 0;index < launches; index += 1) {
-    bucket.launches += 1;
-    transcript.replyLaunches += 1;
-    if (transcript.replyLaunches === 2) {
-      bucket.launchesParallel += 2;
-      bucket.repliesParallel += 1;
-    } else if (transcript.replyLaunches > 2) {
-      bucket.launchesParallel += 1;
-    }
-  }
-}
-function closeTurn(transcript, bucket, ts, origin) {
-  const end = transcript.turnEnd;
-  if (end === null)
-    return;
-  const wait = Math.max(0, ts - end.at);
-  if (end.background > 0) {
-    bucket.backgroundCount += 1;
-    bucket.backgroundMs += wait;
-    addTo(bucket.backgroundByOrigin, origin);
-  } else if (origin === "human") {
-    bucket.idleCount += 1;
-    bucket.idleMs += wait;
-  }
-  transcript.turnEnd = null;
-}
-function applyUser(record, session, transcript, bucket, context, ts) {
-  const origin = stringField2(record.turnOrigin);
-  if (origin !== null)
-    closeTurn(transcript, bucket, ts, origin);
-  const decision = record.permissionDecision;
-  const source = isJsonObject15(decision) ? stringField2(decision.source) : null;
-  if (isJsonObject15(decision))
-    session.seen.permission = true;
-  const content = isJsonObject15(record.message) ? record.message.content : null;
-  const blocks = Array.isArray(content) ? content : [];
-  if (source?.startsWith("user")) {
-    for (const block of blocks) {
-      if (!isJsonObject15(block) || block.type !== "tool_result")
-        continue;
-      const toolId = stringField2(block.tool_use_id);
-      if (toolId === null) {
-        session.skipped += 1;
-        continue;
-      }
-      const pending = transcript.pending[toolId];
-      if (pending === undefined) {
-        session.skipped += 1;
-        continue;
-      }
-      const waiting = Math.max(0, ts - pending.at);
-      const logged = context.askLog.get(toolId);
-      const seen = transcript.asks[toolId];
-      const asker = logged?.hook ?? seen?.hook ?? NO_ASKER;
-      const kind = logged?.kind ?? seen?.kind ?? null;
-      bucket.prompts += 1;
-      bucket.promptMs += waiting;
-      bucket.promptLongestMs = Math.max(bucket.promptLongestMs, waiting);
-      const askerCount = bucket.byAsker[asker] ?? { count: 0, ms: 0 };
-      bucket.byAsker[asker] = askerCount;
-      askerCount.count += 1;
-      askerCount.ms += waiting;
-      if (pending.merge) {
-        bucket.merges += 1;
-        addTo(bucket.mergesByAsker, asker);
-        addTo(bucket.mergesByReason, kind ?? "not recorded");
-      }
-    }
-  }
-  if (isJsonObject15(decision) && decision.decision === "reject" && source === "config") {
-    const result = blocks.find((block) => isJsonObject15(block) && block.type === "tool_result");
-    if (isJsonObject15(result))
-      addTo(bucket.autoMode, blockLabel(result, record));
-  }
-  for (const block of blocks) {
-    if (!isJsonObject15(block) || block.type !== "tool_result")
-      continue;
-    const toolId = stringField2(block.tool_use_id);
-    if (toolId === null)
-      continue;
-    delete transcript.pending[toolId];
-    delete transcript.asks[toolId];
-  }
-}
-function applySystem(record, session, transcript, bucket, ts) {
-  if (record.subtype === "turn_duration") {
-    session.seen.turn = true;
-    transcript.turnEnd = {
-      at: ts,
-      background: numberField2(record.pendingBackgroundAgentCount) ?? 0
+    const report = reportOf(output);
+    return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
+  } catch (error) {
+    return {
+      error: `the flow report did not run: ${error instanceof Error ? error.message : String(error)}`
     };
-    const duration = numberField2(record.durationMs);
-    if (duration === null) {
-      session.skipped += 1;
-    } else {
-      session.seen.turnMs = true;
-      bucket.durationMs += duration;
-    }
-    return;
-  }
-  if (record.subtype === "compact_boundary") {
-    session.seen.compact = true;
-    const meta = isJsonObject15(record.compactMetadata) ? record.compactMetadata : {};
-    bucket.compactions += 1;
-    addTo(bucket.compactByTrigger, stringField2(meta.trigger) ?? "unknown");
-    bucket.compactPreTokens += numberField2(meta.preTokens) ?? 0;
-    bucket.compactPostTokens += numberField2(meta.postTokens) ?? 0;
   }
 }
-function applyAttachment(record, session, transcript, ts) {
-  const attachment = record.attachment;
-  if (!isJsonObject15(attachment) || attachment.type !== "hook_success")
-    return;
-  const stdout = stringField2(attachment.stdout);
-  if (stdout === null || !stdout.includes('"permissionDecision":"ask"'))
-    return;
-  const toolId = stringField2(attachment.toolUseID);
-  if (toolId === null) {
-    session.skipped += 1;
-    return;
-  }
-  const hook = hookNameFromCommand(stringField2(attachment.command)) ?? stringField2(attachment.hookName) ?? "a hook";
-  transcript.asks[toolId] = { at: ts, hook, kind: null };
-  session.seen.ask = true;
+function isObject4(value) {
+  return typeof value === "object" && value !== null;
 }
-function neededLine(line) {
-  if (line.length < 10)
-    return false;
-  if (line.includes('"type":"api-request"'))
-    return false;
-  if (line.includes('"type":"attachment"')) {
-    return line.includes("permissionDecision");
-  }
-  return line.includes('"type":"assistant"') || line.includes('"type":"user"') || line.includes('"type":"system"');
+function isOpenWait(value) {
+  return isObject4(value) && typeof value.session === "string" && typeof value.project === "string" && typeof value.at === "number" && typeof value.asker === "string" && typeof value.tool === "string";
 }
-function resetSession(session) {
-  session.hours = {};
-  session.skipped = 0;
-  session.seen = { ask: false, compact: false, permission: false, turn: false, turnMs: false };
-  for (const transcript of Object.values(session.transcripts)) {
-    transcript.offset = 0;
-    transcript.inode = 0;
-    transcript.size = -1;
-    transcript.mtimeMs = -1;
-    transcript.pending = {};
-    transcript.asks = {};
-    transcript.replyId = null;
-    transcript.replyLaunches = 0;
-    transcript.turnEnd = null;
-    transcript.startAt = null;
-    transcript.endAt = null;
-  }
+function isFlowHour(value) {
+  return isObject4(value) && typeof value.t === "number" && typeof value.launches === "number" && typeof value.promptMs === "number";
 }
-function replaced(file, transcript) {
-  if (transcript.inode === 0)
-    return false;
-  let stat;
+function reportOf(output) {
+  let value;
   try {
-    stat = statSync21(file);
+    value = JSON.parse(output);
   } catch {
-    return false;
+    return null;
   }
-  return Number(stat.ino) !== transcript.inode || stat.size < transcript.offset;
-}
-function readTranscriptFile(file, session, transcript, subagent, context) {
-  let stat;
-  try {
-    stat = statSync21(file);
-  } catch {
-    return false;
-  }
-  const unchanged = Number(stat.ino) === transcript.inode && stat.size === transcript.size && stat.mtimeMs === transcript.mtimeMs;
-  if (unchanged)
-    return false;
-  let fd;
-  try {
-    fd = openSync8(file, "r");
-  } catch {
-    return false;
-  }
-  let readAnything = false;
-  try {
-    let absolute = transcript.offset;
-    let carry = Buffer.alloc(0);
-    const chunk = Buffer.alloc(CHUNK_BYTES);
-    for (;; ) {
-      let read;
-      try {
-        read = readSync5(fd, chunk, 0, CHUNK_BYTES, absolute + carry.length);
-      } catch {
-        break;
-      }
-      if (read <= 0)
-        break;
-      readAnything = true;
-      const data = carry.length === 0 ? Buffer.from(chunk.subarray(0, read)) : Buffer.concat([carry, chunk.subarray(0, read)]);
-      const whole = data.lastIndexOf(10) + 1;
-      const text = data.subarray(0, whole).toString("utf8");
-      for (const line of text.split(`
-`)) {
-        if (line.trim() === "" || !neededLine(line))
-          continue;
-        let record;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          session.skipped += 1;
-          continue;
-        }
-        if (!isJsonObject15(record)) {
-          session.skipped += 1;
-          continue;
-        }
-        apply(record, session, transcript, subagent, context);
-      }
-      absolute += whole;
-      carry = Buffer.from(data.subarray(whole));
-      if (read < CHUNK_BYTES)
-        break;
-    }
-    transcript.offset = absolute;
-    transcript.inode = Number(stat.ino);
-    transcript.size = stat.size;
-    transcript.mtimeMs = stat.mtimeMs;
-  } finally {
-    closeSync8(fd);
-  }
-  return readAnything;
-}
-function prune(session, nowMs) {
-  const cutoff = nowMs - FLOW_DAYS_KEPT * DAY_MS;
-  let changed = false;
-  for (const hour of Object.keys(session.hours)) {
-    if (Number(hour) * HOUR_MS < cutoff) {
-      delete session.hours[hour];
-      changed = true;
-    }
-  }
-  for (const transcript of Object.values(session.transcripts)) {
-    for (const [id, tool] of Object.entries(transcript.pending)) {
-      if (tool.at < cutoff) {
-        delete transcript.pending[id];
-        changed = true;
-      }
-    }
-    for (const [id, ask] of Object.entries(transcript.asks)) {
-      if (ask.at < cutoff) {
-        delete transcript.asks[id];
-        changed = true;
-      }
-    }
-  }
-  return changed;
-}
-function bucketsIn(session, context) {
-  const out = [];
-  for (const [hour, bucket] of Object.entries(session.hours)) {
-    const start = Number(hour) * HOUR_MS;
-    if (start + HOUR_MS <= context.sinceMs || start >= context.untilMs)
-      continue;
-    out.push(bucket);
-  }
-  return out;
-}
-function hoursOf(sessions, context) {
-  const first = Math.floor(context.sinceMs / HOUR_MS);
-  const last = Math.ceil(context.untilMs / HOUR_MS);
-  const hours = [];
-  for (let hour = first;hour < last; hour += 1) {
-    hours.push({ launches: 0, promptMs: 0, prompts: 0, replies: 0, t: hour * HOUR_MS });
-  }
-  for (const session of sessions) {
-    for (const [key, bucket] of Object.entries(session.hours)) {
-      const into = hours[Number(key) - first];
-      if (into === undefined)
-        continue;
-      into.launches += bucket.launches;
-      into.promptMs += bucket.promptMs;
-      into.prompts += bucket.prompts;
-      into.replies += bucket.replies;
-    }
-  }
-  return hours;
-}
-function maxOverlap(spans) {
-  const edges = [];
-  for (const span of spans) {
-    if (span.end < span.start)
-      continue;
-    edges.push({ at: span.start, delta: 1 });
-    edges.push({ at: span.end, delta: -1 });
-  }
-  edges.sort((a, b) => a.at - b.at || a.delta - b.delta);
-  let at = 0;
-  let most = 0;
-  for (const edge of edges) {
-    at += edge.delta;
-    most = Math.max(most, at);
-  }
-  return most;
-}
-function addBucket(into, from) {
-  into.askUserQuestion += from.askUserQuestion;
-  into.backgroundCount += from.backgroundCount;
-  into.backgroundMs += from.backgroundMs;
-  into.compactPostTokens += from.compactPostTokens;
-  into.compactPreTokens += from.compactPreTokens;
-  into.compactions += from.compactions;
-  into.durationMs += from.durationMs;
-  into.exitPlanMode += from.exitPlanMode;
-  into.idleCount += from.idleCount;
-  into.idleMs += from.idleMs;
-  into.launches += from.launches;
-  into.launchesParallel += from.launchesParallel;
-  into.merges += from.merges;
-  into.promptLongestMs = Math.max(into.promptLongestMs, from.promptLongestMs);
-  into.promptMs += from.promptMs;
-  into.prompts += from.prompts;
-  into.replies += from.replies;
-  into.repliesParallel += from.repliesParallel;
-  for (const [key, count] of Object.entries(from.autoMode))
-    addTo(into.autoMode, key, count);
-  for (const [key, count] of Object.entries(from.backgroundByOrigin)) {
-    addTo(into.backgroundByOrigin, key, count);
-  }
-  for (const [key, count] of Object.entries(from.compactByTrigger)) {
-    addTo(into.compactByTrigger, key, count);
-  }
-  for (const [key, count] of Object.entries(from.mergesByAsker)) {
-    addTo(into.mergesByAsker, key, count);
-  }
-  for (const [key, count] of Object.entries(from.mergesByReason)) {
-    addTo(into.mergesByReason, key, count);
-  }
-  for (const [key, asker] of Object.entries(from.byAsker)) {
-    const target = into.byAsker[key] ?? { count: 0, ms: 0 };
-    into.byAsker[key] = target;
-    target.count += asker.count;
-    target.ms += asker.ms;
-  }
-}
-function sessionFlow(project, id, session, context) {
-  const total = emptyBucket2();
-  for (const bucket of bucketsIn(session, context))
-    addBucket(total, bucket);
-  const spans = [];
-  for (const [name, transcript] of Object.entries(session.transcripts)) {
-    if (!name.includes("/subagents/"))
-      continue;
-    if (transcript.startAt === null || transcript.endAt === null)
-      continue;
-    const start = Math.max(transcript.startAt, context.sinceMs);
-    const end = Math.min(transcript.endAt, context.untilMs);
-    if (end < start)
-      continue;
-    spans.push({ end, start });
-  }
-  const tokens = total.compactPreTokens + total.compactPostTokens;
-  return {
-    activeMs: session.seen.turnMs ? total.durationMs : null,
-    agents: {
-      launches: total.launches,
-      launchesParallel: total.launchesParallel,
-      mostAtOnce: maxOverlap(spans),
-      parallelRatio: total.launches === 0 ? 0 : total.launchesParallel / total.launches,
-      replies: total.replies,
-      repliesParallel: total.repliesParallel
-    },
-    autoModeBlocks: total.autoMode,
-    background: session.seen.turn ? {
-      byOrigin: total.backgroundByOrigin,
-      count: total.backgroundCount,
-      totalMs: total.backgroundMs
-    } : null,
-    compactions: {
-      byTrigger: total.compactByTrigger,
-      count: total.compactions,
-      tokens: total.compactions === 0 || tokens === 0 ? null : { post: total.compactPostTokens, pre: total.compactPreTokens }
-    },
-    cwd: session.cwd,
-    firstAt: session.firstAt,
-    idle: session.seen.turn ? { count: total.idleCount, totalMs: total.idleMs } : null,
-    lastAt: session.lastAt,
-    merges: {
-      byAsker: total.mergesByAsker,
-      byReason: total.mergesByReason,
-      count: total.merges
-    },
-    project,
-    prompts: session.seen.permission ? {
-      byAsker: total.byAsker,
-      count: total.prompts,
-      longestMs: total.promptLongestMs,
-      totalMs: total.promptMs
-    } : null,
-    questions: {
-      askUserQuestion: total.askUserQuestion,
-      exitPlanMode: total.exitPlanMode
-    },
-    session: id,
-    skipped: session.skipped
-  };
-}
-function totalsOf(sessions) {
-  const totals = {
-    activeMs: null,
-    agents: {
-      launches: 0,
-      launchesParallel: 0,
-      mostAtOnce: 0,
-      parallelRatio: 0,
-      replies: 0,
-      repliesParallel: 0
-    },
-    autoModeBlocks: {},
-    background: null,
-    compactions: { byTrigger: {}, count: 0, tokens: null },
-    idle: null,
-    merges: { byAsker: {}, byReason: {}, count: 0 },
-    prompts: null,
-    questions: { askUserQuestion: 0, exitPlanMode: 0 },
-    sessions: sessions.length,
-    skipped: 0
-  };
-  let pre = 0;
-  let post = 0;
-  let tokensSeen = false;
-  for (const session of sessions) {
-    totals.skipped += session.skipped;
-    if (session.activeMs !== null)
-      totals.activeMs = (totals.activeMs ?? 0) + session.activeMs;
-    totals.agents.launches += session.agents.launches;
-    totals.agents.launchesParallel += session.agents.launchesParallel;
-    totals.agents.replies += session.agents.replies;
-    totals.agents.repliesParallel += session.agents.repliesParallel;
-    totals.agents.mostAtOnce = Math.max(totals.agents.mostAtOnce, session.agents.mostAtOnce);
-    totals.questions.askUserQuestion += session.questions.askUserQuestion;
-    totals.questions.exitPlanMode += session.questions.exitPlanMode;
-    for (const [key, count] of Object.entries(session.autoModeBlocks)) {
-      addTo(totals.autoModeBlocks, key, count);
-    }
-    totals.merges.count += session.merges.count;
-    for (const [key, count] of Object.entries(session.merges.byAsker)) {
-      addTo(totals.merges.byAsker, key, count);
-    }
-    for (const [key, count] of Object.entries(session.merges.byReason)) {
-      addTo(totals.merges.byReason, key, count);
-    }
-    totals.compactions.count += session.compactions.count;
-    for (const [key, count] of Object.entries(session.compactions.byTrigger)) {
-      addTo(totals.compactions.byTrigger, key, count);
-    }
-    if (session.compactions.tokens !== null) {
-      tokensSeen = true;
-      pre += session.compactions.tokens.pre;
-      post += session.compactions.tokens.post;
-    }
-    if (session.prompts !== null) {
-      totals.prompts ??= { byAsker: {}, count: 0, longestMs: 0, totalMs: 0 };
-      totals.prompts.count += session.prompts.count;
-      totals.prompts.totalMs += session.prompts.totalMs;
-      totals.prompts.longestMs = Math.max(totals.prompts.longestMs, session.prompts.longestMs);
-      for (const [key, asker] of Object.entries(session.prompts.byAsker)) {
-        const into = totals.prompts.byAsker[key] ?? { count: 0, ms: 0 };
-        totals.prompts.byAsker[key] = into;
-        into.count += asker.count;
-        into.ms += asker.ms;
-      }
-    }
-    if (session.background !== null) {
-      totals.background ??= { byOrigin: {}, count: 0, totalMs: 0 };
-      totals.background.count += session.background.count;
-      totals.background.totalMs += session.background.totalMs;
-      for (const [key, count] of Object.entries(session.background.byOrigin)) {
-        addTo(totals.background.byOrigin, key, count);
-      }
-    }
-    if (session.idle !== null) {
-      totals.idle ??= { count: 0, totalMs: 0 };
-      totals.idle.count += session.idle.count;
-      totals.idle.totalMs += session.idle.totalMs;
-    }
-  }
-  totals.compactions.tokens = totals.compactions.count === 0 || !tokensSeen ? null : { post, pre };
-  totals.agents.parallelRatio = totals.agents.launches === 0 ? 0 : totals.agents.launchesParallel / totals.agents.launches;
-  return totals;
-}
-function sessionMatches(wanted, id) {
-  if (wanted === null)
-    return true;
-  if (id === wanted)
-    return true;
-  return wanted.length >= 4 && id.startsWith(wanted);
-}
-function openWaitsOf(flow, session, context) {
-  const out = [];
-  const cutoff = context.nowMs - OPEN_WAIT_MAX_AGE_MS;
-  for (const transcript of Object.values(session.transcripts)) {
-    for (const [id, tool] of Object.entries(transcript.pending)) {
-      if (tool.at < cutoff)
-        continue;
-      const logged = context.askLog.get(id);
-      const seen = transcript.asks[id];
-      const question = QUESTION_TOOLS.has(tool.name);
-      if (logged === undefined && seen === undefined && !question)
-        continue;
-      out.push({
-        asker: logged?.hook ?? seen?.hook ?? NO_ASKER,
-        at: logged?.at ?? tool.at,
-        cwd: flow.cwd,
-        kind: logged?.kind ?? seen?.kind ?? (question ? "question" : null),
-        project: flow.project,
-        session: flow.session,
-        tool: tool.name
-      });
-    }
-  }
-  return out;
-}
-function writeCache(file, cache) {
-  try {
-    mkdirSync23(dirname23(file), { recursive: true, mode: 448 });
-    atomicWrite(file, `${JSON.stringify(cache)}
-`, 384);
-  } catch {}
-}
-function missingMeasures(sessions) {
-  if (sessions.length === 0)
-    return [];
-  const missing = [];
-  if (!sessions.some((session) => session.seen.turnMs)) {
-    missing.push("active time: no turn durations were recorded by this version");
-  }
-  if (!sessions.some((session) => session.seen.turn)) {
-    missing.push("background waits and idle time: no turn durations were recorded");
-  }
-  if (!sessions.some((session) => session.seen.permission)) {
-    missing.push("prompts: no permission decisions were recorded by this version");
-  }
-  if (!sessions.some((session) => session.seen.ask)) {
-    missing.push("which hook asked: no hook asks were recorded; every prompt is attributed to Claude Code");
-  }
-  return missing;
-}
-function readFlow(paths, options) {
-  const nowMs = options.nowMs ?? Date.now();
-  const logged = readAskLog(join67(paths.stateDir, GUARD_ASKS_FILE));
-  const context = {
-    askLog: logged.asks,
-    nowMs,
-    sinceMs: options.sinceMs,
-    untilMs: nowMs
-  };
-  const sessions = [];
-  const open = [];
-  const seenSessions = [];
-  const projectsDir = join67(paths.claudeConfigDir, "projects");
-  for (const project of entries(projectsDir).dirs) {
-    const folder = join67(projectsDir, project);
-    const cacheFile = join67(paths.stateDir, "flow", `${project}.json`);
-    let cache = { project, sessions: {}, version: CACHE_VERSION };
-    try {
-      cache = parseCache(readFileSync64(cacheFile, "utf8"), project);
-    } catch {}
-    let dirty = false;
-    const listed = entries(folder);
-    const ids = new Set([
-      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
-      ...listed.dirs
-    ]);
-    for (const id of [...ids].sort()) {
-      if (!sessionMatches(options.session, id))
-        continue;
-      const session = cache.sessions[id] ?? emptySession();
-      cache.sessions[id] = session;
-      const own = join67(folder, `${id}.jsonl`);
-      const entry = session.transcripts[`${id}.jsonl`] ?? emptyTranscript();
-      session.transcripts[`${id}.jsonl`] = entry;
-      const subagents = join67(folder, id, "subagents");
-      const files = [
-        { path: own, subagent: false, transcript: entry }
-      ];
-      for (const name of entries(subagents).files.filter((file) => file.endsWith(".jsonl"))) {
-        const key = `${id}/subagents/${name}`;
-        const transcript = session.transcripts[key] ?? emptyTranscript();
-        session.transcripts[key] = transcript;
-        files.push({ path: join67(subagents, name), subagent: true, transcript });
-      }
-      if (files.some((file) => replaced(file.path, file.transcript)))
-        resetSession(session);
-      for (const file of files) {
-        if (readTranscriptFile(file.path, session, file.transcript, file.subagent, context)) {
-          dirty = true;
-        }
-      }
-    }
-    if (pruneAll(cache, nowMs))
-      dirty = true;
-    if (dirty)
-      writeCache(cacheFile, cache);
-    for (const [id, session] of Object.entries(cache.sessions)) {
-      if (!sessionMatches(options.session, id))
-        continue;
-      if (!matches(options.project, project, session.cwd))
-        continue;
-      const flow = sessionFlow(project, id, session, context);
-      open.push(...openWaitsOf(flow, session, context));
-      const last = session.lastAt;
-      if (last === null || last < options.sinceMs || last >= nowMs)
-        continue;
-      if (bucketsIn(session, context).length === 0)
-        continue;
-      sessions.push(flow);
-      seenSessions.push(session);
-    }
-  }
-  sessions.sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || a.session.localeCompare(b.session));
-  open.sort((a, b) => b.at - a.at || a.session.localeCompare(b.session));
-  return {
-    hours: hoursOf(seenSessions, context),
-    missing: missingMeasures(seenSessions),
-    open,
-    sessions,
-    sinceMs: options.sinceMs,
-    skipped: { askLog: logged.skipped, records: sessions.reduce((sum, s) => sum + s.skipped, 0) },
-    totals: totalsOf(sessions),
-    untilMs: nowMs
-  };
-}
-function openWaits(paths, options) {
-  return readFlow(paths, options).open;
-}
-function pruneAll(cache, nowMs) {
-  let changed = false;
-  for (const [id, session] of Object.entries(cache.sessions)) {
-    if (session.lastAt !== null && session.lastAt < nowMs - CACHE_KEEP_DAYS * DAY_MS) {
-      delete cache.sessions[id];
-      changed = true;
-      continue;
-    }
-    if (prune(session, nowMs))
-      changed = true;
-  }
-  return changed;
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { hours, open, sessions, sinceMs, untilMs } = value;
+  if (typeof sinceMs !== "number" || typeof untilMs !== "number")
+    return null;
+  if (!Array.isArray(sessions) || !Array.isArray(open) || !Array.isArray(hours))
+    return null;
+  if (!open.every(isOpenWait) || !hours.every(isFlowHour))
+    return null;
+  return value;
 }
 
 // src/portal/page-data.ts
@@ -36463,10 +35525,11 @@ function crewSummary(record, events, nowMs) {
     worktree: record.worktree
   };
 }
-function workAnswer(deps) {
+async function workAnswer(deps) {
   const found = repoOf(deps);
-  if ("note" in found)
-    return { crew: [], lead: null, note: found.note, repo: null, sessions: [] };
+  if ("note" in found) {
+    return { crew: [], lead: null, note: found.note, repo: null, sessions: [], waitsError: null };
+  }
   const { repo } = found;
   const events = readCrewEvents(deps.action.portal.paths.stateDir, repo).events;
   const records = listCrew(deps.action.portal.paths.stateDir, repo).records;
@@ -36487,13 +35550,9 @@ function workAnswer(deps) {
   const crewIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
   const leadIds = new Set(leads.map((one) => one.sessionId));
   const now = deps.action.portal.now();
-  const others = savedSessions(join68(deps.action.portal.paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id));
-  const waiting = new Set(others.some((session) => !session.endedCleanly) ? openWaits(deps.action.portal.paths, {
-    nowMs: now,
-    project: null,
-    session: null,
-    sinceMs: now - OPEN_WAIT_MAX_AGE_MS
-  }).map((wait) => wait.session) : []);
+  const others = savedSessions(join67(deps.action.portal.paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id));
+  const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
+  const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
   const sessions = others.map((session) => ({
     branch: session.branch,
     folder: session.folder,
@@ -36503,7 +35562,14 @@ function workAnswer(deps) {
     name: session.name,
     state: sessionStateOf(session, waiting, now)
   }));
-  return { crew, lead, note: null, repo, sessions };
+  return {
+    crew,
+    lead,
+    note: null,
+    repo,
+    sessions,
+    waitsError: "error" in waits ? waits.error : null
+  };
 }
 function mergeVerdictOf(verdict) {
   switch (verdict.kind) {
@@ -36551,7 +35617,7 @@ async function crewAnswerFor(deps, ref) {
   }));
   let brief = null;
   try {
-    brief = readFileSync65(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
+    brief = readFileSync63(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
     byFile: [],
@@ -36590,7 +35656,7 @@ async function crewAnswerFor(deps, ref) {
     events,
     memory: memoryOf(record, allEvents, deps.action.portal.now()),
     mergeCheck,
-    report: reportOf(record.reportPath),
+    report: reportOf2(record.reportPath),
     reviews
   };
 }
@@ -36607,7 +35673,7 @@ function memoryOf(record, events, nowMs) {
   }
   return kept;
 }
-function reportOf(file) {
+function reportOf2(file) {
   if (file === null)
     return null;
   try {
@@ -36688,12 +35754,8 @@ async function needsAnswer(deps) {
       recommended: question.recommended
     });
   }
-  const permissions = openWaits(paths, {
-    nowMs: now,
-    project: null,
-    session: null,
-    sinceMs: now - OPEN_WAIT_MAX_AGE_MS
-  }).map((wait) => permissionWaitOf(wait, records));
+  const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
+  const permissions = "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
@@ -36710,13 +35772,14 @@ async function needsAnswer(deps) {
       ])
     },
     permissions,
+    permissionsError: "error" in waits ? waits.error : null,
     update
   };
 }
 async function breakersOf2(deps, now) {
   let text;
   try {
-    text = readFileSync65(deps.action.portal.paths.gatewayStateFile, "utf8");
+    text = readFileSync63(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -36761,7 +35824,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync65(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync63(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -36938,17 +36001,13 @@ function worktreesAnswer(deps) {
     };
   }
 }
-function flowAnswer(deps, range) {
-  const now = deps.action.portal.now();
+async function flowAnswer(deps, range) {
   const wanted = HISTORY_RANGE_MS[range];
   const kept = FLOW_DAYS_KEPT * 86400000;
-  const window = Math.min(wanted, kept);
-  const report = readFlow(deps.action.portal.paths, {
-    nowMs: now,
-    project: null,
-    session: null,
-    sinceMs: now - window
-  });
+  const read = await readFlowOffLoop(deps.action.portal, Math.min(wanted, kept));
+  if ("error" in read)
+    return read;
+  const { report } = read;
   return {
     from: report.sinceMs,
     note: wanted > kept ? `the flow report keeps ${FLOW_DAYS_KEPT} days, so this answer covers ${FLOW_DAYS_KEPT} days, not ${range}` : null,
@@ -37055,7 +36114,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync66(paths.portalProjectsFile, "utf8");
+    text = readFileSync64(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -37074,7 +36133,7 @@ function readAddedProjects(paths) {
 }
 function writeAddedProjects(paths, roots) {
   const file = paths.portalProjectsFile;
-  mkdirSync24(dirname24(file), { mode: 448, recursive: true });
+  mkdirSync23(dirname23(file), { mode: 448, recursive: true });
   const value = { roots, version: ADDED_VERSION };
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
@@ -37138,7 +36197,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf2(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync57(files.config);
+  const set = existsSync56(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -37148,7 +36207,7 @@ async function summaryOf2(found, world, currentRoot) {
     current: currentRoot !== null && samePath3(found.root, currentRoot),
     id: projectId(found.root),
     lastUsed: found.lastWrite > 0 ? new Date(found.lastWrite).toISOString() : null,
-    name: basename13(found.root),
+    name: basename12(found.root),
     root: found.root,
     set,
     source: found.source,
@@ -37453,7 +36512,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join69(folder.folder, "dist", "router.js"),
+      bundle: join68(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -38034,7 +37093,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync58(folder) && statSync22(folder).isDirectory();
+    isFolder = existsSync57(folder) && statSync20(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -38476,125 +37535,110 @@ function guardCursorOf(value) {
   const n = Number(found[2]);
   return Number.isSafeInteger(at) && Number.isSafeInteger(n) ? { at, n } : "bad";
 }
+var ok = (body) => ({ body, status: 200 });
+var badRange = () => ({
+  body: { error: `range must be one of ${Object.keys(HISTORY_RANGE_MS).join(", ")}` },
+  status: 400
+});
+var API_READS = {
+  "/api/overview": async (deps) => ok(await overviewAnswer(deps)),
+  "/api/slots": async (deps) => ok(await slotsAnswer(deps)),
+  "/api/health": async (deps) => ok(await healthAnswer2(deps)),
+  "/api/machine": async (deps) => ok(await machineAnswer(deps)),
+  "/api/settings": (deps) => ok(settingsAnswer(deps)),
+  "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
+  "/api/work": async (deps) => ok(await workAnswer(deps)),
+  "/api/needs": async (deps) => ok(await needsAnswer(deps)),
+  "/api/worktrees": (deps) => ok(worktreesAnswer(deps)),
+  "/api/update": (deps) => ok(updateAnswer(deps)),
+  "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
+  "/api/facts": async (deps) => ok(await deps.facts()),
+  "/api/history/keys": (deps, query) => {
+    const range = rangeOf(query.get("range"));
+    if (range === null)
+      return badRange();
+    try {
+      return ok(historyKeys(deps.action.portal.paths.historyDbFile, {
+        now: deps.action.portal.now(),
+        range
+      }));
+    } catch {
+      return { body: { error: "the request history could not be read" }, status: 500 };
+    }
+  },
+  "/api/flow": async (deps, query) => {
+    const range = rangeOf(query.get("range"));
+    if (range === null)
+      return badRange();
+    const answer = await flowAnswer(deps, range);
+    return "error" in answer ? { body: answer, status: 500 } : ok(answer);
+  },
+  "/api/history": (deps, query) => {
+    const range = rangeOf(query.get("range"));
+    const by = query.get("by") ?? "target";
+    const status = query.get("status");
+    if (range === null || !HISTORY_BY2.has(by) || status !== null && status !== "error") {
+      return {
+        body: {
+          error: `history takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, by=target|slot|model|session, slot, target, model, session and status=error`
+        },
+        status: 400
+      };
+    }
+    try {
+      return ok(historyAnswer(deps, range, by, historyFilters(query)));
+    } catch {
+      return { body: { error: "the request history could not be read" }, status: 500 };
+    }
+  },
+  "/api/requests": (deps, query) => {
+    const status = query.get("status");
+    const cursor = cursorOf(query.get("cursor"));
+    if (status !== null && status !== "error" || cursor === "bad") {
+      return {
+        body: {
+          error: "requests takes cursor=<the id the page before ended at>, limit=1..200, slot, target, model, session and status=error"
+        },
+        status: 400
+      };
+    }
+    try {
+      return ok(requestsAnswer(deps, {
+        filters: historyFilters(query),
+        limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
+        ...cursor === null ? {} : { cursor }
+      }));
+    } catch {
+      return { body: { error: "the request history could not be read" }, status: 500 };
+    }
+  },
+  "/api/guard-asks": (deps, query) => {
+    const range = rangeOf(query.get("range"));
+    const cursor = guardCursorOf(query.get("cursor"));
+    if (range === null || cursor === "bad") {
+      return {
+        body: {
+          error: `guard-asks takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, cursor=<at>.<n>, limit, hook, session, tool and q`
+        },
+        status: 400
+      };
+    }
+    return ok(guardAsksAnswer(deps, {
+      cursor,
+      hook: wordOf(query.get("hook")),
+      limit: limitOf(query.get("limit"), GUARD_ASKS_DEFAULT),
+      q: wordOf(query.get("q")),
+      range,
+      session: wordOf(query.get("session")),
+      tool: wordOf(query.get("tool"))
+    }));
+  }
+};
 async function answerApi(deps, url) {
   const path = url.pathname;
-  const query = url.searchParams;
-  const ok = (body) => ({ body, status: 200 });
-  switch (path) {
-    case "/api/overview":
-      return ok(await overviewAnswer(deps));
-    case "/api/slots":
-      return ok(await slotsAnswer(deps));
-    case "/api/health":
-      return ok(await healthAnswer2(deps));
-    case "/api/machine":
-      return ok(await machineAnswer(deps));
-    case "/api/settings":
-      return ok(settingsAnswer(deps));
-    case "/api/projects":
-      return ok(await projectsAnswer(deps));
-    case "/api/work":
-      return ok(workAnswer(deps));
-    case "/api/needs":
-      return ok(await needsAnswer(deps));
-    case "/api/worktrees":
-      return ok(worktreesAnswer(deps));
-    case "/api/update":
-      return ok(updateAnswer(deps));
-    case "/api/jobs":
-      return ok(await jobsAnswerFor(deps));
-    case "/api/facts":
-      return ok(await deps.facts());
-    case "/api/history/keys": {
-      const range = rangeOf(query.get("range"));
-      if (range === null) {
-        return {
-          body: { error: `range must be one of ${Object.keys(HISTORY_RANGE_MS).join(", ")}` },
-          status: 400
-        };
-      }
-      try {
-        return ok(historyKeys(deps.action.portal.paths.historyDbFile, {
-          now: deps.action.portal.now(),
-          range
-        }));
-      } catch {
-        return { body: { error: "the request history could not be read" }, status: 500 };
-      }
-    }
-    case "/api/flow": {
-      const range = rangeOf(query.get("range"));
-      if (range === null) {
-        return {
-          body: { error: `range must be one of ${Object.keys(HISTORY_RANGE_MS).join(", ")}` },
-          status: 400
-        };
-      }
-      return ok(flowAnswer(deps, range));
-    }
-    case "/api/history": {
-      const range = rangeOf(query.get("range"));
-      const by = query.get("by") ?? "target";
-      const status = query.get("status");
-      if (range === null || !HISTORY_BY2.has(by) || status !== null && status !== "error") {
-        return {
-          body: {
-            error: `history takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, by=target|slot|model|session, slot, target, model, session and status=error`
-          },
-          status: 400
-        };
-      }
-      try {
-        return ok(historyAnswer(deps, range, by, historyFilters(query)));
-      } catch {
-        return { body: { error: "the request history could not be read" }, status: 500 };
-      }
-    }
-    case "/api/requests": {
-      const status = query.get("status");
-      const cursor = cursorOf(query.get("cursor"));
-      if (status !== null && status !== "error" || cursor === "bad") {
-        return {
-          body: {
-            error: "requests takes cursor=<the id the page before ended at>, limit=1..200, slot, target, model, session and status=error"
-          },
-          status: 400
-        };
-      }
-      try {
-        return ok(requestsAnswer(deps, {
-          filters: historyFilters(query),
-          limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
-          ...cursor === null ? {} : { cursor }
-        }));
-      } catch {
-        return { body: { error: "the request history could not be read" }, status: 500 };
-      }
-    }
-    case "/api/guard-asks": {
-      const range = rangeOf(query.get("range"));
-      const cursor = guardCursorOf(query.get("cursor"));
-      if (range === null || cursor === "bad") {
-        return {
-          body: {
-            error: `guard-asks takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, cursor=<at>.<n>, limit, hook, session, tool and q`
-          },
-          status: 400
-        };
-      }
-      return ok(guardAsksAnswer(deps, {
-        cursor,
-        hook: wordOf(query.get("hook")),
-        limit: limitOf(query.get("limit"), GUARD_ASKS_DEFAULT),
-        q: wordOf(query.get("q")),
-        range,
-        session: wordOf(query.get("session")),
-        tool: wordOf(query.get("tool"))
-      }));
-    }
-    default:
-      break;
-  }
+  const read = Object.hasOwn(API_READS, path) ? API_READS[path] : undefined;
+  if (read !== undefined)
+    return await read(deps, url.searchParams);
   if (path.startsWith("/api/projects/")) {
     let id;
     try {
@@ -39947,7 +38991,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync67 } from "fs";
+import { readFileSync as readFileSync65 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -39985,7 +39029,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync67(file, "utf8");
+      return readFileSync65(file, "utf8");
     } catch {
       return null;
     }
@@ -40053,7 +39097,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync67(file);
+      bytes = readFileSync65(file);
     } catch {
       return;
     }
@@ -40127,8 +39171,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync59, readFileSync as readFileSync68, statSync as statSync23 } from "fs";
-import { extname, join as join70, resolve as resolve13, sep as sep5 } from "path";
+import { existsSync as existsSync58, readFileSync as readFileSync66, statSync as statSync21 } from "fs";
+import { extname, join as join69, resolve as resolve12, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -40157,11 +39201,11 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve13(join70(folder, decoded));
+  const file = resolve12(join69(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
-    return statSync23(file).isFile() ? file : null;
+    return statSync21(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -40179,7 +39223,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync68(join70(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync66(join69(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -40193,8 +39237,8 @@ function readCsp(folder) {
 function readExport(folder) {
   if (folder === null)
     return null;
-  const absolute = resolve13(folder);
-  if (!existsSync59(join70(absolute, "index.html")))
+  const absolute = resolve12(folder);
+  if (!existsSync58(join69(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -40226,7 +39270,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync68(file);
+        const bytes = readFileSync66(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -40241,7 +39285,7 @@ function exportServer(source) {
       if (!pathname.startsWith("/_next/static/"))
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
-      const build = resolve13(source.folder, "_next", "static");
+      const build = resolve12(source.folder, "_next", "static");
       return file?.startsWith(`${build}${sep5}`) === true ? file : null;
     }
   };
@@ -41137,7 +40181,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join71(dirname25(import.meta.path), "portal-ui");
+  return join70(dirname24(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -41442,7 +40486,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join72(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join71(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -41497,16 +40541,16 @@ async function runServer(paths, options) {
       browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join72(folder, "dist", "router.js"),
+        bundle: join71(folder, "dist", "router.js"),
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join72(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join71(folder, "dist")) },
       mcp: realMcpDoctorDeps(),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join72(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join71(folder, "hooks", "hooks.json") }
     };
   };
   const portal = await startPortal(ctx, {
