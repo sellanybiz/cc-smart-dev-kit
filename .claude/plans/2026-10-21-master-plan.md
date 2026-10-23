@@ -479,6 +479,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **Owner, before a 4-hour absence:** (1) C1 merges into `release-1.1.0` once its checks pass and the eval subset a nested run can do (`--without-needs-shell`) shows no case worse, so C5b can start; the owner reads core.md and runs the full `bun run evals fast` before the PR merges into `main`, and a dislike is one revert commit. (2) When C5b is merged and the full check is green, the lead pushes `release-1.1.0` and opens the PR into `main`; the merge waits for the owner's yes.
 
+- 2026-10-23: **Owner ask: claude-mem from the portal.** Point claude-mem at the OmniRoute gateway, change its model, add its API key, set its fallback. **PM1** (inside 1.1.0, after PF1; brief `briefs/pm1.md`; kind `ui`): a claude-mem card on the Machine page with its state and the source of each value; the route and model from the live list, the key in a masked field saved as a secret through `src/setup/`, claude-mem's own quota fallback from the same list; every write asks first, is owned and undone by `restore`, and `setup` leaves the person's values afterwards. The rule of 2026-10-17 (no model of the plugin's own) stands: the portal writes only what the person picks. C5b now waits for PM1 too.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below. Then C1's new `plugin/instructions/core.md` (its report lists every rule it moved or shortened) and run `bun run evals fast` in a normal terminal on `release-1.1.0` (no `--save-baseline`): no case may score below today's baseline.
