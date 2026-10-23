@@ -1,6 +1,6 @@
 /**
  * The lead's notes hook (`lead-notes.ts`): one line about what changed among the lead's crew
- * sessions since its last turn, said once.
+ * sessions since its last turn, said once, and the one-line crew rule at a session start (D61).
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -29,6 +29,9 @@ import { leadNotesHook } from "./specs";
 const CREW_ID = "W2-x-1a2b3c";
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
+/** The D61 start note, written out: the lead skill's "Your crew builds" in one line. */
+const START_NOTE =
+  "You lead: your crew sessions build the work — your context is re-read every turn, so every file you read or write costs on every later turn.";
 
 /** A crew record as `crew start` writes one, in `repo`. */
 function newCrew(repo: string): NewCrew {
@@ -374,6 +377,71 @@ describe("the lead's name (LD1)", () => {
         },
         world.env,
       ),
+      // The start note, and no `sessionTitle` beside it: `addContext` is the exact answer.
+    ).toEqual(addContext("SessionStart", START_NOTE));
+  });
+});
+
+describe("D61: a lead's start note, and never a prompt", () => {
+  /** A session start, as Claude Code gives it. */
+  function start(repo: string, source: string) {
+    return { hook_event_name: "SessionStart", session_id: LEAD_SESSION, cwd: repo, source };
+  }
+
+  test("a start, a resume, a clear and a compaction each carry it", async () => {
+    const world = await leadWorld();
+    for (const source of ["startup", "resume", "clear", "compact"]) {
+      expect(await runHook(leadNotesHook, start(world.repo, source), world.env)).toEqual(
+        addContext("SessionStart", START_NOTE),
+      );
+    }
+  });
+
+  test("a prompt never carries it: words at a start only", async () => {
+    const world = await leadWorld();
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a start's news comes after it, in one answer", async () => {
+    const world = await leadWorld();
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(await runHook(leadNotesHook, start(world.repo, "resume"), world.env)).toEqual(
+      addContext("SessionStart", `${START_NOTE}\n${stepLine("tests-green")}`),
+    );
+  });
+
+  test("the first turn in a lead, which seeds the cursor, still carries it", async () => {
+    const world = await leadWorld({ cursor: false });
+    expect(await runHook(leadNotesHook, start(world.repo, "startup"), world.env)).toEqual(
+      addContext("SessionStart", START_NOTE),
+    );
+    expect(readNotesState(world.stateDir, world.repo, LEAD_SESSION)).toEqual({
+      offset: statSync(crewEventsFile(world.stateDir, world.repo)).size,
+    });
+  });
+
+  test("an ordinary session hears nothing", async () => {
+    const { repo } = makeClone();
+    const env = hookEnv();
+    expect(await runHook(leadNotesHook, start(repo, "startup"), env)).toEqual({});
+  });
+
+  test("a crew session hears nothing: it is not the lead", async () => {
+    const world = await leadWorld();
+    // The store really holds a crew session for that id (`sessionId` is null on the world's own
+    // record): a crew session is a crew record, never a lead one, so the note is not for it.
+    const crewSession = "0a1b2c3d-0000-4000-8000-000000000000";
+    await createCrew(
+      world.stateDir,
+      { ...newCrew(world.repo), id: "W3-x-9f8e7d", sessionId: crewSession },
+      T0,
+    );
+    expect(
+      await runHook(
+        leadNotesHook,
+        { ...start(world.repo, "startup"), session_id: crewSession },
+        world.env,
+      ),
     ).toEqual({});
   });
 });
@@ -482,11 +550,14 @@ describe("D23: a lead with no to-do list is reminded, never blocked", () => {
       cwd: world.repo,
       source: "resume",
     };
-    expect(await runHook(leadNotesHook, start, world.env)).toEqual({});
+    // The D61 start note, and never the reminder: `addContext` is the exact answer.
+    expect(await runHook(leadNotesHook, start, world.env)).toEqual(
+      addContext("SessionStart", START_NOTE),
+    );
     // News at a start is still said, without it.
     await step(world.stateDir, world.repo, "tests-green");
     expect(await runHook(leadNotesHook, start, world.env)).toEqual(
-      addContext("SessionStart", stepLine("tests-green")),
+      addContext("SessionStart", `${START_NOTE}\n${stepLine("tests-green")}`),
     );
   });
 

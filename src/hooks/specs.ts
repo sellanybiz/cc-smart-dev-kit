@@ -22,7 +22,7 @@
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the first edit held until the task list exists, the report block, the pause at a limit (`crew-role.ts`) |
- * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once, and its task-list reminder at each prompt (`lead-notes.ts`) |
+ * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once, its task-list reminder at each prompt, and the crew rule at a session start (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
@@ -447,8 +447,10 @@ export const crewRoleHook: HookSpec = {
  * changed among its crew sessions since its last turn — the store's events from a per-lead cursor,
  * rendered by the watch's own `eventLine`, said once. **Machine-wide**: it is silent unless the
  * input's `session_id` is a lead recorded in this repository, and it reads no project file. At a
- * prompt it also adds one reminder line while the lead's own task folder holds no task file (D23);
- * never a block. A crash is one line on stderr and exit 0: a note never stops a lead's turn.
+ * SessionStart — a start, a resume, a clear, a compaction — it adds one line first: the lead's
+ * crew sessions build the work (D61). At a prompt it also adds one reminder line while the lead's
+ * own task folder holds no task file (D23); never a block. A crash is one line on stderr and
+ * exit 0: a note never stops a lead's turn.
  */
 export const leadNotesHook: HookSpec = {
   name: "lead-notes",

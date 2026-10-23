@@ -26,6 +26,13 @@ you open it.
 - **The kit's builder and rules-maintainer agents get the task tools**, and one line each to
   keep a list for a multi-step brief. The read-only reviewer, auditor and ui-verifier stay as
   they are.
+- **A lead sends the building to its crew.** The lead skill gains "Your crew builds": the code,
+  the tests, research across many files and long debugging go to a crew session, and the lead
+  keeps the plan, the briefs, the starts, the questions, the merges, the plan file and the
+  person. The `lead-notes` hook adds the same rule in one line when a lead's context is built
+  again — a start, a resume, a clear, a compaction — and never at a prompt or on an edit. Words
+  only (D61): the lead's context is re-read on the premium model every turn, so every file it
+  reads or writes costs on every later turn.
 
 **What to run:** nothing. The hooks come with the plugin update. A session that is already
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
