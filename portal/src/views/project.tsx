@@ -12,6 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { ActionResult } from "@/api/client";
 import { useResource } from "@/api/hooks";
+import { PortalRequestError } from "@/api/http";
 import { PROJECT_REFRESH } from "@/api/refresh";
 import type {
   ProjectBranchRow,
@@ -537,14 +538,23 @@ export function ProjectView() {
   const project = useResource(
     (client) =>
       id === null
-        ? Promise.reject(new Error("No project is named in the address: open one from Settings."))
+        ? Promise.reject(
+            new PortalRequestError(
+              "No project is named in the address: open one from Settings.",
+              404,
+            ),
+          )
         : client.project(id),
     `${ready}|${id ?? ""}`,
     PROJECT_REFRESH,
   );
   if (!ready) return <LoadingState label="the project" />;
   return (
-    <ResourceView resource={project} label="the project">
+    <ResourceView
+      resource={project}
+      label="the project"
+      back={{ href: "/settings", label: "Open Settings" }}
+    >
       {(data) => <ProjectPage data={data} setupAsked={setupAsked} refresh={project.refresh} />}
     </ResourceView>
   );

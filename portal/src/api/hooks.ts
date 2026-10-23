@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GatewayNotSetUpError, type PortalClient, portalClient } from "./client";
+import { PortalRequestError } from "./http";
 import type { LiveMessage } from "./stream";
 import type { Connection } from "./types";
 import type { LiveEventName } from "./wire";
@@ -9,7 +10,13 @@ import type { LiveEventName } from "./wire";
 /** What a page has of one resource: still loading, failed (and why), or the data. */
 export type Resource<T> =
   | { status: "loading" }
-  | { status: "error"; message: string; gateway: boolean }
+  | {
+      status: "error";
+      message: string;
+      gateway: boolean;
+      /** The server has nothing by that name (404): a link back helps, asking again does not. */
+      missing: boolean;
+    }
   | { status: "ready"; data: T };
 
 function messageOf(error: unknown): string {
@@ -75,6 +82,7 @@ export function useResource<T>(
                   status: "error",
                   message: messageOf(error),
                   gateway: error instanceof GatewayNotSetUpError,
+                  missing: error instanceof PortalRequestError && error.status === 404,
                 },
               },
         );

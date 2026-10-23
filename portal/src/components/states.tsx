@@ -1,8 +1,9 @@
 "use client";
 
-import { CircleAlertIcon, PlugZapIcon, RotateCwIcon } from "lucide-react";
+import { CircleAlertIcon, PlugZapIcon, RotateCwIcon, SearchXIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Resource } from "@/api/hooks";
+import { CommandLine } from "@/components/copy-button";
 import { AppLink } from "@/components/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,11 +76,37 @@ export function GatewayNotSetUp() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-start gap-4">
-          <code className="rounded-md bg-muted px-3 py-2 font-mono text-sm">
-            {KIT_NAME} gateway setup
-          </code>
+          <CommandLine command={`${KIT_NAME} gateway setup`} label="Copy" />
           <Button asChild variant="outline">
             <AppLink href="/machine">Open Machine</AppLink>
+          </Button>
+        </CardContent>
+      </Card>
+    </PagePad>
+  );
+}
+
+/** A page whose subject is not there (the server answered 404): why, and the way back. */
+export function MissingState({
+  message,
+  back,
+}: {
+  message: string;
+  back: { href: string; label: string };
+}) {
+  return (
+    <PagePad>
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <SearchXIcon className="size-5 text-muted-foreground" aria-hidden="true" />
+            Nothing here by that name
+          </CardTitle>
+          <CardDescription>{message}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline">
+            <AppLink href={back.href}>{back.label}</AppLink>
           </Button>
         </CardContent>
       </Card>
@@ -111,18 +138,19 @@ export function ResourceView<T>({
   resource,
   label,
   children,
+  back = { href: "/", label: "Open Overview" },
 }: {
   resource: Resource<T> & { reload: () => void };
   label: string;
   children: (data: T) => ReactNode;
+  /** Where a page whose subject is not there sends the person. */
+  back?: { href: string; label: string };
 }) {
   if (resource.status === "loading") return <LoadingState label={label} />;
   if (resource.status === "error") {
-    return resource.gateway ? (
-      <GatewayNotSetUp />
-    ) : (
-      <ErrorState message={resource.message} onRetry={resource.reload} />
-    );
+    if (resource.gateway) return <GatewayNotSetUp />;
+    if (resource.missing) return <MissingState message={resource.message} back={back} />;
+    return <ErrorState message={resource.message} onRetry={resource.reload} />;
   }
   return <>{children(resource.data)}</>;
 }

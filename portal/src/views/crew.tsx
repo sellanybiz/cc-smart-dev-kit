@@ -582,7 +582,11 @@ export function CrewView() {
   );
   if (!ready) return <LoadingState label="the crew session" />;
   return (
-    <ResourceView resource={crew} label="the crew session">
+    <ResourceView
+      resource={crew}
+      label="the crew session"
+      back={{ href: "/work", label: "Open Work" }}
+    >
       {(data) => <CrewPage data={data} />}
     </ResourceView>
   );
