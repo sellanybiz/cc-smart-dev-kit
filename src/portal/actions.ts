@@ -48,6 +48,16 @@ import { testJudgeTarget } from "../gateway/judge-test";
 import { JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
+import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
+import {
+  type ChoiceResult,
+  chooseFallback,
+  chooseKey,
+  chooseRoute,
+  type FallbackChoice,
+  followSetup,
+  type KeyChoice,
+} from "../machine/claude-mem-choices";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
 import { locateCheckoutAsync } from "../project/resolve";
@@ -403,17 +413,12 @@ async function saveSlot(
 }
 
 /**
- * Checks one typed target the way `gateway slot` would (`chainProblem`: it parses, its backend
- * is in the config, and that backend lists the model), before the page adds it to a draft. A
- * `claude-…` id is taken as it is, as the command line takes it.
+ * What is wrong with one target, the way `gateway slot` checks it (`chainProblem`: it parses,
+ * its backend is in the config, and that backend lists the model), in words; null when it is
+ * fine. A `claude-…` id is taken as it is, as the command line takes it. The slot picker's
+ * check and claude-mem's card use this one check, so neither takes a model typed free.
  */
-async function checkTarget(
-  action: ActionContext,
-  body: Record<string, unknown>,
-): Promise<ActionResult> {
-  const text = typeof body.target === "string" ? body.target.trim() : "";
-  if (text === "")
-    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+async function targetProblem(action: ActionContext, text: string): Promise<null | string> {
   const config = gatewayConfig(action);
   const parsed = parseTarget(text);
   const models: Record<string, null | string[]> = {};
@@ -426,17 +431,31 @@ async function checkTarget(
     }
   }
   const problem = chainProblem(config, [text], models);
-  if (problem !== null) {
-    const names = Object.keys(config.backends);
-    const known =
-      "target" in parsed &&
-      parsed.target.kind !== "anthropic" &&
-      !Object.hasOwn(config.backends, parsed.target.backend)
-        ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.`
-        : "";
-    // A backend's model list never holds its key, but the line is masked all the same.
-    return { lines: [`${shownDetail(problem, [])}${known}`], ok: false };
-  }
+  if (problem === null) return null;
+  const names = Object.keys(config.backends);
+  const known =
+    "target" in parsed &&
+    parsed.target.kind !== "anthropic" &&
+    !Object.hasOwn(config.backends, parsed.target.backend)
+      ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.`
+      : "";
+  // A backend's model list never holds its key, but the line is masked all the same.
+  return `${shownDetail(problem, [])}${known}`;
+}
+
+/**
+ * Checks one typed target before the page adds it to a draft (`targetProblem`).
+ */
+async function checkTarget(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "")
+    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+  const parsed = parseTarget(text);
+  const problem = await targetProblem(action, text);
+  if (problem !== null) return { lines: [problem], ok: false };
   return {
     lines: [
       "target" in parsed && parsed.target.kind === "anthropic"
@@ -1207,6 +1226,120 @@ function browserTokenAction(action: ActionContext, body: Record<string, unknown>
   }
 }
 
+// ── claude-mem (PM1) ────────────────────────────────────────────────────────────
+
+/**
+ * A claude-mem target from the page, checked the way the slot picker checks one
+ * (`targetProblem`): a `<backend>:<model>` its backend lists, or a `claude-…` id when `claude`
+ * is allowed. Never a model typed free.
+ */
+async function claudeMemTarget(
+  action: ActionContext,
+  text: string,
+): Promise<{ backend: string; model: string } | { claude: string } | { why: string }> {
+  if (!existsSync(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+    return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
+  }
+  const parsed = parseTarget(text);
+  if ("error" in parsed) return { why: parsed.error };
+  if (parsed.target.kind === "anthropic") return { claude: text };
+  const problem = await targetProblem(action, text);
+  if (problem !== null) return { why: problem };
+  return { backend: parsed.target.backend, model: parsed.target.model };
+}
+
+/** Runs one claude-mem write; a lock another command holds, or a file error, is its answer. */
+async function claudeMemWrite(write: () => Promise<ChoiceResult>): Promise<ActionResult> {
+  try {
+    return await write();
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * claude-mem's route (`claudemem.route`): `claude`, or a `<backend>:<model>` from the live list.
+ * The page asks first; the writer checks a backend with one tiny chat before it writes.
+ */
+async function claudeMemRoute(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "") return { lines: ['Pick "claude" or a model from the list.'], ok: false };
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  if (text === CLAUDE_PROVIDER) return claudeMemWrite(() => chooseRoute(paths, { kind: "claude" }));
+  const target = await claudeMemTarget(action, text);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  if ("claude" in target) {
+    return {
+      lines: [
+        `${text} is a Claude model: pick "claude" for the Claude route (claude-mem's own Claude model).`,
+      ],
+      ok: false,
+    };
+  }
+  return claudeMemWrite(() => chooseRoute(paths, { kind: "backend", ...target }));
+}
+
+/**
+ * claude-mem's key (`claudemem.key`): `use: "gateway"` (the gateway's own key for that backend,
+ * as setup uses it) or `use: "other"` with a pasted `key`. The key is never printed back.
+ */
+async function claudeMemKey(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.use !== "gateway" && body.use !== "other") {
+    return { lines: ['Say which key: "gateway" or "other".'], ok: false };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  const choice: KeyChoice =
+    body.use === "gateway"
+      ? { kind: "gateway" }
+      : { key: typeof body.key === "string" ? body.key : "", kind: "other" };
+  return claudeMemWrite(() => chooseKey(paths, choice));
+}
+
+/**
+ * claude-mem's quota fallback (`claudemem.fallback`): `off`, `claude` (its own Claude model), a
+ * `claude-…` model, or a `<backend>:<model>` from the live list.
+ */
+async function claudeMemFallback(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "") {
+    return { lines: ['Pick "off", "claude" or a model from the list.'], ok: false };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  if (text === FALLBACK_OFF) return claudeMemWrite(() => chooseFallback(paths, { kind: "off" }));
+  if (text === CLAUDE_PROVIDER) {
+    return claudeMemWrite(() => chooseFallback(paths, { kind: "claude", model: null }));
+  }
+  const target = await claudeMemTarget(action, text);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const choice: FallbackChoice =
+    "claude" in target ? { kind: "claude", model: target.claude } : { kind: "backend", ...target };
+  return claudeMemWrite(() => chooseFallback(paths, choice));
+}
+
+/**
+ * `claudemem.follow`: hands claude-mem back to setup (`followSetup`): the person's choices are
+ * forgotten, and setup's own claude-mem step runs, so it follows the scout slot again.
+ */
+async function claudeMemFollow(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  return claudeMemWrite(() => followSetup(action.portal.paths));
+}
+
 // ── The crew, and the worktrees (D52) ───────────────────────────────────────────
 
 /** The longest answer a page may send to a crew session: a message, not a document. */
@@ -1309,6 +1442,10 @@ export const ACTION_NAMES = [
   "automode.apply",
   "browser.setup",
   "browser.token",
+  "claudemem.fallback",
+  "claudemem.follow",
+  "claudemem.key",
+  "claudemem.route",
   "companion.enable",
   "crew.answer",
   "crew.resume",
@@ -1382,6 +1519,14 @@ export async function runAction(
       return browserSetupAction(action);
     case "browser.token":
       return browserTokenAction(action, body);
+    case "claudemem.route":
+      return claudeMemRoute(action, body);
+    case "claudemem.key":
+      return claudeMemKey(action, body);
+    case "claudemem.follow":
+      return claudeMemFollow(action, body);
+    case "claudemem.fallback":
+      return claudeMemFallback(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":

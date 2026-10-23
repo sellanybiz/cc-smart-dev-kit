@@ -908,6 +908,31 @@ export function mockData(empty: boolean): MockData {
         version: "2.1.312",
         why: null,
       },
+      claudeMem: {
+        backends: ["omniroute"],
+        blocked: null,
+        current: {
+          fallback: {
+            idle: null,
+            model: null,
+            provider: "claude",
+            source: "default",
+            target: null,
+          },
+          key: { pool: false, source: "setup", state: "gateway" },
+          route: {
+            address: "http://127.0.0.1:20128/v1",
+            kind: "backend",
+            model: "glm-5.3-flash",
+            provider: "openai-compatible",
+            source: "setup",
+            target: "omniroute:glm-5.3-flash",
+          },
+        },
+        file: "~/.claude-mem/settings.json",
+        minVersion: "13.29.0",
+        version: "13.40.0",
+      },
       bun: { minimum: "1.4.3", ok: true, version: "1.4.5" },
       doctorAt: now - 4 * MINUTE,
       companions: [

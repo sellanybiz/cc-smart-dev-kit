@@ -738,6 +738,27 @@ describe("every answer", () => {
       pluginFolder: () => ({ folder: plugin }),
     });
     try {
+      // claude-mem installed, its file holding the planted key (PM1): the Machine answer reads
+      // that file, and its card's actions write it.
+      const claudeMemInstall = join(world.paths.home, "plugins", "claude-mem");
+      mkdirSync(claudeMemInstall, { recursive: true });
+      mkdirSync(dirname(world.paths.installedPluginsFile), { recursive: true });
+      writeFileSync(
+        world.paths.installedPluginsFile,
+        JSON.stringify({
+          plugins: {
+            "claude-mem@thedotmack": [
+              { installPath: claudeMemInstall, scope: "user", version: "13.40.0" },
+            ],
+          },
+          version: 2,
+        }),
+      );
+      mkdirSync(dirname(world.paths.claudeMemSettingsFile), { recursive: true });
+      writeFileSync(
+        world.paths.claudeMemSettingsFile,
+        JSON.stringify({ CLAUDE_MEM_OPENAI_COMPAT_API_KEY: KEY, CLAUDE_MEM_PROVIDER: "claude" }),
+      );
       const first = await world.call("/");
       for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(path);
@@ -783,6 +804,22 @@ describe("every answer", () => {
       expect(tested.body).not.toContain(KEY);
       expect(tested.body).not.toContain("PLANTED");
       expect(JSON.parse(tested.body).ok).toBe(true);
+      // The claude-mem card's writes: a route checked with the person's key, that key pasted
+      // again, the gateway's key, a Claude fallback: no answer holds the key.
+      const csrf = await world.csrfOf();
+      for (const [name, body] of [
+        ["claudemem.route", { confirm: true, target: "omniroute:glm-5.3-flash" }],
+        ["claudemem.key", { confirm: true, key: KEY, use: "other" }],
+        ["claudemem.key", { confirm: true, use: "gateway" }],
+        ["claudemem.fallback", { confirm: true, target: "claude" }],
+      ] as const) {
+        const answer = await world.post(name, body, csrf);
+        expect({ name, ok: JSON.parse(answer.body).ok }).toEqual({ name, ok: true });
+        expect(answer.body).not.toContain(KEY);
+        expect(answer.body).not.toContain("PLANTED");
+      }
+      // The machine answer after those writes holds none either.
+      expect((await world.call("/api/machine")).body).not.toContain("PLANTED");
       // And the config file itself still holds it: nothing was rewritten.
       expect(readFileSync(world.paths.gatewayConfigFile, "utf8")).toContain(KEY);
     } finally {
@@ -3809,6 +3846,7 @@ describe("the JSON API", () => {
         "browser",
         "bun",
         "claudeCode",
+        "claudeMem",
         "companions",
         "doctor",
         "jobs",
@@ -3818,6 +3856,18 @@ describe("the JSON API", () => {
         "updates",
         "warp",
       ]);
+      // claude-mem's card (PM1) without a gateway or claude-mem: what is missing, and the fix.
+      expect(machine.claudeMem).toEqual({
+        backends: null,
+        blocked: {
+          fix: "claude plugin install claude-mem@thedotmack",
+          text: "claude-mem is not installed, so there is nothing to set.",
+        },
+        current: null,
+        file: "~/.claude-mem/settings.json",
+        minVersion: "13.29.0",
+        version: null,
+      });
       const settings = JSON.parse((await world.call("/api/settings")).body) as {
         error: null | string;
         rows: unknown[];

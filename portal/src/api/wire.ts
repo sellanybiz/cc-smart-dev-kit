@@ -358,9 +358,47 @@ export interface McpServerRow {
   state: "foreign" | "missing" | "ours" | "unknown" | "unreadable";
 }
 
+/** `src/machine/claude-mem-choices.ts` › `ClaudeMemSource`: who put a claude-mem value there. */
+export type ClaudeMemSource = "default" | "hand" | "portal" | "setup";
+
+/** `src/machine/claude-mem-choices.ts` › `ClaudeMemCurrent`: claude-mem's values now. */
+export interface ClaudeMemCurrent {
+  route: {
+    kind: "backend" | "claude" | "other";
+    provider: string;
+    target: null | string;
+    model: null | string;
+    address: null | string;
+    source: ClaudeMemSource;
+  };
+  key: {
+    state: "gateway" | "none" | "other";
+    pool: boolean;
+    source: ClaudeMemSource;
+  };
+  fallback: {
+    provider: string;
+    model: null | string;
+    idle: null | string;
+    target: null | string;
+    source: ClaudeMemSource;
+  };
+}
+
+/** `src/machine/claude-mem-choices.ts` › `ClaudeMemFacts`: the claude-mem card. Never the key. */
+export interface ClaudeMemFacts {
+  file: string;
+  version: null | string;
+  minVersion: string;
+  blocked: null | { fix: null | string; text: string };
+  current: null | ClaudeMemCurrent;
+  backends: null | string[];
+}
+
 export interface MachineAnswer {
   bun: BunFacts;
   claudeCode: ClaudeCodeFacts;
+  claudeMem: ClaudeMemFacts;
   mcp: McpServerRow[];
   autoMode: null | {
     added: string[];
@@ -936,6 +974,10 @@ export const ACTION_NAMES = [
   "automode.apply",
   "browser.setup",
   "browser.token",
+  "claudemem.fallback",
+  "claudemem.follow",
+  "claudemem.key",
+  "claudemem.route",
   "companion.enable",
   "crew.answer",
   "crew.resume",

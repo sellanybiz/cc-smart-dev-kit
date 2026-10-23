@@ -30,6 +30,11 @@ import {
 import type { BreakerRecord, FallbackRecord, LimitRecord } from "../../gateway/limit-state";
 import type { GuardAsk } from "../../hooks/ask-log";
 import type { JobsAnswer, JobWeightState, JobWeightsState } from "../../jobs/status";
+import type {
+  ClaudeMemCurrent,
+  ClaudeMemFacts,
+  ClaudeMemSource,
+} from "../../machine/claude-mem-choices";
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
 import type { MergeDetail } from "../../workflow/merge-check";
@@ -64,6 +69,9 @@ export type {
   BreakerRecord,
   BunFacts,
   ClaudeCodeFacts,
+  ClaudeMemCurrent,
+  ClaudeMemFacts,
+  ClaudeMemSource,
   CrewEvent,
   DiffFile,
   DoctorCheck,
@@ -146,12 +154,14 @@ export type MachineUpdate = MachineData["updates"];
 
 /**
  * `GET /api/machine`: the Machine page. Needs no gateway config. Beside the server-rendered
- * page's facts: Claude Code's version and live proof, the Bun the portal runs on, and the MCP
- * servers setup registers (`mcp status`'s own reader).
+ * page's facts: Claude Code's version and live proof, the Bun the portal runs on, the MCP
+ * servers setup registers (`mcp status`'s own reader), and claude-mem's route, key and
+ * fallback (PM1, never the key itself).
  */
 export interface MachineAnswer extends MachineData {
   bun: BunFacts;
   claudeCode: ClaudeCodeFacts;
+  claudeMem: ClaudeMemFacts;
   mcp: McpServerRow[];
 }
 

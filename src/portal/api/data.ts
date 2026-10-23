@@ -9,6 +9,7 @@
  */
 
 import { type JobsAnswer, jobsAnswer, readJobs } from "../../jobs/status";
+import { readClaudeMemFacts } from "../../machine/claude-mem-choices";
 import { jobContext } from "../actions";
 import {
   bunFacts,
@@ -175,7 +176,13 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
 export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> {
   const ctx = deps.action.portal;
   const [data, claudeCode] = await Promise.all([machineData(deps), claudeCodeFacts(ctx)]);
-  const answer: MachineAnswer = { ...data, bun: bunFacts(ctx), claudeCode, mcp: mcpRows(ctx) };
+  const answer: MachineAnswer = {
+    ...data,
+    bun: bunFacts(ctx),
+    claudeCode,
+    claudeMem: readClaudeMemFacts(ctx.paths),
+    mcp: mcpRows(ctx),
+  };
   if ("error" in deps.found && configExists(ctx)) {
     return { ...answer, configError: deps.found.error };
   }

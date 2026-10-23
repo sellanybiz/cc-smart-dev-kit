@@ -18,6 +18,7 @@ import {
 } from "../gateway/service";
 import { TASK_LABEL } from "../gateway/service-windows";
 import { ownedGatewayEnvKeys } from "../gateway/settings";
+import { forgetClaudeMemChoices } from "../machine/claude-mem";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
 import { bunConfigPath } from "../setup/bun-config";
@@ -213,6 +214,20 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 }
 
 /**
+ * Restore takes the person's claude-mem writes from the portal out with the other owned keys,
+ * so the record that marks them as the person's goes too (`forgetClaudeMemChoices`): a setup
+ * after it follows the scout slot again. Prints a line when there was one; true when it was.
+ */
+function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string): boolean {
+  const forgotten = forgetClaudeMemChoices(stateDir);
+  if (forgotten === null) return false;
+  console.log(
+    `- ${short(forgotten)}: removed (your claude-mem choices from the portal; the next setup follows the scout slot again)`,
+  );
+  return true;
+}
+
+/**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
  * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
  * the settings they still send every request to the router; stopping it would make each of
@@ -272,6 +287,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           console.log(line);
         }
         forgetInstructionChoice(paths.stateDir, short);
+        forgetClaudeMemChoice(paths.stateDir, short);
         console.log(stageOneDone(paths, options.cliBundle));
         return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
@@ -368,7 +384,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       }
       for (const line of mcp.lines) console.log(line);
       for (const line of browser.lines) console.log(line);
-      const forgot = forgetInstructionChoice(paths.stateDir, short);
+      const forgotInstructions = forgetInstructionChoice(paths.stateDir, short);
+      const forgotChoices = forgetClaudeMemChoice(paths.stateDir, short);
+      const forgot = forgotInstructions || forgotChoices;
       if (
         results.length === 0 &&
         !stateGone &&
