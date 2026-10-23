@@ -71,7 +71,7 @@ export function GatewayKeyPart({ state }: { state: KeyState }) {
             Set the gateway up in a terminal first: it asks for this key, or makes one with your
             OmniRoute password.
           </p>
-          <CommandLine command={`${KIT_NAME} gateway setup`} label="the setup command" />
+          <CommandLine command={`${KIT_NAME} gateway setup`} label="Copy the command" />
         </div>
       )}
       {canChange && (
