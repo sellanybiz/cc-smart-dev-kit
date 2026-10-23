@@ -2,9 +2,9 @@
  * The Claude Code commands a crew session launch runs, and what it reads from their answers:
  *
  * - `claude --bg -w <worktree> --name … --model … --effort … --permission-mode auto
- *   --autocompact auto --settings <file> "<first line>"` — returns at once and prints
- *   `backgrounded · <short id> · <name>` (proved live, L1a.1: 0.9 s; `--session-id` is ignored
- *   with `--bg`, so the short id is read from that line);
+ *   --autocompact auto --strict-mcp-config --mcp-config <file> --settings <file> "<first line>"`
+ *   — returns at once and prints `backgrounded · <short id> · <name>` (proved live, L1a.1: 0.9 s;
+ *   `--session-id` is ignored with `--bg`, so the short id is read from that line);
  * - `claude agents --json --all` — one row per session (`id`, `sessionId`, `cwd`, `pid`, `state`
  *   …), read once to record the new session's id and see that agent view lists it. **Not** its
  *   `cwd`: that read shows the launch folder until a `-w` session has entered its worktree

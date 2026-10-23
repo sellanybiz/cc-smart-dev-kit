@@ -15,8 +15,10 @@ import {
   SHORT_ID,
   writeSessionRecord,
 } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -411,9 +413,117 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     expect(world.out).toEqual([]);
     expect(world.err).toEqual([
       'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
-      "Fix: fix workflow.crew.keep in .claude/cc-smart-dev-kit.json",
+      "Fix: set workflow.crew.keep in .claude/cc-smart-dev-kit.json",
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toEqual([]);
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
+  });
+
+  test("a keep entry in the person's own defaults names their file in the fix line", async () => {
+    const world = await ledWorld();
+    const file = world.paths.workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ crew: { keep: ["plugin:acme-tools@acme"] } })}\n`);
+    expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_PLUGINS: PLUGINS }))).toBe(1);
+    expect(world.err).toEqual([
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
+      "Fix: set workflow.crew.keep in ~/.config/cc-smart-dev-kit/workflow.json",
+    ]);
+  });
+
+  test("a settings file that cannot be written fails before any worktree is made", async () => {
+    const world = await ledWorld();
+    // A folder where `mcp.json` goes: `settings.json` is written, the second write fails.
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    mkdirSync(join(dirname(settingsFile), "mcp.json"), { recursive: true });
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
+    expect(world.out[0]).toContain(
+      "failed C my-app B6b portal-live: its settings could not be written",
+    );
+    // Written before anything is made, so nothing is left to take back or to free the name.
+    expect(existsSync(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"))).toBe(
+      false,
+    );
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin"]);
+  });
+});
+
+describe("a lean start: a queued crew session is lean when it starts", () => {
+  /** What the machine runs at the time the queued crew session starts. */
+  const PLUGINS = JSON.stringify([
+    { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+    { enabled: true, id: "claude-mem@thedotmack" },
+  ]);
+
+  /** A queued crew session of B6b, as `crew start` records one when no place is free. */
+  async function queuedHere(world: Awaited<ReturnType<typeof ledWorld>>): Promise<CrewRecord> {
+    return await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-portal-live",
+        continues: null,
+        effort: "high",
+        files: [],
+        id: ID,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b portal-live",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "portal-live",
+        state: "queued",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"),
+      },
+      T0,
+    );
+  }
+
+  test("the plugins it turns off are read when it starts, and both files are written", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    await startQueued(
+      record,
+      world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-test-key" }),
+      defaultResolved(),
+    );
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toContain(
+      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+    );
+    expect(
+      Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
+    ).toEqual(["tavily-websearch"]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const resolved = defaultResolved();
+    resolved.crew.keep = { source: "project", value: ["plugin:acme-tools@acme"] };
+    await startQueued(record, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), resolved);
+    const [after] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(after?.state).toBe("failed");
+    const events = readCrewEvents(world.paths.stateDir, world.repo).events;
+    expect(events[events.length - 1]?.text).toContain(
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme"',
+    );
+    expect(existsSync(record.worktree)).toBe(false);
     expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
   });
 });

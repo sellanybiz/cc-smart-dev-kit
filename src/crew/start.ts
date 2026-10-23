@@ -18,14 +18,15 @@
  *      folder), then start now or queued (`placeFor`: its phases, its lead's caps, the
  *      machine's ceiling and the 5-hour window, the memory), and the record (`starting` or
  *      `queued`, one `created` event);
- *   5. its files: the brief with its frame (`brief.md`) and the settings file that names the
- *      crew session to its own session and turns Claude Code's retry watchdog on, with no wait
- *      limit (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>,
- *      "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`,
- *      D42);
+ *   5. its files: the brief with its frame (`brief.md`), the settings file that names the
+ *      crew session to its own session, turns Claude Code's retry watchdog on with no wait
+ *      limit (`settings.json`, D42) and turns the other plugins off, and the `--mcp-config`
+ *      file `mcp.json` beside it with the servers its kind keeps (`src/crew/claude.ts` ›
+ *      `leanLaunch`). **Before anything is made**, so a write that fails leaves no worktree;
  *   6. a queued crew session ends here. Otherwise: `git worktree add -b crew/<phase>-<slug>
  *      .claude/worktrees/crew-<phase>-<slug> <base>` in the main checkout (fast; anything slow is
- *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …`
+ *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …
+ *      --strict-mcp-config --mcp-config <mcp.json> --settings <settings.json> "<first line>"`
  *      from the main checkout, the short id read from its `backgrounded` line, and ONE read of
  *      `claude agents --json --all` to record the session id and see that agent view lists it.
  *      **The folder is not judged here**: `claude agents --json` reports the launch folder until a
@@ -38,7 +39,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { tildify } from "../cli/paths";
+import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
 import type { McpContext } from "../mcp/servers";
@@ -65,7 +66,12 @@ import {
   RETRY_WATCHDOG_RECHECK_MS,
   RETRY_WATCHDOG_VALUE,
 } from "../setup/retry-watchdog";
-import type { ResolvedWorkflow } from "../workflow/resolve";
+import {
+  personalWorkflowFile,
+  type ResolvedValue,
+  type ResolvedWorkflow,
+  type WorkflowSource,
+} from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
@@ -341,6 +347,14 @@ export interface LaunchSpec {
 }
 
 /**
+ * The file a `workflow.crew.keep` value came from: the project's file, or the person's own
+ * defaults. The fix line names the file the person edits.
+ */
+function keepFileOf(source: WorkflowSource, paths: CliPaths): string {
+  return source === "personal" ? tildify(personalWorkflowFile(paths), paths.home) : CONFIG_PATH;
+}
+
+/**
  * The lean start for a session of `kind`: the machine's plugin list (one `claude plugin list
  * --json` call), and what the project keeps of it (`workflow.crew.keep`). A list that cannot be
  * read leaves every plugin as it is — a lean start never fails a start over it — while a keep
@@ -348,7 +362,7 @@ export interface LaunchSpec {
  */
 function leanOf(
   kind: null | CrewKind,
-  keep: readonly string[],
+  keep: ResolvedValue<string[]>,
   ctx: CrewContext,
   claude: string,
   repo: string,
@@ -366,9 +380,9 @@ function leanOf(
         ? { key: false, reason: "no Tavily key" }
         : { key: true },
   };
-  const lean = leanLaunch({ context, enabled, keep, kind });
+  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
   if (!lean.ok) {
-    throw refusal(lean.why, `fix workflow.crew.keep in ${CONFIG_PATH}`);
+    throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
   }
   return lean.lean;
 }
@@ -405,7 +419,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   const briefGiven = await readBrief(args, ctx);
   const chosen = chooseLaunch(args.kind, args, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
-  const lean = leanOf(args.kind, caller.resolved.crew.keep.value, ctx, claude, caller.repo);
+  const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
   const baseRef = args.base ?? currentRef(root, ctx.env);
   const baseSha = baseRef === null ? null : commitOf(root, baseRef, ctx.env);
@@ -501,7 +515,7 @@ async function planContinuation(
   const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
-  const lean = leanOf(old.kind, caller.resolved.crew.keep.value, ctx, claude, caller.repo);
+  const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const number =
     records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name: string;
@@ -691,6 +705,18 @@ function crewSettingsText(id: string, off: readonly string[]): string {
 /** Step 6: the worktree, the session, and the session id it records. */
 async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): Promise<number> {
   const { worktree } = spec;
+  // The session's own settings and the MCP servers it loads: the two files that make it lean.
+  // Both are written here, by the one function both the start and the queued start run, so a
+  // crew session that waited in the queue gets the machine's plugins as they are when it starts.
+  // **Before anything is made**: a write that fails leaves no worktree and no branch behind.
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
+  const mcpFile = join(dirname(settingsFile), "mcp.json");
+  try {
+    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
+  } catch (error) {
+    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
+  }
   const added = runGit(
     spec.repo,
     ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha],
@@ -706,17 +732,6 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   }
   const deps = claudeDeps(ctx);
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
-  // The session's own settings and the MCP servers it loads: the two files that make it lean.
-  // Both are written here, by the one function both the start and the queued start run, so a
-  // crew session that waited in the queue gets the machine's plugins as they are when it starts.
-  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
-  const mcpFile = join(dirname(settingsFile), "mcp.json");
-  try {
-    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
-    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
-  } catch (error) {
-    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
-  }
   const args = launchArgs({
     effort: spec.effort,
     mcpFile,
@@ -1057,7 +1072,7 @@ export async function startQueued(
     // installed or removed while it waited changes what it gets.
     lean = leanOf(
       isCrewKind(record.kind) ? record.kind : null,
-      resolved.crew.keep.value,
+      resolved.crew.keep,
       ctx,
       claude,
       record.repo,

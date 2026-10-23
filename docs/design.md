@@ -2988,7 +2988,10 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    ${TAVILY_API_KEY}` is Claude Code's placeholder). A `claude plugin list --json` read decides
    what to turn off; one that fails turns nothing off, because a lean start never fails a start.
    Entries merge key by key across settings sources, so a plugin the file does not name keeps its
-   own state (`docs/claude-code-contract.md`).
+   own state (`docs/claude-code-contract.md`). Turning off a plugin this one declares as a
+   dependency — claude-mem, frontend-design — does not stop it loading for that session: a
+   session's settings file changes no install record (proved, `docs/claude-code-contract.md` §
+   A lean crew session).
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
