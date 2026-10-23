@@ -455,6 +455,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **BR1 merged** (`5068924`, bundles `32a0914`): root cause proved — a session the Claude daemon starts has no `DISPLAY`, so the Playwright MCP's own detached Chrome start died at once and its call failed at the relay's 30 s deadline. The launcher now starts Chrome itself with the desktop's display (read from the systemd user manager, bounded), waits for Chrome's own lock, or ends at once with one plain line; `browser check` has a whole-run limit and never hangs.
 
+- 2026-10-23 (overnight): **CC7 merged** (`809e97d`, bundles `857d498`): `crew-role` on `UserPromptSubmit` records the person's own prompt in a crew session and the lead's watch prints it; proved live that a `SendMessage` and a background task's event arrive wrapped, a typed prompt bare, and the input has no source field. Three more crew sessions stopped on a question only the person could answer (CC3: `git checkout -- plugin/dist`; CC8's reviewer: a script naming the portal's port); each continues as a new round from its head (`briefs/cc3-2.md`, `briefs/cc8-2.md`) — CC6's crew deny ends this once 1.1.0 is installed.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
@@ -462,6 +464,7 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 3. Live proofs the crew sessions could not run: BR1 — close Chrome, then run `cc-smart-dev-kit browser check` from a terminal (it should start Chrome in the `claude-code` profile and connect); CR1's probe (its report names the exact `!` commands) for how a `--bg -w` session comes back in its worktree.
 4. After 1.1.0 is installed: remove `crew.max` 12 / `crew.maxOpus` 4 from this machine's own workflow file (now the machine-wide ceiling); turn the status line on (`cc-smart-dev-kit setup --statusline`) so the opus usage guard holds.
 5. Any crew session still waiting on a permission prompt (`claude attach <name>`).
+6. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
 
 ### Decided overnight (for the owner's review)
 
