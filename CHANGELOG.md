@@ -11,7 +11,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   **take-over** records those values as cc-smart-dev-kit's own, after asking and naming them:
   nothing in claude-mem's settings file changes, each value stays exactly as it is until you pick
   another, and `restore` puts them back — a key is never written down, so `restore` removes a
-  taken-over key like any other key of the kit's. It is the card's offer, or
+  taken-over key like any other key of the kit's. It is
   `cc-smart-dev-kit claude-mem take-over`. A new **`cc-smart-dev-kit claude-mem`** command makes
   the card's choices from your own terminal — `status`, `route`, `key` (on stdin, never an
   argument, never printed), `fallback` and `take-over` — through the same functions and the same
