@@ -4,7 +4,7 @@
  * a backend's own list for the bare model name a router answer records.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
@@ -107,14 +107,25 @@ describe("the kit's table", () => {
 });
 
 describe("Claude Code's own number", () => {
-  test("CC4: the status line records it per model, and the model with `[1m]` is the same id", () => {
+  test("CC4: the status line records it per id as reported, `[1m]` included", () => {
+    // One id can have two windows, so the two readings must not share a key.
     const paths = world();
-    recordClaudeWindow(paths, statusLineInput("claude-opus-5-5", CONTEXT_WINDOW_1M), NOW);
+    recordClaudeWindow(paths, statusLineInput("claude-opus-5-5", CONTEXT_WINDOW_SMALL), NOW);
     recordClaudeWindow(paths, statusLineInput("claude-opus-5-5[1m]", CONTEXT_WINDOW_1M), NOW);
-    expect(claudeWindowSaid(paths, "claude-opus-5-5")).toBe(CONTEXT_WINDOW_1M);
+    expect(claudeWindowSaid(paths, "claude-opus-5-5")).toBe(CONTEXT_WINDOW_SMALL);
     expect(claudeWindowSaid(paths, "claude-opus-5-5[1m]")).toBe(CONTEXT_WINDOW_1M);
     const kept = JSON.parse(readFileSync(claudeWindowFile(paths), "utf8"));
-    expect(Object.keys(kept)).toEqual(["claude-opus-5-5"]);
+    expect(Object.keys(kept).sort()).toEqual(["claude-opus-5-5", "claude-opus-5-5[1m]"]);
+  });
+
+  test("CC4: a `[1m]` model is not measured by what was recorded for the same id without it", async () => {
+    const paths = world();
+    // An interactive session on the 200K model recorded its number; the `[1m]` model's own
+    // window is still Claude Code's 1M.
+    recordClaudeWindow(paths, statusLineInput("claude-opus-4-5", CONTEXT_WINDOW_SMALL), NOW);
+    const watch = windowWatch({ paths });
+    expect(await watch.of("claude-opus-4-5", NOW)).toBe(CONTEXT_WINDOW_SMALL);
+    expect(await watch.of("claude-opus-4-5[1m]", NOW)).toBe(CONTEXT_WINDOW_1M);
   });
 
   test("CC4: nothing is recorded when the input reports no model or no window", () => {
@@ -203,6 +214,69 @@ describe("a backend's model", () => {
         NOW,
       ),
     ).toBe(1_000_000);
+  });
+
+  test("CC4: an answer that names no chain model is not kept for the day", async () => {
+    // A catalog still loading, or a 200 that is no list: keeping it would leave the gauge blind
+    // until the kept list was a day old.
+    const paths = world();
+    let calls = 0;
+    const empty = () => {
+      calls += 1;
+      return Promise.resolve({
+        models: [{ contextLength: null, id: "aihorde/2DN" }],
+        status: 200,
+      });
+    };
+    expect(await windowWatch({ list: empty, paths }).of("deepseek-v4.1-flash", NOW)).toBeNull();
+    expect(existsSync(backendWindowsFile(paths))).toBe(false);
+    // A watch started now asks again at once, not in a day.
+    expect(
+      await windowWatch({ list: empty, paths }).of("deepseek-v4.1-flash", NOW + 60_000),
+    ).toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  test("CC4: the exact catalog id wins over another provider's same-named entry", async () => {
+    const paths = world("omniroute:ollama-cloud/deepseek-v4.1-flash");
+    const fake = fakeList([
+      { contextLength: 64_000, id: "deepseek/deepseek-v4.1-flash" },
+      { contextLength: 1_000_000, id: "ollama-cloud/deepseek-v4.1-flash" },
+    ]);
+    expect(await windowWatch({ list: fake.list, paths }).of("deepseek-v4.1-flash", NOW)).toBe(
+      1_000_000,
+    );
+    // A target that carries a provider is named only by its own id: another provider's entry
+    // with the same last segment is not that model.
+    const elsewhere = world("omniroute:ollama-cloud/deepseek-v4.1-flash");
+    const only = fakeList([{ contextLength: 64_000, id: "deepseek/deepseek-v4.1-flash" }]);
+    expect(
+      await windowWatch({ list: only.list, paths: elsewhere }).of("deepseek-v4.1-flash", NOW),
+    ).toBeNull();
+  });
+
+  test("CC4: a bare target's own entry wins over a provider's same-named one", async () => {
+    const paths = world("omniroute:deepseek-v4.1-flash");
+    // The bare entry is the target itself; the prefixed one only shares its last segment.
+    const fake = fakeList([
+      { contextLength: 64_000, id: "deepseek/deepseek-v4.1-flash" },
+      { contextLength: 1_000_000, id: "deepseek-v4.1-flash" },
+    ]);
+    expect(await windowWatch({ list: fake.list, paths }).of("deepseek-v4.1-flash", NOW)).toBe(
+      1_000_000,
+    );
+    // With no bare entry nothing says which provider answered: the smallest window, so a crew
+    // session hands off early, never late. (A fresh world: the first call kept this one's list.)
+    const served = fakeList([
+      { contextLength: 1_000_000, id: "ollama-cloud/deepseek-v4.1-flash" },
+      { contextLength: 64_000, id: "deepseek/deepseek-v4.1-flash" },
+    ]);
+    expect(
+      await windowWatch({ list: served.list, paths: world("omniroute:deepseek-v4.1-flash") }).of(
+        "deepseek-v4.1-flash",
+        NOW,
+      ),
+    ).toBe(64_000);
   });
 
   test("CC4: the kept list is read again after its day", async () => {

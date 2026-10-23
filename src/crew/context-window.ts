@@ -5,10 +5,12 @@
  * Three sources, in order:
  *   1. **Claude Code's own number**, when the status line recorded one for this model
  *      (`<stateDir>/context-window.json`): the status line input's
- *      `context_window.context_window_size`, with the input's `model.id`
+ *      `context_window.context_window_size`, with the input's `model.id`, kept as reported
  *      (`docs/claude-code-contract.md`). A crew session is a `--bg` run with no footer, so it
  *      may never run a status line of its own: the number is whichever session on this machine
- *      ran one for that model, and with none the table below decides.
+ *      ran one for that model, and with none the table below decides. A key is the id exactly
+ *      as reported, `[1m]` included: one id can have two windows, and merging the keys would
+ *      let one session's size measure another's.
  *   2. **The kit's table** (`WINDOW_1M_SINCE`): keyed by family and the version that family's
  *      1M window starts at, never by one exact id, so a newer model of a family needs no change
  *      here. `[1m]` on any id is 1M, as Claude Code reads it. A Claude id the kit cannot place
@@ -27,7 +29,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
-import { listModels } from "../gateway/backends";
+import { type ListedModel, listModels } from "../gateway/backends";
 import type { GatewayConfig } from "../gateway/config";
 import {
   CLAUDE_FAMILIES,
@@ -37,7 +39,6 @@ import {
   isClaudeModelId,
   parseTarget,
   versionAtLeast,
-  withoutContextSuffix,
 } from "../gateway/targets";
 import { gatewayConfigOf } from "../hooks/agent-guard";
 import { writeStoreFile } from "./store";
@@ -122,7 +123,10 @@ export function claudeWindowOfInput(input: unknown): null | { model: string; siz
     : undefined;
   if (typeof model !== "string" || model.trim() === "") return null;
   if (typeof context !== "number" || !Number.isInteger(context) || context <= 0) return null;
-  return { model: withoutContextSuffix(model.trim().toLowerCase()), size: context };
+  // The id as reported, `[1m]` included: one id can have two windows (`claude-opus-4-5` and
+  // `claude-opus-4-5[1m]`), and a key that merged them would let one session's size measure
+  // the other's.
+  return { model: model.trim().toLowerCase(), size: context };
 }
 
 /**
@@ -150,9 +154,12 @@ export function recordClaudeWindow(paths: CliPaths, input: unknown, nowMs: numbe
   );
 }
 
-/** The window Claude Code reported for `model`, or null when it reported none. */
+/**
+ * The window Claude Code reported for `model` — the id exactly as reported, `[1m]` included —
+ * or null when it reported none.
+ */
 export function claudeWindowSaid(paths: CliPaths, model: string): null | number {
-  const name = withoutContextSuffix(model.trim().toLowerCase());
+  const name = model.trim().toLowerCase();
   return readClaudeStored(claudeWindowFile(paths))[name]?.size ?? null;
 }
 
@@ -213,6 +220,36 @@ function namesModel(targetModel: string, name: string): boolean {
   if (targetModel === name) return true;
   const at = Math.max(targetModel.lastIndexOf("/"), targetModel.lastIndexOf(":"));
   return at !== -1 && targetModel.slice(at + 1) === name;
+}
+
+/**
+ * The windows a backend's list gives the models a chain names: an exact catalog id first, and
+ * then the target whose model part is the bare name the answer records. A target that is only a
+ * bare name can match the same name under two providers' entries, and nothing says which one
+ * answered: those take the smallest window, so a crew session hands off early, never late.
+ */
+export function windowsFrom(
+  models: readonly ListedModel[],
+  wanted: ReadonlySet<string>,
+): Record<string, number> {
+  const windows: Record<string, number> = {};
+  const usable = models.filter(
+    (one): one is ListedModel & { contextLength: number } =>
+      one.contextLength !== null && one.contextLength > 0,
+  );
+  for (const one of usable) {
+    if (wanted.has(one.id)) windows[one.id] = one.contextLength;
+  }
+  for (const model of wanted) {
+    if (windows[model] !== undefined) continue;
+    let found: null | number = null;
+    for (const candidate of usable) {
+      if (!namesModel(candidate.id, model) && !namesModel(model, candidate.id)) continue;
+      found = found === null ? candidate.contextLength : Math.min(found, candidate.contextLength);
+    }
+    if (found !== null) windows[model] = found;
+  }
+  return windows;
 }
 
 /** Every slot target's model part: what the kept lists hold windows for, and nothing else. */
@@ -326,22 +363,19 @@ export function windowWatch(deps: WindowDeps): WindowWatch {
       // and the file is read at every poll.
       const wanted = targetModels(config);
       wanted.add(target.model);
-      const windows: Record<string, number> = {};
-      for (const one of listed.models) {
-        if (one.contextLength === null || one.contextLength <= 0) continue;
-        for (const model of wanted) {
-          if (namesModel(one.id, model) || namesModel(model, one.id)) {
-            windows[model] = one.contextLength;
-            break;
-          }
-        }
+      const windows = windowsFrom(listed.models, wanted);
+      // An answer that names none of them (a catalog loading, or a 200 that is no list) is no
+      // reading: kept, it would leave the gauge blind until the kept list was a day old.
+      if (Object.keys(windows).length === 0) {
+        failedAtMs.set(target.backend, nowMs);
+        return known;
       }
       try {
         writeKept(deps.paths, target.backend, { readAtMs: nowMs, windows });
       } catch {
         // The reading stands for this poll; the next one asks again (the list was not kept).
       }
-      return windows[target.model] ?? null;
+      return windows[target.model] ?? known;
     },
   };
 }

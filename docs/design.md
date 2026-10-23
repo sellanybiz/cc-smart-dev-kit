@@ -3259,10 +3259,12 @@ written and its cache read) against the window of the model that wrote that repl
 (`context-window.ts`, the window's one home). **The window comes from three places, in order.**
 **Claude Code's own number**, when the status line recorded one for that model
 (`context_window.context_window_size` in its input, kept per model in
-`<stateDir>/context-window.json`); a crew session is a `--bg` run with no footer, so the number
-is whichever session on the machine ran a status line for that model. Otherwise **the kit's table**,
+`<stateDir>/context-window.json`, one entry per id exactly as reported, `[1m]` included, because
+one id can have two windows); a crew session is a `--bg` run with no footer, so the number is
+whichever session on the machine ran a status line for that model. Otherwise **the kit's table**,
 keyed by family and the version its 1M window starts at: Fable 5 and later, Opus 4.6 and later,
 Sonnet 4.6 and later and Haiku 5.5 have 1 000 000; Haiku 4.5 and the older models have 200 000;
+a family name alone (`opus`) names that family's current model, so it is 1 000 000 too;
 `[1m]` on any id is 1 000 000; and an id the table cannot place is guessed at 200 000, so a crew
 session hands off early, never late. For **a backend's bare model name** (the router answered from
 it), the window is that backend's own `/v1/models` `context_length` for the target the gateway
