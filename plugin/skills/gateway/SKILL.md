@@ -251,6 +251,23 @@ personal file git already tracks (for on), a login key or `apiKeyHelper` anywher
 chain (with on or off), `--team` with on, and a profile the config does not have. **For the
 project this session itself runs in, the person runs it** (§ A change to your own model path).
 
+## One session, on a path of its own ("plain Claude just this once")
+
+`cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claude args>]` starts
+one session, in the folder it runs in, whatever the machine's and the project's settings say:
+
+- `--no-gateway`: plain Claude at Anthropic, on the person's own claude.ai login. Use it for a
+  task that must not go through an affordable model.
+- `--gateway`: this machine's router; `--profile <name>`: the router with one profile's chains.
+- No mode: no `--settings` file, and the settings decide as for `claude`.
+- Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). The session is
+  attached to that terminal and its exit code is passed on.
+
+It passes a `--settings` file holding only `env.ANTHROPIC_BASE_URL`, because a settings file
+beats the shell and the project's files for that one session. It refuses an unknown profile,
+`--gateway` on a machine with no gateway, and running inside a Claude Code session — the person
+runs it in their own terminal.
+
 ## Profiles: a project's own chains
 
 A profile is a named set of chains and switches over the machine's, reached by the project's URL

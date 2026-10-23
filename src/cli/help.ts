@@ -35,6 +35,7 @@ import {
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
+import { LAUNCH_USAGE } from "./launch";
 import { PROJECT_INIT_USAGE } from "./project-init";
 import { REPORT_USAGE } from "./report";
 import { UPDATE_USAGE } from "./update";
@@ -296,6 +297,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "update", listed: "more", help: UPDATE_HELP },
   { name: "restore", listed: "more", help: RESTORE_HELP },
   { name: "migrate", listed: "more", help: MIGRATE_HELP },
+  { name: "launch", listed: "more", help: LAUNCH_USAGE },
   { name: "sessions", listed: "more", help: SESSIONS_HELP },
   { name: "worktrees", listed: "more", help: WORKTREES_HELP },
   { name: "usage", listed: "more", help: USAGE_HELP },

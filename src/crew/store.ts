@@ -613,8 +613,13 @@ export function writeStoreFile(file: string, text: string): void {
   atomicWrite(file, text, 0o600);
 }
 
-/** Writes `value` whole, as JSON (`writeStoreFile`). */
-function writeRecord(file: string, value: unknown): void {
+/**
+ * Writes `value` whole, as JSON (`writeStoreFile`). One home for the kit's JSON state: a
+ * record, and a session's `--settings` file, which `crew start` and `cc-smart-dev-kit launch`
+ * both pass to `claude --settings` (mode 0600, so a file a session reads is never another
+ * user's to read).
+ */
+export function writeJsonFile(file: string, value: unknown): void {
   writeStoreFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
@@ -703,7 +708,7 @@ export async function createCrew(
         `a crew session "${crew.id}" is already recorded for ${crew.repo} (${file})`,
       );
     }
-    writeRecord(file, record);
+    writeJsonFile(file, record);
     appendEvent(stateDir, crew.repo, eventOf(record, at, "created", null));
     return record;
   });
@@ -896,7 +901,7 @@ async function changeCrew(
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
     const after = checked(crewRecordSchema, merged, file);
-    writeRecord(file, after);
+    writeJsonFile(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
     return { changed: true, record: after };
@@ -937,7 +942,7 @@ export async function writeLead(
       },
       file,
     );
-    writeRecord(file, record);
+    writeJsonFile(file, record);
     return record;
   });
 }
@@ -1015,7 +1020,7 @@ export async function writeReport(
 ): Promise<string> {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
-  await underStoreLock(stateDir, repo, () => writeRecord(file, value));
+  await underStoreLock(stateDir, repo, () => writeJsonFile(file, value));
   return file;
 }
 
@@ -1037,7 +1042,7 @@ export async function setCrewMemory(
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     const after = checked(crewRecordSchema, { ...before, memoryMb }, file);
-    writeRecord(file, after);
+    writeJsonFile(file, after);
     return after;
   });
 }
@@ -1100,8 +1105,8 @@ export async function recordCrewReport(
       recordFile,
     );
     // The report file first: a record that names a report the file lacks is the worse half-write.
-    writeRecord(file, value);
-    writeRecord(recordFile, after);
+    writeJsonFile(file, value);
+    writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
     return after;
   });

@@ -125,6 +125,7 @@ import {
   readLead,
   readReport,
   updateCrew,
+  writeJsonFile,
   writeStoreFile,
 } from "./store";
 import { usageFacts, usageUnreadLine } from "./usage-guard";
@@ -703,7 +704,7 @@ async function failed(
  * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
  * servers out (`docs/claude-code-contract.md`).
  */
-function crewSettingsText(id: string, off: readonly string[]): string {
+function crewSettings(id: string, off: readonly string[]): Record<string, unknown> {
   const settings: Record<string, unknown> = {
     env: {
       [CREW_ENV]: id,
@@ -715,7 +716,7 @@ function crewSettingsText(id: string, off: readonly string[]): string {
     settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
   }
   settings.disableClaudeAiConnectors = true;
-  return `${JSON.stringify(settings, null, 2)}\n`;
+  return settings;
 }
 
 /** Step 6: the worktree, the session, and the session id it records. */
@@ -729,7 +730,7 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   // Its neighbour, from the one home both the start and a resume read it from (`crewMcpFile`).
   const mcpFile = crewMcpFile(ctx.paths.stateDir, spec.repo, record.id);
   try {
-    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeJsonFile(settingsFile, crewSettings(record.id, spec.lean.off));
     writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
   } catch (error) {
     return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
