@@ -52,6 +52,7 @@ const session = (over: Partial<SavedSession> = {}): SavedSession => ({
   folder: "/work/my-app",
   id: "aaaaaaaa-1111-2222-3333-444444444444",
   lastWrite: 1000,
+  model: null,
   name: "a session",
   ...over,
 });
@@ -75,8 +76,23 @@ describe("reading a saved session", () => {
       folder: "/work/my-app-wt-fix-login",
       id: "abc",
       lastWrite: 42,
+      model: null,
       name: "Fix the login bug",
     });
+  });
+
+  test("the model is the last reply's own, and Claude Code's synthetic stand-in is not one", () => {
+    const reply = (model: string) =>
+      line({ message: { model, role: "assistant" }, type: "assistant" });
+    const tail =
+      reply("claude-opus-5-5") +
+      line({ type: "user" }) +
+      reply("glm-5.3-flash") +
+      reply("<synthetic>") +
+      line({ type: "system" });
+    expect(describeSession(tail, { id: "abc", lastWrite: 3 }).model).toBe("glm-5.3-flash");
+    // A tail with no reply names no model.
+    expect(describeSession(line({ type: "user" }), { id: "abc", lastWrite: 3 }).model).toBeNull();
   });
 
   test("the title Claude gave it, when the person renamed nothing; a moved session's new folder", () => {

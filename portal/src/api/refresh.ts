@@ -18,12 +18,16 @@ export function actionResult(message: LiveMessage, prefix: string): boolean {
 }
 
 export const OVERVIEW_REFRESH: RefreshOn = (message) =>
-  message.name === "state" || message.name === "crew" || actionResult(message, "slot.");
+  message.name === "state" ||
+  message.name === "crew" ||
+  actionResult(message, "slot.") ||
+  actionResult(message, "switch");
 
 export const SLOTS_REFRESH: RefreshOn = (message) =>
   message.name === "state" || actionResult(message, "slot.") || actionResult(message, "switch");
 
-export const HEALTH_REFRESH: RefreshOn = ["state"];
+export const HEALTH_REFRESH: RefreshOn = (message) =>
+  message.name === "state" || actionResult(message, "router.");
 
 export const NEEDS_REFRESH: RefreshOn = (message) =>
   message.name === "crew" ||

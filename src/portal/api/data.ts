@@ -11,8 +11,13 @@
 import { type JobsAnswer, jobsAnswer, readJobs } from "../../jobs/status";
 import { jobContext } from "../actions";
 import {
+  bunFacts,
+  claudeCodeFacts,
   configExists,
   type FallbackRow,
+  mcpRows,
+  planWindow,
+  portHolder,
   type RouterFacts,
   type SwitchFacts,
   switchFacts,
@@ -103,6 +108,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       backends: [],
       dashboardUrl: null,
       fallbacks: [],
+      fiveHour: planWindow(deps.action.portal),
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
@@ -116,6 +122,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
     ...(await overviewData(deps, deps.found.config)),
     configured: true,
     error: null,
+    fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps),
   };
 }
@@ -152,6 +159,7 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
       fallbacks: [] as FallbackRow[],
       limits: [],
       log: { lines: [], note: null },
+      portHolder: null,
       router: NO_ROUTER,
     };
   }
@@ -159,16 +167,19 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
     ...(await healthData(deps, deps.found.config)),
     configured: true,
     error: null,
+    portHolder: portHolder(deps.action.portal, deps.found.config.port),
   };
 }
 
 /** `/api/machine`: the Machine page. Needs no gateway config. */
 export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> {
-  const data = await machineData(deps);
-  if ("error" in deps.found && configExists(deps.action.portal)) {
-    return { ...data, configError: deps.found.error };
+  const ctx = deps.action.portal;
+  const [data, claudeCode] = await Promise.all([machineData(deps), claudeCodeFacts(ctx)]);
+  const answer: MachineAnswer = { ...data, bun: bunFacts(ctx), claudeCode, mcp: mcpRows(ctx) };
+  if ("error" in deps.found && configExists(ctx)) {
+    return { ...answer, configError: deps.found.error };
   }
-  return data;
+  return answer;
 }
 
 /** `/api/settings`: the Settings page. Needs no gateway config. */

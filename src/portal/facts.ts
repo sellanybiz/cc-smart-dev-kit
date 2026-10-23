@@ -8,10 +8,11 @@
  *
  * Some numbers a page would like are not here, and are not invented:
  *
- *   - **Plan usage percentages.** Claude Code computes them from the headers of its own
- *     answers and hands them to the status line on stdin (`src/cli/statusline.ts`); nothing
- *     writes them down. The router records only the limits it saw (which model, which
- *     window, when it resets), and that is what the page shows.
+ *   - **Plan usage percentages, but the 5-hour window's.** Claude Code computes them from the
+ *     headers of its own answers and hands them to the status line on stdin
+ *     (`src/cli/statusline.ts`). The status line writes down the 5-hour window alone
+ *     (`src/cli/usage-window.ts`, `planWindow` here); the 7-day ones are written nowhere.
+ *     The router records the limits it saw (which model, which window, when it resets).
  *   - **Prices and image support.** They are in OmniRoute's own catalog, which the gateway
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
  */
@@ -26,7 +27,10 @@ import {
   browserSetup,
   realBrowserSetupDeps,
 } from "../browser/setup";
-import { VERSION } from "../build-info";
+import { bunTooOld, MIN_BUN, VERSION } from "../build-info";
+import type { Check } from "../cli/check";
+import { type LiveRecord, parseClaudeVersion, readLiveRecord } from "../cli/live-check";
+import { readUsageWindow } from "../cli/usage-window";
 import { listModels } from "../gateway/backends";
 import { judgeDefaultWords } from "../gateway/commands";
 import {
@@ -41,6 +45,7 @@ import {
   type SlotMode,
   slotMode,
 } from "../gateway/config";
+import { portHolderCheck, type SocketState } from "../gateway/doctor";
 import { routerHealth } from "../gateway/health";
 import {
   currentFallbacks,
@@ -51,7 +56,8 @@ import {
   parseLimitState,
 } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
-import { UNIT_NAME } from "../gateway/service";
+import { routerServiceKind, SOCKET_NAME, UNIT_NAME } from "../gateway/service";
+import { TASK_NAME } from "../gateway/service-windows";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
 import {
   FAMILY_SLOTS,
@@ -62,11 +68,13 @@ import {
 } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
 import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
 import { locateCheckout, resolveProject } from "../project/resolve";
 import { redactUrlsIn } from "../setup/marketplace-access";
+import { commandContext } from "../update/apply";
 // Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
 import { type Clash, clashesOf } from "../workflow/clashes";
 import type { PortalContext } from "./context";
@@ -1238,5 +1246,128 @@ export async function omnirouteRow(
           ? "behind"
           : "ok",
     unit: facts.unit?.name ?? null,
+  };
+}
+
+// ── B6d: the versions, the MCP servers, the router's port holder, the 5-hour window ─────
+
+/** How long `claude --version` may take before the Machine page says it could not tell. */
+export const CLAUDE_VERSION_TIMEOUT_MS = 10_000;
+
+/** Claude Code on this machine: the version it says, and the last live proof (`doctor --live`). */
+export interface ClaudeCodeFacts {
+  /** Null when it could not be read; `why` says why. */
+  version: null | string;
+  why: null | string;
+  /** The last `doctor --live` that passed: the Claude Code and kit versions it proved. */
+  liveCheck: LiveRecord | null;
+}
+
+/**
+ * `claude --version`, spawned asynchronously (the server stays live while it runs), in the
+ * home folder and with none of the repository variables from outside (`commandContext`), and
+ * the last live proof from its record. Never a version made up: a missing or silent `claude`
+ * is a reason.
+ */
+export async function claudeCodeFacts(ctx: PortalContext): Promise<ClaudeCodeFacts> {
+  const liveCheck = readLiveRecord(ctx.paths.stateDir);
+  const claude = ctx.which("claude");
+  if (claude === null) return { liveCheck, version: null, why: "claude is not on PATH" };
+  try {
+    const child = Bun.spawn([claude, "--version"], {
+      ...commandContext(ctx.env, ctx.paths.home),
+      // Only the version line is read: a warning on stderr is not kept in a pipe nobody drains.
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: CLAUDE_VERSION_TIMEOUT_MS,
+    });
+    const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const version = exitCode === 0 ? parseClaudeVersion(output) : null;
+    return version === null
+      ? { liveCheck, version: null, why: `claude --version named no version (exit ${exitCode})` }
+      : { liveCheck, version, why: null };
+  } catch (error) {
+    return { liveCheck, version: null, why: `claude --version did not run: ${messageOf(error)}` };
+  }
+}
+
+/** The Bun the portal runs on, against the kit's minimum (`MIN_BUN`). */
+export interface BunFacts {
+  minimum: string;
+  /** True: at least the minimum. */
+  ok: boolean;
+  version: string;
+}
+
+export function bunFacts(ctx: PortalContext): BunFacts {
+  return {
+    minimum: MIN_BUN,
+    // The kit's own rule, pre-releases included (`bunTooOld`); the path only shapes its words.
+    ok: bunTooOld(ctx.bunVersion, "") === null,
+    version: ctx.bunVersion,
+  };
+}
+
+/** One of the kit's MCP servers, as `mcp status` reads it (`src/mcp/status.ts`). */
+export interface McpServerRow {
+  name: string;
+  /** For a server something else registered: what runs instead (never its env or headers). */
+  runsWhat: null | string;
+  state: McpServerState;
+}
+
+/** Every MCP server setup registers, read from Claude Code's config and the kit's records. */
+export function mcpRows(ctx: PortalContext): McpServerRow[] {
+  return mcpServerStatus(ctx.paths).map((server) => ({
+    name: server.name,
+    runsWhat: server.runsWhat,
+    state: server.state,
+  }));
+}
+
+/**
+ * What holds the router's port across restarts — systemd's socket unit, or the Windows task —
+ * in `doctor`'s own words (`portHolderCheck`).
+ */
+export interface PortHolder {
+  check: Check;
+  kind: "scheduled-task" | "systemd";
+  /** The unit or the task it names. */
+  name: string;
+  /** `open`: it holds the port now; `start-limit`: systemd closed it after failed starts. */
+  state: SocketState;
+}
+
+/** The port holder for the config's port; null where this machine runs no service for it. */
+export function portHolder(ctx: PortalContext, port: number): null | PortHolder {
+  const kind = routerServiceKind(ctx.machine.platform, ctx.which);
+  if (kind === "none") return null;
+  const { check, state } = portHolderCheck(
+    { paths: ctx.paths, runner: ctx.runner, service: kind },
+    port,
+  );
+  return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };
+}
+
+/** One window of the plan's usage, as the status line last recorded it. */
+export interface PlanWindow {
+  /** The share used, 0 to 100. */
+  percent: number;
+  /** When it resets (ISO 8601); null when Claude Code named no time. */
+  resetsAt: null | string;
+}
+
+/**
+ * The plan's 5-hour window, from the one file the status line records it in
+ * (`src/cli/usage-window.ts`); null with no reading, or one from a window that is over. The
+ * 7-day window is recorded nowhere, so no page has a number for it.
+ */
+export function planWindow(ctx: PortalContext): null | PlanWindow {
+  const window = readUsageWindow(ctx.paths, ctx.now());
+  if (window === null) return null;
+  return {
+    percent: window.percent,
+    resetsAt: window.resetsAt === null ? null : new Date(window.resetsAt * 1000).toISOString(),
   };
 }

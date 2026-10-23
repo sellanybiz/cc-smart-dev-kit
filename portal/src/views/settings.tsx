@@ -108,8 +108,8 @@ function ThisMachine() {
         <InfoIcon aria-hidden="true" />
         <AlertTitle>Your own defaults, for every project on this machine</AlertTitle>
         <AlertDescription>
-          A project's own file wins where it sets a value. A change here is a preview until saving
-          lands; until then, <code className="font-mono">{KIT_NAME} workflow set</code> changes one.
+          A project's own file wins where it sets a value. A change here is saved at once into your
+          own workflow file, as <code className="font-mono">{KIT_NAME} workflow set</code> saves it.
         </AlertDescription>
       </Alert>
       {data.error !== null && (

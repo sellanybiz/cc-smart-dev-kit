@@ -12,7 +12,7 @@ import { type ReactNode, useCallback, useId, useState } from "react";
 import type { ActionResult } from "@/api/client";
 import type { NeedsItem } from "@/api/types";
 import { ActionButton, ActionResultLine } from "@/components/action-button";
-import { CopyButton } from "@/components/copy-button";
+import { CommandLine } from "@/components/copy-button";
 import { HeldMajorActions } from "@/components/held-major";
 import { AppLink } from "@/components/router";
 import { Badge } from "@/components/ui/badge";
@@ -39,18 +39,6 @@ function CrewLink({ id, name }: { id: string; name: string }) {
     >
       {name}
     </AppLink>
-  );
-}
-
-/** A command to copy, in the page's mono text, with its copy button beside it. */
-function CommandLine({ command, label }: { command: string; label: string }) {
-  return (
-    <span className="flex flex-wrap items-center gap-2">
-      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs wrap-anywhere">
-        {command}
-      </code>
-      <CopyButton text={command} label={label} />
-    </span>
   );
 }
 

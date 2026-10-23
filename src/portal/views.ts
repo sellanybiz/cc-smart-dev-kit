@@ -514,7 +514,7 @@ function settingControl(row: SettingsRow, disabled: boolean): string {
         .join("")}</div>`;
     }
     case "number":
-      return `<div class="row numrow"><input type="number" min="1" max="100" value="${escapeHtml(String(row.value))}" aria-labelledby="${row.id}" class="numinput"${disabled ? " disabled" : ` data-setting="${row.key}"`}><span class="small">%</span></div>`;
+      return `<div class="row numrow"><input type="number" min="1" max="100" value="${escapeHtml(String(row.value))}" aria-labelledby="${row.id}" class="numinput"${disabled ? " disabled" : ` data-setting="${row.key}"`}>${row.unit === undefined ? "" : `<span class="small">${row.unit}</span>`}</div>`;
   }
 }
 

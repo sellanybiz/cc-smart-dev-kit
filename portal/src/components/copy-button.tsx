@@ -45,3 +45,15 @@ export function CopyButton({
     </Button>
   );
 }
+
+/** A command to copy, in the page's mono text, with its copy button beside it. */
+export function CommandLine({ command, label }: { command: string; label: string }) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs wrap-anywhere">
+        {command}
+      </code>
+      <CopyButton text={command} label={label} />
+    </span>
+  );
+}
