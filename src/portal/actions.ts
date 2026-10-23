@@ -63,6 +63,7 @@ import {
   type FallbackChoice,
   followSetup,
   type KeyChoice,
+  takeOver,
 } from "../machine/claude-mem-choices";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
@@ -1429,6 +1430,23 @@ async function claudeMemFallback(
 }
 
 /**
+ * `claudemem.takeover` (MS1, D63): records the values the person set by hand in claude-mem's file
+ * as cc-smart-dev-kit's, so the route, the key and the fallback may change. `readClaudeMemFacts`
+ * says per choice whether one of them refuses it now (`refusedByHand`, `handKeys`), and the page
+ * asks first, in the card's own words.
+ *
+ * Nothing in claude-mem's file changes: each value stays exactly as it is until the person picks
+ * another, and `restore` puts it back (a key is never written down, so restore takes it out).
+ */
+async function claudeMemTakeOver(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("taken over");
+  return claudeMemWrite(() => takeOver(action.portal.paths));
+}
+
+/**
  * `claudemem.follow`: hands claude-mem back to setup (`followSetup`): the person's choices are
  * forgotten, and setup's own claude-mem step runs, so it follows the scout slot again.
  */
@@ -1623,6 +1641,7 @@ export const ACTION_NAMES = [
   "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
+  "claudemem.takeover",
   "companion.enable",
   "crew.answer",
   "crew.resume",
@@ -1707,6 +1726,8 @@ export async function runAction(
       return claudeMemFollow(action, body);
     case "claudemem.fallback":
       return claudeMemFallback(action, body);
+    case "claudemem.takeover":
+      return claudeMemTakeOver(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":

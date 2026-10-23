@@ -35596,6 +35596,57 @@ async function followSetup(paths, check = checkAffordableTarget) {
     ok: true
   };
 }
+async function takeOver(paths) {
+  const ready = readReady(paths);
+  if ("blocked" in ready)
+    return { lines: [ready.blocked.text], ok: false };
+  const { read } = ready;
+  const claims = [];
+  for (const key of handSetKeys(read)) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found)
+      continue;
+    claims.push([path, current.value]);
+  }
+  if (claims.length === 0) {
+    return {
+      lines: [
+        `Nothing to take over: every value claude-mem holds in ${read.short} is cc-smart-dev-kit's own, or claude-mem's own default.`
+      ],
+      ok: true
+    };
+  }
+  return withLock(paths.stateDir, () => {
+    const result = applyManagedJson({
+      claim: claims,
+      file: paths.claudeMemSettingsFile,
+      secret: isSecretPath,
+      stateDir: paths.stateDir,
+      unchosen
+    });
+    const taken = [];
+    const moved = [];
+    for (const [path] of claims) {
+      if (result.skipped.some((one) => samePath(one.path, path)))
+        moved.push(formatKeyPath(path));
+      else
+        taken.push(path);
+    }
+    if (taken.length === 0)
+      return { lines: [CHANGED_MEANWHILE], ok: false };
+    const short = tildify(paths.claudeMemSettingsFile, paths.home);
+    return {
+      lines: [
+        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as cc-smart-dev-kit's: each stays exactly as it is until you pick another.`,
+        ...taken.map((path) => `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`),
+        "restore puts them back.",
+        ...moved.map((key) => `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`)
+      ],
+      ok: true
+    };
+  });
+}
 
 // src/setup/auto-mode.ts
 import { join as join62 } from "path";
@@ -36536,6 +36587,11 @@ async function claudeMemFallback(action, body) {
   const choice = "claude" in target ? { kind: "claude", model: target.claude } : { kind: "backend", ...target };
   return claudeMemWrite(() => chooseFallback(paths, choice));
 }
+async function claudeMemTakeOver(action, body) {
+  if (body.confirm !== true)
+    return notConfirmed("taken over");
+  return claudeMemWrite(() => takeOver(action.portal.paths));
+}
 async function claudeMemFollow(action, body) {
   if (body.confirm !== true)
     return notConfirmed("changed");
@@ -36673,6 +36729,8 @@ async function runAction(name, body, action) {
       return claudeMemFollow(action, body);
     case "claudemem.fallback":
       return claudeMemFallback(action, body);
+    case "claudemem.takeover":
+      return claudeMemTakeOver(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":

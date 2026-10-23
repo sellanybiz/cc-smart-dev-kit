@@ -1008,6 +1008,7 @@ export const ACTION_NAMES = [
   "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
+  "claudemem.takeover",
   "companion.enable",
   "crew.answer",
   "crew.resume",
