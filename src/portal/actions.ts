@@ -85,6 +85,7 @@ import {
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
+import { forgetWorktrees } from "./worktrees-read";
 
 /**
  * The OmniRoute context every portal action uses: the portal's own network, clock and runner,
@@ -1261,6 +1262,8 @@ async function crewCliAction(
     cwd: record.repo,
     onLine: (line) => action.publish?.("action", { action: name, line }),
   });
+  // `crew rm` removes the crew session's worktree: the Worktrees page's kept answer is stale.
+  forgetWorktrees(action.portal);
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
   if (run.timedOut) lines.push(crewTimeoutLine(args[0] ?? "", record.id));
@@ -1287,6 +1290,8 @@ async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
     cwd: action.cwd,
     onLine: (line) => action.publish?.("action", { action: "worktrees.clean", line }),
   });
+  // The list the page reads next must be the one after the clean, not the one from before it.
+  forgetWorktrees(action.portal);
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
   if (run.timedOut) lines.push("worktrees --clean did not answer in time");

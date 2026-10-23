@@ -263,8 +263,6 @@ export async function runWorktrees(
   sinks: WorktreesSinks = CONSOLE_SINKS,
 ): Promise<number> {
   const { error, print } = sinks;
-  const checkout = locateCheckout(cwd, { env });
-  const repo = checkout?.mainCheckout ?? resolve(cwd);
 
   if (options.remove !== null && options.remove === "") {
     error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
@@ -275,6 +273,8 @@ export async function runWorktrees(
     print(JSON.stringify(worktreesAnswerOf(paths, env, cwd, Date.now())));
     return 0;
   }
+  const checkout = locateCheckout(cwd, { env });
+  const repo = checkout?.mainCheckout ?? resolve(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
     print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`);

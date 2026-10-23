@@ -29,6 +29,15 @@ export const WORKTREES_FRESH_MS = 5_000;
 /** The answer, or why it could not be read, in words a page can show. */
 export type WorktreesRead = { answer: WorktreesAnswer } | { error: string };
 
+/**
+ * Drops this portal's kept answers: an action that adds or removes a worktree (`crew rm`,
+ * `worktrees.clean`) makes them stale, and the page's next read must scan again instead of
+ * showing the list from before the action for up to `WORKTREES_FRESH_MS`.
+ */
+export function forgetWorktrees(ctx: PortalContext): void {
+  kept.delete(ctx);
+}
+
 interface Kept {
   at: number;
   read: Promise<WorktreesRead>;
