@@ -428,11 +428,18 @@ describe("D61: a lead's start note, and never a prompt", () => {
 
   test("a crew session hears nothing: it is not the lead", async () => {
     const world = await leadWorld();
-    // A crew session's own id at a start: the store has a crew record, never a lead record, for it.
+    // The store really holds a crew session for that id (`sessionId` is null on the world's own
+    // record): a crew session is a crew record, never a lead one, so the note is not for it.
+    const crewSession = "0a1b2c3d-0000-4000-8000-000000000000";
+    await createCrew(
+      world.stateDir,
+      { ...newCrew(world.repo), id: "W3-x-9f8e7d", sessionId: crewSession },
+      T0,
+    );
     expect(
       await runHook(
         leadNotesHook,
-        { ...start(world.repo, "startup"), session_id: "0a1b2c3d-0000-4000-8000-000000000000" },
+        { ...start(world.repo, "startup"), session_id: crewSession },
         world.env,
       ),
     ).toEqual({});
