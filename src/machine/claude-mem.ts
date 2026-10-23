@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { loadConfigFile, messageOf } from "../gateway/config";
@@ -21,7 +22,7 @@ import {
   samePath,
 } from "../setup/managed-json";
 import { redactUrl } from "../setup/marketplace-access";
-import { realTarget } from "../setup/write";
+import { atomicWrite, realTarget } from "../setup/write";
 import { companionState, companions, comparableVersion } from "./companions";
 
 /**
@@ -39,6 +40,12 @@ import { companionState, companions, comparableVersion } from "./companions";
  * out again while they still hold cc-smart-dev-kit's value (`RETIRED_KEYS`); a value the
  * person set or changed stays.
  *
+ * **The person's own choice, from the portal** (PM1, owner 2026-10-23): the Machine page sets
+ * claude-mem's route and model, its key and its quota fallback (`claude-mem-choices.ts`). Those
+ * writes are owned like setup's, so `restore` takes them out, and each is recorded in
+ * `CHOICES_FILE` as the person's: setup then leaves the provider keys (together) and a chosen
+ * fallback as they are (`isPersonsChoice`). The person choosing is not the plugin choosing.
+ *
  * **claude-mem's two start blocks are off on every machine** (D23, owner 2026-10-21): work
  * state (its to-do list) and the memory-use block. Both are planned whenever claude-mem is
  * installed, whether or not the gateway is set up (`START_BLOCK_KEYS`).
@@ -55,20 +62,41 @@ import { companionState, companions, comparableVersion } from "./companions";
 export const CLAUDE_MEM_ID = "claude-mem@thedotmack";
 /** The release that brought the openai-compatible provider and the quota fallback (its CHANGELOG). */
 export const CLAUDE_MEM_MIN_VERSION = "13.29.0";
+/** claude-mem's quota fallback: the provider that takes its work while the route's is limited. */
+export const FALLBACK_PROVIDER = "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER";
+/** The Claude model of a Claude fallback (claude-mem applies it to that provider only). */
+export const FALLBACK_MODEL = "CLAUDE_MEM_QUOTA_FALLBACK_MODEL";
 /**
- * claude-mem's quota-fallback keys, which 0.4.3 and earlier set to a fixed Claude model. Never
- * written now; setup takes them out while they hold cc-smart-dev-kit's value, and leaves the
- * person's.
+ * claude-mem's quota-fallback keys, which 0.4.3 and earlier set to a fixed Claude model. Setup
+ * never writes them now; it takes them out while they hold cc-smart-dev-kit's value, and leaves
+ * the person's (also one they chose in the portal).
  */
-export const RETIRED_KEYS = [
-  "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER",
-  "CLAUDE_MEM_QUOTA_FALLBACK_MODEL",
-] as const;
+export const RETIRED_KEYS = [FALLBACK_PROVIDER, FALLBACK_MODEL] as const;
+/** The fallback value that turns it off: claude-mem waits for its own provider instead. */
+export const FALLBACK_OFF = "off";
+/**
+ * The release whose empty fallback provider means Claude (its CHANGELOG, 13.37.0: "now defaults
+ * to `claude`"). Before it, an empty value meant no fallback at all.
+ */
+export const CLAUDE_FALLBACK_SINCE = "13.37.0";
 
-const API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+export const API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
 /** The person's own pool of keys. Never set by cc-smart-dev-kit; a pool there is their choice. */
-const API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
-const PROVIDER = "CLAUDE_MEM_PROVIDER";
+export const API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
+export const PROVIDER = "CLAUDE_MEM_PROVIDER";
+export const PRESET = "CLAUDE_MEM_OPENAI_COMPAT_PRESET";
+export const BASE_URL = "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL";
+export const MODEL = "CLAUDE_MEM_OPENAI_COMPAT_MODEL";
+/** The provider value that sends claude-mem's summaries to an OpenAI-compatible backend. */
+export const OPENAI_COMPATIBLE = "openai-compatible";
+/** The preset whose base URL claude-mem takes as it is (it adds `/chat/completions`). */
+export const CUSTOM_PRESET = "custom";
+/** The Claude model claude-mem uses on the Claude route (claude-mem's own setting). */
+export const CLAUDE_MODEL = "CLAUDE_MEM_MODEL";
+/** claude-mem's own default provider: Claude, on the person's own login. */
+export const CLAUDE_PROVIDER = "claude";
+/** The five keys that point claude-mem at a model: setup writes them together, or none. */
+export const PROVIDER_KEYS = [PROVIDER, PRESET, BASE_URL, MODEL, API_KEY] as const;
 
 /**
  * claude-mem's two start blocks (D23), off on every machine. Work state is claude-mem's
@@ -102,16 +130,20 @@ export const TODO_TOOLS_VALUE = "1";
 
 /** For each key: the values that mean "nobody chose this yet" (claude-mem's defaults). */
 const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
-  [PROVIDER]: ["", "claude"],
-  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
+  [PROVIDER]: ["", CLAUDE_PROVIDER],
+  [PRESET]: [""],
+  [BASE_URL]: [""],
+  [MODEL]: [""],
   [API_KEY]: [""],
   [START_BLOCK_KEYS[0]]: ["", "true"],
   [START_BLOCK_KEYS[1]]: ["", "true"],
+  // claude-mem 13.37.0 and newer seed "claude"; older ones seeded "".
+  [FALLBACK_PROVIDER]: ["", CLAUDE_PROVIDER],
+  [FALLBACK_MODEL]: [""],
 };
 
-const unchosen = (path: KeyPath, value: unknown) =>
+/** True for a value claude-mem seeded itself in that key: nobody chose it. */
+export const unchosen = (path: KeyPath, value: unknown) =>
   typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 
 /** The gateway's affordable model, as claude-mem reaches it. */
@@ -123,6 +155,11 @@ export interface AffordableTarget {
   model: string;
   /** The backend's key from gateway.json. Never printed. */
   apiKey: string;
+}
+
+/** A gateway backend's address as claude-mem's base URL: its OpenAI-compatible `/v1`. */
+export function compatBaseUrl(backendBaseUrl: string): string {
+  return `${backendBaseUrl}/v1`;
 }
 
 /**
@@ -154,7 +191,7 @@ export function gatewayAffordableTarget(
   return {
     target: {
       backend: parsed.target.backend,
-      baseUrl: `${backend.baseUrl}/v1`,
+      baseUrl: compatBaseUrl(backend.baseUrl),
       model: parsed.target.model,
       apiKey: backend.apiKey,
     },
@@ -196,17 +233,73 @@ export interface StartBlockReading {
 }
 
 /**
- * claude-mem's settings file as a plan reads it: the file's object, where its keys go (the
- * old nested `env` form when that is what holds them), and the keys cc-smart-dev-kit owns.
+ * The person's own choices, made in the portal (`claude-mem-choices.ts`): for each key they
+ * set there, a copy of the record `applyManagedJson` kept for that write (the value, or only
+ * its hash for the key). The write is owned, so `restore` takes it out like any of setup's;
+ * this file is what tells setup that the value is the person's, not its own to change.
  */
-function readClaudeMemSettings(paths: CliPaths):
-  | {
-      data: JsonObject;
-      at: (key: string) => KeyPath;
-      records: OwnedRecord[];
-      short: string;
-    }
-  | { problem: string } {
+export const CHOICES_FILE = "claude-mem-choices.json";
+
+/**
+ * One choice: the value the person chose (or its hash, for the key), and whether the write
+ * was owned. A choice of claude-mem's own seeded default (`"claude"` for the provider, when
+ * the file already holds it) changes nothing in the file, so `applyManagedJson` owns nothing:
+ * such a choice is recorded with `owned: false`, and `restore` has nothing to take out.
+ */
+export interface ChoiceRecord extends OwnedRecord {
+  owned: boolean;
+}
+
+/** The whole choices file: each settings file (its real path) and its choices. */
+function readChoicesFile(stateDir: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(stateDir, CHOICES_FILE), "utf8"));
+    return isObject(parsed) ? parsed : {};
+  } catch {
+    // No choice made yet, or a file that cannot be read: no key counts as the person's
+    // portal choice, and setup's other rules (a value that is not its own is theirs) still hold.
+    return {};
+  }
+}
+
+/** The choices file's records for claude-mem's settings file (its real path); [] when none. */
+export function readChoices(stateDir: string, file: string): ChoiceRecord[] {
+  const records = readChoicesFile(stateDir)[file];
+  return Array.isArray(records)
+    ? records.filter(
+        (record): record is ChoiceRecord =>
+          isObject(record) &&
+          Array.isArray(record.path) &&
+          record.path.every((part) => typeof part === "string") &&
+          typeof record.owned === "boolean",
+      )
+    : [];
+}
+
+/** Replaces one settings file's choices, mode 600, in one rename. Runs under setup's lock. */
+export function writeChoices(stateDir: string, file: string, records: ChoiceRecord[]): void {
+  const all = readChoicesFile(stateDir);
+  if (records.length === 0) delete all[file];
+  else all[file] = records;
+  atomicWrite(join(stateDir, CHOICES_FILE), `${JSON.stringify(all, null, 2)}\n`, 0o600);
+}
+
+/** claude-mem's settings file as a plan reads it. */
+export interface ClaudeMemSettings {
+  /** The file's object. */
+  data: JsonObject;
+  /** Where a key goes: the old nested `env` form when that is what holds them. */
+  at: (key: string) => KeyPath;
+  /** The keys cc-smart-dev-kit owns in it, with the value it wrote. */
+  records: OwnedRecord[];
+  /** The keys the person set from the portal (`CHOICES_FILE`). */
+  choices: ChoiceRecord[];
+  /** The file, with `~` for the home folder. */
+  short: string;
+}
+
+/** claude-mem's settings file as a plan reads it, or why it cannot be read. */
+export function readClaudeMemSettings(paths: CliPaths): ClaudeMemSettings | { problem: string } {
   const file = paths.claudeMemSettingsFile;
   const short = tildify(file, paths.home);
   let data: JsonObject;
@@ -224,8 +317,30 @@ function readClaudeMemSettings(paths: CliPaths):
     data,
     at: (key: string): KeyPath => (nested ? ["env", key] : [key]),
     records: ownedRecords(paths.stateDir, realTarget(file)),
+    choices: readChoices(paths.stateDir, realTarget(file)),
     short,
   };
+}
+
+/**
+ * True when the person set this key from the portal and it still holds that value. An owned
+ * choice also needs setup's own record to match (after a `restore` that record is gone, so an
+ * old choice no longer counts); an unowned one (claude-mem's own default, chosen as it was)
+ * needs the key to be owned by nobody and still hold that default.
+ */
+export function isPersonsChoice(read: ClaudeMemSettings, key: string): boolean {
+  const path = read.at(key);
+  const current = getKey(read.data, path);
+  const choice = read.choices.find((record) => samePath(record.path, path));
+  if (choice === undefined || !hasValue(choice)) return false;
+  if (ownership([choice], path, current) !== "ours") return false;
+  const owned = ownership(read.records, path, current);
+  return choice.owned ? owned === "ours" : owned === "none" && unchosen(path, current.value);
+}
+
+/** A record that keeps the value (or its hash): one that keeps neither proves nothing. */
+function hasValue(record: OwnedRecord): boolean {
+  return record.sha256 !== undefined || Object.hasOwn(record, "value");
 }
 
 /**
@@ -271,7 +386,7 @@ function shownStartBlock(value: unknown): string {
  * `"true"`, which is how the README's way back on reads, so setup must never undo it.
  */
 function planStartBlocks(
-  read: { data: JsonObject; at: (key: string) => KeyPath; records: OwnedRecord[]; short: string },
+  read: ClaudeMemSettings,
   notes: string[],
 ): Array<readonly [KeyPath, string]> {
   const planned: Array<readonly [KeyPath, string]> = [];
@@ -305,9 +420,16 @@ function planStartBlocks(
 function planProvider(
   paths: CliPaths,
   install: { version: string | null },
-  read: { data: JsonObject; at: (key: string) => KeyPath; records: OwnedRecord[]; short: string },
+  read: ClaudeMemSettings,
   notes: string[],
 ): ClaudeMemPlan["provider"] {
+  // The person chose claude-mem's route, model or key in the portal: the provider keys are
+  // theirs, together, until they choose again (or `restore` takes their choice out).
+  const chosen = PROVIDER_KEYS.find((key) => isPersonsChoice(read, key));
+  if (chosen !== undefined) {
+    notes.push(`  claude-mem settings left alone: you chose ${chosen} in the portal (your choice)`);
+    return null;
+  }
   const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
   if ("reason" in affordable) {
     // cc-smart-dev-kit pointed claude-mem at a backend before, and there is no affordable model now.
@@ -347,10 +469,10 @@ function planProvider(
 
   const target = affordable.target;
   const wanted: Record<string, string> = {
-    [PROVIDER]: "openai-compatible",
-    CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
-    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: target.baseUrl,
-    CLAUDE_MEM_OPENAI_COMPAT_MODEL: target.model,
+    [PROVIDER]: OPENAI_COMPATIBLE,
+    [PRESET]: CUSTOM_PRESET,
+    [BASE_URL]: target.baseUrl,
+    [MODEL]: target.model,
     [API_KEY]: target.apiKey,
   };
 
@@ -375,6 +497,15 @@ function planProvider(
 }
 
 /**
+ * claude-mem's old nested form: a file that holds only "env". claude-mem rewrites it flat on
+ * its next start, and drops any flat key written beside "env" then; an owned key written under
+ * "env" would lose its path in the rewrite. So nothing writes such a file until that one start.
+ */
+export function isOldNestedForm(data: JsonObject): boolean {
+  return isObject(data.env) && Object.keys(data).every((key) => key === "env");
+}
+
+/**
  * What setup does for claude-mem:
  * - `plan`: the keys to set (the two start blocks, and the provider keys when a plan has them);
  * - `note`: a line that says why it leaves the whole file alone (it cannot be read, or it is
@@ -392,10 +523,7 @@ export function claudeMemPlan(
   if ("problem" in read) return { note: `! claude-mem settings left alone: ${read.problem}` };
   const left = (why: string) => ({ note: `! claude-mem settings left alone: ${why}` });
 
-  // claude-mem rewrites a file that holds only "env" flat on its next start, and drops
-  // any flat key written beside "env" then; an owned key written under "env" would lose its
-  // path in the rewrite. So the whole file waits for that one start.
-  if (isObject(read.data.env) && Object.keys(read.data).every((key) => key === "env")) {
+  if (isOldNestedForm(read.data)) {
     return left(
       `${read.short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.`,
     );
@@ -406,7 +534,8 @@ export function claudeMemPlan(
   const provider = planProvider(paths, install, read, notes);
   return {
     plan: {
-      remove: RETIRED_KEYS.map(read.at),
+      // A quota fallback the person chose in the portal is owned like 0.4.3's, and theirs.
+      remove: RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
       startBlocks,
       provider,
       notes,
