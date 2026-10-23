@@ -568,7 +568,7 @@ function uncheckedKeyWords(detail: string): string {
 }
 
 /** The refusal when a key is set on a machine with no gateway config: a first setup is setup's. */
-export const NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`;
+const NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`;
 
 /**
  * Sets the OmniRoute key of a gateway that is set up, and nothing else: the portal's two key
