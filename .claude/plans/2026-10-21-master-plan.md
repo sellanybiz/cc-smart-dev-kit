@@ -461,6 +461,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **CC5 merged** (`541244e`, bundles `9b1aff0`): `crew lead tell` between leads of one repo, a file-clash line at `crew start`, and `after-merge` tells the other leads (never a crew session) with an event each lead's watch prints. Conflicts with CC7 were additive (both sides' lines kept). CC5's open items moved into **CR1** (started): `findLead` duplicates `findCrew` (one home), a `clash` event showing as another crew session's `last:` line, and the proof that each lead's monitor reads only its own crew when two leads share a repo.
 
+- 2026-10-23 (overnight): **B6d merged** (`860bf53`; bundles and export `e820bf9`): Overview, Health, Machine, Settings, Work and Flow draw every fact the machine gives, with their actions. **B6e** (the whole portal's verification and design verdict, Opus) started, given the open portal items: the sideways scroll at 1024 px, the header wrap at 1280 with `?mock=`, phone tables, the synchronous `systemctl`/`readFlow` calls on the server's loop, and the key-never-on-a-page test for `/api/*`. Full check after CC5: 5660 pass, 0 fail.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
