@@ -19464,6 +19464,12 @@ var OPENAI_COMPATIBLE = "openai-compatible";
 var CUSTOM_PRESET = "custom";
 var CLAUDE_PROVIDER = "claude";
 var PROVIDER_KEYS = [PROVIDER, PRESET, BASE_URL, MODEL, API_KEY];
+var OPENROUTER_DEFAULT_MODEL = "cohere/north-mini-code:free";
+var OPENROUTER_BASE_URL = "CLAUDE_MEM_OPENROUTER_BASE_URL";
+var OPENROUTER_MODEL = "CLAUDE_MEM_OPENROUTER_MODEL";
+var OPENROUTER_API_KEY = "CLAUDE_MEM_OPENROUTER_API_KEY";
+var OPENROUTER_API_KEY_POOL = "CLAUDE_MEM_OPENROUTER_API_KEYS";
+var OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_API_KEY];
 var START_BLOCK_KEYS = [
   "CLAUDE_MEM_WORK_STATE_ENABLED",
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
@@ -19481,7 +19487,10 @@ var UNCHOSEN = {
   [START_BLOCK_KEYS[0]]: ["", "true"],
   [START_BLOCK_KEYS[1]]: ["", "true"],
   [FALLBACK_PROVIDER]: ["", CLAUDE_PROVIDER],
-  [FALLBACK_MODEL]: [""]
+  [FALLBACK_MODEL]: [""],
+  [OPENROUTER_BASE_URL]: [""],
+  [OPENROUTER_MODEL]: ["", OPENROUTER_DEFAULT_MODEL],
+  [OPENROUTER_API_KEY]: [""]
 };
 var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 function compatBaseUrl(backendBaseUrl) {
@@ -19740,7 +19749,8 @@ async function checkAffordableTarget(target, timeoutMs = 30000) {
   return `${target.backend} answered HTTP ${status} to a one-token chat request for ${target.model} at ${where}`;
 }
 function isSecretPath(path) {
-  return path.at(-1) === API_KEY;
+  const key = path.at(-1);
+  return key === API_KEY || key === OPENROUTER_API_KEY || key === OPENROUTER_API_KEY_POOL;
 }
 function applyClaudeMem(paths, plan, dryRun) {
   return applyManagedJson({
@@ -19759,7 +19769,8 @@ function shownClaudeMemValue(path, value) {
   if (isSecretPath(path) && typeof value === "string" && value !== "") {
     return JSON.stringify(maskKey(value));
   }
-  if (path.at(-1) === BASE_URL && typeof value === "string" && value !== "") {
+  const key = path.at(-1);
+  if ((key === BASE_URL || key === OPENROUTER_BASE_URL) && typeof value === "string" && value !== "") {
     return JSON.stringify(backendAddress(value) ?? "(an address that is not a URL)");
   }
   return JSON.stringify(value);
@@ -49661,7 +49672,12 @@ var FLOW_FRESH_MS = 5000;
 var reports = shortCache(FLOW_FRESH_MS);
 
 // src/machine/claude-mem-choices.ts
-var PLANNED_FROM = [...PROVIDER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL];
+var PLANNED_FROM = [
+  ...PROVIDER_KEYS,
+  FALLBACK_PROVIDER,
+  FALLBACK_MODEL,
+  ...OPENROUTER_KEYS
+];
 
 // src/portal/worktrees-read.ts
 var WORKTREES_FRESH_MS = 5000;

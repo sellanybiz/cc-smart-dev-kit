@@ -4012,6 +4012,7 @@ describe("the JSON API", () => {
         },
         current: null,
         file: "~/.claude-mem/settings.json",
+        handKeys: [],
         minVersion: "13.29.0",
         version: null,
       });

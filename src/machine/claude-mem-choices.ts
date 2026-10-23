@@ -42,6 +42,11 @@ import {
   isSecretPath,
   MODEL,
   OPENAI_COMPATIBLE,
+  OPENROUTER,
+  OPENROUTER_API_KEY,
+  OPENROUTER_BASE_URL,
+  OPENROUTER_KEYS,
+  OPENROUTER_MODEL,
   PRESET,
   PROVIDER,
   PROVIDER_KEYS,
@@ -68,10 +73,28 @@ import { comparableVersion } from "./companions";
  *     chat (`checkAffordableTarget`), so claude-mem is never left on a model, a key or an
  *     address that does not answer. Nothing is written when it fails.
  *
+ * **A backend fallback needs a provider the route does not hold.** claude-mem ignores a
+ * fallback whose provider is the route's own, so a route already on `openai-compatible` takes
+ * claude-mem's OpenRouter setup instead, pointed at the same backend and model
+ * (`fallbackProviderFor`). Both reach the same endpoint: claude-mem appends `/chat/completions`
+ * to that address exactly as its custom preset does. A person who really uses OpenRouter keeps
+ * their own address there, and it is refused like any other hand-set value.
+ *
  * claude-mem reads its settings file each time it uses it (13.40.0's `loadFromFile`), so a
- * change needs no restart. Its facts: claude-mem 13.40.0's own source (`worker-service.cjs`,
- * the settings defaults and `validateSettings`) and its CHANGELOG (13.29.0 brought the
- * openai-compatible provider and the fallback; 13.37.0 made Claude the fallback's default).
+ * change needs no restart. Its facts, read in its own 13.40.0 `worker-service.cjs`:
+ *   - an empty `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` means Claude: `A1()` answers
+ *     `e===""?"claude":…`;
+ *   - a fallback whose provider equals the route's never takes over: `E4e(t)` answers
+ *     `r===null||r===t||!ybr(r)||qC(r,e)?null:r`, and `BE` then keeps the route's provider;
+ *   - `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` is applied to a Claude fallback alone
+ *     (`applyQuotaFallbackModel` returns unless the provider is `claude`); empty, claude-mem's
+ *     own `CLAUDE_MEM_MODEL` runs instead;
+ *   - the OpenRouter provider reads `CLAUDE_MEM_OPENROUTER_BASE_URL`, `_MODEL` and
+ *     `_API_KEY` (`t4e`), needs that key (`E1` answers `!!t4e(t).apiKey`), and sends to
+ *     `bI(baseUrl)` — the address with `/chat/completions` on it.
+ * Also from claude-mem 13.40.0: the settings defaults and `validateSettings` (which accepts
+ * `openrouter` as a fallback provider whatever the route is), and its CHANGELOG (13.29.0
+ * brought the openai-compatible provider and the fallback; 13.37.0 made Claude its default).
  */
 
 /** Who put a value there. */
@@ -102,6 +125,12 @@ export interface ClaudeMemFacts {
   current: null | ClaudeMemCurrent;
   /** The gateway's backends by name; null when the gateway is not set up (no backend to pick). */
   backends: null | string[];
+  /**
+   * The keys set by hand that refuse a choice now (`refusedByHand`), by name, never with a
+   * value. Empty when nothing is the person's to give up. The take-over records them as the
+   * kit's, and `restore` puts them back.
+   */
+  handKeys: string[];
 }
 
 /** claude-mem's values now, each with where it came from. */
@@ -118,6 +147,8 @@ export interface ClaudeMemCurrent {
     /** The backend's address, without a user name, password, query or fragment. */
     address: null | string;
     source: ClaudeMemSource;
+    /** True when a change here is refused now because one of its keys is set by hand. */
+    refusedByHand: boolean;
   };
   key: {
     /**
@@ -128,17 +159,27 @@ export interface ClaudeMemCurrent {
     /** True when the person's own key pool is set too (claude-mem tries the key first). */
     pool: boolean;
     source: ClaudeMemSource;
+    /** True when a change here is refused now because the key is set by hand. */
+    refusedByHand: boolean;
   };
   fallback: {
     /** The provider that takes over while the route's is limited, or `off`, as claude-mem reads it. */
     provider: string;
-    /** A Claude fallback's model; null: claude-mem's own Claude model. */
+    /** A Claude fallback's model as the person set it; null when claude-mem's own applies. */
     model: null | string;
+    /**
+     * The Claude model a Claude fallback really runs on: the person's fallback model, else
+     * claude-mem's own Claude model (`CLAUDE_MEM_MODEL`). Null when neither is set (claude-mem's
+     * built-in default applies), and null for a fallback that is not Claude.
+     */
+    claudeModel: null | string;
     /** A backend fallback's `<backend>:<model>`, when its address is a gateway backend's. */
     target: null | string;
     /** Why it can never take over now (the same provider as the route); null when it can. */
     idle: null | string;
     source: ClaudeMemSource;
+    /** True when a change here is refused now because one of its keys is set by hand. */
+    refusedByHand: boolean;
   };
 }
 
@@ -264,6 +305,35 @@ function routeProvider(read: ClaudeMemSettings): string {
   return textOf(read, PROVIDER) || CLAUDE_PROVIDER;
 }
 
+/**
+ * The provider a backend fallback uses. claude-mem ignores a fallback whose provider is the
+ * route's own (its worker answers no fallback when the two are equal), so a route already on
+ * `openai-compatible` takes the OpenRouter setup and everything else takes the
+ * OpenAI-compatible one — each pointed at the same backend, with the same model.
+ */
+function fallbackProviderFor(route: string): string {
+  return route === OPENAI_COMPATIBLE ? OPENROUTER : OPENAI_COMPATIBLE;
+}
+
+/**
+ * The keys each choice may write, so a value set by hand names the choices it refuses. The
+ * compat four belong to the route while the route is on that provider and to the fallback
+ * otherwise (`fallbackProviderFor`), so one hand-set value refuses one of the two — never both
+ * by accident. The OpenRouter three are the fallback's alone; the key choice writes the compat
+ * key only, as `chooseKey` does.
+ */
+function keysPerChoice(route: string): Record<"fallback" | "key" | "route", readonly string[]> {
+  return {
+    fallback: [
+      ...(route === OPENAI_COMPATIBLE ? OPENROUTER_KEYS : ([PRESET, BASE_URL, MODEL, API_KEY] as const)),
+      FALLBACK_MODEL,
+      FALLBACK_PROVIDER,
+    ],
+    key: [API_KEY],
+    route: PROVIDER_KEYS,
+  };
+}
+
 /** claude-mem's state for the Machine page. Reads files only; never holds the key. */
 export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
   const config = gatewayConfig(paths);
@@ -271,6 +341,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
   const base = {
     backends: config === null ? null : Object.keys(config.backends).sort(),
     file: tildify(paths.claudeMemSettingsFile, paths.home),
+    handKeys: [] as string[],
     minVersion: CLAUDE_MEM_MIN_VERSION,
   };
   if ("blocked" in ready) {
@@ -286,25 +357,53 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
   const key = textOf(read, API_KEY);
   const fallback = fallbackProvider(read, version);
   const fallbackModel = textOf(read, FALLBACK_MODEL);
-  // claude-mem has one OpenAI-compatible setup: the route's, or a Claude route's fallback.
+  const claudeModel = textOf(read, CLAUDE_MODEL);
+  // claude-mem has two OpenAI-shaped setups, each with its own address and model: the
+  // OpenAI-compatible five (the route's, or a Claude route's fallback) and the OpenRouter three
+  // (the fallback's, on a route that is already on the compat provider).
   const compatTarget =
     backend !== null && compatModel !== "" ? `${backend.name}:${compatModel}` : null;
+  const openRouterBackend = backendAt(config, textOf(read, OPENROUTER_BASE_URL));
+  const openRouterModel = textOf(read, OPENROUTER_MODEL);
+  const openRouterTarget =
+    openRouterBackend !== null && openRouterModel !== ""
+      ? `${openRouterBackend.name}:${openRouterModel}`
+      : null;
+  // The keys the person set by hand, and so the choices a change to which is refused now.
+  const handKeys: string[] = [
+    ...PROVIDER_KEYS,
+    ...OPENROUTER_KEYS,
+    FALLBACK_PROVIDER,
+    FALLBACK_MODEL,
+  ].filter((one) => sourceOf(read, one) === "hand");
+  const refused = keysPerChoice(provider);
+  const refusedByHand = (keys: readonly string[]): boolean =>
+    keys.some((one) => handKeys.includes(one));
   return {
     ...base,
     blocked: null,
     current: {
       fallback: {
+        claudeModel:
+          fallback === CLAUDE_PROVIDER ? fallbackModel || claudeModel || null : null,
         idle:
           fallback === provider && fallback !== FALLBACK_OFF
             ? "It is the same provider as the route, so claude-mem has no fallback: it waits for the route's provider."
             : null,
-        model: fallbackModel === "" ? null : fallbackModel,
+        model: fallback === CLAUDE_PROVIDER && fallbackModel !== "" ? fallbackModel : null,
         provider: fallback,
+        refusedByHand: refusedByHand(refused.fallback),
         source: sourceOf(read, FALLBACK_PROVIDER),
-        target: fallback === OPENAI_COMPATIBLE ? compatTarget : null,
+        target:
+          fallback === OPENAI_COMPATIBLE
+            ? compatTarget
+            : fallback === OPENROUTER
+              ? openRouterTarget
+              : null,
       },
       key: {
         pool: textOf(read, API_KEY_POOL).trim() !== "",
+        refusedByHand: refusedByHand(refused.key),
         source: sourceOf(read, API_KEY),
         state:
           key === "" ? "none" : backend !== null && backend.apiKey === key ? "gateway" : "other",
@@ -314,15 +413,17 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
         kind,
         model:
           kind === "claude"
-            ? textOf(read, CLAUDE_MODEL) || null
+            ? claudeModel || null
             : compatModel === ""
               ? null
               : compatModel,
         provider,
+        refusedByHand: refusedByHand(refused.route),
         source: sourceOf(read, kind === "backend" ? MODEL : PROVIDER),
         target: kind === "backend" ? compatTarget : null,
       },
     },
+    handKeys,
     version,
   };
 }
@@ -336,11 +437,12 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
  */
 function keyFor(
   read: ClaudeMemSettings,
+  keyName: string,
   gatewayKey: string,
   gatewayKeys: readonly string[],
 ): { key: string; set: boolean } {
-  const current = textOf(read, API_KEY);
-  const source = sourceOf(read, API_KEY);
+  const current = textOf(read, keyName);
+  const source = sourceOf(read, keyName);
   if (
     current !== "" &&
     !gatewayKeys.includes(current) &&
@@ -351,14 +453,20 @@ function keyFor(
   return { key: gatewayKey, set: true };
 }
 
+/** A backend's model as one of claude-mem's OpenAI-shaped providers takes it. */
+interface ProviderKeys {
+  set: Array<readonly [string, string]>;
+  target: AffordableTarget;
+}
+
 /** The keys that point claude-mem's OpenAI-compatible provider at one gateway backend's model. */
 function compatKeys(
   read: ClaudeMemSettings,
   backend: GatewayBackend,
   model: string,
-): { set: Array<readonly [string, string]>; target: AffordableTarget } {
+): ProviderKeys {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys);
   return {
     set: [
       [PRESET, CUSTOM_PRESET],
@@ -368,6 +476,40 @@ function compatKeys(
     ],
     target: { apiKey: key.key, backend: backend.name, baseUrl, model },
   };
+}
+
+/**
+ * The keys that point claude-mem's OpenRouter provider at one gateway backend's model: the
+ * same address and model the compat keys would hold, under that provider's own names. claude-mem
+ * appends `/chat/completions` to the address, so both reach the backend's own endpoint.
+ */
+function openRouterKeys(
+  read: ClaudeMemSettings,
+  backend: GatewayBackend,
+  model: string,
+): ProviderKeys {
+  const baseUrl = compatBaseUrl(backend.baseUrl);
+  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys);
+  return {
+    set: [
+      [OPENROUTER_BASE_URL, baseUrl],
+      [OPENROUTER_MODEL, model],
+      ...(key.set ? [[OPENROUTER_API_KEY, key.key] as const] : []),
+    ],
+    target: { apiKey: key.key, backend: backend.name, baseUrl, model },
+  };
+}
+
+/** The keys one backend fallback writes, for the provider its route leaves free. */
+function fallbackKeys(
+  read: ClaudeMemSettings,
+  backend: GatewayBackend,
+  model: string,
+  route: string,
+): ProviderKeys {
+  return fallbackProviderFor(route) === OPENROUTER
+    ? openRouterKeys(read, backend, model)
+    : compatKeys(read, backend, model);
 }
 
 /** A gateway backend by name, with its address and key, or the words for why there is none. */
@@ -433,7 +575,12 @@ function handRefusal(
 }
 
 /** The keys a choice is planned from: the route's, the key's and the fallback's. */
-const PLANNED_FROM = [...PROVIDER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL] as const;
+const PLANNED_FROM = [
+  ...PROVIDER_KEYS,
+  FALLBACK_PROVIDER,
+  FALLBACK_MODEL,
+  ...OPENROUTER_KEYS,
+] as const;
 
 /** What a chooser read, to compare under the lock: the planned-from keys' values. */
 function plannedFrom(read: ClaudeMemSettings): unknown[] {
@@ -552,7 +699,21 @@ export async function chooseRoute(
   if (theirs !== null) return theirs;
   const problem = await check(keys.target);
   if (problem !== null) return { lines: [`Nothing was saved: ${problem}.`], ok: false };
-  return save(paths, ready.read, set, routeLine(`${choice.model} on ${choice.backend}`));
+  const result = await save(
+    paths,
+    ready.read,
+    set,
+    routeLine(`${choice.model} on ${choice.backend}`),
+  );
+  // A fallback on the provider the route now uses never takes over: claude-mem then has no
+  // fallback at all, and its own keys are the route's now. Say it, rather than let the person
+  // wait for one that cannot come (`readClaudeMemFacts` reports the same, as `idle`).
+  if (result.ok && fallbackProvider(ready.read, ready.version) === OPENAI_COMPATIBLE) {
+    result.lines.push(
+      "! claude-mem's fallback is on the route's own provider now, so claude-mem ignores it: choose the fallback again, or off.",
+    );
+  }
+  return result;
 }
 
 /**
@@ -617,9 +778,11 @@ export async function chooseKey(
 
 /**
  * Sets claude-mem's quota fallback: off (claude-mem waits for its route's provider), Claude (its
- * own Claude model, or one named), or a backend model. claude-mem has one OpenAI-compatible
- * setup, so a backend fallback needs the Claude route, and a Claude fallback needs a route that
- * is not Claude: a fallback that is the route's own provider never takes over.
+ * own Claude model, or one named), or a backend model. A fallback that is the route's own
+ * provider never takes over, so a Claude fallback needs a route that is not Claude, and a
+ * backend fallback needs a backend the route's provider does not already hold: it takes
+ * claude-mem's OpenRouter setup while the route is on the OpenAI-compatible one, and the other
+ * way round (`fallbackProviderFor`). Either way it reaches the same backend and model.
  */
 export async function chooseFallback(
   paths: CliPaths,
@@ -660,18 +823,14 @@ export async function chooseFallback(
       `While its route's provider is limited, claude-mem uses ${choice.model ?? "its own Claude model"} on your own Claude login.`,
     );
   }
-  if (route === OPENAI_COMPATIBLE) {
-    return {
-      lines: [
-        "claude-mem has one OpenAI-compatible backend, and its route uses it: the fallback can be Claude, or off.",
-      ],
-      ok: false,
-    };
-  }
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found) return { lines: [found.why], ok: false };
-  const keys = compatKeys(read, found.backend, choice.model);
-  const set = [...keys.set, [FALLBACK_PROVIDER, OPENAI_COMPATIBLE] as const];
+  // A route on the compat provider leaves the OpenRouter setup free, and a fallback on the
+  // route's own provider never takes over (claude-mem's own rule): so the fallback moves to
+  // the other of the two, at the same backend and model.
+  const provider = fallbackProviderFor(route);
+  const keys = fallbackKeys(read, found.backend, choice.model, route);
+  const set = [...keys.set, [FALLBACK_PROVIDER, provider] as const];
   const theirs = handRefusal(read, set);
   if (theirs !== null) return theirs;
   const problem = await check(keys.target);
