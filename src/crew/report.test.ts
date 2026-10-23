@@ -359,6 +359,16 @@ describe("crew report", () => {
     expect(report?.outsideBrief).toEqual(["README.md", "a file.md", "extra.ts"]);
   });
 
+  test("a `./` in a brief's --files names the path git does", async () => {
+    const world = await crewWorld1({ files: ["./README.md"] });
+    await runCrew(
+      ["report", "--status", "done"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+    expect(report?.outsideBrief).toEqual(["extra.ts"]);
+  });
+
   test("D36: options belong to a question, and a question has no file", async () => {
     const world = await crewWorld1();
     const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });

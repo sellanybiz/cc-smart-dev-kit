@@ -21,7 +21,7 @@
  */
 import { COMMAND, VERSION } from "../build-info";
 import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
+import { BOARD_COMMANDS, LEAD_TELL_USAGE, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -313,6 +313,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   ...BOARD_COMMANDS.map((one) => ({ name: `crew ${one.name}`, help: one.help })),
   // A crew session's note to another: its help sits beside the board's, so both read one text.
   { name: "crew tell", help: TELL_USAGE },
+  { name: "crew lead tell", help: LEAD_TELL_USAGE },
   { name: "session-name", help: SESSION_NAME_HELP },
   // Claude Code runs it from the plugin's settings.json: a status line's row body, not a
   // command for a person.

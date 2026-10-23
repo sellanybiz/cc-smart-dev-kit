@@ -57,6 +57,11 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   when you launch").
 - **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
   holds it, and it starts by itself when its place frees. Never start it a second time.
+- **A `clash:` line after the start is a warning, not a failure.** Another lead's crew session in
+  this repository lists some of the same files: the line names that lead, its crew session and the
+  files they share, and both starts go on. Two leads may mean to share a file. If they must not,
+  tell the other lead: `cc-smart-dev-kit crew lead tell "<that lead>" --kind contract "<what the
+  phase changes there>"`.
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.
@@ -87,7 +92,8 @@ How to brief well, and how to brief an affordable model: `/cc-smart-dev-kit:suba
 Running this skill starts the `crew-events` monitor. It prints one line per change of your
 crew sessions — a start, a step, a question, a permission wait, a quiet crew session, a report, a crash, a
 queued crew session that started, a note one crew session told another, the person writing to one — and each line reaches you as a notification, also when you are
-idle. So after the starts, **go on**.
+idle. A lead of another plan in this repository reaches you the same way: a note it tells you, a
+merge it made into the base, and a file clash of its phase with yours. So after the starts, **go on**.
 
 **On each line, act in that turn:**
 
@@ -99,6 +105,10 @@ idle. So after the starts, **go on**.
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
 | the person wrote to a crew session | read its next report against the brief before you merge it. Their word wins over the brief, so the phase it hands back may no longer be the phase it started (§ 6) |
+| `contract from another lead` (a note from another lead of this repository) | read it; a contract note needs no reply. If it changes your plan, act in this turn |
+| `question from another lead` | answer it: `cc-smart-dev-kit crew lead tell "<that lead>" --kind contract "<your answer>"` |
+| `merged #<n> … into <base>` (another lead merged into the base) | at your next stop, merge `origin/<base>` into the branch your folder is on, and run your install if a lock file changed. A crew session's branch never takes the base in: its lead's branch already has it |
+| `clash: …` (a crew session of yours and another lead's phase may change the same files) | nothing: both starts go on. If the two phases must not share, tell that lead with `crew lead tell` (§ 3) |
 | `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
 | `paused` (a model limit) | nothing: the watch resumes it once the gateway answers again, one first and the others 30 s apart; after `/login` on another account, `cc-smart-dev-kit crew resume --paused` |
 

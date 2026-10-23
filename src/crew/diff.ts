@@ -112,15 +112,23 @@ export function diffAgainstBase(folder: string, baseSha: string, env: Env): Diff
  */
 export function outsideBrief(paths: readonly string[], patterns: readonly string[]): string[] {
   if (patterns.length === 0) return [];
-  const globs = patterns.map((pattern) => new Bun.Glob(pattern));
+  const globs = patterns.map(filePattern);
   return paths.filter(
-    (path) =>
-      !patterns.some((pattern, index) => matchesPattern(path, pattern, globs[index] as Bun.Glob)),
+    (path) => !globs.some((one) => matchesFilePattern(path, one.pattern, one.glob)),
   );
 }
 
-/** True when `path` is the file or is under the folder `pattern` names. */
-function matchesPattern(path: string, pattern: string, glob: Bun.Glob): boolean {
+/**
+ * A `--files` pattern as git spells a path, with its glob: a leading `./` dropped, because git's
+ * own paths never carry one and a person may type it (`./src/x.ts` names `src/x.ts`).
+ */
+export function filePattern(pattern: string): { glob: Bun.Glob; pattern: string } {
+  const named = pattern.startsWith("./") ? pattern.slice(2) : pattern;
+  return { glob: new Bun.Glob(named), pattern: named };
+}
+
+/** True when `path` is the file or is under the folder `pattern` names (a glob included). */
+export function matchesFilePattern(path: string, pattern: string, glob: Bun.Glob): boolean {
   if (path === pattern) return true;
   if (pattern.endsWith("/")) return path.startsWith(pattern);
   if (!/[*?[\]{}]/.test(pattern)) return path.startsWith(`${pattern}/`);

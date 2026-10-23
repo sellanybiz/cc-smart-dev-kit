@@ -32,12 +32,14 @@ export const REPORT_COMMAND = `${COMMAND} crew report`;
 
 /**
  * The commands a lead runs, and what a crew session never does with each (D45): one home for
- * the words the launcher's refusal (`readCaller`) and the Bash judge (`src/hooks/bash-judge.ts`)
- * both use. The keys are the commands; the values complete "a crew session never …".
+ * the words the launcher's refusal (`readCaller`) uses for every command, and the Bash judge
+ * (`src/hooks/bash-judge.ts`) uses for `start`. The keys are the commands; the values complete
+ * "a crew session never …".
  */
 export const CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
+  "lead tell": "tells another lead",
   resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions",

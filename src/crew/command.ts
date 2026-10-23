@@ -17,6 +17,7 @@ import { runCrewAttach, runCrewKinds, runCrewList, runCrewStatus } from "./board
 import type { CrewContext } from "./context";
 import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
+import { runLeadTell } from "./lead-tell";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
 import { runCrewRm } from "./remove";
 import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } from "./report";
@@ -25,7 +26,16 @@ import { runCrewStart, type StartArgs } from "./start";
 import { CREW_STEPS, isCrewStep, runCrewStep } from "./step";
 import { runCrewTell, type TellArgs } from "./tell";
 import { isTellKind, TELL_KINDS } from "./tell-format";
-import { BOARD_COMMANDS, boardCommand, TELL_ARGS, TELL_SUMMARY, TELL_USAGE } from "./usage";
+import {
+  BOARD_COMMANDS,
+  boardCommand,
+  LEAD_TELL_ARGS,
+  LEAD_TELL_SUMMARY,
+  LEAD_TELL_USAGE,
+  TELL_ARGS,
+  TELL_SUMMARY,
+  TELL_USAGE,
+} from "./usage";
 import { runCrewWatch, type WatchArgs } from "./watch";
 
 /** Every kind, with the model it names and what it is for: built from `CREW_KINDS`. */
@@ -77,6 +87,10 @@ Commands:
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads; it prints the /rename line that shows the name.
+  lead tell ${LEAD_TELL_ARGS}
+                 ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
+                 It records the note for each other lead, whose watch shows it as
+                 one line, and prints one SendMessage line per lead.
   start <phase> --slug <slug> --kind <kind> --brief <file|-> [--base <ref>]
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
@@ -324,6 +338,10 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       ctx.error(usageError("Say which crew command"));
       return 2;
     }
+    if (sub === "lead" && rest[0] === "tell") {
+      ctx.print(LEAD_TELL_USAGE);
+      return 0;
+    }
     ctx.print(sub === "tell" ? TELL_USAGE : (boardCommand(sub)?.help ?? CREW_USAGE));
     return 0;
   }
@@ -377,6 +395,16 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     return await runCrewStart(args, ctx);
   }
   if (sub === "lead") {
+    // `crew lead tell` is the lead's own note to another lead; `crew lead` alone records this
+    // session as a lead. One word decides, before the arguments are read.
+    if (rest[0] === "tell") {
+      const args = parseTellArgs(rest.slice(1), LEAD_TELL_ARGS_LABELS);
+      if ("error" in args) {
+        ctx.error(usageError(args.error, "lead tell"));
+        return 2;
+      }
+      return await guarded("lead tell", ctx, () => runLeadTell(args, ctx));
+    }
     const args = parseLeadArgs(rest);
     if ("error" in args) {
       ctx.error(usageError(args.error));
@@ -521,9 +549,41 @@ export function parseAnswerArgs(argv: readonly string[]): AnswerArgs | { error: 
 
 /**
  * `crew tell`'s arguments, checked; or the mistake. The receivers come first and the text last,
- * because a receiver is a name (one quoted word) and the text is the sentence it says.
+ * because a receiver is a name (one quoted word) and the text is the sentence it says. The few
+ * words that differ between `crew tell` and `crew lead tell` are given in, so both commands
+ * read their arguments one way.
  */
-export function parseTellArgs(argv: readonly string[]): TellArgs | { error: string } {
+export interface TellArgsOptions {
+  /** What the receiver list is called in the mistake for a missing one. */
+  ask: string;
+  /** The command as a usage mistake names it: `crew tell`, `crew lead tell`. */
+  command: string;
+  /** The receivers' placeholder: `<name…>` or `<lead…>`. */
+  receivers: string;
+  /** Who may be told, completing the kind mistake: `a crew session tells`, `a lead tells`. */
+  teller: string;
+}
+
+/** The words `crew tell` reads its arguments with. */
+const CREW_TELL: TellArgsOptions = {
+  ask: "who you tell",
+  command: "crew tell",
+  receivers: "<name…>",
+  teller: "a crew session tells",
+};
+
+/** The words `crew lead tell` reads its arguments with. */
+const LEAD_TELL_ARGS_LABELS: TellArgsOptions = {
+  ask: "which leads you tell",
+  command: "crew lead tell",
+  receivers: "<lead…>",
+  teller: "a lead tells",
+};
+
+export function parseTellArgs(
+  argv: readonly string[],
+  options: TellArgsOptions = CREW_TELL,
+): TellArgs | { error: string } {
   const parsed = parseOptions(argv, ["--kind"]);
   if ("error" in parsed) return parsed;
   const kindText = parsed.options.get("--kind");
@@ -532,16 +592,20 @@ export function parseTellArgs(argv: readonly string[]): TellArgs | { error: stri
   }
   if (!isTellKind(kindText)) {
     return {
-      error: `Unknown kind: ${kindText} (a crew session tells ${TELL_KINDS.join(" or ")}, nothing else)`,
+      error: `Unknown kind: ${kindText} (${options.teller} ${TELL_KINDS.join(" or ")}, nothing else)`,
     };
   }
   const rest = parsed.positionals.slice(0, -1);
   const text = parsed.positionals.at(-1) ?? "";
   if (rest.length === 0) {
-    return { error: `Say who you tell: crew tell <name…> --kind ${kindText} "<text>"` };
+    return {
+      error: `Say ${options.ask}: ${options.command} ${options.receivers} --kind ${kindText} "<text>"`,
+    };
   }
   if (text.trim() === "") {
-    return { error: `Say what you tell: crew tell <name…> --kind ${kindText} "<text>"` };
+    return {
+      error: `Say what you tell: ${options.command} ${options.receivers} --kind ${kindText} "<text>"`,
+    };
   }
   return { kind: kindText, text, to: rest };
 }

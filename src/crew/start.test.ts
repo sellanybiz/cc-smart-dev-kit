@@ -16,6 +16,7 @@ import {
 } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { filesOverlap } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -964,5 +965,220 @@ describe("two leads in one repository", () => {
       ["B6b", LEAD_SESSION, "LEAD my-app master-plan", "master-plan"],
       ["C5b", OTHER_SESSION, "LEAD my-app docs-plan", "docs-plan"],
     ]);
+  });
+});
+
+/**
+ * A crew session in this repository, in `state`, holding `files`: the state the file-clash check
+ * reads (D55).
+ */
+async function otherLeadCrew(
+  world: Awaited<ReturnType<typeof ledWorld>>,
+  change: {
+    files: string[];
+    id: string;
+    name: string;
+    state: string;
+    leadName?: string;
+    leadSessionId?: string;
+  },
+): Promise<CrewRecord> {
+  return await createCrew(
+    world.paths.stateDir,
+    {
+      base: null,
+      baseRef: "main",
+      branch: `crew/${change.id}`,
+      effort: "high",
+      files: change.files,
+      id: change.id,
+      kind: "build",
+      lastLine: null,
+      leadName: change.leadName ?? "LEAD my-app docs-plan",
+      leadSessionId: change.leadSessionId ?? OTHER_SESSION,
+      memoryMb: null,
+      model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+      name: change.name,
+      permissionMode: "auto",
+      phase: "C5b",
+      plan: "docs-plan",
+      pr: null,
+      questions: [],
+      repo: world.repo,
+      reportPath: null,
+      sessionId: null,
+      shortId: null,
+      slug: "trim",
+      state: change.state,
+      waitsFor: [],
+      worktree: join(world.repo, ".claude", "worktrees", "crew-C5b-trim"),
+    },
+    T0,
+  );
+}
+
+/** The file-clash events of the world's repository. */
+function clashEvents(world: ReturnType<typeof crewWorld>) {
+  return readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+    (one) => one.type === "clash",
+  );
+}
+
+/** The line the start of B6b prints after its own line when it clashes over `README.md`. */
+const CLASH_LINE =
+  "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: README.md — not blocked; two leads may mean to share a file";
+
+describe("D55: a file clash between two leads, warned at crew start", () => {
+  test("shared files: one line naming the other lead, its crew session and the files", async () => {
+    const world = await ledWorld();
+    const other = await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    const head = git(world.repo, "rev-parse", "HEAD").trim().slice(0, 7);
+    const code = await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx());
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out).toEqual([
+      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head}`,
+      CLASH_LINE,
+    ]);
+    expect(clashEvents(world)).toMatchObject([
+      { crew: other.id, lead: OTHER_SESSION, name: other.name, state: "working", text: CLASH_LINE },
+    ]);
+  });
+
+  test("disjoint files: no line and no event", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", ".gitignore"), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(clashEvents(world)).toEqual([]);
+  });
+
+  test("a crew session of the same lead is no clash: one lead means one plan", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      leadName: "LEAD my-app master-plan",
+      leadSessionId: LEAD_SESSION,
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(clashEvents(world)).toEqual([]);
+  });
+
+  test("a queued crew session of another lead clashes too", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "queued",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    expect(world.out[1]).toBe(CLASH_LINE);
+    expect(clashEvents(world).map((one) => one.state)).toEqual(["queued"]);
+  });
+
+  test("two globs that match no file yet, under one prefix, overlap", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["src/crew/**"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "src/crew/new.ts"), world.ctx())).toBe(
+      0,
+    );
+    expect(world.out[1]).toBe(
+      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches both yet) — not blocked; two leads may mean to share a file",
+    );
+    // The rule on its own: the tracked files decide when they can; a glob against a path that
+    // does not exist yet is exact (the glob says whether it names it); two globs or two paths
+    // are judged by their fixed prefixes; different folders never clash.
+    expect(filesOverlap(["src/crew/**"], ["src/crew/new.ts"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["src/crew/**", "src/crew/new.ts"],
+    });
+    expect(filesOverlap(["src/crew/new.ts"], ["src/crew/*.ts"], [])).toEqual({
+      files: [],
+      patterns: ["src/crew/new.ts", "src/crew/*.ts"],
+    });
+    expect(filesOverlap(["src/crew/*.ts"], ["src/other/new.ts"], [])).toBeNull();
+    // `*` does not cross `/`, so `src/crew/*.ts` can never name the file in `deep/`: the glob
+    // is asked, and it says no.
+    expect(
+      filesOverlap(["src/crew/*.ts"], ["src/crew/deep/new.ts"], ["src/crew/start.ts"]),
+    ).toBeNull();
+    // A pattern that starts with a wildcard names no fixed place: `*.md` is never under a
+    // folder, while `**/*.ts` may reach anywhere.
+    expect(filesOverlap(["*.md"], ["src/brand-new.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["*.md"], ["*.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["**/*.ts"], ["src/brand-new.ts"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["**/*.ts", "src/brand-new.ts"],
+    });
+    // A `./` prefix is the same path as git spells it.
+    expect(filesOverlap(["./README.md"], ["README.md"], ["README.md"])).toEqual({
+      files: ["README.md"],
+      patterns: null,
+    });
+    // A bare folder names everything under it, so a glob whose own fixed prefix is inside that
+    // folder can only name files the folder holds.
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["src/crew/*.ts", "src/crew"],
+    });
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew/deep"], ["README.md"])).toBeNull();
+    // Two globs that both match real files are decided by the files they match.
+    expect(
+      filesOverlap(["src/crew/*.ts"], ["src/crew/**"], ["src/crew/start.ts", "src/crew/diff.ts"]),
+    ).toEqual({ files: ["src/crew/diff.ts", "src/crew/start.ts"], patterns: null });
+  });
+
+  test("the other lead's watch says the clash as one line, once", async () => {
+    const world = await ledWorld();
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app docs-plan",
+        plan: "docs-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    world.out.length = 0;
+    expect(
+      await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
+    ).toBe(0);
+    expect(world.out).toEqual([CLASH_LINE]);
+    // Once: the next pass says nothing new.
+    world.out.length = 0;
+    expect(
+      await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
+    ).toBe(0);
+    expect(world.out).toEqual([]);
   });
 });
