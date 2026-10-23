@@ -81,6 +81,8 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
+import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
+import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -150,6 +152,11 @@ export interface ActionResult {
   filesHash?: string;
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
+  /**
+   * `project.workflow.propose` only: the pull request it opened, for the card's own link. Read
+   * from the command's `--json` line, and only from a run that exited 0.
+   */
+  url?: string;
 }
 
 /** Everything an action is given: the portal's own context, the CLI's two, and the workflow. */
@@ -878,6 +885,92 @@ async function setWorkflowSetting(
   }
 }
 
+/**
+ * `project.workflow.propose` (D57): one of the project's workflow settings, changed through a
+ * pull request. The page asks first (`confirm`), and the CLI's own `workflow propose` runs in a
+ * child (`runCliChild`) in the project's folder: the command makes a branch, a worktree, a
+ * commit and a push, and those must never run inside the server's process
+ * (`.claude/rules/portal.md`). The child is the same command the terminal runs, with the same
+ * checks and words; the answer carries the pull request's URL for the card's own link.
+ *
+ * A crew session cannot reach this: the session-escape guard denies a crew session's call into
+ * the portal's port (D36), and the child of a click is the person's — `runCliChild` drops
+ * `CC_SMART_DEV_KIT_CREW` whatever the portal's own environment says (D52).
+ */
+async function projectWorkflowPropose(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("proposed");
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const setting = typeof body.setting === "string" ? body.setting.trim() : "";
+  if (!WORKFLOW_KEYS.includes(setting as WorkflowKey)) {
+    return {
+      lines: [`"${setting}" is not a setting: the settings are ${WORKFLOW_KEYS.join(", ")}.`],
+      ok: false,
+    };
+  }
+  const unset = body.unset === true;
+  const value = typeof body.value === "string" ? body.value.trim() : "";
+  if (!unset && value === "") {
+    return { lines: ["Type the setting's value, or remove it from the project."], ok: false };
+  }
+  // A value never starts with "-"; letting one through would read as the command's own option.
+  if (!unset && value.startsWith("-")) {
+    return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
+  }
+  // `--json`: on success the command prints one line `{ url, branch, worktree, … }` — a contract
+  // that does not move with its human words — and on any refusal it prints none, so a URL can
+  // never come out of a failure. The child gets the command's own worst case and more
+  // (`PROPOSE_WORST_CASE_MS`): its limits fire, and its take-back runs, before it is ended.
+  const run = await runCliChild(
+    action.portal,
+    ["workflow", "propose", setting, ...(unset ? ["--unset"] : [value]), "--json"],
+    {
+      cwd: target.cwd,
+      onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line }),
+      timeoutMs: PROPOSE_WORST_CASE_MS,
+    },
+  );
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push(proposeTimeoutLine(setting));
+  const ok = run.error === null && !run.timedOut && run.exitCode === 0;
+  const opened = ok ? proposedLine(run.lines) : null;
+  if (opened === null) return { lines, ok };
+  return {
+    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}, in ${opened.worktree}.`],
+    ok,
+    url: opened.url,
+  };
+}
+
+/**
+ * The pull request a successful `workflow propose --json` printed: its one JSON line, read as
+ * the command's contract (`url`, `branch`, `worktree`). Null for any other output — "already
+ * set" and "was not set" are plain lines, and a refusal prints no JSON.
+ */
+function proposedLine(lines: string[]): { branch: string; url: string; worktree: string } | null {
+  for (const line of [...lines].reverse()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      isObject(parsed) &&
+      typeof parsed.url === "string" &&
+      typeof parsed.branch === "string" &&
+      typeof parsed.worktree === "string"
+    ) {
+      return { branch: parsed.branch, url: parsed.url, worktree: parsed.worktree };
+    }
+  }
+  return null;
+}
+
 // ── The project's two files ─────────────────────────────────────────────────────
 
 /** The form's own fields: everything the Project card shows, and nothing else. */
@@ -1542,6 +1635,7 @@ export const ACTION_NAMES = [
   "omniroute.update",
   "project.add",
   "project.preview",
+  "project.workflow.propose",
   "project.write",
   "router.restart",
   "slot.breaker",
@@ -1639,6 +1733,8 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.workflow.propose":
+      return projectWorkflowPropose(action, body);
     case "project.add":
       return projectAdd(action, body);
     case "crew.answer": {

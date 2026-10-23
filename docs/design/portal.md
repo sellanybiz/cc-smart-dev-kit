@@ -267,7 +267,8 @@ covers the store as the portal found it. The doctor pass and an action's lines a
 the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
+`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`, `work`,
+`crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
@@ -290,6 +291,33 @@ memory over time, the merge verdict's review, its limits and what the review sti
 every open breaker with the router's live count of what waits, each doctor failure with its
 fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
 yet. Nothing carries a key or a prompt.
+
+**A project's workflow settings, and the one action that changes them** (D57):
+`projects/<id>/workflow` answers every key the project's file can hold (`isProjectKey`: the
+policy settings and the project's two switches), each with its value and where that value came
+from, the base a change would go into (`worktrees.base`) and whether `gh` can open a pull
+request now (`ghLoginState`, one cached answer a minute, as the branch verdicts are).
+**The values are the base's**, read with `resolveGateAsync` over the file committed on
+`origin/<base>` — the same read the merge guard judges with, and the one `workflow propose`
+compares against — then through `resolvedValueOf`, the map `workflow show` prints from. An
+uncommitted edit in the person's checkout, or another branch's file, is never shown as the
+project's policy; the ref is as fresh as the last fetch, so after a merge on GitHub the card
+shows the old value until the checkout fetches, exactly as the gate does. A project with no
+file, no base, or no committed file, or a file (or a personal `workflow.json`) that cannot be
+read, is a `note` and no settings — never a `default` for a value the project really sets. The change itself is `project.workflow.propose`:
+the page asks first (`confirm`), then `runCliChild` runs the CLI's own `workflow propose` in a
+child in the project's folder — a branch, a worktree, a commit and a push never run in the
+server's process. The child gets at least the command's own worst case (`PROPOSE_WORST_CASE_MS`,
+the sum of its step limits): its limits fire, and the take-back after a failed step runs, before
+the child is ended from outside. It runs with `--json`, and the answer carries the pull request's
+URL for the card's link only when the run exited 0 — a refusal's output never becomes a link. A crew
+session cannot reach it: the session-escape guard denies a crew session's call into the
+portal's port, and the child of a click is the person's, not the crew session whose start
+began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52). It drops `CLAUDECODE` too:
+the portal inherits it from the session start that launched it, and a command that refuses
+inside a session — a review-gate setting, above all — must not refuse the person's own click.
+A review-gate change counts once the pull request is merged, so the click opens the gate's own
+review rather than skipping it.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
@@ -377,13 +405,17 @@ child.** `crew stop`, `crew resume` and `crew rm` reach `git` and `claude` throu
 spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm`
 makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
 server, one click froze every page, every other action and the stream for that long. So those
-four actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
-stop|resume|rm <id>`, each **in the record's own repository**, or `dist/cli.js worktrees
---clean`, which has no crew record and runs **in the portal's own folder** — the folder the
-portal was started in. Each child gets the plugin's two bun flags, the portal's own `HOME` and
-`CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52)
-and a 3-minute timeout; one cut at that timeout says so and points at `crew status` and at
-running it again, because a `crew rm` may have done part of its work.
+actions — and `project.workflow.propose` (D57), which makes a worktree, a commit and a push —
+run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
+stop|resume|rm <id>`, each **in the record's own repository**, `dist/cli.js workflow propose`
+**in the project's own folder**, or `dist/cli.js worktrees --clean`, which has no crew record and
+runs **in the portal's own folder** — the folder the portal was started in. Each child gets the
+plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no
+`CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52), no `CLAUDECODE` (nor a
+Claude Code session: the portal inherits it from the session start that launched it, D9), and a
+3-minute timeout — a propose gets its command's own worst case instead. One cut at that timeout
+says so and points at `crew status` and at running it again, because a `crew rm` may have done
+part of its work.
 Every line goes out on the stream as it is printed. The record is found on **the machine**
 (`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
 own folder's store would find nothing. `crew.answer` runs in a child too

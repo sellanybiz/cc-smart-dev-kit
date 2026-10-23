@@ -19,7 +19,7 @@ import {
   slotsAnswer,
   updateAnswer,
 } from "./data";
-import { projectAnswerFor } from "./projects";
+import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
   crewAnswerFor,
@@ -218,7 +218,14 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       return { body: { error: "name a project" }, status: 400 };
     }
     if (id === "" || id.includes("/")) {
-      return { body: { error: "name a project" }, status: 400 };
+      // `/api/projects/<id>/workflow` (D57): the project's workflow settings, its base and
+      // whether gh can open a pull request. One read only, like every route here.
+      const suffix = "/workflow";
+      const named = id.endsWith(suffix) ? id.slice(0, -suffix.length) : "";
+      if (named === "" || named.includes("/"))
+        return { body: { error: "name a project" }, status: 400 };
+      const workflow = await projectWorkflowAnswerFor(deps, named);
+      return "error" in workflow ? { body: workflow, status: 404 } : ok(workflow);
     }
     const answer = await projectAnswerFor(deps, id);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);

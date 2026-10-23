@@ -14,7 +14,12 @@ import type {
   ProjectListRow,
   SettingsData,
 } from "./types";
-import type { ActionName, ActionResult } from "./wire";
+import type {
+  ActionName,
+  ActionResult,
+  ProjectWorkflowAnswer,
+  ProjectWorkflowSetting,
+} from "./wire";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -79,9 +84,56 @@ function planFor(root: string, answers: ProjectInitAnswers): ProjectInitPlan {
 export interface ProjectMocks {
   projects: ProjectList;
   projectPages: Record<string, ProjectData>;
+  /** Each project's workflow settings, for the Workflow card (D57), by project id. */
+  workflowPages: Record<string, ProjectWorkflowAnswer>;
   /** The mock's answer to a `project.*` action: a preview carries its plan, as the server's. */
   act: (action: ActionName, body: Record<string, unknown>) => ActionResult | null;
 }
+
+/**
+ * One project's workflow settings, every key with its value and where it came from — the
+ * shape `/api/projects/<id>/workflow` answers (D57). The values are placeholders: the card
+ * only draws them, and a value the project's own file sets is marked `project`.
+ */
+const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
+  { key: "autoCommit", source: "project", value: true },
+  { key: "autoPush", source: "project", value: true },
+  { key: "openPr", source: "project", value: "draft" },
+  { key: "autoMerge", source: "personal", value: true },
+  { key: "mergeMethod", source: "default", value: "merge" },
+  { key: "deleteBranch", source: "default", value: false },
+  { key: "reviewBeforePush", source: "default", value: true },
+  { key: "reviewAgents", source: "default", value: ["cc-smart-dev-kit:reviewer"] },
+  { key: "fixesAfterReview.lines", source: "default", value: 200 },
+  { key: "fixesAfterReview.files", source: "default", value: 10 },
+  { key: "fixesAfterReview.percent", source: "default", value: 20 },
+  { key: "clearWorktreeAfterMerge", source: "personal", value: true },
+  {
+    key: "alerts.events",
+    source: "default",
+    value: ["needs-you", "question", "finished", "failed"],
+  },
+  { key: "alerts.sound", source: "default", value: false },
+  { key: "alerts.usagePercent", source: "default", value: 85 },
+  { key: "crew.enabled", source: "personal", value: true },
+  { key: "crew.keep", source: "default", value: [] },
+  { key: "crew.idleStopMinutes", source: "default", value: 10 },
+  { key: "crew.max", source: "default", value: 24 },
+  { key: "crew.maxOpus", source: "default", value: null },
+  { key: "crew.memoryGb", source: "default", value: 2 },
+  { key: "crew.perLead", source: "default", value: 4 },
+  { key: "crew.perLeadOpus", source: "default", value: 2 },
+  { key: "crew.usagePercent", source: "default", value: 85 },
+  { key: "crew.quietMinutes", source: "default", value: 20 },
+  { key: "crew.handoffPercent", source: "default", value: 70 },
+  { key: "crew.softHours", source: "default", value: 2 },
+  { key: "crew.maxHours", source: "default", value: 4 },
+  { key: "crew.tag", source: "project", value: "my-app" },
+  { key: "switches.statusLine", source: "personal", value: true },
+  { key: "switches.sessionNames", source: "project", value: true },
+  { key: "switches.jobRoute", source: "project", value: true },
+  { key: "switches.updateHold", source: "default", value: false },
+];
 
 export function projectMocks(now: number, empty: boolean, settings: SettingsData): ProjectMocks {
   const rows: ProjectListRow[] = empty
@@ -199,8 +251,47 @@ export function projectMocks(now: number, empty: boolean, settings: SettingsData
       ];
     }),
   );
+  const workflowPages: Record<string, ProjectWorkflowAnswer> = Object.fromEntries(
+    rows.map((project): [string, ProjectWorkflowAnswer] => {
+      if (!project.setUp) {
+        return [
+          project.id,
+          {
+            base: null,
+            gh: "in",
+            note: `${project.path} has no .claude/cc-smart-dev-kit.json yet: set it up with \`cc-smart-dev-kit project init\` there.`,
+            settings: [],
+          },
+        ];
+      }
+      return [
+        project.id,
+        {
+          base: "main",
+          gh: project.source === "added" ? "missing" : "in",
+          note: null,
+          settings: WORKFLOW_SETTINGS,
+        },
+      ];
+    }),
+  );
   return {
     act: (action, body) => {
+      if (action === "project.workflow.propose") {
+        const page = typeof body.project === "string" ? workflowPages[body.project] : undefined;
+        if (page === undefined) return { lines: ["Mock data: no such project."], ok: false };
+        if (page.note !== null) return { lines: [page.note], ok: false };
+        const setting = typeof body.setting === "string" ? body.setting : "";
+        return {
+          lines: [
+            `+ ${setting} in .claude/cc-smart-dev-kit.json`,
+            "+ worktree-workflow-mock (mock), cut from origin/main and pushed",
+            "+ pull request into main: https://github.com/example-org/my-app/pull/44",
+          ],
+          ok: true,
+          url: "https://github.com/example-org/my-app/pull/44",
+        };
+      }
       if (action === "project.preview") {
         const page = typeof body.project === "string" ? projectPages[body.project] : undefined;
         if (page === undefined) return { lines: ["Mock data: no such project."], ok: false };
@@ -222,6 +313,7 @@ export function projectMocks(now: number, empty: boolean, settings: SettingsData
       return null;
     },
     projectPages,
+    workflowPages,
     projects: {
       note: empty ? "No Claude Code session record was found on this machine yet." : null,
       rows,

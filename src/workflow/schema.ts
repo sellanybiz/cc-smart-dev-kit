@@ -374,6 +374,22 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
   return SWITCH_KEYS.includes(key as WorkflowKey);
 }
 
+/**
+ * The switches the project's own file holds (`sessionNames`, `jobs.route`). The other two — the
+ * status line and the update hold — are the person's, per machine: `workflow set --project`
+ * refuses them (`write.ts`), and so has nothing for a pull request to change.
+ */
+export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
+
+/**
+ * True when the project's own file can hold the key: every policy key, and the project's two
+ * switches. The one answer behind `workflow propose`'s refusal and the portal's list of what a
+ * project's card may change; `propose.test.ts` holds it equal to what the writer accepts.
+ */
+export function isProjectKey(key: WorkflowKey): boolean {
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+}
+
 /** The switch's own name: `"switches.statusLine"` → `"statusLine"`. */
 export function switchOf(key: `switches.${SwitchName}`): SwitchName {
   return key.slice("switches.".length) as SwitchName;

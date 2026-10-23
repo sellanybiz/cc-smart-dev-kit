@@ -326,7 +326,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, th
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, any gateway fallback in use, and a slot whose every target is limited or down (the breaker). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the crew's opus usage guard ([`crew.usagePercent`](#the-workflow), D54). |
 | `cc-smart-dev-kit hook <notify>` | The notifier hook (below): `setup` wires `hook notify` in your user settings for agent view; it reads the hook's input on stdin and answers as Claude Code expects. The three worktree names of the plugin's retired worktree engine (**retired in 1.0.0**) only print the fix on stderr and exit 1 — a non-blocking error, so a leftover line never blocks a subagent's stop; `cc-smart-dev-kit project init` takes such a line out of the project's settings (§ Worktrees). |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
-| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. A lead uses `--branch` as its hand-back gate (§ [The workflow](#the-workflow)). |
+| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| propose <setting> <value> [--unset] [--folder <project>] [--json] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `propose` changes one of the project's own settings **through a pull request**: a branch and a worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and `gh pr create` — never a write in the main checkout, and it counts once merged. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. A lead uses `--branch` as its hand-back gate (§ [The workflow](#the-workflow)). |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). A crew session is refused: `crew start --name` gave it the name its lead, `crew answer` and the message guard address it by. |
 
 ### The gateway and OmniRoute
@@ -2454,6 +2454,30 @@ A switch is written where it really lives, so `switches.sessionNames` and
 refuse it (they are yours, per machine). A value of the wrong kind, or a setting that is not
 one of the settings there are, is refused before anything is written; a file that is not
 valid JSON is named, never rewritten.
+
+**The project's own settings change through a pull request.** `.claude/cc-smart-dev-kit.json`
+is committed and shared, and the merge guard reads the review gate from the file committed on
+the base: a change counts once it is merged, never from a checkout's own copy. So
+`cc-smart-dev-kit workflow propose` (and the portal's Workflow card, built on it) never writes
+the main checkout. It cuts a branch and a worktree from `origin/<worktrees.base>` (in
+`.claude/worktrees/`, so a merged one is cleaned like any finished worktree), writes the one
+setting there with the same writer `set --project` uses — so the value is validated and
+`requires` is raised in the same commit — commits it, pushes the branch and opens the pull
+request with `gh`:
+
+```sh
+cc-smart-dev-kit workflow propose autoCommit true
+cc-smart-dev-kit workflow propose autoMerge --unset
+cc-smart-dev-kit workflow propose crew.perLead 6 --folder ~/code/my-app --json
+```
+
+A value the base already commits is said and nothing is made (an uncommitted edit in your
+checkout is not a policy); the base must carry the project's file (commit and push it first);
+`gh` must be installed and logged in for this repository. A failure after the branch exists
+takes the worktree and the branch back, and the pushed branch too — except a `gh pr create`
+that does not answer in time, which leaves both, since the pull request may be open.
+Inside Claude Code the review-gate keys refuse, as `set` does there; outside it — your
+terminal, the portal — every key is allowed, because the pull request's review is the gate.
 
 ## A project's `.claude/cc-smart-dev-kit.json`
 

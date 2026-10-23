@@ -291,6 +291,8 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   // The lead's hand-back gate (D22): `help workflow merge-check` prints the workflow's own
   // usage, which carries merge-check's lines — one text, not a second copy.
   { name: "workflow merge-check", help: WORKFLOW_USAGE },
+  // A project's setting through a pull request (D57): the same one text carries its lines.
+  { name: "workflow propose", help: WORKFLOW_USAGE },
   { name: "update", listed: "more", help: UPDATE_HELP },
   { name: "restore", listed: "more", help: RESTORE_HELP },
   { name: "migrate", listed: "more", help: MIGRATE_HELP },
