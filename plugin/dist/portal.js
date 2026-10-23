@@ -21356,6 +21356,12 @@ function crewFilesDir(stateDir, repo, id) {
 function crewBriefFile(stateDir, repo, id) {
   return join33(crewFilesDir(stateDir, repo, id), "brief.md");
 }
+function crewSettingsFile(stateDir, repo, id) {
+  return join33(crewFilesDir(stateDir, repo, id), "settings.json");
+}
+function crewMcpFile(stateDir, repo, id) {
+  return join33(crewFilesDir(stateDir, repo, id), "mcp.json");
+}
 function crewEventsFile(stateDir, repo) {
   return join33(crewStoreDir(stateDir, repo), "events.jsonl");
 }
@@ -28017,6 +28023,8 @@ function pruneWorktrees(repo, env) {
 import { statSync as statSync17 } from "fs";
 import { join as join50 } from "path";
 var CLAUDE_TIMEOUT_MS2 = 30000;
+var CREW_AUTOCOMPACT = "auto";
+var CREW_PERMISSION_MODE = "auto";
 var realRunProgram = (argv, options) => {
   try {
     const result = Bun.spawnSync(argv, {
@@ -28090,6 +28098,18 @@ function callClaude(deps, binary, args, cwd, timeoutMs = CLAUDE_TIMEOUT_MS2) {
     return { ok: false, why: `${binary} did not start: ${run.error}` };
   return { ok: true, run };
 }
+function sessionFlags(model, effort, permissionMode = CREW_PERMISSION_MODE) {
+  return [
+    "--model",
+    model,
+    "--effort",
+    effort,
+    "--permission-mode",
+    permissionMode,
+    "--autocompact",
+    CREW_AUTOCOMPACT
+  ];
+}
 function textField(value) {
   return typeof value === "string" && value !== "" ? value : null;
 }
@@ -28153,7 +28173,7 @@ function isLiveRow(row) {
 }
 
 // src/crew/answer.ts
-import { existsSync as existsSync45 } from "fs";
+import { existsSync as existsSync46 } from "fs";
 
 // src/workflow/resolve.ts
 import { existsSync as existsSync44, readFileSync as readFileSync53 } from "fs";
@@ -28372,8 +28392,128 @@ function resolveWorkflow(paths, projectConfig) {
   };
 }
 
-// src/crew/bypass.ts
+// src/crew/display.ts
+function lastLine2(text) {
+  return text.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
+}
+
+// src/cli/usage-window.ts
+import { existsSync as existsSync45, readFileSync as readFileSync54 } from "fs";
 import { join as join52 } from "path";
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+function usageWindowFile(paths) {
+  return join52(paths.stateDir, "usage-window.json");
+}
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
+function readStored(file) {
+  if (!existsSync45(file))
+    return null;
+  try {
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync54(file, "utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+function readUsageWindow(paths, nowMs) {
+  const stored = readStored(usageWindowFile(paths));
+  if (stored === null)
+    return null;
+  const { resetsAt } = stored.fiveHour;
+  if (resetsAt !== null)
+    return resetsAt * 1000 <= nowMs ? null : stored.fiveHour;
+  const readAt = Date.parse(stored.readAt);
+  return Number.isFinite(readAt) && nowMs - readAt > WINDOW_SPAN_MS ? null : stored.fiveHour;
+}
+
+// src/crew/board.ts
+function isRefusal(value) {
+  return "lines" in value && "code" in value;
+}
+function readRecords(ctx, all, command) {
+  let checkout = null;
+  try {
+    checkout = locateCheckout(ctx.cwd, { env: ctx.env });
+  } catch (error) {
+    if (!all)
+      return outsideProject(command, error instanceof Error ? error.message : String(error));
+  }
+  if (!all && checkout === null)
+    return outsideProject(command, "this folder is not in a git project");
+  const repo = checkout === null ? null : checkout.mainCheckout ?? checkout.root;
+  const listed = all ? listAllCrew(ctx.paths.stateDir) : listCrew(ctx.paths.stateDir, repo ?? "");
+  const newestFirst = [...listed.records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  let machine = all ? listed.records : null;
+  return {
+    broken: listed.broken,
+    checkout,
+    machine: () => {
+      machine ??= listAllCrew(ctx.paths.stateDir).records;
+      return machine;
+    },
+    records: newestFirst,
+    repo: all ? null : repo
+  };
+}
+function outsideProject(command, why) {
+  const fix = command === "list" ? "run it in the project's folder, or add --all" : `run it in the project's folder (${COMMAND} crew list --all shows every repository)`;
+  return { code: 1, lines: [`crew ${command}: ${why}`, `Fix: ${fix}`] };
+}
+function findNamed(records, ref, look) {
+  const plain = withoutListRef(ref);
+  const matches = records.filter((one) => one.name === plain || look.ids(one).some((id) => id !== null && id === plain)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (matches.length === 0)
+    return { kind: "none" };
+  if (matches.length === 1)
+    return { kind: "one", record: matches[0] };
+  const live = matches.filter((one) => (look.live ?? (() => true))(one));
+  if (live.length === 1)
+    return { kind: "one", record: live[0] };
+  return { kind: "many", records: matches };
+}
+var CREW_LOOK = {
+  ids: (one) => [one.id, one.shortId, one.sessionId],
+  live: (one) => one.state !== "removed"
+};
+function findCrew(records, ref, command) {
+  const found = findNamed(records, ref, CREW_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: no crew session of this repository is "${ref}"`,
+            `Fix: ${COMMAND} crew list shows them, and --all those of every repository`
+          ]
+        }
+      };
+    case "many":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} crew sessions`,
+            ...found.records.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
+            "Fix: name one by its id"
+          ]
+        }
+      };
+  }
+}
+function stateSince(record, events) {
+  const stateEvent = events.find((one) => one.type === "state" || one.type === "created");
+  return stateEvent?.at ?? record.updatedAt;
+}
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge"]);
+
+// src/crew/bypass.ts
+import { join as join53 } from "path";
 var BYPASS_MODE = "bypassPermissions";
 var SKIP_FLAG = "--dangerously-skip-permissions";
 function commandLineMode(line) {
@@ -28390,8 +28530,8 @@ function commandLineMode(line) {
 }
 function settingsFilesOf(checkoutRoot, userSettingsFile) {
   return [
-    join52(checkoutRoot, ".claude", "settings.local.json"),
-    join52(checkoutRoot, ".claude", "settings.json"),
+    join53(checkoutRoot, ".claude", "settings.local.json"),
+    join53(checkoutRoot, ".claude", "settings.json"),
     userSettingsFile
   ];
 }
@@ -28481,9 +28621,6 @@ var REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"];
 function isReachable(state) {
   return REACHABLE_STATES.includes(state);
 }
-function findCrew(records, name) {
-  return records.find((one) => one.name === name) ?? records.find((one) => one.id === name) ?? null;
-}
 function openQuestionIndex(record) {
   for (let index = record.questions.length - 1;index >= 0; index -= 1) {
     if (record.questions[index]?.answer === null)
@@ -28519,11 +28656,13 @@ async function runCrewAnswer(args, ctx) {
     ctx.error(`crew answer: the store could not be read: ${reasonOf3(error)}`);
     return 1;
   }
-  const record = findCrew(records, args.crew);
-  if (record === null) {
-    ctx.error(`crew answer: no crew session named "${args.crew}" is recorded in this repository${records.length === 0 ? "" : ` (the crew here: ${records.map((one) => one.name).join(", ")})`}`);
+  const found = findCrew(records, args.crew, "answer");
+  if ("refusal" in found) {
+    for (const line of found.refusal.lines)
+      ctx.error(line);
     return 1;
   }
+  const { record } = found;
   const index = openQuestionIndex(record);
   if (index === null) {
     ctx.error(`crew answer: ${record.name} has no question waiting for an answer${record.questions.length === 0 ? " (it never asked one)" : ""}`);
@@ -28536,8 +28675,12 @@ async function runCrewAnswer(args, ctx) {
       ctx.error(`crew answer: ${record.name} ended its phase and was stopped, and it takes no more answers`);
       return 1;
     }
-    const rows = agentRows(ctx);
-    if (!isLiveRow(rows === null ? null : rowOf2(rows, record)))
+    const liveness = sessionLiveness(ctx, record);
+    if (liveness === "unknown") {
+      ctx.error(`crew answer: ${record.name}: ${UNREADABLE_VIEW_WHY}`);
+      return 1;
+    }
+    if (liveness === "dead")
       way = "resume";
   } else if (!isReachable(record.state)) {
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
@@ -28564,10 +28707,50 @@ async function runCrewAnswer(args, ctx) {
   }
   return 0;
 }
+function resumePlace(record) {
+  if (!existsSync46(record.worktree)) {
+    return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
+  }
+  return { folder: record.worktree, ok: true };
+}
+function sessionLiveness(ctx, record) {
+  const rows = agentRows(ctx);
+  if (rows === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    return claude === null ? "dead" : "unknown";
+  }
+  return isLiveRow(rowOf2(rows, record)) ? "live" : "dead";
+}
+var UNREADABLE_VIEW_WHY = "agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again";
+function resumeArgs(launch, files, text) {
+  const args = [
+    "--bg",
+    "--resume",
+    launch.sessionId,
+    ...sessionFlags(launch.model, launch.effort, launch.permissionMode)
+  ];
+  if (files.mcpFile !== null)
+    args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
+  args.push("--settings", files.settingsFile);
+  if (text !== null)
+    args.push(text);
+  return args;
+}
 async function resumeSession(ctx, record, text) {
   if (record.sessionId === null) {
     return { ok: false, why: `${record.name} has no session to resume` };
   }
+  const place = resumePlace(record);
+  if (!place.ok)
+    return { ok: false, why: place.why };
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
+  if (!existsSync46(settingsFile)) {
+    return {
+      ok: false,
+      why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`
+    };
+  }
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, record.repo, record.id);
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     return {
@@ -28576,8 +28759,12 @@ async function resumeSession(ctx, record, text) {
     };
   }
   const deps = claudeDeps(ctx);
-  const folder = existsSync45(record.worktree) ? record.worktree : ctx.cwd;
-  const called = callClaude(deps, claude, ["--bg", "--resume", record.sessionId, text], folder);
+  const called = callClaude(deps, claude, resumeArgs({
+    effort: record.effort,
+    model: record.model.named,
+    permissionMode: record.permissionMode,
+    sessionId: record.sessionId
+  }, { mcpFile: existsSync46(mcpFile) ? mcpFile : null, settingsFile }, text), place.folder);
   if (!called.ok)
     return { ok: false, why: called.why };
   if (called.run.exitCode !== 0) {
@@ -28652,43 +28839,6 @@ function matchesFilePattern(path, pattern, glob) {
   if (!/[*?[\]{}]/.test(pattern))
     return path.startsWith(`${pattern}/`);
   return glob.match(path);
-}
-
-// src/crew/display.ts
-function lastLine2(text) {
-  return text.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
-}
-
-// src/cli/usage-window.ts
-import { existsSync as existsSync46, readFileSync as readFileSync54 } from "fs";
-import { join as join53 } from "path";
-var WINDOW_SPAN_MS = 5 * 60 * 60000;
-function usageWindowFile(paths) {
-  return join53(paths.stateDir, "usage-window.json");
-}
-var storedSchema = looseObject({
-  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
-  readAt: string2()
-});
-function readStored(file) {
-  if (!existsSync46(file))
-    return null;
-  try {
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync54(file, "utf8")));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-function readUsageWindow(paths, nowMs) {
-  const stored = readStored(usageWindowFile(paths));
-  if (stored === null)
-    return null;
-  const { resetsAt } = stored.fiveHour;
-  if (resetsAt !== null)
-    return resetsAt * 1000 <= nowMs ? null : stored.fiveHour;
-  const readAt = Date.parse(stored.readAt);
-  return Number.isFinite(readAt) && nowMs - readAt > WINDOW_SPAN_MS ? null : stored.fiveHour;
 }
 
 // src/crew/start.ts
@@ -33363,74 +33513,6 @@ ${UPDATE_USAGE}`);
 
 // src/crew/end.ts
 import { existsSync as existsSync54 } from "fs";
-
-// src/crew/board.ts
-function isRefusal(value) {
-  return "lines" in value && "code" in value;
-}
-function readRecords(ctx, all, command) {
-  let checkout = null;
-  try {
-    checkout = locateCheckout(ctx.cwd, { env: ctx.env });
-  } catch (error) {
-    if (!all)
-      return outsideProject(command, error instanceof Error ? error.message : String(error));
-  }
-  if (!all && checkout === null)
-    return outsideProject(command, "this folder is not in a git project");
-  const repo = checkout === null ? null : checkout.mainCheckout ?? checkout.root;
-  const listed = all ? listAllCrew(ctx.paths.stateDir) : listCrew(ctx.paths.stateDir, repo ?? "");
-  const newestFirst = [...listed.records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
-  let machine = all ? listed.records : null;
-  return {
-    broken: listed.broken,
-    checkout,
-    machine: () => {
-      machine ??= listAllCrew(ctx.paths.stateDir).records;
-      return machine;
-    },
-    records: newestFirst,
-    repo: all ? null : repo
-  };
-}
-function outsideProject(command, why) {
-  const fix = command === "list" ? "run it in the project's folder, or add --all" : `run it in the project's folder (${COMMAND} crew list --all shows every repository)`;
-  return { code: 1, lines: [`crew ${command}: ${why}`, `Fix: ${fix}`] };
-}
-function findCrew2(records, ref, command) {
-  const plain = withoutListRef(ref);
-  const matches = records.filter((one) => one.name === plain || one.id === plain || one.shortId !== null && one.shortId === plain || one.sessionId !== null && one.sessionId === plain).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const [only] = matches;
-  if (only !== undefined && matches.length === 1)
-    return { record: only };
-  if (only === undefined) {
-    return {
-      refusal: {
-        code: 1,
-        lines: [
-          `crew ${command}: no crew session of this repository is "${ref}"`,
-          `Fix: ${COMMAND} crew list shows them, and --all those of every repository`
-        ]
-      }
-    };
-  }
-  return {
-    refusal: {
-      code: 1,
-      lines: [
-        `crew ${command}: "${ref}" is ${matches.length === 2 ? "two" : String(matches.length)} crew sessions`,
-        ...matches.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
-        "Fix: name one by its id"
-      ]
-    }
-  };
-}
-function stateSince(record, events) {
-  const stateEvent = events.find((one) => one.type === "state" || one.type === "created");
-  return stateEvent?.at ?? record.updatedAt;
-}
-
-// src/crew/end.ts
 var CLAUDE_END_TIMEOUT_MS = 30000;
 var GIT_TIMEOUT_MS3 = 30000;
 var CLAUDE_LOCK_PREFIX = "claude session ";
@@ -33463,7 +33545,7 @@ function actOn(ref, command, ctx) {
   const read = readRecords(ctx, false, command);
   if (isRefusal(read))
     return read;
-  const found = findCrew2(read.records, ref, command);
+  const found = findCrew(read.records, ref, command);
   return "refusal" in found ? found.refusal : { read, record: found.record };
 }
 function claudeFailure(ctx, repo, args) {
@@ -33553,9 +33635,21 @@ async function runCrewResume(ref, ctx) {
     return refuse(failure2(`crew resume: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
   }
   const id = record.shortId;
-  const respawn = claudeFailure(ctx, record.repo, ["respawn", id]);
-  if (respawn !== null) {
-    return refuse(failure2(`crew resume: ${respawn}`, `Fix: claude respawn ${id} by hand, or ${COMMAND} crew list to see it`), ctx);
+  const place = resumePlace(record);
+  if (!place.ok) {
+    return refuse(failure2(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`), ctx);
+  }
+  const liveness = sessionLiveness(ctx, record);
+  if (liveness === "live") {
+    ctx.print(`${record.name} is running already (${id}); there is nothing to resume`);
+    return 0;
+  }
+  if (liveness === "unknown") {
+    return refuse(failure2(`crew resume: ${record.name}: ${UNREADABLE_VIEW_WHY}`), ctx);
+  }
+  const resumed = await resumeSession(ctx, record, null);
+  if (!resumed.ok) {
+    return refuse(failure2(`crew resume: ${resumed.why}`, `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`), ctx);
   }
   const stored = record.state === "working" ? true : await markState(record, "working", "resumed by the lead", ctx);
   ctx.print(`resumed ${record.name} (${id})`);
@@ -36442,7 +36536,7 @@ async function crewAnswerFor(deps, ref) {
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
-  const named = findCrew2(records, ref, "status");
+  const named = findCrew(records, ref, "status");
   if ("refusal" in named)
     return { error: named.refusal.lines.join(" ") };
   const record = named.record;

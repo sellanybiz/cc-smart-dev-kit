@@ -15352,6 +15352,16 @@ function resolveWorkflow(paths, projectConfig) {
   };
 }
 
+// src/cli/usage-window.ts
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
+
+// src/crew/board.ts
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge"]);
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -15374,13 +15384,6 @@ var RETRY_WATCHDOG_SETTINGS = [
   [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
 ];
 var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
-
-// src/cli/usage-window.ts
-var WINDOW_SPAN_MS = 5 * 60 * 60000;
-var storedSchema = looseObject({
-  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
-  readAt: string2()
-});
 
 // src/crew/start.ts
 var CLASH_STATES = [...RUNNING_STATES, "queued"];
