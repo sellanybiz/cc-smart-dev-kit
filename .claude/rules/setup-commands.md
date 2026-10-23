@@ -44,11 +44,16 @@ root, or writes a trust rule. How it writes: `setup-and-managed-files.md`. How i
   terminal they are left out whatever the flags, and setup says so. A project setup
   cannot read (invalid or too-new `cc-smart-dev-kit.json`, old git, a missing main checkout)
   leaves only these entries out, with a `!` note.
-- **An offered setting is asked once, and the default is no** (the status line, the retry
-  watchdog: `src/setup/retry-watchdog.ts`). Only on a terminal; a "no" is a file in the state
-  folder (`statusline-declined`, `retry-watchdog-declined`) that stops the question; a flag turns
-  it on without asking (and `--no-retry-watchdog` turns it off and remembers the "no"); with no
-  terminal nothing is asked or changed, and `--dry-run` says so. Its keys are owned keys.
+- **An offered setting is asked once, and the default is no** (the status line). Only on a
+  terminal; a "no" is a file in the state folder (`statusline-declined`) that stops the question;
+  a flag turns it on without asking; with no terminal nothing is asked or changed, and
+  `--dry-run` says so. Its keys are owned keys.
+- **The retry watchdog is on by default** (D56, `src/setup/retry-watchdog.ts`): setup writes its
+  three owned keys without a question, with or without a terminal and with `--yes`, unless a "no"
+  is on file (`retry-watchdog-declined`) or a key of the person's own is in the settings;
+  `--no-retry-watchdog` takes ours out and remembers the "no". One of the three is a 24-hour cap
+  (`…_MAX_USAGE_LIMIT_WAIT_MS`): a usage limit that resets further away ends the wait, so a
+  `claude -p` script returns instead of waiting for days.
 - **Every question comes first.** All questions are asked before anything runs or is
   written. A "no" to one drops only what depends on it.
 - **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in

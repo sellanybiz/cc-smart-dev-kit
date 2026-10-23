@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
@@ -84,11 +84,13 @@ import {
   samePath,
 } from "../setup/managed-json";
 import {
-  RETRY_WATCHDOG_FLAG,
-  RETRY_WATCHDOG_QUESTION,
+  RETRY_WATCHDOG_DECLINED_NOTE,
+  RETRY_WATCHDOG_KEY,
+  RETRY_WATCHDOG_ON_NOTE,
   RETRY_WATCHDOG_SETTINGS,
+  retryWatchdogDeclined,
   retryWatchdogDeclinedFile,
-  retryWatchdogKeysPresent,
+  retryWatchdogKeysOurs,
 } from "../setup/retry-watchdog";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
@@ -136,9 +138,9 @@ export interface SetupOptions {
   statusline: boolean;
   /**
    * Claude Code's retry watchdog for the person's own sessions (`src/setup/retry-watchdog.ts`).
-   * `true`: `--retry-watchdog` — write its two keys without asking. `false`:
-   * `--no-retry-watchdog` — take ours out, and remember a "no". `null`: neither — ask once on a
-   * terminal (default no), never again after a "no".
+   * `true`: `--retry-watchdog` — write its three keys, and forget an earlier "no". `false`:
+   * `--no-retry-watchdog` — take ours out, and remember a "no". `null`: neither — on by
+   * default (D56), unless a "no" is on file or the person set a key of their own.
    */
   retryWatchdog: boolean | null;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
@@ -206,8 +208,9 @@ interface Managed {
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
   /**
-   * The retry watchdog's keys: `on` (`--retry-watchdog`, or a "yes" to the question) writes
-   * them, `off` (`--no-retry-watchdog`) takes ours out, `null` leaves them as they are.
+   * The retry watchdog's keys: `on` (`--retry-watchdog`, or the D56 default) writes them,
+   * `off` (`--no-retry-watchdog`) takes ours out, `null` leaves them as they are (a "no" on
+   * file, or a key of the person's own).
    */
   retryWatchdog: "off" | "on" | null;
   /**
@@ -399,6 +402,19 @@ function applySetup(
       "info",
       `${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`,
     );
+  }
+  // D56: the watchdog is on by default. When this run turns it on, one `·` line says what
+  // every session on the machine now does, and how to turn it off. A run that only adds the
+  // cap to the two keys an older setup wrote is that one change line, with no note. A "no"
+  // on file gets its own line instead: setup leaves the keys alone.
+  const watchdogTurnedOn = settings.changes.some(
+    (change) => formatKeyPath(change.path) === formatKeyPath(RETRY_WATCHDOG_KEY),
+  );
+  if (managed.retryWatchdog === "on" && watchdogTurnedOn) {
+    add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
+  }
+  if (managed.retryWatchdog === null && retryWatchdogDeclined(paths.stateDir)) {
+    add("settings", "info", RETRY_WATCHDOG_DECLINED_NOTE);
   }
   if (todoTools?.kind === "kept") {
     add(
@@ -700,55 +716,20 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed, yes:
 }
 
 /**
- * Claude Code's retry watchdog is offered, never taken: asked once, in a terminal, with the
- * trade-offs in the question; the default is no. Not asked with `--yes`, when
- * `--retry-watchdog` or `--no-retry-watchdog` already decided, when one of its keys is in the
- * settings' `env` (the person chose; a value that is theirs stays, as ForeignKeyError rules),
- * or after a "no" (`retryWatchdogDeclinedFile`). True when the answer was "no" (to remember);
- * a "yes" sets `managed.retryWatchdog`.
+ * D56: Claude Code's retry watchdog is on by default. Nothing asked, on a terminal or not,
+ * with `--yes` or not: it is turned on unless a flag already decided, the person said no
+ * before (`retryWatchdogDeclinedFile`), or a key of their own is in the settings' `env`
+ * (their value stays, as ForeignKeyError rules). A key an older setup wrote is ours: the run
+ * completes it with D56's cap.
  */
-function askRetryWatchdog(
-  paths: CliPaths,
-  machine: Machine,
-  managed: Managed,
-  yes: boolean,
-): boolean {
-  if (yes || machine.confirm === null || !retryWatchdogUndecided(paths, managed)) return false;
-  const answer = machine.confirm(RETRY_WATCHDOG_QUESTION);
-  if (answer) managed.retryWatchdog = "on";
-  return !answer;
-}
-
-/** True while nothing has decided the watchdog: no flag, no "no" on file, no key of its in the settings. */
-function retryWatchdogUndecided(paths: CliPaths, managed: Managed): boolean {
-  if (managed.retryWatchdog !== null) return false;
-  if (existsSync(retryWatchdogDeclinedFile(paths.stateDir))) return false;
+function decideRetryWatchdog(paths: CliPaths, managed: Managed): void {
+  if (managed.retryWatchdog !== null) return;
+  if (retryWatchdogDeclined(paths.stateDir)) return;
   try {
-    return !retryWatchdogKeysPresent(paths.settingsFile);
+    if (retryWatchdogKeysOurs(paths)) managed.retryWatchdog = "on";
   } catch {
     // An unreadable file: setup's own pass reports it.
-    return false;
   }
-}
-
-/**
- * What a dry run says about the watchdog: it asks nothing, so it names what a real run would
- * do. Nothing when the choice is made already (a flag, a key in the settings, a "no").
- */
-function retryWatchdogDryNote(
-  paths: CliPaths,
-  machine: Machine,
-  managed: Managed,
-  yes: boolean,
-): ReportLine | null {
-  if (!retryWatchdogUndecided(paths, managed)) return null;
-  const text =
-    machine.confirm === null
-      ? `retry watchdog: not offered, there is no terminal (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on`
-      : yes
-        ? `retry watchdog: not offered with --yes (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on`
-        : `retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); ${RETRY_WATCHDOG_FLAG} turns it on without asking`;
-  return { section: "settings", mark: "info", text };
 }
 
 /**
@@ -1103,6 +1084,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // changes another repo.
   report.push(...reportLines("projects", retiredRepoLines(paths, options.env)));
 
+  // D56: the retry watchdog is on by default. A flag, a "no" on file, or a key of the
+  // person's own already decides it; anything else turns it on here, before the read-only
+  // pass, so a value of theirs that setup may not take still stops it in that pass.
+  decideRetryWatchdog(paths, managed);
   // A read-only pass: a key the user set (autoUpdate: true) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
   const planned = applySetup(paths, managed, true, plannedRemovals, machine.platform);
@@ -1127,8 +1112,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null) report.push(asking.note);
     }
-    const watchdogNote = retryWatchdogDryNote(paths, machine, managed, options.yes);
-    if (watchdogNote !== null) report.push(watchdogNote);
     if (planned.tmuxAdded && tmuxRunning) {
       report.push({ section: "terminal", mark: "info", text: tmuxNow });
     }
@@ -1165,9 +1148,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     );
   }
   const declined = askStatusline(paths, asking, managed, options.yes);
-  // `--no-retry-watchdog` is a "no" as well: remembered, so a later plain setup does not ask.
-  const watchdogDeclined =
-    askRetryWatchdog(paths, asking, managed, options.yes) || options.retryWatchdog === false;
+  // `--no-retry-watchdog` is a "no": remembered, so a later plain setup leaves the keys out.
+  const watchdogDeclined = options.retryWatchdog === false;
   let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
@@ -1249,6 +1231,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
         if (watchdogDeclined) {
           atomicWrite(retryWatchdogDeclinedFile(paths.stateDir), "no\n", 0o600);
+        }
+        // `--retry-watchdog` forgets an earlier "no", so the state agrees with the keys.
+        if (options.retryWatchdog === true) {
+          rmSync(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
         }
         return {
           mcp,

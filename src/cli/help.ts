@@ -95,8 +95,8 @@ by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, po
 at the scout slot's affordable model (when its chain starts with one), and copies the
 project's auto-mode entries into your settings. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
-with --yes. --yes offers neither the status line nor the retry watchdog. It prints a section
-per part, one verdict line, and the next steps to run, in order.
+with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
+prints a section per part, one verdict line, and the next steps to run, in order.
 
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
@@ -110,10 +110,11 @@ per part, one verdict line, and the next steps to run, in order.
   --instructions       bring them back (restore forgets the choice)
   --statusline         also set Claude Code's status line to "${COMMAND} statusline"
                        (asked when run in a terminal)
-  ${RETRY_WATCHDOG_FLAG}     make every Claude Code session wait and retry at a limit instead
-                       of failing, with no time limit (${RETRY_WATCHDOG_ENV} in your
-                       settings; asked once when run in a terminal, default no)
-  ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and do not ask again
+  ${RETRY_WATCHDOG_FLAG}     turn the retry watchdog on without asking (it is on by default):
+                       every Claude Code session waits at a limit instead of failing
+                       (${RETRY_WATCHDOG_ENV} in your settings); a usage limit that
+                       resets more than 24 hours away ends the wait
+  ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and keep it out
   --dry-run            print what would change, and write, run and check nothing`;
 
 const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--verbose] [--json] [--live]

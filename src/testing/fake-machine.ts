@@ -92,8 +92,8 @@ export interface WorldOptions {
    * again. Default: true, so a test about other questions sees only those; false asks it.
    */
   statuslineAnswered?: boolean;
-  /** The same for the retry watchdog question (`src/setup/retry-watchdog.ts`). Default: true. */
-  retryWatchdogAnswered?: boolean;
+  /** The same for the retry watchdog's "no" (`src/setup/retry-watchdog.ts`). Default: true. */
+  retryWatchdogDeclined?: boolean;
   /**
    * The fake `claude` keeps what `claude mcp` registers, as Claude Code does
    * (`fake-claude-mcp.ts`), so a second setup finds the servers the first one added. Default:
@@ -185,7 +185,7 @@ export function world(options: WorldOptions = {}) {
     mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
     writeFileSync(statuslineDeclinedFile(paths.stateDir), "no\n", { mode: 0o600 });
   }
-  if (options.retryWatchdogAnswered !== false) {
+  if (options.retryWatchdogDeclined !== false) {
     mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
     writeFileSync(retryWatchdogDeclinedFile(paths.stateDir), "no\n", { mode: 0o600 });
   }
