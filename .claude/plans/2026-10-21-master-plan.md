@@ -497,6 +497,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **The owner's eval comparison on `release-1.1.0`** (after C1 and its two lines back; `bun run evals fast`, 31 cases, $2.36): no case worse for real. Six improved (`cli-change-no-performance-budget` 0.50→1.00, `pull-request-on-open-pr` 0.67→1.00, `self-evolve-on-repeated-mistake` 0.67→1.00, `memory-routing-on-project-fact` 0→0.33, `plan-before-build` 0.11→0.22, `edit-in-worktree` 0→0.11). One read worse once: `pr-body-keeps-account-private` 1.00→0.67, where one run never wrote the file (Haiku, 12 turns); rerun 3×3 times by the lead (a filtered nested run, the case needs no shell): 9 of 9 pass. **C1 stays.**
 
+- 2026-10-23: **Owner: Remote Control is not needed.** Claude Code turns it off while `ANTHROPIC_BASE_URL` points away from Anthropic, so it stays off while the gateway is on (as documented); 1.2.0 keeps its order (GP2, GP3, GP4, GP5), and GP3's `launch --no-gateway` check of Remote Control stays a check, not a priority.
+
 ### For the owner in the morning
 
 1. **C1 first (it is not merged):** read `.claude/worktrees/crew-C1-core-trim/plugin/instructions/core.md` (128 lines) and its report's list of rules moved and **deleted** (`~/.claude/cc-smart-dev-kit/crew/<repo>/reports/C1-core-trim-*.json`). The deleted ones are yours: say which come back. Then, in a normal terminal, `cd <the repo>/.claude/worktrees/crew-C1-core-trim && bun run evals fast` (no `--save-baseline`): no case may score below today's baseline. Then the lead merges C1 and opens the PR. Read **Decided overnight** below too.
