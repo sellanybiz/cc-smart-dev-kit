@@ -24,7 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ago, clockTime, megabytes, slotName, until } from "@/lib/format";
+import { ago, clockTime, duration, megabytes, slotName, until } from "@/lib/format";
 
 /** The states a crew session is running in: the Overview's count uses the same list. */
 const RUNNING: readonly string[] = ["starting", "working", "blocked", "paused", "quiet"];
@@ -61,6 +61,13 @@ function waitingWords(record: CrewRecord, now: number): string | null {
   return waiting.resetsAt === null
     ? `Waits for ${waiting.model}'s limit`
     : `Waits for ${waiting.model}'s limit, resets ${until(waiting.resetsAt, now)}`;
+}
+
+/** How long a state has held, to the minute: a newer one is "under a minute". */
+function heldFor(since: string, now: number): string {
+  const ms = now - Date.parse(since);
+  if (!Number.isFinite(ms)) return "an unknown time";
+  return ms < 60_000 ? "under a minute" : duration(Math.round(ms / 60_000) * 60_000);
 }
 
 /** What a memory line shows, in words, for a screen reader. */
@@ -131,6 +138,11 @@ function CrewRow({
       <TableCell className="w-44 align-top whitespace-normal">
         <div className="flex flex-col items-start gap-1">
           <TonePill tone={stateTone(record.state)}>{record.state}</TonePill>
+          {record.stateSince !== undefined && (
+            <span className="text-xs text-muted-foreground">
+              for {heldFor(record.stateSince, now)}
+            </span>
+          )}
           {waiting !== null && (
             <span className="text-xs text-pretty text-muted-foreground">{waiting}</span>
           )}
@@ -259,7 +271,7 @@ const SESSION_TONE: Record<OtherSession["state"], Tone> = {
   working: "ok",
   waiting: "warn",
   idle: "info",
-  open: "info",
+  ended: "info",
 };
 
 function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: number }) {
@@ -267,7 +279,10 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
     <Card className="gap-0 overflow-hidden py-0">
       <CardHeader className="border-b py-4">
         <CardTitle>Your other sessions</CardTitle>
-        <CardDescription>Claude sessions on this machine that no lead started.</CardDescription>
+        <CardDescription>
+          Claude sessions of this project from the last two days that no lead started. A session
+          that still runs is answered in its own terminal; resuming one opens a copy.
+        </CardDescription>
       </CardHeader>
       {sessions.length === 0 ? (
         <div className="p-6">
@@ -302,7 +317,9 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
                   </TableCell>
                   <TableCell>{session.project}</TableCell>
                   <TableCell className="font-mono text-xs">{session.branch ?? "—"}</TableCell>
-                  <TableCell className="font-mono text-xs">{session.model}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {session.model ?? <span className="text-muted-foreground">—</span>}
+                  </TableCell>
                   <TableCell>
                     <TonePill tone={SESSION_TONE[session.state]}>
                       {session.state === "waiting" ? "waits for you" : session.state}
@@ -310,7 +327,11 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
                   </TableCell>
                   <TableCell>{ago(session.lastAt, now)}</TableCell>
                   <TableCell className="text-right">
-                    <CopyButton text={`claude --resume ${session.sessionId}`} label="Resume" />
+                    {session.state === "ended" || session.state === "idle" ? (
+                      <CopyButton text={`claude --resume ${session.sessionId}`} label="Resume" />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">runs now</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -374,7 +395,7 @@ function WorkPage({ data }: { data: WorkData }) {
             )
           }
           headline={`${data.others.length} other session${data.others.length === 1 ? "" : "s"} on this machine`}
-          detail="Resume one in a terminal to answer it"
+          detail="Answer it in its own terminal"
         />
       </SectionCards>
       <PagePad className="flex flex-col gap-4 md:gap-6">

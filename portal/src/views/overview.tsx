@@ -4,7 +4,14 @@ import { useMemo, useState } from "react";
 import { recentOf } from "@/api/adapt";
 import { useLiveEvent, useResource } from "@/api/hooks";
 import { HISTORY_REFRESH, NEEDS_REFRESH, OVERVIEW_REFRESH } from "@/api/refresh";
-import type { FallbackRow, LimitRow, OverviewData, RecentRequest } from "@/api/types";
+import type {
+  FallbackRow,
+  LimitRow,
+  OverviewData,
+  PlanWindow,
+  RecentRequest,
+  SwitchFacts,
+} from "@/api/types";
 import { BySwitch } from "@/components/by-switch";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
@@ -14,10 +21,22 @@ import { METRICS } from "@/components/metrics";
 import { NeedsList } from "@/components/needs-list";
 import { RequestsTable } from "@/components/requests-table";
 import { AppLink } from "@/components/router";
+import { SavedSwitch } from "@/components/saved-switch";
 import { SectionCards, StatCard } from "@/components/section-cards";
-import { ResourceView } from "@/components/states";
+import { PagePad, ResourceView } from "@/components/states";
 import { TonePill } from "@/components/status";
-import { count, duration, percent, slotName, targetModel, usd } from "@/lib/format";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  clockTime,
+  count,
+  duration,
+  percent,
+  slotName,
+  targetModel,
+  until,
+  usd,
+} from "@/lib/format";
 import { rangeOf } from "@/lib/history";
 
 /** Requests a minute over the last five minutes of the router's list. */
@@ -117,7 +136,115 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
   );
 }
 
-/** The "Needs you" panel: the newest few, each one line, and the way to the whole list. */
+/**
+ * The gateway's three switches, each the same command the CLI runs (`gateway on|off`, the judge
+ * slot's mode, the opus and fable slots' mode), asked first, its result in place.
+ */
+function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number }) {
+  return (
+    <PagePad>
+      <Card>
+        <CardHeader>
+          <CardTitle>Switches</CardTitle>
+          <CardDescription>
+            Each changes every running Claude session from its next request. You confirm first.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <div className="grid gap-6 @3xl/main:grid-cols-3">
+            <SavedSwitch
+              label="Gateway"
+              help={
+                switches.gateway
+                  ? `On: Claude Code sends its requests through the router on 127.0.0.1:${port}.`
+                  : "Off: Claude Code talks to Anthropic directly, and no slot answers."
+              }
+              checked={switches.gateway}
+              action="switch"
+              body={(on) => ({ name: "gateway", on })}
+              question={`Turn the gateway ${switches.gateway ? "off" : "on"}?`}
+            />
+            <SavedSwitch
+              label="Your own judge"
+              help={
+                switches.judgeUntested
+                  ? "A target has not passed the force-push test, so the router ignores it."
+                  : switches.judge
+                    ? "On: your judge judges every auto-mode safety check in Claude's place. A weak judge can let a risky command through, and it reads the conversation."
+                    : "Off: Claude judges auto mode's safety checks. It turns on only with a saved, fully force-push-tested chain."
+              }
+              checked={switches.judge}
+              action="switch"
+              body={(on) => ({ name: "judge", on })}
+              question={`Turn your own judge ${switches.judge ? "off" : "on"}?`}
+            />
+            <SavedSwitch
+              label="opus and fable slots"
+              help={
+                switches.models
+                  ? "On: Opus and Fable requests go to the chains saved on the Slots page."
+                  : "Off: Opus and Fable answer themselves."
+              }
+              checked={switches.models}
+              action="switch"
+              body={(on) => ({ name: "models", on })}
+              question={`Turn the opus and fable slots ${switches.models ? "off" : "on"}?`}
+            />
+          </div>
+          {switches.warnings.map((warning) => (
+            <Alert key={warning} className="border-warn/40">
+              <AlertDescription>{warning}</AlertDescription>
+            </Alert>
+          ))}
+        </CardContent>
+      </Card>
+    </PagePad>
+  );
+}
+
+/**
+ * The plan's 5-hour window, as Claude Code's status line last recorded it, and the newest plan
+ * limit the router saw. Nothing else of the plan's usage is written down anywhere.
+ */
+function PlanCard({
+  window,
+  limit,
+  now,
+}: {
+  window: null | PlanWindow;
+  limit: LimitRow | undefined;
+  now: number;
+}) {
+  return (
+    <StatCard
+      label="Plan usage, 5-hour window"
+      className="@4xl/main:col-span-2 @7xl/main:col-span-1"
+      value={window === null ? "—" : percent(window.percent / 100)}
+      badge={
+        limit !== undefined ? (
+          <TonePill tone="warn">limit until {limit.resets ?? "?"}</TonePill>
+        ) : window === null ? (
+          <TonePill tone="info">no reading</TonePill>
+        ) : (
+          <TonePill tone="ok">no limit seen</TonePill>
+        )
+      }
+      headline={
+        window === null
+          ? "The status line has recorded none yet"
+          : window.resetsAt === null
+            ? "Claude Code named no reset time"
+            : `Resets ${until(window.resetsAt, now)}, at ${clockTime(window.resetsAt)}`
+      }
+      detail={
+        limit !== undefined
+          ? `${limit.model} ran out of its ${limit.claim} window`
+          : "From the status line; the 7-day windows are written nowhere"
+      }
+    />
+  );
+}
+
 /** The heavy-job queue in one line, linking to its card on Machine. */
 function JobsTile({ jobs }: { jobs: OverviewData["jobs"] }) {
   const gb = (value: number) => `${value.toLocaleString("en", { maximumFractionDigits: 1 })}`;
@@ -208,8 +335,6 @@ function OverviewPage({ data }: { data: OverviewData }) {
   const rpm = perMinute(health.recent, now);
   const breakers = Object.entries(health.breakers);
   const restingCount = Object.keys(health.cooling).length;
-  const fiveHours = data.usage.find((u) => u.window === "5h");
-  const sevenDays = data.usage.find((u) => u.window === "7d");
   const limit = data.limits[0];
   const fallback = data.fallbacks[0];
 
@@ -265,31 +390,7 @@ function OverviewPage({ data }: { data: OverviewData }) {
               : `${breakers[0][1].heldNow} request${breakers[0][1].heldNow === 1 ? "" : "s"} waiting now`
           }
         />
-        <StatCard
-          label="Claude replies, 5 h and 7 days"
-          className="@4xl/main:col-span-2 @7xl/main:col-span-1"
-          value={
-            <span className="flex items-baseline gap-2">
-              {count(fiveHours?.claudeReplies ?? 0)}
-              <span className="text-base font-normal text-muted-foreground">
-                / {count(sevenDays?.claudeReplies ?? 0)}
-              </span>
-            </span>
-          }
-          badge={
-            limit === undefined ? (
-              <TonePill tone="ok">no limit seen</TonePill>
-            ) : (
-              <TonePill tone="warn">limit until {limit.resets ?? "?"}</TonePill>
-            )
-          }
-          headline={
-            fiveHours !== undefined && fiveHours.claudeReplies > 0
-              ? `${percent(fiveHours.premiumReplies / fiveHours.claudeReplies)} of the last 5 h on Opus or Fable`
-              : "No Claude reply in the last 5 h"
-          }
-          detail="Plan percentages are only in Claude Code's status line"
-        />
+        <PlanCard window={data.fiveHour} limit={limit} now={now} />
         <StatCard
           label="Crew sessions running"
           value={count(data.crewRunning)}
@@ -309,6 +410,7 @@ function OverviewPage({ data }: { data: OverviewData }) {
       </SectionCards>
       <FilterBar state={state} />
       <Charts state={state} jobs={data.jobs} />
+      <SwitchesCard switches={data.switches} port={health.port} />
       <DataTable
         label="Routing"
         tabs={[
@@ -347,7 +449,7 @@ function OverviewPage({ data }: { data: OverviewData }) {
   );
 }
 
-/** Overview: the traffic now, what answers it, and what needs you. */
+/** Overview: the traffic now, what answers it, the switches, and what needs you. */
 export function OverviewView() {
   const overview = useResource((client) => client.overview(), "", OVERVIEW_REFRESH);
   const [live, setLive] = useState<RecentRequest[]>([]);

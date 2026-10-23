@@ -2358,7 +2358,7 @@ function oldBunRefusal(command, version, path) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync56, readFileSync as readFileSync66 } from "fs";
-import { dirname as dirname22, join as join67 } from "path";
+import { dirname as dirname23, join as join67 } from "path";
 
 // src/gateway/config.ts
 import { createHash as createHash2 } from "crypto";
@@ -21296,6 +21296,19 @@ function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+function parseCrewKeep(entry) {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -21318,6 +21331,7 @@ var workflowSchema = strictObject({
   }).optional(),
   crew: strictObject({
     enabled: boolean2().optional(),
+    keep: array(crewKeepSchema).optional(),
     idleStopMinutes: numberField("crew.idleStopMinutes"),
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
@@ -21354,6 +21368,7 @@ var workflowDefaults = {
   },
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     maxOpus: null,
@@ -21388,6 +21403,7 @@ var POLICY_KEYS = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -21452,6 +21468,19 @@ function parseWorkflowValue(key, text) {
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
+  if (key === "crew.keep") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0)
+      return { ok: false, why: `crew.keep is a list of ${CREW_KEEP_RULE}` };
+    const unknown = named.filter((entry) => parseCrewKeep(entry) === null);
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why: `crew.keep: unknown ${unknown.join(", ")} (an entry is ${CREW_KEEP_RULE})`
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
   if (key === "reviewAgents") {
     const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
     if (named.length === 0) {
@@ -21486,7 +21515,7 @@ function showValue(key, value) {
   if (key === "crew.maxOpus" && value === null)
     return `(${CREW_MAX_OPUS_UNSET})`;
   if (Array.isArray(value))
-    return value.join(", ");
+    return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }
 
@@ -22569,6 +22598,7 @@ function crewIdOf(env) {
   const id = env[CREW_ENV]?.trim() ?? "";
   return id === "" ? null : id;
 }
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 function sessionRecordFile(claudeConfigDir, pid) {
   return join37(claudeConfigDir, "sessions", `${pid}.json`);
 }
@@ -24692,6 +24722,7 @@ var CREW_STEPS = {
   worktreeRemove: "A crew session never runs `git worktree remove --force`: it deletes a worktree even when " + "it holds uncommitted or untracked work, and nobody is at the machine to answer the " + "guard's question. Look in it first: commit or copy out what it holds, then run `git " + "worktree remove <path>` without `--force`, which refuses while anything is left.",
   branchDelete: "A crew session never deletes a branch with `git branch -D`: it can drop commits that " + "were never merged, and nobody is at the machine to answer the guard's question. `git log " + "--oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d " + "<branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
   resetHard: "A crew session never runs `git reset --hard`: it throws away every uncommitted change in " + "this folder, and nobody is at the machine to answer the guard's question. Commit the " + "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " + "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " + "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
+  resetMerge: "A crew session never runs `git reset --merge`: it throws away changes that are staged but " + "not committed \u2014 a staged change to a tracked file goes back to the target version, and a " + "staged new file is deleted for good \u2014 and nobody is at the machine to answer the guard's " + "question. `git reset --keep <commit>` moves the branch and never overwrites a working " + "file (it refuses instead), but it still resets the index, so a version staged and not " + "also in the working file is dropped: commit it first when it is needed. To undo a " + "deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm " + "path.bak`), and check it with `git diff --quiet -- path`.",
   clean: "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " + "is at the machine to answer the guard's question. Run `git clean -n` and read the list " + "first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
   stashClear: "A crew session never runs `git stash clear`: it throws away every stash for good, and " + "nobody is at the machine to answer the guard's question. `git stash list` shows them " + "all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
   stashDrop: "A crew session never runs `git stash drop` without a name: it drops the newest stash, " + "whoever made it, and nobody is at the machine to answer the guard's question. `git stash " + "list` shows them; `git stash drop stash@{n}` names the one you mean.",
@@ -24917,6 +24948,10 @@ var RESET_HARD_ASK = {
   ask: "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first.",
   crew: CREW_STEPS.resetHard
 };
+var RESET_MERGE_ASK = {
+  ask: "`git reset --merge` throws away changes that are staged but not committed: a staged " + "change to a tracked file goes back to the target version, and a staged new file is " + "deleted from the folder (measured). Your working files are kept: it refuses rather than " + "overwrite one whose working copy differs from the target, including a file with both " + "staged and unstaged changes (measured on git 2.53). Approve only if you want the " + "staged work gone; a WIP commit keeps it first.",
+  crew: CREW_STEPS.resetMerge
+};
 var CLEAN_FORCE_ASK = {
   ask: "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting.",
   crew: CREW_STEPS.clean
@@ -25093,6 +25128,9 @@ function callQuestions(call, folder, run) {
     return answer(BRANCH_DELETE_ASK, run);
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
     return answer(RESET_HARD_ASK, run);
+  }
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
+    return answer(RESET_MERGE_ASK, run);
   }
   if (sub === "clean") {
     const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
@@ -25293,9 +25331,6 @@ var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
 function pullRequestMerges(command, aliases = null, dialect) {
   return pullRequestCalls(command, aliases, dialect).filter(isMerge);
-}
-function pullRequestOpenings(command, aliases = null, dialect) {
-  return pullRequestCalls(command, aliases, dialect).filter((one) => !isMerge(one));
 }
 function isMerge(one) {
   return one.opens === undefined;
@@ -27477,6 +27512,7 @@ function judgeWorkflowCall(fields, ctx, env, place) {
 }
 var UNREADABLE_ASK = "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
 var UNREADABLE_UNATTENDED = "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
+var UNREADABLE_CREW = "The guard cannot see the model and effort its launches run on: pass the script inline (`script`), or by `scriptPath` to a file the guard can read.";
 function workflowAnswer(call, env) {
   if (call.refusal !== null)
     return { decision: "deny", reason: call.refusal };
@@ -27484,8 +27520,14 @@ function workflowAnswer(call, env) {
   if (denied !== undefined)
     return { decision: "deny", reason: workflowReason(denied) };
   if (call.unreadable.length > 0 && nobodyWatches(env)) {
-    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join(`
-`) };
+    return {
+      decision: "deny",
+      reason: [
+        ...call.unreadable,
+        ...inCrew(env) ? [UNREADABLE_CREW, CREW_QUESTION_STEP] : [UNREADABLE_UNATTENDED]
+      ].join(`
+`)
+    };
   }
   const asks = [
     ...call.unreadable.map((reason) => `${reason}
@@ -27677,10 +27719,9 @@ function judgeModel(launch, real, ctx, env) {
     if (word === null)
       return deny(real, builder ? fableBuildDenial(real, type) : fableDenial(real));
     if (nobodyWatches(env)) {
-      return deny(real, [
-        "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it in an interactive session."
-      ].join(`
+      const why = "A Fable launch is approved by the person, one by one, and this session has nobody to answer";
+      return deny(real, inCrew(env) ? [`${why}.`, CREW_QUESTION_STEP].join(`
+`) : [`${why} (\`claude -p\`).`, "Run it in an interactive session."].join(`
 `));
     }
     return {
@@ -27704,10 +27745,13 @@ function judgeModel(launch, real, ctx, env) {
     const effort = launch.effort?.toLowerCase() ?? null;
     if (real.family !== "opus") {
       if (nobodyWatches(env)) {
-        return deny(real, [
-          `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
-          "Name `opus` (or a Claude Opus id) as its model."
+        const why = `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer`;
+        return deny(real, inCrew(env) ? [
+          `${why}.`,
+          "Name `opus` (or a Claude Opus id) as its model.",
+          CREW_QUESTION_STEP
         ].join(`
+`) : [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join(`
 `));
       }
       return {
@@ -27725,8 +27769,10 @@ function judgeModel(launch, real, ctx, env) {
     if (effort !== OPUS_ASK_EFFORT)
       return allow(real, why);
     if (nobodyWatches(env)) {
-      return deny(real, [
-        `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+      const nobody = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
+      return deny(real, inCrew(env) ? [`${nobody}.`, `Run it at ${levelsText(OPUS_FREE_EFFORTS)}.`, CREW_QUESTION_STEP].join(`
+`) : [
+        `${nobody} (\`claude -p\`).`,
         `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`
       ].join(`
 `));
@@ -27755,7 +27801,10 @@ function judgeModel(launch, real, ctx, env) {
   return allow(real, "");
 }
 function nobodyWatches(env) {
-  return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
+  return inCrew(env) || !isAttended(env);
+}
+function inCrew(env) {
+  return crewIdOf(env) !== null;
 }
 function sessionLaunchModel(sessionModel, gateway, env) {
   if (sessionModel === null)
@@ -27875,36 +27924,56 @@ var RAN_EVENT = "PostToolUse";
 function afterTheCall(input) {
   return stringField(input.hook_event_name) === RAN_EVENT;
 }
-function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
+function judgeCall(input, env, paths, cwd) {
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
-  const file = agentLaunchesFile(paths.stateDir);
-  const ran = afterTheCall(input);
-  const record = (judged) => {
-    const lines = judged.map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index)).filter((line) => line !== null);
-    if (lines.length > 0)
-      appendAgentLaunches(file, lines);
-  };
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
     const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
     const answer = workflowAnswer(call, env);
-    if (answer.decision === "deny")
-      return ran ? SILENT : toolDecision("deny", answer.reason);
-    const asked = answer.decision === "ask";
+    return { kind: "workflow", call, decision: answer.decision, reason: answer.reason };
+  }
+  const launch = readLaunch(input);
+  if (launch === null)
+    return null;
+  return { kind: "launch", launch, verdict: judgeLaunch(launch, context, env) };
+}
+function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null)
+    return SILENT;
+  const ran = afterTheCall(input);
+  const file = agentLaunchesFile(paths.stateDir);
+  const record = (lines) => {
+    const records = lines.map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index)).filter((line) => line !== null);
+    if (records.length > 0)
+      appendAgentLaunches(file, records);
+  };
+  if (judged.kind === "workflow") {
+    const { call, decision, reason } = judged;
+    if (decision === "deny")
+      return ran ? SILENT : toolDecision("deny", reason);
+    const asked = decision === "ask";
     if (ran === asked) {
       record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
     if (ran || !asked)
       return SILENT;
-    return toolDecision("ask", answer.reason);
+    return toolDecision("ask", reason);
   }
-  const launch = readLaunch(input);
-  if (launch === null)
+  const { launch, verdict } = judged;
+  if (verdict.decision === (ran ? "ask" : "allow"))
+    record([{ launch, verdict }]);
+  return ran || verdict.decision === "allow" ? SILENT : toolDecision(verdict.decision, verdict.reason);
+}
+function crewAgentAnswer(input, env, paths, cwd) {
+  if (!inCrew(env) || afterTheCall(input))
     return SILENT;
-  const result = judgeLaunch(launch, context, env);
-  if (result.decision === (ran ? "ask" : "allow"))
-    record([{ launch, verdict: result }]);
-  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null)
+    return SILENT;
+  const decision = judged.kind === "workflow" ? judged.decision : judged.verdict.decision;
+  const reason = judged.kind === "workflow" ? judged.reason : judged.verdict.reason;
+  return decision === "deny" && reason.includes(CREW_QUESTION_STEP) ? toolDecision("deny", reason) : SILENT;
 }
 
 // src/hooks/agent-usage.ts
@@ -30579,7 +30648,9 @@ function jobRouteConfigAnswer(message, input, context) {
   if (command === null || inputDialect(input) !== "bash" || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
     return SILENT;
   }
-  return toolDecision("ask", `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`);
+  const why = `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`;
+  return crewIdOf(context.env) === null ? toolDecision("ask", why) : toolDecision("deny", `${why}
+${CREW_QUESTION_STEP}`);
 }
 function jobRouteOutsideGit(input, context) {
   return judgeCommandAnswer(input, context) ?? SILENT;
@@ -31557,10 +31628,82 @@ function launchArgs(spec) {
     CREW_PERMISSION_MODE,
     "--autocompact",
     CREW_AUTOCOMPACT,
+    "--strict-mcp-config",
+    "--mcp-config",
+    spec.mcpFile,
     "--settings",
     spec.settingsFile,
     spec.prompt
   ];
+}
+function parsePluginList(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed))
+    return null;
+  const rows = [];
+  for (const row of parsed) {
+    if (typeof row !== "object" || row === null)
+      continue;
+    const { enabled, id } = row;
+    if (typeof id !== "string" || id === "")
+      continue;
+    rows.push({ enabled: enabled === true, id });
+  }
+  return rows;
+}
+function serversFor(kind) {
+  const names = [TAVILY_SERVER_NAME];
+  if (kind === "ui")
+    names.push("playwright");
+  return names;
+}
+function leanLaunch(input) {
+  const keptPlugins = new Set;
+  const keptServers = new Set(serversFor(input.kind));
+  for (const entry of input.keep) {
+    const parsed = parseCrewKeep(entry);
+    if (parsed === null) {
+      return { ok: false, why: `workflow.crew.keep: "${entry}" is not ${CREW_KEEP_RULE}` };
+    }
+    if (parsed.kind === "plugin") {
+      if (parsed.id.startsWith(`${PLUGIN}@`))
+        continue;
+      if (input.enabled !== null && !input.enabled.some((row) => row.enabled && row.id === parsed.id)) {
+        return {
+          ok: false,
+          why: `workflow.crew.keep names plugin "${parsed.id}", which is not enabled in this Claude Code`
+        };
+      }
+      keptPlugins.add(parsed.id);
+      continue;
+    }
+    if (!SERVER_NAMES.includes(parsed.name)) {
+      return {
+        ok: false,
+        why: `workflow.crew.keep names server "${parsed.name}"; a crew session can keep only the servers cc-smart-dev-kit registers (${SERVER_NAMES.join(", ")})`
+      };
+    }
+    keptServers.add(parsed.name);
+  }
+  const off = input.enabled === null ? [] : [
+    ...new Set(input.enabled.filter((row) => row.enabled && !row.id.startsWith(`${PLUGIN}@`)).map((row) => row.id).filter((id) => !keptPlugins.has(id)))
+  ].sort();
+  const servers = {};
+  for (const one of mcpServers(input.context)) {
+    if (!keptServers.has(one.name) || one.skipped !== undefined)
+      continue;
+    servers[one.name] = JSON.parse(one.json);
+  }
+  return { lean: { off, servers }, ok: true };
+}
+function mcpConfigText(servers) {
+  return `${JSON.stringify({ mcpServers: servers }, null, 2)}
+`;
 }
 var BACKGROUNDED = /^\s*backgrounded\s+\u00B7\s+([0-9a-f]{8})\s+\u00B7\s+(\S.*?)\s*$/m;
 function parseBackgrounded(output) {
@@ -31794,6 +31937,7 @@ var RESOLVED = {
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "crew.enabled": (r) => r.crew.enabled,
+  "crew.keep": (r) => r.crew.keep,
   "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
@@ -31842,6 +31986,7 @@ function resolveWorkflow(paths, projectConfig) {
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of("crew.idleStopMinutes", crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes),
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
@@ -32153,7 +32298,7 @@ function memoryMbOf(pid) {
 
 // src/crew/start.ts
 import { existsSync as existsSync52, readFileSync as readFileSync62 } from "fs";
-import { basename as basename10, join as join61, resolve as resolve8 } from "path";
+import { basename as basename10, dirname as dirname21, join as join61, resolve as resolve8 } from "path";
 
 // src/worktrees/include.ts
 import { copyFileSync, existsSync as existsSync50, mkdirSync as mkdirSync23 } from "fs";
@@ -32448,6 +32593,23 @@ async function readBrief(args, ctx) {
     throw refusal("the brief is empty", undefined, 2);
   return text;
 }
+function keepFileOf(source, paths) {
+  return source === "personal" ? tildify(personalWorkflowFile(paths), paths.home) : CONFIG_PATH;
+}
+function leanOf(kind, keep, ctx, claude, repo) {
+  const listed = callClaude(claudeDeps(ctx), claude, ["plugin", "list", "--json"], repo);
+  const enabled = listed.ok && listed.run.exitCode === 0 ? parsePluginList(listed.run.stdout) : null;
+  const context = {
+    bunx: ctx.which("bunx") ?? "bunx",
+    launcher: launcherArgv(ctx.paths.binDir, ctx.platform),
+    tavily: readTavilyKey(ctx.paths, ctx.env, ctx.platform).source === "none" ? { key: false, reason: "no Tavily key" } : { key: true }
+  };
+  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  if (!lean.ok) {
+    throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
+  }
+  return lean.lean;
+}
 async function plan(args, ctx) {
   const read = readCaller("start", ctx);
   if (!read.ok)
@@ -32476,6 +32638,7 @@ async function plan(args, ctx) {
   const chosen = chooseLaunch(args.kind, args, ctx);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
   const baseRef = args.base ?? currentRef(root, ctx.env);
   const baseSha = baseRef === null ? null : commitOf(root, baseRef, ctx.env);
@@ -32505,6 +32668,7 @@ async function plan(args, ctx) {
     files: args.files,
     kind: args.kind,
     lead,
+    lean,
     name,
     phase: args.phase,
     slug: args.slug,
@@ -32534,6 +32698,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const number = records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name;
   try {
@@ -32561,6 +32726,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
     files: old.files,
     kind: old.kind,
     lead,
+    lean,
     name,
     phase: old.phase,
     slug: old.slug,
@@ -32644,8 +32810,31 @@ async function failed(record, reason, ctx, change = {}) {
   ctx.print(`failed ${record.name}: ${reason}`);
   return 1;
 }
+function crewSettingsText(id, off) {
+  const settings = {
+    env: {
+      [CREW_ENV]: id,
+      [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
+      [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS)
+    }
+  };
+  if (off.length > 0) {
+    settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
+  }
+  settings.disableClaudeAiConnectors = true;
+  return `${JSON.stringify(settings, null, 2)}
+`;
+}
 async function launch(spec, record, ctx) {
   const { worktree } = spec;
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
+  const mcpFile = join61(dirname21(settingsFile), "mcp.json");
+  try {
+    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
+  } catch (error) {
+    return await failed(record, `its settings could not be written: ${reasonOf3(error)}`, ctx);
+  }
   const added = runGit(spec.repo, ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha], ctx.env, WORKTREE_ADD_TIMEOUT_MS);
   if (!added.ok)
     return await failed(record, `git worktree add failed: ${lastLine2(added.err)}`, ctx);
@@ -32658,10 +32847,11 @@ async function launch(spec, record, ctx) {
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
   const args = launchArgs({
     effort: spec.effort,
+    mcpFile,
     model: spec.model,
     name: record.name,
     prompt: firstPrompt(record.name, spec.leadName, briefFile),
-    settingsFile: crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id),
+    settingsFile,
     worktreeName: basename10(worktree)
   });
   const nothingStarted = async (reason) => {
@@ -32934,14 +33124,6 @@ async function startPlanned(planned, ctx) {
       crewName: record.name,
       worktree: planned.worktree
     }));
-    writeStoreFile(crewSettingsFile(ctx.paths.stateDir, caller.repo, record.id), `${JSON.stringify({
-      env: {
-        [CREW_ENV]: record.id,
-        [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
-        [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS)
-      }
-    }, null, 2)}
-`);
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf3(error)}`, ctx);
   }
@@ -32968,6 +33150,7 @@ function specOf(planned) {
     claude: planned.claude,
     effort: planned.chosen.effort,
     leadName: planned.lead.name,
+    lean: planned.lean,
     model: planned.chosen.model,
     repo: planned.caller.repo,
     resolved: modelText(planned.chosen.model, planned.chosen.real.model),
@@ -33021,12 +33204,20 @@ async function startQueued(record, ctx, resolved) {
     await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet);
     return;
   }
+  let lean;
+  try {
+    lean = leanOf(isCrewKind(record.kind) ? record.kind : null, resolved.crew.keep, ctx, claude, record.repo);
+  } catch (error) {
+    await failed(record, error instanceof Refusal ? error.lines.join("; ") : reasonOf3(error), quiet);
+    return;
+  }
   await launch({
     baseSha: sha,
     branch: record.branch,
     claude,
     effort: record.effort,
     leadName: record.leadName,
+    lean,
     model: record.model.named,
     repo: record.repo,
     resolved: modelText(record.model.named, record.model.resolved),
@@ -33090,6 +33281,7 @@ function describeSession(tail, file) {
   let title = null;
   let folder = null;
   let branch = null;
+  let model = null;
   const lastTypes = [];
   for (const line of tail.split(`
 `)) {
@@ -33104,6 +33296,8 @@ function describeSession(tail, file) {
     lastTypes.push(entry.type);
     if (typeof entry.cwd === "string")
       folder = entry.cwd;
+    if (entry.type === "assistant")
+      model = replyModel(entry.message) ?? model;
     if (entry.type === "agent-name" && typeof entry.agentName === "string") {
       givenName = entry.agentName;
     }
@@ -33131,8 +33325,15 @@ function describeSession(tail, file) {
     folder,
     id: file.id,
     lastWrite: file.lastWrite,
+    model,
     name: givenName ?? title
   };
+}
+function replyModel(message) {
+  if (typeof message !== "object" || message === null)
+    return null;
+  const model = message.model;
+  return typeof model === "string" && model !== "" && model !== "<synthetic>" ? model : null;
 }
 function lastPart(path) {
   return path.split(/[\\/]/).findLast((part) => part !== "") ?? path;
@@ -34183,7 +34384,8 @@ function openPrRefusal(resolved, base, opening) {
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
-function crewPrAnswer(input, env, cwd) {
+var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
+function crewPullRequestAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
     return SILENT;
   const command = stringField(toolInput(input).command);
@@ -34192,12 +34394,14 @@ function crewPrAnswer(input, env, cwd) {
   const dialect = dialectOfTool(input.tool_name);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
+  if (computedMergeRisk(command, dialect))
+    return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect))
     return toolDecision("deny", CREW_PR_REFUSAL);
-  if (pullRequestOpenings(command, null, dialect).length > 0) {
-    return toolDecision("deny", CREW_PR_REFUSAL);
-  }
   const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  if (calls.some((one) => isMerge(one) && !one.disarms)) {
+    return toolDecision("deny", CREW_MERGE_REFUSAL);
+  }
   return calls.some((one) => !isMerge(one)) ? toolDecision("deny", CREW_PR_REFUSAL) : SILENT;
 }
 function notOpenedByItself(opening, reason) {
@@ -34256,13 +34460,15 @@ async function mergeGuard(context) {
   const config = project.config;
   if (config === null)
     return SILENT;
-  if (computedMergeRisk(command, dialect)) {
-    return toolDecision("ask", notByItself(COMPUTED_MERGE));
-  }
   const crew = crewIdOf(env) !== null;
+  const refuseMerge = (why) => crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : toolDecision("ask", why);
+  const refuseOpening = (why) => crew ? toolDecision("deny", CREW_PR_REFUSAL) : toolDecision("ask", why);
+  if (computedMergeRisk(command, dialect)) {
+    return refuseMerge(notByItself(COMPUTED_MERGE));
+  }
   const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
-    return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
+    return refuseMerge(notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
   const { timeFor } = startBudget(env);
   const gates = new Map;
@@ -34335,17 +34541,17 @@ async function mergeGuard(context) {
     try {
       early = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notByItself(workflowUnread(error)));
+      return refuseMerge(notByItself(workflowUnread(error)));
     }
     if (early === "late")
-      return toolDecision("ask", notInTime(`the policy committed on ${integration}`));
+      return refuseMerge(notInTime(`the policy committed on ${integration}`));
     if (!early.ok)
-      return toolDecision("ask", notByItself(policyUnread(integration, early.why)));
+      return refuseMerge(notByItself(policyUnread(integration, early.why)));
     if (early.gate.config?.ownHooks?.includes("merge-guard") === true)
       return SILENT;
     const off = autoMergeOff(early.gate.resolved, integration);
     if (off !== null)
-      return toolDecision("ask", notByItself(off));
+      return refuseMerge(notByItself(off));
   }
   const world = {
     paths,
@@ -34377,55 +34583,56 @@ async function mergeGuard(context) {
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
     if (merge.admin) {
-      return toolDecision("ask", notByItself(adminRefusal(merge.target?.ref ?? null)));
+      return refuseMerge(notByItself(adminRefusal(merge.target?.ref ?? null)));
     }
     if (merge.unread !== null)
-      return toolDecision("ask", notChecked(merge.unread, env));
+      return refuseMerge(notChecked(merge.unread, env));
     if (merge.refusal !== null)
-      return toolDecision("ask", notByItself(merge.refusal, number));
+      return refuseMerge(notByItself(merge.refusal, number));
     const target = merge.target;
     if (target === null)
       continue;
     if (target.repo !== null) {
       const foreign = foreignReason(target.repo);
       if (foreign.late)
-        return toolDecision("ask", notInTime("this project's own repository"));
+        return refuseMerge(notInTime("this project's own repository"));
       if (foreign.reason !== null) {
-        return toolDecision("ask", notByItself(foreign.reason, number));
+        return refuseMerge(notByItself(foreign.reason, number));
       }
     }
     const verdict = await checkPullRequest(world, target, defaultBranches);
-    if (verdict.kind === "silent")
-      return SILENT;
+    if (verdict.kind === "silent") {
+      return crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : SILENT;
+    }
     if (verdict.kind !== "allowed")
-      return toolDecision("ask", askFor(verdict, env));
+      return refuseMerge(askFor(verdict, env));
     allowed = verdict.reason;
   }
   for (const opening of openings) {
     if (opening.refusal !== null) {
-      return toolDecision("ask", notOpenedByItself(opening, opening.refusal));
+      return refuseOpening(notOpenedByItself(opening, opening.refusal));
     }
     const repo = opening.target?.repo ?? null;
     if (repo !== null) {
       const foreign = foreignReason(repo);
       if (foreign.late) {
-        return toolDecision("ask", notOpenedByItself(opening, "reading this project's own repository would have taken longer than the guard's own budget allows"));
+        return refuseOpening(notOpenedByItself(opening, "reading this project's own repository would have taken longer than the guard's own budget allows"));
       }
       if (foreign.reason !== null) {
-        return toolDecision("ask", notOpenedByItself(opening, foreign.reason));
+        return refuseOpening(notOpenedByItself(opening, foreign.reason));
       }
     }
     let read;
     try {
       read = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notOpenedByItself(opening, workflowUnread(error)));
+      return refuseOpening(notOpenedByItself(opening, workflowUnread(error)));
     }
     if (read === "late") {
-      return toolDecision("ask", notOpenedByItself(opening, "reading the policy would have taken longer than the guard's own budget allows"));
+      return refuseOpening(notOpenedByItself(opening, "reading the policy would have taken longer than the guard's own budget allows"));
     }
     if (!read.ok) {
-      return toolDecision("ask", notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")));
+      return refuseOpening(notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")));
     }
     if (read.gate.config?.ownHooks?.includes("merge-guard") === true)
       return SILENT;
@@ -34434,19 +34641,22 @@ async function mergeGuard(context) {
       kind: opening.opens ?? "create"
     });
     if (why !== null)
-      return toolDecision("ask", notOpenedByItself(opening, why));
+      return refuseOpening(notOpenedByItself(opening, why));
     const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }
     if (outside === "unread") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
     }
     if (outside !== null)
-      return toolDecision("ask", notOpenedByItself(opening, outside));
+      return refuseOpening(notOpenedByItself(opening, outside));
   }
   if (allowed !== null && !crew && exactMergeOf(command, dialect) !== null) {
     return toolDecision("allow", allowed);
+  }
+  if (crew && (merges.length > 0 || openings.length > 0)) {
+    return toolDecision("deny", merges.length > 0 ? CREW_MERGE_REFUSAL : CREW_PR_REFUSAL);
   }
   return SILENT;
 }
@@ -34666,7 +34876,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname21, isAbsolute as isAbsolute7, posix as posix3, relative as relative3, resolve as resolve10, win32 as win324 } from "path";
+import { dirname as dirname22, isAbsolute as isAbsolute7, posix as posix3, relative as relative3, resolve as resolve10, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -34928,7 +35138,7 @@ function movedTo2(invocation, folder, ctx, dialect) {
   return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname21(paths.workflowConfigFile);
+  const settings = dirname22(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative3(paths.home, folder);
@@ -35036,10 +35246,12 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
 var LOOPBACK = String.raw`(?:[\w-]+\.)?localhost|127(?:\.\d{1,3}){0,3}|0\.0\.0\.0|0x7f[\da-f.x]*|2130706433|\[?::1?\]?|\[?::ffff:[\d.]+\]?`;
 var PORTAL_ADDRESS = new RegExp(String.raw`(?<![\w.:-])(?:${LOOPBACK})[\s:/,'")\]]{1,8}${DEFAULT_PORTAL_PORT}(?!\d)`, "i");
 var PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_PORT}) on this machine. The portal has no sign-in of its own: its pages change the gateway, the safety judge, updates and the workflow settings, the review gate included. It is for you, in your own browser. Allow this only if you asked for it.`;
+var CREW_KIT_REFUSAL = "A crew session never changes the kit's own limits (the project's cc-smart-dev-kit.json, the " + "kit's settings, its state folder, or its installed plugin): the limits are the person's, and " + "the guard asks before such a write. " + CREW_QUESTION_STEP;
+var CREW_PORTAL_REFUSAL = "A crew session has no business with the portal: its pages change the gateway, the safety " + "judge, updates and the workflow settings, and the portal is for the person, in their own " + "browser. " + CREW_QUESTION_STEP;
 function commandOf2(input) {
   return stringField(toolInput(input).command) ?? "";
 }
-function judgeShell(input, paths, platform) {
+function judgeShell(input, paths, platform, crew) {
   const command = commandOf2(input);
   if (command === "")
     return SILENT;
@@ -35056,7 +35268,19 @@ function judgeShell(input, paths, platform) {
   if (found.denials.size > 0)
     return toolDecision("deny", [...found.denials].join(`
 `));
-  if (PORTAL_ADDRESS.test(command))
+  const portal = PORTAL_ADDRESS.test(command);
+  if (crew) {
+    if (portal)
+      return toolDecision("deny", CREW_PORTAL_REFUSAL);
+    const computedKit = found.asks.has(COMPUTED_KIT_ASK);
+    const limits = [...found.asks].some((ask) => ask !== COMPUTED_KIT_ASK);
+    if (!computedKit && !limits)
+      return SILENT;
+    return toolDecision("deny", limits ? [CREW_KIT_REFUSAL, ...computedKit ? [COMPUTED_KIT_ASK] : []].join(`
+`) : [COMPUTED_KIT_ASK, CREW_QUESTION_STEP].join(`
+`));
+  }
+  if (portal)
     found.asks.add(PORTAL_QUESTION);
   return found.asks.size > 0 ? toolDecision("ask", [...found.asks].join(`
 `)) : SILENT;
@@ -35077,7 +35301,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname21);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname22);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
@@ -35094,21 +35318,21 @@ function editedPaths(input, cwd, home) {
   const written = isAbsolute7(path) ? resolve10(path) : resolve10(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
-function judgeEdit(input, paths) {
+function judgeEdit(input, paths, crew) {
   for (const file of editedPaths(input, stringField(input.cwd), paths.home)) {
     const what = kitFileKind(file, paths);
     if (what !== null) {
-      return toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
+      return crew ? toolDecision("deny", CREW_KIT_REFUSAL) : toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
     }
   }
   return SILENT;
 }
-function sessionEscapeGuard(input, paths, platform = process.platform) {
+function sessionEscapeGuard(input, paths, platform = process.platform, crew = false) {
   const tool = stringField(input.tool_name) ?? "";
   if (ESCAPE_SHELL_TOOLS.includes(tool))
-    return judgeShell(input, paths, platform);
+    return judgeShell(input, paths, platform, crew);
   if (ESCAPE_EDIT_TOOLS.includes(tool))
-    return judgeEdit(input, paths);
+    return judgeEdit(input, paths, crew);
   return SILENT;
 }
 var DOMAIN_TEXT = new RegExp(`${COMMAND}|${CLAUDECODE}|${DEFAULT_PORTAL_PORT}|(?:dist|entries)[\\\\/](?:cli|portal)\\.`, "i");
@@ -35464,7 +35688,9 @@ var gitGuardHook = {
 var mergeGuardHook = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    if (crewIdOf(context.env) !== null)
+      return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && requestsPullRequestChange(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
   },
@@ -35476,7 +35702,7 @@ var mergeGuardHook = {
     const command = commandOf3(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
-  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
+  crewLimits: (input, _checkout, { env }) => crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard
 };
 var mainFolderGuardHook = {
@@ -35579,6 +35805,7 @@ var agentGuardHook = {
   events: ["PreToolUse", "PostToolUse"],
   onConfigProblem: (_message, input, _event, _checkout, context) => agentGuard(input, context.env, context.paths, cwdOf2(input)),
   outsideGit: (input, _event, _why, context) => agentGuard(input, context.env, context.paths, cwdOf2(input)),
+  crewLimits: (input, _checkout, { env, paths }) => crewAgentAnswer(input, env, paths, cwdOf2(input)),
   onCrash: guardCrash("the model this launch runs on", (input) => [...AGENT_TOOLS, ...WORKFLOW_TOOLS].includes(toolOf2(input))),
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
@@ -35587,10 +35814,10 @@ var sessionEscapeGuardHook = {
   name: "session-escape-guard",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: (_message, input, _event, _checkout, context) => sessionEscapeGuard(input, context.paths),
-  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+  onConfigProblem: (_message, input, _event, _checkout, context) => sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
   onCrash: guardCrash("whether this call goes around the limits set for the session", inEscapeDomain),
-  run: ({ input, paths }) => sessionEscapeGuard(input, paths)
+  run: ({ input, paths, env }) => sessionEscapeGuard(input, paths, process.platform, crewIdOf(env) !== null)
 };
 var fableSessionHook = {
   name: "fable-session",
@@ -37298,7 +37525,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname22(dir)) {
+  for (let dir = cwd;; dir = dirname23(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join67(dir, name);
       if (from === join67(paths.claudeConfigDir, "CLAUDE.md") || !existsSync56(from))
@@ -37314,7 +37541,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname22(dir) === dir)
+    if (dirname23(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -41421,7 +41648,7 @@ ${PORTAL_USAGE}`);
 
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync26 } from "fs";
-import { dirname as dirname23 } from "path";
+import { dirname as dirname24 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -41497,7 +41724,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync26(dirname23(file), { mode: 448, recursive: true });
+  mkdirSync26(dirname24(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -41940,7 +42167,7 @@ ${WORKFLOW_USAGE}`);
 
 // src/sessions/flow.ts
 import { closeSync as closeSync9, mkdirSync as mkdirSync27, openSync as openSync9, readFileSync as readFileSync71, readSync as readSync5, statSync as statSync23 } from "fs";
-import { dirname as dirname24, join as join72 } from "path";
+import { dirname as dirname25, join as join72 } from "path";
 
 // src/cli/usage.ts
 import { existsSync as existsSync64, readdirSync as readdirSync23, readFileSync as readFileSync70, statSync as statSync22 } from "fs";
@@ -42953,6 +43180,26 @@ function bucketsIn(session, context) {
   }
   return out;
 }
+function hoursOf(sessions, context) {
+  const first = Math.floor(context.sinceMs / HOUR_MS);
+  const last = Math.ceil(context.untilMs / HOUR_MS);
+  const hours = [];
+  for (let hour = first;hour < last; hour += 1) {
+    hours.push({ launches: 0, promptMs: 0, prompts: 0, replies: 0, t: hour * HOUR_MS });
+  }
+  for (const session of sessions) {
+    for (const [key, bucket] of Object.entries(session.hours)) {
+      const into = hours[Number(key) - first];
+      if (into === undefined)
+        continue;
+      into.launches += bucket.launches;
+      into.promptMs += bucket.promptMs;
+      into.prompts += bucket.prompts;
+      into.replies += bucket.replies;
+    }
+  }
+  return hours;
+}
 function maxOverlap(spans) {
   const edges = [];
   for (const span of spans) {
@@ -43190,7 +43437,7 @@ function openWaitsOf(flow, session, context) {
 }
 function writeCache(file, cache) {
   try {
-    mkdirSync27(dirname24(file), { recursive: true, mode: 448 });
+    mkdirSync27(dirname25(file), { recursive: true, mode: 448 });
     atomicWrite(file, `${JSON.stringify(cache)}
 `, 384);
   } catch {}
@@ -43288,6 +43535,7 @@ function readFlow(paths, options) {
   sessions.sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || a.session.localeCompare(b.session));
   open.sort((a, b) => b.at - a.at || a.session.localeCompare(b.session));
   return {
+    hours: hoursOf(seenSessions, context),
     missing: missingMeasures(seenSessions),
     open,
     sessions,
@@ -43566,7 +43814,7 @@ import {
   writeFileSync as writeFileSync13
 } from "fs";
 import { platform as platform2 } from "os";
-import { dirname as dirname25, join as join73, resolve as resolve12 } from "path";
+import { dirname as dirname26, join as join73, resolve as resolve12 } from "path";
 var PIN_HOURS = 48;
 var RESTORE_HOURS = 12;
 var TAIL_BYTES2 = 512 * 1024;
@@ -43717,7 +43965,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
 function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
-  const dir = dirname25(openedMarkerFile(stateDir, id));
+  const dir = dirname26(openedMarkerFile(stateDir, id));
   for (const name of readdirSync24(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
@@ -43790,7 +44038,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync65(dirname25(tabDir))
+    warpDataFolder: existsSync65(dirname26(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -44397,7 +44645,7 @@ function topLevelHelp() {
 
 // src/cli/migrate.ts
 import { existsSync as existsSync67, readdirSync as readdirSync25, readFileSync as readFileSync74, renameSync as renameSync5, rmSync as rmSync16, statSync as statSync25 } from "fs";
-import { basename as basename12, dirname as dirname26, join as join75 } from "path";
+import { basename as basename12, dirname as dirname27, join as join75 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
   name: "anymodel",
@@ -44424,7 +44672,7 @@ function oldGatewayEnv(port) {
 }
 function migrateUnits(paths, overrides = {}) {
   return {
-    dir: overrides.dir ?? dirname26(paths.routerUnitFile),
+    dir: overrides.dir ?? dirname27(paths.routerUnitFile),
     oldUnit: overrides.oldUnit ?? OLD.unit,
     oldSocket: overrides.oldSocket ?? OLD.socket,
     unit: overrides.unit ?? basename12(paths.routerUnitFile),
@@ -45250,7 +45498,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync68, rmSync as rmSync17 } from "fs";
-import { dirname as dirname27, join as join76 } from "path";
+import { dirname as dirname28, join as join76 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -45274,7 +45522,7 @@ function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   if (existsSync68(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  const bunfig = bunConfigPath(dirname27(dirname27(cliBundle)));
+  const bunfig = bunConfigPath(dirname28(dirname28(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
   return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
@@ -45436,7 +45684,7 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync69, mkdirSync as mkdirSync29 } from "fs";
-import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute8, join as join78, relative as relative7 } from "path";
+import { basename as basename13, delimiter, dirname as dirname29, isAbsolute as isAbsolute8, join as join78, relative as relative7 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join77 } from "path";
@@ -45559,7 +45807,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyFile !== null) {
     const mark = existsSync69(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
-      mkdirSync29(dirname28(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync29(dirname29(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }

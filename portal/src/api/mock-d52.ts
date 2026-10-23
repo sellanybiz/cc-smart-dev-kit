@@ -459,6 +459,12 @@ export function jobsData(now: number, empty: boolean): JobsData {
     freeGb: empty ? 21.4 : 13.1,
     budgetGb: 24,
     keptGb: 8,
+    weights: empty
+      ? {
+          cpu: { value: null, why: "the CPU controller is off for this user's services" },
+          io: { value: null, why: "the io controller is off for this user's services" },
+        }
+      : { cpu: { value: 20 }, io: { value: 20 } },
     stores: [
       {
         where: "machine",

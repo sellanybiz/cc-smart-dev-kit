@@ -58,6 +58,7 @@ const SESSION_FLOW: SessionFlow = {
 /** The report the formatter test prints, by hand. */
 function reportOne(): FlowReport {
   return {
+    hours: [],
     missing: [],
     open: [
       {

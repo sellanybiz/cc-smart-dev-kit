@@ -79,6 +79,7 @@ describe("workflow show", () => {
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
       "crew.enabled = false (default)",
+      "crew.keep = (nothing) (default)",
       "crew.idleStopMinutes = 10 (default)",
       "crew.max = 24 (default)",
       "crew.maxOpus = (no machine-wide opus count) (default)",

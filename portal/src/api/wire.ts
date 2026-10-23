@@ -187,10 +187,17 @@ export interface SlotRow {
 
 // ── The page answers ───────────────────────────────────────────────────────────────────
 
+/** `src/portal/facts.ts` › `PlanWindow`: one window of the plan's usage, as the status line recorded it. */
+export interface PlanWindow {
+  percent: number;
+  resetsAt: null | string;
+}
+
 export interface OverviewAnswer extends NotSetUp {
   backends: BackendRow[];
   dashboardUrl: null | string;
   fallbacks: FallbackRow[];
+  fiveHour: null | PlanWindow;
   jobs: { budgetGb: number; heldGb: number; waiting: number };
   limits: LimitRow[];
   limitsRead: boolean;
@@ -211,11 +218,20 @@ export interface SlotsAnswer extends NotSetUp {
   tested: Record<string, string>;
 }
 
+/** `src/portal/facts.ts` › `PortHolder`: what holds the router's port, in doctor's words. */
+export interface PortHolder {
+  check: DoctorCheck;
+  kind: "scheduled-task" | "systemd";
+  name: string;
+  state: "open" | "other" | "start-limit";
+}
+
 export interface HealthAnswer extends NotSetUp {
   backends: BackendRow[];
   fallbacks: FallbackRow[];
   limits: LimitRow[];
   log: { lines: LogLine[]; note: null | string };
+  portHolder: null | PortHolder;
   router: RouterFacts;
 }
 
@@ -321,7 +337,31 @@ export interface ProjectCardData {
   set: boolean;
 }
 
+/** `src/portal/facts.ts` › `BunFacts`: the Bun the portal runs on, against the kit's minimum. */
+export interface BunFacts {
+  minimum: string;
+  ok: boolean;
+  version: string;
+}
+
+/** `src/portal/facts.ts` › `ClaudeCodeFacts`: its version, and the last `doctor --live` proof. */
+export interface ClaudeCodeFacts {
+  liveCheck: null | { claudeCode: string; passedAt: string; plugin: string };
+  version: null | string;
+  why: null | string;
+}
+
+/** `src/portal/facts.ts` › `McpServerRow`: one of the kit's MCP servers, as `mcp status` reads it. */
+export interface McpServerRow {
+  name: string;
+  runsWhat: null | string;
+  state: "foreign" | "missing" | "ours" | "unknown" | "unreadable";
+}
+
 export interface MachineAnswer {
+  bun: BunFacts;
+  claudeCode: ClaudeCodeFacts;
+  mcp: McpServerRow[];
   autoMode: null | {
     added: string[];
     differsFrom: null | string;
@@ -361,6 +401,7 @@ export type WorkflowKey =
   | "alerts.sound"
   | "alerts.usagePercent"
   | "crew.enabled"
+  | "crew.keep"
   | "crew.idleStopMinutes"
   | "crew.max"
   | "crew.maxOpus"
@@ -380,7 +421,8 @@ export type WorkflowKey =
 
 /** `src/portal/settings.ts` › `SettingsRow`. */
 export interface SettingsRow {
-  card: "alerts" | "flow" | "switches";
+  card: "alerts" | "crew" | "flow" | "switches";
+  unit?: "%";
   choices?: readonly { label: string; value: string }[];
   help: string;
   id: string;
@@ -448,11 +490,14 @@ export interface CrewSummary {
   branch: string;
   createdAt: string;
   effort: string;
+  files: string[];
   id: string;
   kind: string;
+  lastEvent: null | { at: string; text: string; type: string };
   lastLine: null | string;
   leadName: string;
   leadSessionId: string;
+  memory: CrewMemoryPoint[];
   memoryMb: null | number;
   model: { named: string; resolved: string; slot: null | string; tier: null | string };
   name: string;
@@ -477,6 +522,7 @@ export interface CrewSummary {
     since?: string;
     slot?: string;
   };
+  waitsFor: string[];
   worktree: string;
 }
 
@@ -494,11 +540,12 @@ export interface LeadSummary {
 
 export interface SessionSummary {
   branch: null | string;
-  endedCleanly: boolean;
   folder: null | string;
   id: string;
   lastWrite: number;
+  model: null | string;
   name: null | string;
+  state: "ended" | "idle" | "waiting" | "working";
 }
 
 export interface WorkAnswer {
@@ -865,6 +912,8 @@ export interface FlowReport {
   }[];
   skipped: { askLog: number; records: number };
   missing: string[];
+  /** The window hour by hour, oldest first: every hour, an empty one too. */
+  hours: { launches: number; promptMs: number; prompts: number; replies: number; t: number }[];
 }
 
 export interface FlowAnswer {

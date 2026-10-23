@@ -36,6 +36,11 @@ export interface SavedSession {
   id: string;
   /** When its file was last written, in milliseconds. */
   lastWrite: number;
+  /**
+   * The model that wrote its last reply in the file's tail (`message.model`: an affordable
+   * backend's own name when a slot answered); null when the tail holds no reply.
+   */
+  model: null | string;
   /** The name the person gave it (`/rename`), or else the title Claude gave it. */
   name: null | string;
 }
@@ -77,6 +82,7 @@ export function describeSession(
   let title: null | string = null;
   let folder: null | string = null;
   let branch: null | string = null;
+  let model: null | string = null;
   const lastTypes: unknown[] = [];
 
   for (const line of tail.split("\n")) {
@@ -89,6 +95,7 @@ export function describeSession(
     }
     lastTypes.push(entry.type);
     if (typeof entry.cwd === "string") folder = entry.cwd;
+    if (entry.type === "assistant") model = replyModel(entry.message) ?? model;
     if (entry.type === "agent-name" && typeof entry.agentName === "string") {
       givenName = entry.agentName;
     }
@@ -118,8 +125,19 @@ export function describeSession(
     folder,
     id: file.id,
     lastWrite: file.lastWrite,
+    model,
     name: givenName ?? title,
   };
+}
+
+/**
+ * The model a reply names; null for none, and for `<synthetic>`: Claude Code's own stand-in
+ * for a message it wrote itself (an interrupted turn, an error), which no model answered.
+ */
+function replyModel(message: unknown): null | string {
+  if (typeof message !== "object" || message === null) return null;
+  const model = (message as Record<string, unknown>).model;
+  return typeof model === "string" && model !== "" && model !== "<synthetic>" ? model : null;
 }
 
 /** The last part of a path, whichever slash it uses. */

@@ -6292,6 +6292,19 @@ function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+function parseCrewKeep(entry) {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -6314,6 +6327,7 @@ var workflowSchema = strictObject({
   }).optional(),
   crew: strictObject({
     enabled: boolean2().optional(),
+    keep: array(crewKeepSchema).optional(),
     idleStopMinutes: numberField("crew.idleStopMinutes"),
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
@@ -6350,6 +6364,7 @@ var workflowDefaults = {
   },
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     maxOpus: null,
@@ -6382,6 +6397,7 @@ var POLICY_KEYS = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -7543,6 +7559,7 @@ function crewIdOf(env) {
   const id = env[CREW_ENV]?.trim() ?? "";
   return id === "" ? null : id;
 }
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
@@ -9468,6 +9485,7 @@ var CREW_STEPS = {
   worktreeRemove: "A crew session never runs `git worktree remove --force`: it deletes a worktree even when " + "it holds uncommitted or untracked work, and nobody is at the machine to answer the " + "guard's question. Look in it first: commit or copy out what it holds, then run `git " + "worktree remove <path>` without `--force`, which refuses while anything is left.",
   branchDelete: "A crew session never deletes a branch with `git branch -D`: it can drop commits that " + "were never merged, and nobody is at the machine to answer the guard's question. `git log " + "--oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d " + "<branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
   resetHard: "A crew session never runs `git reset --hard`: it throws away every uncommitted change in " + "this folder, and nobody is at the machine to answer the guard's question. Commit the " + "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " + "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " + "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
+  resetMerge: "A crew session never runs `git reset --merge`: it throws away changes that are staged but " + "not committed \u2014 a staged change to a tracked file goes back to the target version, and a " + "staged new file is deleted for good \u2014 and nobody is at the machine to answer the guard's " + "question. `git reset --keep <commit>` moves the branch and never overwrites a working " + "file (it refuses instead), but it still resets the index, so a version staged and not " + "also in the working file is dropped: commit it first when it is needed. To undo a " + "deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm " + "path.bak`), and check it with `git diff --quiet -- path`.",
   clean: "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " + "is at the machine to answer the guard's question. Run `git clean -n` and read the list " + "first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
   stashClear: "A crew session never runs `git stash clear`: it throws away every stash for good, and " + "nobody is at the machine to answer the guard's question. `git stash list` shows them " + "all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
   stashDrop: "A crew session never runs `git stash drop` without a name: it drops the newest stash, " + "whoever made it, and nobody is at the machine to answer the guard's question. `git stash " + "list` shows them; `git stash drop stash@{n}` names the one you mean.",
@@ -9693,6 +9711,10 @@ var RESET_HARD_ASK = {
   ask: "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first.",
   crew: CREW_STEPS.resetHard
 };
+var RESET_MERGE_ASK = {
+  ask: "`git reset --merge` throws away changes that are staged but not committed: a staged " + "change to a tracked file goes back to the target version, and a staged new file is " + "deleted from the folder (measured). Your working files are kept: it refuses rather than " + "overwrite one whose working copy differs from the target, including a file with both " + "staged and unstaged changes (measured on git 2.53). Approve only if you want the " + "staged work gone; a WIP commit keeps it first.",
+  crew: CREW_STEPS.resetMerge
+};
 var CLEAN_FORCE_ASK = {
   ask: "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting.",
   crew: CREW_STEPS.clean
@@ -9869,6 +9891,9 @@ function callQuestions(call, folder, run) {
     return answer2(BRANCH_DELETE_ASK, run);
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
     return answer2(RESET_HARD_ASK, run);
+  }
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
+    return answer2(RESET_MERGE_ASK, run);
   }
   if (sub === "clean") {
     const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
@@ -10059,9 +10084,6 @@ var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
 function pullRequestMerges(command, aliases = null, dialect) {
   return pullRequestCalls(command, aliases, dialect).filter(isMerge);
-}
-function pullRequestOpenings(command, aliases = null, dialect) {
-  return pullRequestCalls(command, aliases, dialect).filter((one) => !isMerge(one));
 }
 function isMerge(one) {
   return one.opens === undefined;
@@ -12487,6 +12509,7 @@ function judgeWorkflowCall(fields, ctx, env, place) {
 }
 var UNREADABLE_ASK = "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
 var UNREADABLE_UNATTENDED = "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
+var UNREADABLE_CREW = "The guard cannot see the model and effort its launches run on: pass the script inline (`script`), or by `scriptPath` to a file the guard can read.";
 function workflowAnswer(call, env) {
   if (call.refusal !== null)
     return { decision: "deny", reason: call.refusal };
@@ -12494,8 +12517,14 @@ function workflowAnswer(call, env) {
   if (denied !== undefined)
     return { decision: "deny", reason: workflowReason(denied) };
   if (call.unreadable.length > 0 && nobodyWatches(env)) {
-    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join(`
-`) };
+    return {
+      decision: "deny",
+      reason: [
+        ...call.unreadable,
+        ...inCrew(env) ? [UNREADABLE_CREW, CREW_QUESTION_STEP] : [UNREADABLE_UNATTENDED]
+      ].join(`
+`)
+    };
   }
   const asks = [
     ...call.unreadable.map((reason) => `${reason}
@@ -12687,10 +12716,9 @@ function judgeModel(launch, real, ctx, env) {
     if (word === null)
       return deny(real, builder ? fableBuildDenial(real, type) : fableDenial(real));
     if (nobodyWatches(env)) {
-      return deny(real, [
-        "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it in an interactive session."
-      ].join(`
+      const why = "A Fable launch is approved by the person, one by one, and this session has nobody to answer";
+      return deny(real, inCrew(env) ? [`${why}.`, CREW_QUESTION_STEP].join(`
+`) : [`${why} (\`claude -p\`).`, "Run it in an interactive session."].join(`
 `));
     }
     return {
@@ -12714,10 +12742,13 @@ function judgeModel(launch, real, ctx, env) {
     const effort = launch.effort?.toLowerCase() ?? null;
     if (real.family !== "opus") {
       if (nobodyWatches(env)) {
-        return deny(real, [
-          `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
-          "Name `opus` (or a Claude Opus id) as its model."
+        const why = `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer`;
+        return deny(real, inCrew(env) ? [
+          `${why}.`,
+          "Name `opus` (or a Claude Opus id) as its model.",
+          CREW_QUESTION_STEP
         ].join(`
+`) : [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join(`
 `));
       }
       return {
@@ -12735,8 +12766,10 @@ function judgeModel(launch, real, ctx, env) {
     if (effort !== OPUS_ASK_EFFORT)
       return allow(real, why);
     if (nobodyWatches(env)) {
-      return deny(real, [
-        `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+      const nobody = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
+      return deny(real, inCrew(env) ? [`${nobody}.`, `Run it at ${levelsText(OPUS_FREE_EFFORTS)}.`, CREW_QUESTION_STEP].join(`
+`) : [
+        `${nobody} (\`claude -p\`).`,
         `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`
       ].join(`
 `));
@@ -12765,7 +12798,10 @@ function judgeModel(launch, real, ctx, env) {
   return allow(real, "");
 }
 function nobodyWatches(env) {
-  return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
+  return inCrew(env) || !isAttended(env);
+}
+function inCrew(env) {
+  return crewIdOf(env) !== null;
 }
 function sessionLaunchModel(sessionModel, gateway, env) {
   if (sessionModel === null)
@@ -12885,36 +12921,56 @@ var RAN_EVENT = "PostToolUse";
 function afterTheCall(input) {
   return stringField(input.hook_event_name) === RAN_EVENT;
 }
-function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
+function judgeCall(input, env, paths, cwd) {
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
-  const file = agentLaunchesFile(paths.stateDir);
-  const ran = afterTheCall(input);
-  const record = (judged) => {
-    const lines = judged.map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index)).filter((line) => line !== null);
-    if (lines.length > 0)
-      appendAgentLaunches(file, lines);
-  };
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
     const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
     const answer = workflowAnswer(call, env);
-    if (answer.decision === "deny")
-      return ran ? SILENT : toolDecision("deny", answer.reason);
-    const asked = answer.decision === "ask";
+    return { kind: "workflow", call, decision: answer.decision, reason: answer.reason };
+  }
+  const launch = readLaunch(input);
+  if (launch === null)
+    return null;
+  return { kind: "launch", launch, verdict: judgeLaunch(launch, context, env) };
+}
+function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null)
+    return SILENT;
+  const ran = afterTheCall(input);
+  const file = agentLaunchesFile(paths.stateDir);
+  const record = (lines) => {
+    const records = lines.map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index)).filter((line) => line !== null);
+    if (records.length > 0)
+      appendAgentLaunches(file, records);
+  };
+  if (judged.kind === "workflow") {
+    const { call, decision, reason } = judged;
+    if (decision === "deny")
+      return ran ? SILENT : toolDecision("deny", reason);
+    const asked = decision === "ask";
     if (ran === asked) {
       record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
     if (ran || !asked)
       return SILENT;
-    return toolDecision("ask", answer.reason);
+    return toolDecision("ask", reason);
   }
-  const launch = readLaunch(input);
-  if (launch === null)
+  const { launch, verdict } = judged;
+  if (verdict.decision === (ran ? "ask" : "allow"))
+    record([{ launch, verdict }]);
+  return ran || verdict.decision === "allow" ? SILENT : toolDecision(verdict.decision, verdict.reason);
+}
+function crewAgentAnswer(input, env, paths, cwd) {
+  if (!inCrew(env) || afterTheCall(input))
     return SILENT;
-  const result = judgeLaunch(launch, context, env);
-  if (result.decision === (ran ? "ask" : "allow"))
-    record([{ launch, verdict: result }]);
-  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null)
+    return SILENT;
+  const decision = judged.kind === "workflow" ? judged.decision : judged.verdict.decision;
+  const reason = judged.kind === "workflow" ? judged.reason : judged.verdict.reason;
+  return decision === "deny" && reason.includes(CREW_QUESTION_STEP) ? toolDecision("deny", reason) : SILENT;
 }
 
 // src/hooks/agent-usage.ts
@@ -14608,7 +14664,9 @@ function jobRouteConfigAnswer(message, input, context) {
   if (command === null || inputDialect(input) !== "bash" || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
     return SILENT;
   }
-  return toolDecision("ask", `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`);
+  const why = `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`;
+  return crewIdOf(context.env) === null ? toolDecision("ask", why) : toolDecision("deny", `${why}
+${CREW_QUESTION_STEP}`);
 }
 function jobRouteOutsideGit(input, context) {
   return judgeCommandAnswer(input, context) ?? SILENT;
@@ -15271,6 +15329,7 @@ function resolveWorkflow(paths, projectConfig) {
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of("crew.idleStopMinutes", crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes),
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
@@ -15292,6 +15351,16 @@ function resolveWorkflow(paths, projectConfig) {
     }
   };
 }
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
 
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
@@ -15827,7 +15896,8 @@ function openPrRefusal(resolved, base, opening) {
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
-function crewPrAnswer(input, env, cwd) {
+var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
+function crewPullRequestAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
     return SILENT;
   const command = stringField(toolInput(input).command);
@@ -15836,12 +15906,14 @@ function crewPrAnswer(input, env, cwd) {
   const dialect = dialectOfTool(input.tool_name);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
+  if (computedMergeRisk(command, dialect))
+    return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect))
     return toolDecision("deny", CREW_PR_REFUSAL);
-  if (pullRequestOpenings(command, null, dialect).length > 0) {
-    return toolDecision("deny", CREW_PR_REFUSAL);
-  }
   const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  if (calls.some((one) => isMerge(one) && !one.disarms)) {
+    return toolDecision("deny", CREW_MERGE_REFUSAL);
+  }
   return calls.some((one) => !isMerge(one)) ? toolDecision("deny", CREW_PR_REFUSAL) : SILENT;
 }
 function notOpenedByItself(opening, reason) {
@@ -15900,13 +15972,15 @@ async function mergeGuard(context) {
   const config = project.config;
   if (config === null)
     return SILENT;
-  if (computedMergeRisk(command, dialect)) {
-    return toolDecision("ask", notByItself(COMPUTED_MERGE));
-  }
   const crew = crewIdOf(env) !== null;
+  const refuseMerge = (why) => crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : toolDecision("ask", why);
+  const refuseOpening = (why) => crew ? toolDecision("deny", CREW_PR_REFUSAL) : toolDecision("ask", why);
+  if (computedMergeRisk(command, dialect)) {
+    return refuseMerge(notByItself(COMPUTED_MERGE));
+  }
   const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
-    return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
+    return refuseMerge(notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
   const { timeFor } = startBudget(env);
   const gates = new Map;
@@ -15979,17 +16053,17 @@ async function mergeGuard(context) {
     try {
       early = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notByItself(workflowUnread(error)));
+      return refuseMerge(notByItself(workflowUnread(error)));
     }
     if (early === "late")
-      return toolDecision("ask", notInTime(`the policy committed on ${integration}`));
+      return refuseMerge(notInTime(`the policy committed on ${integration}`));
     if (!early.ok)
-      return toolDecision("ask", notByItself(policyUnread(integration, early.why)));
+      return refuseMerge(notByItself(policyUnread(integration, early.why)));
     if (early.gate.config?.ownHooks?.includes("merge-guard") === true)
       return SILENT;
     const off = autoMergeOff(early.gate.resolved, integration);
     if (off !== null)
-      return toolDecision("ask", notByItself(off));
+      return refuseMerge(notByItself(off));
   }
   const world = {
     paths,
@@ -16021,55 +16095,56 @@ async function mergeGuard(context) {
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
     if (merge.admin) {
-      return toolDecision("ask", notByItself(adminRefusal(merge.target?.ref ?? null)));
+      return refuseMerge(notByItself(adminRefusal(merge.target?.ref ?? null)));
     }
     if (merge.unread !== null)
-      return toolDecision("ask", notChecked(merge.unread, env));
+      return refuseMerge(notChecked(merge.unread, env));
     if (merge.refusal !== null)
-      return toolDecision("ask", notByItself(merge.refusal, number));
+      return refuseMerge(notByItself(merge.refusal, number));
     const target = merge.target;
     if (target === null)
       continue;
     if (target.repo !== null) {
       const foreign = foreignReason(target.repo);
       if (foreign.late)
-        return toolDecision("ask", notInTime("this project's own repository"));
+        return refuseMerge(notInTime("this project's own repository"));
       if (foreign.reason !== null) {
-        return toolDecision("ask", notByItself(foreign.reason, number));
+        return refuseMerge(notByItself(foreign.reason, number));
       }
     }
     const verdict = await checkPullRequest(world, target, defaultBranches);
-    if (verdict.kind === "silent")
-      return SILENT;
+    if (verdict.kind === "silent") {
+      return crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : SILENT;
+    }
     if (verdict.kind !== "allowed")
-      return toolDecision("ask", askFor(verdict, env));
+      return refuseMerge(askFor(verdict, env));
     allowed = verdict.reason;
   }
   for (const opening of openings) {
     if (opening.refusal !== null) {
-      return toolDecision("ask", notOpenedByItself(opening, opening.refusal));
+      return refuseOpening(notOpenedByItself(opening, opening.refusal));
     }
     const repo = opening.target?.repo ?? null;
     if (repo !== null) {
       const foreign = foreignReason(repo);
       if (foreign.late) {
-        return toolDecision("ask", notOpenedByItself(opening, "reading this project's own repository would have taken longer than the guard's own budget allows"));
+        return refuseOpening(notOpenedByItself(opening, "reading this project's own repository would have taken longer than the guard's own budget allows"));
       }
       if (foreign.reason !== null) {
-        return toolDecision("ask", notOpenedByItself(opening, foreign.reason));
+        return refuseOpening(notOpenedByItself(opening, foreign.reason));
       }
     }
     let read;
     try {
       read = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notOpenedByItself(opening, workflowUnread(error)));
+      return refuseOpening(notOpenedByItself(opening, workflowUnread(error)));
     }
     if (read === "late") {
-      return toolDecision("ask", notOpenedByItself(opening, "reading the policy would have taken longer than the guard's own budget allows"));
+      return refuseOpening(notOpenedByItself(opening, "reading the policy would have taken longer than the guard's own budget allows"));
     }
     if (!read.ok) {
-      return toolDecision("ask", notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")));
+      return refuseOpening(notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")));
     }
     if (read.gate.config?.ownHooks?.includes("merge-guard") === true)
       return SILENT;
@@ -16078,19 +16153,22 @@ async function mergeGuard(context) {
       kind: opening.opens ?? "create"
     });
     if (why !== null)
-      return toolDecision("ask", notOpenedByItself(opening, why));
+      return refuseOpening(notOpenedByItself(opening, why));
     const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }
     if (outside === "unread") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
     }
     if (outside !== null)
-      return toolDecision("ask", notOpenedByItself(opening, outside));
+      return refuseOpening(notOpenedByItself(opening, outside));
   }
   if (allowed !== null && !crew && exactMergeOf(command, dialect) !== null) {
     return toolDecision("allow", allowed);
+  }
+  if (crew && (merges.length > 0 || openings.length > 0)) {
+    return toolDecision("deny", merges.length > 0 ? CREW_MERGE_REFUSAL : CREW_PR_REFUSAL);
   }
   return SILENT;
 }
@@ -16655,10 +16733,12 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
 var LOOPBACK = String.raw`(?:[\w-]+\.)?localhost|127(?:\.\d{1,3}){0,3}|0\.0\.0\.0|0x7f[\da-f.x]*|2130706433|\[?::1?\]?|\[?::ffff:[\d.]+\]?`;
 var PORTAL_ADDRESS = new RegExp(String.raw`(?<![\w.:-])(?:${LOOPBACK})[\s:/,'")\]]{1,8}${DEFAULT_PORTAL_PORT}(?!\d)`, "i");
 var PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_PORT}) on this machine. The portal has no sign-in of its own: its pages change the gateway, the safety judge, updates and the workflow settings, the review gate included. It is for you, in your own browser. Allow this only if you asked for it.`;
+var CREW_KIT_REFUSAL = "A crew session never changes the kit's own limits (the project's cc-smart-dev-kit.json, the " + "kit's settings, its state folder, or its installed plugin): the limits are the person's, and " + "the guard asks before such a write. " + CREW_QUESTION_STEP;
+var CREW_PORTAL_REFUSAL = "A crew session has no business with the portal: its pages change the gateway, the safety " + "judge, updates and the workflow settings, and the portal is for the person, in their own " + "browser. " + CREW_QUESTION_STEP;
 function commandOf2(input) {
   return stringField(toolInput(input).command) ?? "";
 }
-function judgeShell(input, paths, platform) {
+function judgeShell(input, paths, platform, crew) {
   const command = commandOf2(input);
   if (command === "")
     return SILENT;
@@ -16675,7 +16755,19 @@ function judgeShell(input, paths, platform) {
   if (found.denials.size > 0)
     return toolDecision("deny", [...found.denials].join(`
 `));
-  if (PORTAL_ADDRESS.test(command))
+  const portal = PORTAL_ADDRESS.test(command);
+  if (crew) {
+    if (portal)
+      return toolDecision("deny", CREW_PORTAL_REFUSAL);
+    const computedKit = found.asks.has(COMPUTED_KIT_ASK);
+    const limits = [...found.asks].some((ask) => ask !== COMPUTED_KIT_ASK);
+    if (!computedKit && !limits)
+      return SILENT;
+    return toolDecision("deny", limits ? [CREW_KIT_REFUSAL, ...computedKit ? [COMPUTED_KIT_ASK] : []].join(`
+`) : [COMPUTED_KIT_ASK, CREW_QUESTION_STEP].join(`
+`));
+  }
+  if (portal)
     found.asks.add(PORTAL_QUESTION);
   return found.asks.size > 0 ? toolDecision("ask", [...found.asks].join(`
 `)) : SILENT;
@@ -16713,21 +16805,21 @@ function editedPaths(input, cwd, home) {
   const written = isAbsolute7(path) ? resolve8(path) : resolve8(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
-function judgeEdit(input, paths) {
+function judgeEdit(input, paths, crew) {
   for (const file of editedPaths(input, stringField(input.cwd), paths.home)) {
     const what = kitFileKind(file, paths);
     if (what !== null) {
-      return toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
+      return crew ? toolDecision("deny", CREW_KIT_REFUSAL) : toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
     }
   }
   return SILENT;
 }
-function sessionEscapeGuard(input, paths, platform = process.platform) {
+function sessionEscapeGuard(input, paths, platform = process.platform, crew = false) {
   const tool = stringField(input.tool_name) ?? "";
   if (ESCAPE_SHELL_TOOLS.includes(tool))
-    return judgeShell(input, paths, platform);
+    return judgeShell(input, paths, platform, crew);
   if (ESCAPE_EDIT_TOOLS.includes(tool))
-    return judgeEdit(input, paths);
+    return judgeEdit(input, paths, crew);
   return SILENT;
 }
 var DOMAIN_TEXT = new RegExp(`${COMMAND}|${CLAUDECODE}|${DEFAULT_PORTAL_PORT}|(?:dist|entries)[\\\\/](?:cli|portal)\\.`, "i");
@@ -17072,7 +17164,9 @@ var gitGuardHook = {
 var mergeGuardHook = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    if (crewIdOf(context.env) !== null)
+      return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && requestsPullRequestChange(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
   },
@@ -17084,7 +17178,7 @@ var mergeGuardHook = {
     const command = commandOf3(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
-  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
+  crewLimits: (input, _checkout, { env }) => crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard
 };
 var mainFolderGuardHook = {
@@ -17187,6 +17281,7 @@ var agentGuardHook = {
   events: ["PreToolUse", "PostToolUse"],
   onConfigProblem: (_message, input, _event, _checkout, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
+  crewLimits: (input, _checkout, { env, paths }) => crewAgentAnswer(input, env, paths, cwdOf(input)),
   onCrash: guardCrash("the model this launch runs on", (input) => [...AGENT_TOOLS, ...WORKFLOW_TOOLS].includes(toolOf2(input))),
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
@@ -17195,10 +17290,10 @@ var sessionEscapeGuardHook = {
   name: "session-escape-guard",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: (_message, input, _event, _checkout, context) => sessionEscapeGuard(input, context.paths),
-  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+  onConfigProblem: (_message, input, _event, _checkout, context) => sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
   onCrash: guardCrash("whether this call goes around the limits set for the session", inEscapeDomain),
-  run: ({ input, paths }) => sessionEscapeGuard(input, paths)
+  run: ({ input, paths, env }) => sessionEscapeGuard(input, paths, process.platform, crewIdOf(env) !== null)
 };
 var fableSessionHook = {
   name: "fable-session",

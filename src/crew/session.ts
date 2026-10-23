@@ -16,6 +16,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { parseSessionRecord, type SessionRecord } from "../hooks/sessions";
 import { ancestorsBy, type ParentReader, parentPidFromStat, readProcStat } from "../jobs/ancestry";
 import { type RunningProgram, runningPrograms } from "../worktrees/machine-facts";
@@ -30,6 +31,16 @@ export function crewIdOf(env: Env): null | string {
   const id = env[CREW_ENV]?.trim() ?? "";
   return id === "" ? null : id;
 }
+
+/**
+ * What a crew session reads instead of a guard's question (D36): nobody is at the machine to
+ * answer it, so the session puts the question on the record for its lead and goes on with the
+ * rest of its phase. One home for the words every guard's crew refusal ends with.
+ */
+export const CREW_QUESTION_STEP =
+  "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " +
+  `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` +
+  '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 /** Claude Code's record of the running session with process `pid`. */
 export function sessionRecordFile(claudeConfigDir: string, pid: number): string {

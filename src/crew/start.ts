@@ -18,14 +18,15 @@
  *      folder), then start now or queued (`placeFor`: its phases, its lead's caps, the
  *      machine's ceiling and the 5-hour window, the memory), and the record (`starting` or
  *      `queued`, one `created` event);
- *   5. its files: the brief with its frame (`brief.md`) and the settings file that names the
- *      crew session to its own session and turns Claude Code's retry watchdog on, with no wait
- *      limit (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>,
- *      "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`,
- *      D42);
+ *   5. its files: the brief with its frame (`brief.md`), the settings file that names the
+ *      crew session to its own session, turns Claude Code's retry watchdog on with no wait
+ *      limit (`settings.json`, D42) and turns the other plugins off, and the `--mcp-config`
+ *      file `mcp.json` beside it with the servers its kind keeps (`src/crew/claude.ts` ›
+ *      `leanLaunch`). **Before anything is made**, so a write that fails leaves no worktree;
  *   6. a queued crew session ends here. Otherwise: `git worktree add -b crew/<phase>-<slug>
  *      .claude/worktrees/crew-<phase>-<slug> <base>` in the main checkout (fast; anything slow is
- *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …`
+ *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …
+ *      --strict-mcp-config --mcp-config <mcp.json> --settings <settings.json> "<first line>"`
  *      from the main checkout, the short id read from its `backgrounded` line, and ONE read of
  *      `claude agents --json --all` to record the session id and see that agent view lists it.
  *      **The folder is not judged here**: `claude agents --json` reports the launch folder until a
@@ -36,11 +37,13 @@
  *      trusted`), the worktree and its branch are taken back, so a second try finds the name free.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { tildify } from "../cli/paths";
+import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
+import type { McpContext } from "../mcp/servers";
+import { readTavilyKey } from "../mcp/tavily";
 import {
   AFFORDABLE_EFFORT,
   answeringSlot,
@@ -55,13 +58,20 @@ import {
   uiRuleText,
   uiTierAllowed,
 } from "../models/launch-policy";
+import { CONFIG_PATH } from "../project/resolve";
+import { launcherArgv } from "../setup/launcher-cmd";
 import {
   RETRY_WATCHDOG_ENV,
   RETRY_WATCHDOG_RECHECK_ENV,
   RETRY_WATCHDOG_RECHECK_MS,
   RETRY_WATCHDOG_VALUE,
 } from "../setup/retry-watchdog";
-import type { ResolvedWorkflow } from "../workflow/resolve";
+import {
+  personalWorkflowFile,
+  type ResolvedValue,
+  type ResolvedWorkflow,
+  type WorkflowSource,
+} from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
@@ -71,9 +81,13 @@ import {
   CREW_PERMISSION_MODE,
   callClaude,
   findClaude,
+  type LeanLaunch,
   launchArgs,
+  leanLaunch,
+  mcpConfigText,
   parseAgents,
   parseBackgrounded,
+  parsePluginList,
   refusedUntrusted,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
@@ -288,6 +302,8 @@ interface Plan {
   claude: string;
   baseRef: string;
   baseSha: string;
+  /** The lean start: the plugins this session turns off, and the servers it keeps. */
+  lean: LeanLaunch;
   name: string;
   branch: string;
   worktree: string;
@@ -325,10 +341,53 @@ export interface LaunchSpec {
   resolved: string;
   /** The effort the launch runs at. */
   effort: string;
+  /** The lean start: the plugins this session turns off, and the servers it keeps. */
+  lean: LeanLaunch;
   /** The lead's name, in the session's first line. */
   leadName: string;
   /** The `claude` to run. */
   claude: string;
+}
+
+/**
+ * The file a `workflow.crew.keep` value came from: the project's file, or the person's own
+ * defaults. The fix line names the file the person edits.
+ */
+function keepFileOf(source: WorkflowSource, paths: CliPaths): string {
+  return source === "personal" ? tildify(personalWorkflowFile(paths), paths.home) : CONFIG_PATH;
+}
+
+/**
+ * The lean start for a session of `kind`: the machine's plugin list (one `claude plugin list
+ * --json` call), and what the project keeps of it (`workflow.crew.keep`). A list that cannot be
+ * read leaves every plugin as it is — a lean start never fails a start over it — while a keep
+ * entry that names nothing here is refused before anything is recorded.
+ */
+function leanOf(
+  kind: null | CrewKind,
+  keep: ResolvedValue<string[]>,
+  ctx: CrewContext,
+  claude: string,
+  repo: string,
+): LeanLaunch {
+  const listed = callClaude(claudeDeps(ctx), claude, ["plugin", "list", "--json"], repo);
+  const enabled =
+    listed.ok && listed.run.exitCode === 0 ? parsePluginList(listed.run.stdout) : null;
+  const context: McpContext = {
+    bunx: ctx.which("bunx") ?? "bunx",
+    launcher: launcherArgv(ctx.paths.binDir, ctx.platform),
+    // Only whether a key exists matters here: the registration carries the placeholder, and
+    // Claude Code fills it from the settings' own `env` (`src/mcp/tavily.ts`).
+    tavily:
+      readTavilyKey(ctx.paths, ctx.env, ctx.platform).source === "none"
+        ? { key: false, reason: "no Tavily key" }
+        : { key: true },
+  };
+  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  if (!lean.ok) {
+    throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
+  }
+  return lean.lean;
 }
 
 /** Steps 1–3: every check that needs no lock. Throws a `Refusal`. */
@@ -363,6 +422,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   const briefGiven = await readBrief(args, ctx);
   const chosen = chooseLaunch(args.kind, args, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
   const baseRef = args.base ?? currentRef(root, ctx.env);
   const baseSha = baseRef === null ? null : commitOf(root, baseRef, ctx.env);
@@ -397,6 +457,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     files: args.files,
     kind: args.kind,
     lead,
+    lean,
     name,
     phase: args.phase,
     slug: args.slug,
@@ -456,6 +517,8 @@ async function planContinuation(
   }
   const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
+  // The next crew session is lean like any other, on the old crew session's kind.
+  const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const number =
     records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name: string;
@@ -487,6 +550,7 @@ async function planContinuation(
     files: old.files,
     kind: old.kind,
     lead,
+    lean,
     name,
     phase: old.phase,
     slug: old.slug,
@@ -617,9 +681,45 @@ async function failed(
   return 1;
 }
 
+/**
+ * The settings file a crew session's launch passes: who it is, Claude Code's retry watchdog
+ * (D42), the claude.ai connectors off, and the plugins this session turns off — the lean start.
+ * The watchdog keys and their values are CC1's (`src/setup/retry-watchdog.ts`), and there is no
+ * wait limit on purpose: the owner chose "keep waiting", so no `…_MAX_WAIT_MS` and no
+ * `…_MAX_USAGE_LIMIT_WAIT_MS`. `disableClaudeAiConnectors` is a documented settings key any file
+ * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
+ * servers out (`docs/claude-code-contract.md`).
+ */
+function crewSettingsText(id: string, off: readonly string[]): string {
+  const settings: Record<string, unknown> = {
+    env: {
+      [CREW_ENV]: id,
+      [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
+      [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
+    },
+  };
+  if (off.length > 0) {
+    settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
+  }
+  settings.disableClaudeAiConnectors = true;
+  return `${JSON.stringify(settings, null, 2)}\n`;
+}
+
 /** Step 6: the worktree, the session, and the session id it records. */
 async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): Promise<number> {
   const { worktree } = spec;
+  // The session's own settings and the MCP servers it loads: the two files that make it lean.
+  // Both are written here, by the one function both the start and the queued start run, so a
+  // crew session that waited in the queue gets the machine's plugins as they are when it starts.
+  // **Before anything is made**: a write that fails leaves no worktree and no branch behind.
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
+  const mcpFile = join(dirname(settingsFile), "mcp.json");
+  try {
+    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
+  } catch (error) {
+    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
+  }
   const added = runGit(
     spec.repo,
     ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha],
@@ -637,10 +737,11 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
   const args = launchArgs({
     effort: spec.effort,
+    mcpFile,
     model: spec.model,
     name: record.name,
     prompt: firstPrompt(record.name, spec.leadName, briefFile),
-    settingsFile: crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id),
+    settingsFile,
     // The folder's own name: a hand-off's next crew session has a number in it (`crew-B6b-x-2`), and a
     // queued crew session is launched later from its record, so the record's path is the one source.
     worktreeName: basename(worktree),
@@ -1084,24 +1185,6 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         worktree: planned.worktree,
       }),
     );
-    // The crew session's own settings: who it is, and Claude Code's retry watchdog (D42), so
-    // a turn waits out a limit instead of ending. The keys and their values are CC1's
-    // (`src/setup/retry-watchdog.ts`), and there is no wait limit on purpose: the owner chose
-    // "keep waiting", so no `…_MAX_WAIT_MS` and no `…_MAX_USAGE_LIMIT_WAIT_MS`.
-    writeStoreFile(
-      crewSettingsFile(ctx.paths.stateDir, caller.repo, record.id),
-      `${JSON.stringify(
-        {
-          env: {
-            [CREW_ENV]: record.id,
-            [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
-            [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
-          },
-        },
-        null,
-        2,
-      )}\n`,
-    );
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);
   }
@@ -1141,6 +1224,7 @@ function specOf(planned: Plan): LaunchSpec {
     claude: planned.claude,
     effort: planned.chosen.effort,
     leadName: planned.lead.name,
+    lean: planned.lean,
     model: planned.chosen.model,
     repo: planned.caller.repo,
     resolved: modelText(planned.chosen.model, planned.chosen.real.model),
@@ -1214,6 +1298,25 @@ export async function startQueued(
     await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet);
     return;
   }
+  let lean: LeanLaunch;
+  try {
+    // The machine's plugins as they are now, not when the crew session was queued: a plugin
+    // installed or removed while it waited changes what it gets.
+    lean = leanOf(
+      isCrewKind(record.kind) ? record.kind : null,
+      resolved.crew.keep,
+      ctx,
+      claude,
+      record.repo,
+    );
+  } catch (error) {
+    await failed(
+      record,
+      error instanceof Refusal ? error.lines.join("; ") : reasonOf(error),
+      quiet,
+    );
+    return;
+  }
   await launch(
     {
       baseSha: sha,
@@ -1221,6 +1324,7 @@ export async function startQueued(
       claude,
       effort: record.effort,
       leadName: record.leadName,
+      lean,
       model: record.model.named,
       repo: record.repo,
       resolved: modelText(record.model.named, record.model.resolved),

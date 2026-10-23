@@ -1,10 +1,12 @@
 "use client";
 
-import { ServerIcon } from "lucide-react";
+import { RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useResource } from "@/api/hooks";
 import { HEALTH_REFRESH, HISTORY_REFRESH } from "@/api/refresh";
-import type { BackendRow, HealthData, LogLine } from "@/api/types";
+import type { BackendRow, HealthData, LogLine, PortHolder } from "@/api/types";
+import { ActionButton } from "@/components/action-button";
+import { CommandLine } from "@/components/copy-button";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
@@ -14,6 +16,7 @@ import { RequestsTable } from "@/components/requests-table";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { EmptyState, PagePad, ResourceView } from "@/components/states";
 import { StatusMark, type Tone, TonePill } from "@/components/status";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { count, duration, slotName, targetModel, until } from "@/lib/format";
@@ -78,6 +81,97 @@ function BackendItem({ backend }: { backend: BackendRow }) {
   );
 }
 
+/** The port holder's state, as the card's value and pill: doctor's verdict decides the tone. */
+function holderWords(holder: PortHolder): { tone: Tone; pill: string; value: string } {
+  if (!holder.check.ok) {
+    return holder.state === "start-limit"
+      ? { pill: "closed", tone: "bad", value: "Closed by systemd" }
+      : { pill: "fix", tone: "bad", value: "Not ready" };
+  }
+  return holder.state === "open"
+    ? { pill: "holds the port", tone: "ok", value: "Ready" }
+    : { pill: "set up", tone: "info", value: "Set up" };
+}
+
+/**
+ * What holds the router's port across restarts: systemd's socket unit, or the Windows task.
+ * Its words are doctor's own, and a failure carries doctor's fix to copy.
+ */
+function PortHolderCard({ holder }: { holder: HealthData["socket"] }) {
+  if (holder === null) {
+    return (
+      <StatCard
+        label="Port holder"
+        value="None"
+        badge={<TonePill tone="info">no service</TonePill>}
+        headline="No systemd and no Windows task here"
+        detail="So nothing holds the port while the router restarts"
+      />
+    );
+  }
+  const words = holderWords(holder);
+  return (
+    <StatCard
+      label={holder.kind === "systemd" ? "Socket unit" : "Windows task"}
+      value={words.value}
+      badge={<TonePill tone={words.tone}>{words.pill}</TonePill>}
+      headline={<span className="font-mono text-xs">{holder.name}</span>}
+      detail={
+        <span className="flex flex-col items-start gap-2">
+          <span className="text-pretty">{holder.check.text}</span>
+          {!holder.check.ok && <CommandLine command={holder.check.fix} label="Copy" />}
+        </span>
+      }
+    />
+  );
+}
+
+/**
+ * The router does not answer: why, the commands that show its state and its log (on systemd,
+ * named from the socket unit the server read), and the restart, asked first in the design's
+ * words. `router.restart` runs `gateway setup --yes`, the command line's own.
+ */
+function RouterDown({ data }: { data: HealthData }) {
+  const { router, socket } = data;
+  const unit =
+    socket !== null && socket.kind === "systemd" ? socket.name.replace(/\.socket$/, "") : null;
+  return (
+    <PagePad>
+      <Alert className="border-bad/40">
+        <TriangleAlertIcon className="text-bad" aria-hidden="true" />
+        <AlertTitle>The router is not answering</AlertTitle>
+        <AlertDescription className="flex flex-col items-start gap-3">
+          <span className="text-pretty">
+            Nothing came back from 127.0.0.1:{router.port} ({router.why ?? "no answer"}). Subagents
+            on the affordable slots may fail until it is back.
+          </span>
+          {unit !== null && (
+            <span className="flex flex-col gap-2">
+              <CommandLine command={`systemctl --user status ${unit}`} label="Copy" />
+              <CommandLine command={`journalctl --user -u ${unit} -f`} label="Copy" />
+            </span>
+          )}
+          <ActionButton
+            action="router.restart"
+            body={{}}
+            icon={<RotateCwIcon data-icon="inline-start" aria-hidden="true" />}
+            confirm={{
+              title: "Restart the router?",
+              body:
+                socket !== null && socket.kind === "systemd" && socket.state === "open"
+                  ? "A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails."
+                  : "Nothing holds the router's port while it restarts, so a request fails until it answers again.",
+              yes: "Restart it",
+            }}
+          >
+            Restart the router
+          </ActionButton>
+        </AlertDescription>
+      </Alert>
+    </PagePad>
+  );
+}
+
 function HealthPage({ data }: { data: HealthData }) {
   const [now] = useState(() => Date.now());
   const { router, socket } = data;
@@ -108,19 +202,7 @@ function HealthPage({ data }: { data: HealthData }) {
           }
           detail={`On 127.0.0.1:${router.port}`}
         />
-        {socket !== null && (
-          <StatCard
-            label="Socket"
-            value={socket.listening ? "Listening" : "Closed"}
-            badge={
-              <TonePill tone={socket.listening ? "ok" : "warn"}>
-                {socket.listening ? "ready" : "closed"}
-              </TonePill>
-            }
-            headline="It starts the router on the first request"
-            detail={socket.unit ?? "No socket unit on this machine"}
-          />
-        )}
+        <PortHolderCard holder={socket} />
         <StatCard
           label="Backends answering"
           value={`${answering} of ${data.backends.length}`}
@@ -148,6 +230,7 @@ function HealthPage({ data }: { data: HealthData }) {
           detail={`${count(router.fallbacks)} fallbacks, ${count(router.requests)} requests since start`}
         />
       </SectionCards>
+      {!router.up && <RouterDown data={data} />}
       <PagePad className="grid gap-4 md:gap-6 @4xl/main:grid-cols-2">
         <Card>
           <CardHeader>

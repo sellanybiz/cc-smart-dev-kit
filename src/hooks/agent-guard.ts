@@ -40,10 +40,10 @@
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
- * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
+ * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`, a crew session): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
  * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
- * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
+ * | a session nobody watches (`claude -p`, or a crew session: a `--bg` session nobody reads) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a crew session says to put the question to its lead (`crew report --question`, `CREW_QUESTION_STEP`); a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
  * A reason word is read with the punctuation around it dropped: `Fable reason: plan.` names
  * `plan`.
@@ -115,6 +115,7 @@
  */
 
 import type { CliPaths } from "../cli/paths";
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { settingsReport } from "../gateway/settings";
 import {
@@ -156,6 +157,7 @@ import {
   reasonParts,
   SESSION_EFFORT,
 } from "./agent-launches";
+import { isAttended } from "./attended";
 import {
   type HookInput,
   type HookResult,
@@ -835,6 +837,14 @@ const UNREADABLE_UNATTENDED =
   "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
 
 /**
+ * Said in a crew session after the reasons a run cannot be read: the same self-serve fix the
+ * `claude -p` line names, without "run it in an interactive session", which a crew session
+ * cannot do. `CREW_QUESTION_STEP` follows it.
+ */
+const UNREADABLE_CREW =
+  "The guard cannot see the model and effort its launches run on: pass the script inline (`script`), or by `scriptPath` to a file the guard can read.";
+
+/**
  * The one answer for a whole Workflow call: a refusal or any denied launch denies it; a script
  * it cannot read asks (denied in `claude -p`, where nobody can answer); else the ask names each
  * launch that asks; else it is allowed.
@@ -847,7 +857,13 @@ function workflowAnswer(
   const denied = call.results.find((one) => one.verdict.decision === "deny");
   if (denied !== undefined) return { decision: "deny", reason: workflowReason(denied) };
   if (call.unreadable.length > 0 && nobodyWatches(env)) {
-    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join("\n") };
+    return {
+      decision: "deny",
+      reason: [
+        ...call.unreadable,
+        ...(inCrew(env) ? [UNREADABLE_CREW, CREW_QUESTION_STEP] : [UNREADABLE_UNATTENDED]),
+      ].join("\n"),
+    };
   }
   const asks = [
     ...call.unreadable.map((reason) => `${reason}\n${UNREADABLE_ASK}`),
@@ -1186,12 +1202,13 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     if (word === null)
       return deny(real, builder ? fableBuildDenial(real, type) : fableDenial(real));
     if (nobodyWatches(env)) {
+      const why =
+        "A Fable launch is approved by the person, one by one, and this session has nobody to answer";
       return deny(
         real,
-        [
-          "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-          "Run it in an interactive session.",
-        ].join("\n"),
+        inCrew(env)
+          ? [`${why}.`, CREW_QUESTION_STEP].join("\n")
+          : [`${why} (\`claude -p\`).`, "Run it in an interactive session."].join("\n"),
       );
     }
     return {
@@ -1225,12 +1242,18 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     // person approves it, at any effort — and where nobody can answer, it is refused.
     if (real.family !== "opus") {
       if (nobodyWatches(env)) {
+        const why = `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer`;
         return deny(
           real,
-          [
-            `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
-            "Name `opus` (or a Claude Opus id) as its model.",
-          ].join("\n"),
+          inCrew(env)
+            ? [
+                `${why}.`,
+                "Name `opus` (or a Claude Opus id) as its model.",
+                CREW_QUESTION_STEP,
+              ].join("\n")
+            : [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join(
+                "\n",
+              ),
         );
       }
       return {
@@ -1246,12 +1269,17 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     const why = opusWhy(effort, firstWord(said));
     if (effort !== OPUS_ASK_EFFORT) return allow(real, why);
     if (nobodyWatches(env)) {
+      const nobody = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
       return deny(
         real,
-        [
-          `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
-          `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
-        ].join("\n"),
+        inCrew(env)
+          ? [`${nobody}.`, `Run it at ${levelsText(OPUS_FREE_EFFORTS)}.`, CREW_QUESTION_STEP].join(
+              "\n",
+            )
+          : [
+              `${nobody} (\`claude -p\`).`,
+              `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
+            ].join("\n"),
       );
     }
     return {
@@ -1283,9 +1311,19 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
   return allow(real, "");
 }
 
-/** True when this session has nobody to answer a question (`claude -p`). */
+/**
+ * True when this session has nobody to answer a question: `claude -p`, or a crew session (a
+ * `--bg` session its lead started, with nobody watching it). A crew session is judged exactly
+ * like `claude -p` — every ask becomes a refusal — but its words name the step that reaches its
+ * lead (`CREW_QUESTION_STEP`) rather than "run it in an interactive session".
+ */
 function nobodyWatches(env: Env): boolean {
-  return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
+  return inCrew(env) || !isAttended(env);
+}
+
+/** True when the session is a crew session: nobody watches it, and its step is `crew report`. */
+function inCrew(env: Env): boolean {
+  return crewIdOf(env) !== null;
 }
 
 /**
@@ -1498,6 +1536,33 @@ function afterTheCall(input: HookInput): boolean {
 }
 
 /**
+ * What the guard judged for one call, before any record is written: a whole Workflow call, or a
+ * single launch. `null` when the call is none of the guard's business.
+ */
+type Judgement =
+  | { kind: "workflow"; call: WorkflowCall; decision: "allow" | "ask" | "deny"; reason: string }
+  | { kind: "launch"; launch: Launch; verdict: Verdict };
+
+/**
+ * The guard's judgment of one call, with no record written: the one place `agentGuard` and the
+ * crew part (`crewAgentAnswer`) both judge from, so a spelling that gets past one gets past both.
+ */
+function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Judgement | null {
+  const tool = stringField(input.tool_name);
+  const context = readGuardContext(paths, input, env);
+  if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
+    const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
+    // One answer for the whole call: a deny refuses it, so nothing in it runs; an ask names each
+    // launch that asks and each script it cannot read.
+    const answer = workflowAnswer(call, env);
+    return { kind: "workflow", call, decision: answer.decision, reason: answer.reason };
+  }
+  const launch = readLaunch(input);
+  if (launch === null) return null;
+  return { kind: "launch", launch, verdict: judgeLaunch(launch, context, env) };
+}
+
+/**
  * The hook's answer: judge the launch (or every launch a Workflow script makes), record an
  * Opus or Fable one once it is known to run, and answer with the PreToolUse decision.
  *
@@ -1509,8 +1574,8 @@ function afterTheCall(input: HookInput): boolean {
  *
  * A Workflow run is judged however it names its script — inline, `scriptPath`, a saved or a
  * plugin's `name` — with the workflows it nests (`judgeWorkflowCall`). One the guard cannot read
- * (a built-in, a missing file, a resume) asks, and is refused in `claude -p`. Anything else it
- * cannot work out lets the call through.
+ * (a built-in, a missing file, a resume) asks, and is refused in `claude -p` (and in a crew
+ * session). Anything else it cannot work out lets the call through.
  */
 export function agentGuard(
   input: HookInput,
@@ -1519,34 +1584,63 @@ export function agentGuard(
   cwd: string,
   nowMs: number = Date.now(),
 ): HookResult {
-  const tool = stringField(input.tool_name);
-  const context = readGuardContext(paths, input, env);
-  const file = agentLaunchesFile(paths.stateDir);
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null) return SILENT;
   const ran = afterTheCall(input);
-  const record = (judged: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
-    const lines = judged
+  const file = agentLaunchesFile(paths.stateDir);
+  const record = (lines: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
+    const records = lines
       .map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index))
       .filter((line): line is AgentLaunch => line !== null);
-    if (lines.length > 0) appendAgentLaunches(file, lines);
+    if (records.length > 0) appendAgentLaunches(file, records);
   };
-  if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
-    const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
-    // One answer for the whole call: a deny refuses it, so nothing in it runs and none of its
-    // launches is recorded; an ask names each launch that asks and each script it cannot read.
-    const answer = workflowAnswer(call, env);
-    if (answer.decision === "deny") return ran ? SILENT : toolDecision("deny", answer.reason);
-    const asked = answer.decision === "ask";
+  if (judged.kind === "workflow") {
+    const { call, decision, reason } = judged;
+    // A deny refuses the whole call, so nothing in it runs and none of its launches is recorded.
+    if (decision === "deny") return ran ? SILENT : toolDecision("deny", reason);
+    const asked = decision === "ask";
     // Recorded when the whole call is known to run: at once when nothing in it asks, else after
     // it ran.
     if (ran === asked) {
       record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
     if (ran || !asked) return SILENT;
-    return toolDecision("ask", answer.reason);
+    return toolDecision("ask", reason);
   }
-  const launch = readLaunch(input);
-  if (launch === null) return SILENT;
-  const result = judgeLaunch(launch, context, env);
-  if (result.decision === (ran ? "ask" : "allow")) record([{ launch, verdict: result }]);
-  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  const { launch, verdict } = judged;
+  if (verdict.decision === (ran ? "ask" : "allow")) record([{ launch, verdict }]);
+  return ran || verdict.decision === "allow"
+    ? SILENT
+    : toolDecision(verdict.decision, verdict.reason);
+}
+
+/**
+ * The guard's crew part (D36): a crew session is a background session nobody watches, so every
+ * launch the guard would ask the person about is refused, with the step that reaches its lead —
+ * whatever the project's `ownHooks` says, since a project could otherwise switch the guard off
+ * (`.claude/rules/hooks.md` § A crew session's own limits). It is a **judgment only**: nothing
+ * is recorded, because the run records a launch that runs and this part only ever refuses; the
+ * launch it refuses never runs, so it is recorded nowhere, exactly as for `claude -p`.
+ *
+ * **Only the former questions.** A launch the guard denies for a person (no model or effort, a
+ * low effort, the UI rule) stays the project's own policy: a project whose `ownHooks` lists
+ * `agent-guard` runs its own copy, and this part must not answer for it. So the part denies
+ * exactly the answers that name `CREW_QUESTION_STEP` — the four rules that ask a person.
+ *
+ * Not a crew session, a call outside the guard's tools, or a call it allows: silence.
+ */
+export function crewAgentAnswer(
+  input: HookInput,
+  env: Env,
+  paths: CliPaths,
+  cwd: string,
+): HookResult {
+  if (!inCrew(env) || afterTheCall(input)) return SILENT;
+  const judged = judgeCall(input, env, paths, cwd);
+  if (judged === null) return SILENT;
+  const decision = judged.kind === "workflow" ? judged.decision : judged.verdict.decision;
+  const reason = judged.kind === "workflow" ? judged.reason : judged.verdict.reason;
+  return decision === "deny" && reason.includes(CREW_QUESTION_STEP)
+    ? toolDecision("deny", reason)
+    : SILENT;
 }

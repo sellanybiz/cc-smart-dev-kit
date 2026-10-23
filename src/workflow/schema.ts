@@ -82,6 +82,35 @@ function numberField(key: NumberKey) {
 /** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
 const tagSchema = z.string().refine(isNameTag, TAG_RULE);
 
+/**
+ * One entry of `workflow.crew.keep`: a plugin a crew session keeps on, or an MCP server it keeps
+ * beside the ones its kind needs. A plugin is named by its Claude Code id (`name@marketplace`),
+ * a server by its name.
+ */
+export type CrewKeepEntry = { id: string; kind: "plugin" } | { kind: "server"; name: string };
+
+/** The two shapes an entry takes, in the words a refusal says it. */
+export const CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+
+/** One `workflow.crew.keep` entry, read; null when it is neither shape. */
+export function parseCrewKeep(entry: string): CrewKeepEntry | null {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    // `name@marketplace`, both non-empty: what `claude plugin list` names a plugin by.
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+
+/** The schema for one entry: refused with its shape, so a typo never waits for the next start. */
+const crewKeepSchema = z
+  .string()
+  .refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
+
 export const workflowSchema = z.strictObject({
   /** Commit each finished, reviewed step without asking. */
   autoCommit: z.boolean().optional(),
@@ -148,6 +177,14 @@ export const workflowSchema = z.strictObject({
     .strictObject({
       /** Crew sessions may start here: off, a lead uses subagents only. Default: false. */
       enabled: z.boolean().optional(),
+      /**
+       * What a crew session keeps beside the kit itself: a plugin (`plugin:<id>`) a phase needs,
+       * or an MCP server (`server:<name>`, one the kit registers). Every other plugin is turned
+       * off for the session and every other MCP server is not loaded, so its context goes to the
+       * phase instead of to the machine's other tools. A plugin named here must be enabled on the
+       * machine. Default: nothing.
+       */
+      keep: z.array(crewKeepSchema).optional(),
       /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
       idleStopMinutes: numberField("crew.idleStopMinutes"),
       /** The machine's safety ceiling: at most this many crew sessions run here at once, across leads (D54). Default: 24. */
@@ -212,6 +249,7 @@ export const workflowDefaults = {
   // on the opus tier, and the machine's ceiling is a safety net no lead reaches alone.
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     /** Null: no machine-wide opus count; one set is the person's own ceiling. */
@@ -260,6 +298,7 @@ export type WorkflowKey =
   | "alerts.sound"
   | "alerts.usagePercent"
   | "crew.enabled"
+  | "crew.keep"
   | "crew.idleStopMinutes"
   | "crew.max"
   | "crew.maxOpus"
@@ -292,6 +331,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -420,6 +460,21 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
+  if (key === "crew.keep") {
+    const named = value
+      .split(/[,\s]+/)
+      .map((word) => word.trim())
+      .filter((word) => word !== "");
+    if (named.length === 0) return { ok: false, why: `crew.keep is a list of ${CREW_KEEP_RULE}` };
+    const unknown = named.filter((entry) => parseCrewKeep(entry) === null);
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why: `crew.keep: unknown ${unknown.join(", ")} (an entry is ${CREW_KEEP_RULE})`,
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
   if (key === "reviewAgents") {
     const named = value
       .split(/[,\s]+/)
@@ -461,6 +516,6 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
 export function showValue(key: WorkflowKey, value: unknown): string {
   if (key === "crew.tag" && value === null) return `(${CREW_TAG_UNSET})`;
   if (key === "crew.maxOpus" && value === null) return `(${CREW_MAX_OPUS_UNSET})`;
-  if (Array.isArray(value)) return value.join(", ");
+  if (Array.isArray(value)) return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }

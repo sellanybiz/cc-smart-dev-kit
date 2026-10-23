@@ -21,14 +21,12 @@ import {
 import { join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew } from "../../crew/store";
-import type { Machine } from "../../machine/machine";
 import { projectFolderName } from "../../sessions/saved-sessions";
 import { type FakeWorkflow, fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { commitConfig, makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import type { GhRunner } from "../../workflow/merge-check";
 import { ACTION_NAMES, type ActionContext, portalOmnirouteContext, runAction } from "../actions";
-import type { PortalContext } from "../context";
 import type { PageDataDeps } from "../page-data";
 import {
   addProjectRoot,
@@ -43,6 +41,7 @@ import {
   readAddedProjects,
 } from "./projects";
 import { answerApi } from "./routes";
+import { testPortalContext } from "./test-context";
 import type { ProjectAnswer, ProjectSummary } from "./types";
 
 /** One session's time: every list assertion names a hand-written time, never `Date.now()`. */
@@ -102,42 +101,6 @@ function worldEnv(
   };
 }
 
-/** A `portalContext` with nothing of the machine but what the project answers read. */
-function portalContext(
-  paths: CliPaths,
-  env: Record<string, string>,
-  now: () => number,
-): PortalContext {
-  const machine: Machine = {
-    arch: "x64",
-    confirm: null,
-    exists: (path) => existsSync(path),
-    fetchText: async () => "",
-    macApp: "/Applications/Warp.app",
-    osRelease: () => 'NAME="Ubuntu"\n',
-    platform: "linux",
-    run: () => ({ exitCode: 0, output: "" }),
-    runOnTerminal: () => 0,
-    spawnDetached: () => undefined,
-    which: () => null,
-  };
-  return {
-    bunVersion: Bun.version,
-    env,
-    fetch: async () => new Response("{}"),
-    machine,
-    now,
-    openBrowser: () => undefined,
-    paths,
-    pluginFolder: () => ({ error: "no plugin folder in this test" }),
-    probe: { fetch: async () => new Response("{}"), now, sleep: async () => undefined },
-    runner: () => ({ exitCode: 0, output: "" }),
-    systemFolders: [],
-    systemd: false,
-    which: (name) => Bun.which(name, { PATH: env.PATH ?? "" }),
-  };
-}
-
 interface TestWorld {
   action: ActionContext;
   cwd: string;
@@ -165,7 +128,7 @@ function testWorld(
   const env = worldEnv(home, options.gh === true, options.gitLog, options.gitHold);
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const now = options.clock ?? (() => Date.now());
-  const ctx = portalContext(paths, env, now);
+  const ctx = testPortalContext(paths, env, now);
   const workflow = fakeWorkflow();
   const action: ActionContext = {
     cwd,

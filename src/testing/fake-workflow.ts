@@ -53,6 +53,7 @@ export function defaultResolved(): ResolvedWorkflow {
       enabled: at(false),
       handoffPercent: at(70),
       idleStopMinutes: at(10),
+      keep: at<string[]>([]),
       max: at(24),
       maxOpus: at<null | number>(null),
       maxHours: at(4),

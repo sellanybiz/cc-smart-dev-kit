@@ -37,14 +37,15 @@
  * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
  * (`src/hooks/settings-hooks.ts`).
  *
- * Three guards — `git-guard`, `merge-guard` and `message-guard` — also carry a **crew part**
- * (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command that would
- * throw work away without reading the step that replaces it, opens no pull request, and its
- * peer messages carry the `crew tell` tag (D24, D47). The frame runs that part **before
- * `ownHooks` and before the project's file is read**, so a project with no
- * `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the guard, cannot
- * lose it. Each part is the guard's own detector (`crewGitAnswer`, `crewPrAnswer`,
- * `crewMessageAnswer`), never a copy.
+ * Four guards — `git-guard`, `merge-guard`, `agent-guard` and `message-guard` — also carry a
+ * **crew part** (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command
+ * that would throw work away without reading the step that replaces it, opens no pull request
+ * and merges none, is never asked about a launch (each question is a denial naming the step
+ * that reaches its lead), and its peer messages carry the `crew tell` tag (D24, D36, D47). The
+ * frame runs that part **before `ownHooks` and before the project's file is read**, so a
+ * project with no `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the
+ * guard, cannot lose it. Each part is the guard's own detector (`crewGitAnswer`,
+ * `crewPullRequestAnswer`, `crewAgentAnswer`, `crewMessageAnswer`), never a copy.
  */
 
 import { crewIdOf } from "../crew/session";
@@ -52,7 +53,13 @@ import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
-import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
+import {
+  AGENT_TOOLS,
+  agentGuard,
+  crewAgentAnswer,
+  guardFacts,
+  WORKFLOW_TOOLS,
+} from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
 import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
@@ -82,7 +89,7 @@ import {
 } from "./job-route";
 import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
-import { crewPrAnswer, mergeGuard } from "./merge-guard";
+import { crewPullRequestAnswer, mergeGuard } from "./merge-guard";
 import { crewMessageAnswer, messageGuard } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
@@ -202,7 +209,12 @@ export const gitGuardHook: HookSpec = {
 export const mergeGuardHook: HookSpec = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    // A crew session is never asked (D36). Its crew part has already refused every merge and
+    // opening it can read; a line left over may run (a `--disable-auto`, which merges
+    // nothing), and no merge this guard would stop can be silent there. So a broken or too
+    // new file gives a crew session silence, never a question nobody answers.
+    if (crewIdOf(context.env) !== null) return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && requestsPullRequestChange(command)
       ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message))
@@ -220,9 +232,10 @@ export const mergeGuardHook: HookSpec = {
     const command = commandOf(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
-  // A crew session opens no pull request, whatever the project's file says, and with no file
-  // (`crewPrAnswer`: the same reader as `run`, aliases included).
-  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
+  // A crew session opens no pull request and merges none, whatever the project's file says, and
+  // with no file (`crewPullRequestAnswer`: the same reader as `run`, aliases included).
+  crewLimits: (input, _checkout, { env }) =>
+    crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard,
 };
 
@@ -458,6 +471,12 @@ export const agentGuardHook: HookSpec = {
     agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
+  // A crew session is a background session nobody watches: the guard judges it as unattended,
+  // so every launch it would ask the person about is refused with the step that reaches the
+  // lead — whatever `ownHooks` says and before the file (`crewAgentAnswer` judges, records
+  // nothing).
+  crewLimits: (input, _checkout, { env, paths }) =>
+    crewAgentAnswer(input, env, paths, cwdOf(input)),
   // A crash must not let a launch through unchecked: the guard asks about the launch it was
   // asked to judge. On PostToolUse (the record) it says nothing: the launch already ran.
   onCrash: guardCrash("the model this launch runs on", (input) =>
@@ -477,19 +496,26 @@ export const agentGuardHook: HookSpec = {
  * broken or too new file, and a folder outside git, are judged the same way. And **`alwaysOn`**:
  * `ownHooks` cannot switch it off (it does not even accept the name), because the project's
  * file is one of the things this guard guards. A crash asks about the calls in its domain.
+ *
+ * A crew session is never asked (D36): each ask is a denial naming the step that reaches its
+ * lead, and the crew flag is passed into every path this guard answers through (`run`,
+ * `onConfigProblem`, `outsideGit`) — `alwaysOn` already makes them all reach a crew session,
+ * so no crew part is needed and no call is judged twice.
  */
 export const sessionEscapeGuardHook: HookSpec = {
   name: "session-escape-guard",
   events: ["PreToolUse"],
   alwaysOn: true,
   onConfigProblem: (_message, input, _event, _checkout, context) =>
-    sessionEscapeGuard(input, context.paths),
-  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+  outsideGit: (input, _event, _why, context) =>
+    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
   onCrash: guardCrash(
     "whether this call goes around the limits set for the session",
     inEscapeDomain,
   ),
-  run: ({ input, paths }) => sessionEscapeGuard(input, paths),
+  run: ({ input, paths, env }) =>
+    sessionEscapeGuard(input, paths, process.platform, crewIdOf(env) !== null),
 };
 
 /**

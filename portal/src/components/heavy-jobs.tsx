@@ -5,7 +5,7 @@ import { portalClient } from "@/api/client";
 import { type Resource, useResource } from "@/api/hooks";
 import type { JobEntry, JobStore, JobsData } from "@/api/types";
 import { EmptyState } from "@/components/states";
-import { TonePill } from "@/components/status";
+import { StatusMark, TonePill } from "@/components/status";
 import {
   Card,
   CardAction,
@@ -115,6 +115,40 @@ function JobRows({
   );
 }
 
+/**
+ * What a heavy job gives way with under load besides memory: the CPU and disk I/O weights its
+ * scope gets (systemd's `CPUWeight` and `IOWeight`; a unit that sets none has 100), or why one
+ * is not set on this machine.
+ */
+function Weights({ weights }: { weights: JobsData["weights"] }) {
+  const rows: { label: string; weight: JobsData["weights"]["cpu"] }[] = [
+    { label: "CPU", weight: weights.cpu },
+    { label: "Disk I/O", weight: weights.io },
+  ];
+  return (
+    <ul className="flex flex-col gap-1">
+      {rows.map(({ label, weight }) => (
+        <li key={label}>
+          <StatusMark tone={weight.value === null ? "info" : "ok"}>
+            {weight.value === null ? (
+              <>
+                {label}: no weight is set ({weight.why ?? "the machine does not say why"}).
+              </>
+            ) : (
+              <>
+                {label} weight <span className="tabular-nums">{weight.value}</span>
+                {weight.value < 100
+                  ? ": under load a job gives way to the rest of the machine, which runs at 100."
+                  : ", the same as or above the rest of the machine (100)."}
+              </>
+            )}
+          </StatusMark>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** The Machine page's "Heavy jobs" card: the budget, what runs, and who waits in turn. */
 export function HeavyJobsCard() {
   const jobs = useJobs();
@@ -191,10 +225,13 @@ export function HeavyJobsCard() {
           ))
         )}
         {data !== null && (
-          <p className="text-xs text-muted-foreground">
-            This machine has {gb(data.memoryGb)}; the queue keeps {gb(data.keptGb)} back for
-            everything else.
-          </p>
+          <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+            <p>
+              This machine has {gb(data.memoryGb)}; the queue keeps {gb(data.keptGb)} back for
+              everything else.
+            </p>
+            <Weights weights={data.weights} />
+          </div>
         )}
       </CardContent>
     </Card>

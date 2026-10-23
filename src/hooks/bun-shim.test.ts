@@ -174,6 +174,82 @@ describe("cc-smart-dev-kit-bun.sh finds bun without PATH", () => {
     });
   });
 
+  // CC8: a crew session has nobody to answer the guard's question, so every answer the shim
+  // gives with --missing=ask is a denial that names the fix and what the session can do: end
+  // its turn and say so (a guard that cannot run refuses every shell call it matches, so with
+  // no bun, or one too old, `crew report` cannot run either), or report while shell still
+  // runs. The step, in the shim's own words (it cannot use the TypeScript constant).
+  const CREW_STEP =
+    ' A crew session has nobody to answer, so the call is refused. End your turn and say this in your last message for your lead; if shell commands still run, report it with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>` instead.';
+  const CREW = { CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa" };
+
+  test("no bun and --missing=ask in a crew session: a deny that names the fix and the crew step", () => {
+    const run = runShim({ ...CREW, HOME: tempDir("shim-home"), PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      "a",
+      "b c",
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup." +
+          CREW_STEP,
+      },
+    });
+  });
+
+  test("a bun older than the plugin needs, in a crew session: the same deny", () => {
+    const home = tempDir("shim-home");
+    fakeBun(join(home, ".bun", "bin", "bun"), "old-bun", "1.3.0");
+    const run = runShim({ ...CREW, HOME: home, PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      realBundle(),
+      "b c",
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot run its guard: this Bun is older than the plugin needs (needs Bun >= 1.4.3; this is 1.3.0). Run: bun upgrade" +
+          CREW_STEP,
+      },
+    });
+  });
+
+  test("a guard whose bundle is gone, in a crew session: the same deny", () => {
+    const home = tempDir("shim-home");
+    fakeBun(join(home, ".bun", "bin", "bun"), "gone-bundle-bun");
+    const run = runShim({ ...CREW, HOME: home, PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      join(tempDir("shim-gone"), "git-guard.js"),
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot run its guard: its own program file is missing (an update may have removed this plugin version). Restart Claude Code, then run: cc-smart-dev-kit setup" +
+          CREW_STEP,
+      },
+    });
+  });
+
+  test("the crew deny is only for --missing=ask: a quiet or failing hook is unchanged", () => {
+    // A crew session's non-guard hooks stay quiet, and a command still fails (exit 1): the
+    // crew rule is about a question reaching nobody, not about stopping the session.
+    const env = { ...CREW, HOME: tempDir("shim-home"), PATH: tempDir("empty-path") };
+    expect(runShim(env, ["--missing=quiet", "a"]).stdout).toBe("");
+    expect(runShim(env, ["--missing=quiet", "a"]).stderr).toContain("bun not found");
+    expect(runShim(env, ["--missing=fail", "a"]).exitCode).toBe(1);
+  });
+
   test("no bun and --missing=fail: one line on stderr, exit 1 (a command must not report success)", () => {
     // The mode for the CLI shim (`plugin/bin/cc-smart-dev-kit`): unlike a hook, a command that
     // did not run must not report success.

@@ -6271,6 +6271,19 @@ function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
+function parseCrewKeep(entry) {
+  if (entry.startsWith("plugin:")) {
+    const id = entry.slice("plugin:".length);
+    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
+  }
+  if (entry.startsWith("server:")) {
+    const name = entry.slice("server:".length);
+    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
+  }
+  return null;
+}
+var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -6293,6 +6306,7 @@ var workflowSchema = strictObject({
   }).optional(),
   crew: strictObject({
     enabled: boolean2().optional(),
+    keep: array(crewKeepSchema).optional(),
     idleStopMinutes: numberField("crew.idleStopMinutes"),
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
@@ -6329,6 +6343,7 @@ var workflowDefaults = {
   },
   crew: {
     enabled: false,
+    keep: [],
     idleStopMinutes: 10,
     max: 24,
     maxOpus: null,
@@ -6361,6 +6376,7 @@ var POLICY_KEYS = [
   "alerts.sound",
   "alerts.usagePercent",
   "crew.enabled",
+  "crew.keep",
   "crew.idleStopMinutes",
   "crew.max",
   "crew.maxOpus",
@@ -7821,6 +7837,7 @@ function crewIdOf(env) {
   const id = env[CREW_ENV]?.trim() ?? "";
   return id === "" ? null : id;
 }
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/shell/command.ts
 function dialectOfTool(tool) {

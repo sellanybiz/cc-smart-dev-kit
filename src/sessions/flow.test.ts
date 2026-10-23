@@ -237,6 +237,45 @@ describe("agents and the parallel ratio", () => {
   });
 });
 
+describe("the window hour by hour", () => {
+  it("every hour of the window, with its launches, replies and time blocked on prompts", () => {
+    const { folder, paths } = world([
+      launches("r1", at(10, 5), 2),
+      assistant("r2", at(10, 40), [toolUse("t1", "Bash", { command: "bun test" })]),
+      ask("t1", at(10, 40, 1), '"/home/user/.claude/plugins/x/dist/merge-guard.js"'),
+      result("t1", at(10, 45), { decision: "accept", source: "user_temporary" }),
+      // Before the window: counted in no hour of it.
+      launches("r0", at(8, 30), 3),
+    ]);
+    // A second session counts into the same hours.
+    writeFileSync(
+      join(folder, "bbbbbbbb-1111-2222-3333-444444444444.jsonl"),
+      `${launches("x1", at(12, 10), 1)}\n`,
+    );
+    const report = readFlow(paths, {
+      nowMs: at(13, 30),
+      project: null,
+      session: null,
+      sinceMs: at(10),
+    });
+    expect(report.hours).toEqual([
+      { launches: 2, promptMs: 300_000, prompts: 1, replies: 2, t: at(10) },
+      { launches: 0, promptMs: 0, prompts: 0, replies: 0, t: at(11) },
+      { launches: 1, promptMs: 0, prompts: 0, replies: 1, t: at(12) },
+      { launches: 0, promptMs: 0, prompts: 0, replies: 0, t: at(13) },
+    ]);
+  });
+
+  it("a window with no session still has its hours, each empty", () => {
+    const { paths } = world();
+    const report = readFlow(paths, { nowMs: at(11), project: null, session: null, sinceMs: at(9) });
+    expect(report.hours).toEqual([
+      { launches: 0, promptMs: 0, prompts: 0, replies: 0, t: at(9) },
+      { launches: 0, promptMs: 0, prompts: 0, replies: 0, t: at(10) },
+    ]);
+  });
+});
+
 describe("blocked on permission prompts", () => {
   it("times the wait from the tool's line to the person's answer, and names the asker", () => {
     const { paths } = world([

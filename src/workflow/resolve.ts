@@ -78,6 +78,8 @@ export interface ResolvedWorkflow {
   };
   crew: {
     enabled: ResolvedValue<boolean>;
+    /** The plugins and servers a crew session keeps (`plugin:<id>`, `server:<name>`). */
+    keep: ResolvedValue<string[]>;
     idleStopMinutes: ResolvedValue<number>;
     max: ResolvedValue<number>;
     /** Null: no machine-wide opus count is set (D54). */
@@ -348,6 +350,7 @@ const RESOLVED: {
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "crew.enabled": (r) => r.crew.enabled,
+  "crew.keep": (r) => r.crew.keep,
   "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
@@ -422,6 +425,8 @@ export function resolveWorkflow(
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      // A list is one value: the project's whole list wins, like `alerts.events`.
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of(
         "crew.idleStopMinutes",
         crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes,

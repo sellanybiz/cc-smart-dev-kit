@@ -1,7 +1,7 @@
 "use client";
 
 import { FlaskConicalIcon, ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useResource } from "@/api/hooks";
 import { HISTORY_REFRESH, SLOTS_REFRESH } from "@/api/refresh";
 import type { History, OpenBreaker, SlotRow, SlotsData, SlotTarget } from "@/api/types";
@@ -14,6 +14,7 @@ import {
 } from "@/components/chain-editor";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ModeSwitch, type SlotModeName } from "@/components/mode-switch";
+import { EVERY_SESSION, SavedSwitch } from "@/components/saved-switch";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { PagePad, ResourceView } from "@/components/states";
 import { TonePill } from "@/components/status";
@@ -29,8 +30,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { targetModel, until } from "@/lib/format";
 
 const ROLE_WORDS: Record<string, string> = {
@@ -40,7 +39,6 @@ const ROLE_WORDS: Record<string, string> = {
 };
 
 /** The design's words before a change that rewrites the gateway's config for every session. */
-const EVERY_SESSION = "This changes every running Claude session, from its next request.";
 
 /** A chain's targets, in order, as one line. */
 function chainLine(targets: readonly string[]): string {
@@ -124,64 +122,6 @@ function BreakerNote({ breaker }: { breaker: OpenBreaker }) {
         </ul>
       </AlertDescription>
     </Alert>
-  );
-}
-
-/**
- * One switch of a slot that saves at once (fallback, breaker): asked first, because it changes
- * every running session, then pending, then its result in place.
- */
-function SavedSwitch({
-  label,
-  help,
-  checked,
-  action,
-  slot,
-  disabled = false,
-}: {
-  label: string;
-  help: string;
-  checked: boolean;
-  action: "slot.breaker" | "slot.fallback";
-  slot: string;
-  disabled?: boolean;
-}) {
-  const id = useId();
-  const { run, state } = useAction(action);
-  const [asking, setAsking] = useState(false);
-  const sending = state.phase === "sending";
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-0.5">
-          <Label htmlFor={id}>{label}</Label>
-          <p id={`${id}-help`} className="text-xs text-pretty text-muted-foreground">
-            {help}
-          </p>
-        </div>
-        <Switch
-          id={id}
-          checked={checked}
-          onCheckedChange={() => setAsking(true)}
-          disabled={disabled || sending}
-          aria-describedby={`${id}-help`}
-          aria-busy={sending}
-        />
-      </div>
-      <ActionResultLine state={state} onRetry={() => setAsking(true)} />
-      <ConfirmDialog
-        open={asking}
-        title={`Turn ${label.toLowerCase()} ${checked ? "off" : "on"} for ${slot}?`}
-        yes={`Turn it ${checked ? "off" : "on"}`}
-        onCancel={() => setAsking(false)}
-        onYes={() => {
-          setAsking(false);
-          run({ on: !checked, slot });
-        }}
-      >
-        {EVERY_SESSION}
-      </ConfirmDialog>
-    </div>
   );
 }
 
@@ -376,7 +316,8 @@ function SlotCard({
             }
             checked={row.fallback}
             action="slot.fallback"
-            slot={row.name}
+            body={(on) => ({ on, slot: row.name })}
+            question={`Turn fallback ${row.fallback ? "off" : "on"} for ${row.name}?`}
             disabled={saved.length === 0}
           />
           {judge ? (
@@ -389,7 +330,8 @@ function SlotCard({
               help="When every target is limited or down, hold requests a while, then ask Claude Code to retry."
               checked={row.breaker}
               action="slot.breaker"
-              slot={row.name}
+              body={(on) => ({ on, slot: row.name })}
+              question={`Turn breaker ${row.breaker ? "off" : "on"} for ${row.name}?`}
             />
           )}
         </div>

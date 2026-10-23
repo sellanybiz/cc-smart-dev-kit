@@ -15,7 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV } from "../crew/session";
+import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import {
   createCrew,
   crewEventsFile,
@@ -34,10 +34,11 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { CREW_PUSH_REFUSAL } from "./git-guard";
+import { CREW_PUSH_REFUSAL, CREW_STEPS } from "./git-guard";
 import type { HookResult } from "./io";
-import { CREW_PR_REFUSAL } from "./merge-guard";
+import { CREW_MERGE_REFUSAL, CREW_PR_REFUSAL } from "./merge-guard";
 import type { HookSpec } from "./run";
+import { CREW_KIT_REFUSAL } from "./session-escape-guard";
 import {
   afterMergeHook,
   agentGuardHook,
@@ -918,6 +919,33 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     };
   }
 
+  /** An Agent launch the Agent guard would ask the person about: the opus tier at `max`. */
+  function launch(repo: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "Agent",
+      tool_input: {
+        effort: "max",
+        model: "opus",
+        prompt: "build it",
+        subagent_type: "general-purpose",
+      },
+    };
+  }
+
+  /** An edit of the project's own file: one the session-escape guard asks about. */
+  function edit(repo: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "Edit",
+      tool_input: { file_path: join(repo, ".claude", "cc-smart-dev-kit.json") },
+    };
+  }
+
   /** A denial, checked as the guard's answer: the reason is written by hand, never computed. */
   function denied(result: HookResult, reason: string): void {
     expect(result.exitCode ?? 0).toBe(0);
@@ -941,20 +969,38 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     "The report is recorded for the lead, and its watch wakes the lead on the line.",
   ].join("\n");
 
+  /** The Agent guard's refusal of an opus-tier launch at `max`, in the guard's own words. */
+  const CREW_LAUNCH = [
+    "A launch on Claude Opus at effort `max` is approved by the person, one by one, and this session has nobody to answer.",
+    "Run it at `medium`, `high` or `xhigh`.",
+    CREW_QUESTION_STEP,
+  ].join("\n");
+
   async function expectRefused(crew: Record<string, string>, repo: string): Promise<void> {
     denied(
       await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), crew),
       CREW_PUSH_REFUSAL,
     );
+    // CC8: a work-destroying git command is denied with its own step too, with no file.
+    denied(
+      await runHook(gitGuardHook, shell(repo, "git reset --hard"), crew),
+      CREW_STEPS.resetHard,
+    );
     denied(
       await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), crew),
       CREW_PR_REFUSAL,
     );
+    // CC8: the merge guard's every question is the same refusal for a crew session.
+    denied(await runHook(mergeGuardHook, shell(repo, "gh pr merge 7"), crew), CREW_MERGE_REFUSAL);
     denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
     denied(await runHook(messageGuardHook, message(repo, LEAD, "done"), crew), TO_LEAD);
+    // CC8: a launch the Agent guard would ask about is refused with the crew step, and a write
+    // into the kit's own files is refused by the session-escape guard.
+    denied(await runHook(agentGuardHook, launch(repo), crew), CREW_LAUNCH);
+    denied(await runHook(sessionEscapeGuardHook, edit(repo), crew), CREW_KIT_REFUSAL);
   }
 
-  test("no cc-smart-dev-kit.json: the push, the pull request and the untagged peer message are denied", async () => {
+  test("no cc-smart-dev-kit.json: every crew refusal holds", async () => {
     const { crew, repo } = await world(undefined);
     await expectRefused(crew, repo);
   });
@@ -969,9 +1015,28 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
   });
 
+  test("ownHooks listing agent-guard silences no crew launch refusal", async () => {
+    const { crew, repo } = await world({ ownHooks: ["agent-guard"] });
+    denied(await runHook(agentGuardHook, launch(repo), crew), CREW_LAUNCH);
+  });
+
   test("a file that needs a newer plugin does not soften them either", async () => {
-    const { crew, repo } = await world({ requires: ">=99" });
+    const { crew, env, repo } = await world({ requires: ">=99" });
     await expectRefused(crew, repo);
+    // CC8: a heavy command beside that same file is refused, not asked (`job-route`'s own
+    // answer, which is `alwaysOn` and reads the file only for the route).
+    const result = await runHook(jobRouteHook, shell(repo, "bunx vitest run src/a.test.ts"), crew);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toContain(
+      "cannot check whether this project routes heavy commands",
+    );
+    expect(output.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+    // A line the merge guard leaves alone (a `--disable-auto` lands nothing) gets silence: it
+    // is no merge request for either answer, so no question goes to anyone.
+    const disable = shell(repo, "gh pr merge 7 --disable-auto");
+    expect(await runHook(mergeGuardHook, disable, crew)).toEqual({});
+    expect(await runHook(mergeGuardHook, disable, env)).toEqual({});
   });
 
   test("a computed `$GH pr create` and `$GIT push` are denied too: no file, and whatever ownHooks says (F5-1)", async () => {
@@ -980,12 +1045,12 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     // and no file and no ownHooks list can soften it.
     for (const config of [undefined, { ownHooks: ["git-guard", "merge-guard"] }]) {
       const { crew, repo } = await world(config);
-      for (const command of [
-        "$GH pr create --fill",
-        "$(which gh) pr create --fill",
-        "$GH pr merge 7",
-      ]) {
+      for (const command of ["$GH pr create --fill", "$(which gh) pr create --fill"]) {
         denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_PR_REFUSAL);
+      }
+      // A computed merge's words name a merge, the refusal that says the lead merges.
+      for (const command of ["$GH pr merge 7", "$(which gh) pr merge 7"]) {
+        denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_MERGE_REFUSAL);
       }
       for (const command of ["$GIT push origin fix/x", "$(which git) push origin fix/x"]) {
         denied(await runHook(gitGuardHook, shell(repo, command), crew), CREW_PUSH_REFUSAL);

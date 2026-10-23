@@ -11,6 +11,8 @@
  *                 `broken` (not JSON); unset: the row names the `-w` worktree.
  *   FAKE_AGENTS_JSON  the exact JSON `agents --json` prints (the watch's own view).
  *   FAKE_STOP     `fail` (`claude stop` exits 1); unset: it stops.
+ *   FAKE_PLUGINS  the exact JSON `plugin list --json` prints (the lean start's plugin list);
+ *                 unset: no output, which a lean start reads as "no list", and turns nothing off.
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
@@ -65,6 +67,10 @@ case "$1" in
       *) read -r cwd < "$FAKE_CLAUDE_STATE" ;;
     esac
     printf '[{"id":"${SHORT_ID}","sessionId":"${SHORT_ID}-0000-1111-2222-333333333333","cwd":"%s","kind":"background","state":"working","pid":4242}]\\n' "$cwd"
+    ;;
+  plugin)
+    if [ -n "$FAKE_PLUGINS" ]; then printf '%s\\n' "$FAKE_PLUGINS"; fi
+    exit 0
     ;;
   stop)
     if [ "$FAKE_STOP" = fail ]; then echo "no such session" >&2; exit 1; fi
@@ -151,6 +157,9 @@ export function crewWorld(): CrewWorld {
       HOME: home,
       // The platform's own separator: `:` splits a PATH on macOS and Linux, `;` on Windows.
       PATH: `${bin}${delimiter}${gitDir}`,
+      // The host's key never reaches a test's launch: an empty value is "no key" to
+      // `readTavilyKey`, so the world's crew sessions keep no Tavily server unless a test says so.
+      TAVILY_API_KEY: "",
       ...env,
     };
     return {
