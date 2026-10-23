@@ -848,14 +848,12 @@ async function savePastedToken(paths, input, say, error) {
 
 // src/browser/check.ts
 var CHECK_LIMIT_MS = 120000;
-function limitsFor(wholeMs) {
-  return {
-    wholeMs,
-    stepMs: Math.round(wholeMs / 3),
-    readyMs: Math.round(wholeMs / 4),
-    stopMs: Math.round(wholeMs / 24)
-  };
-}
+var DEFAULT_LIMITS = {
+  wholeMs: CHECK_LIMIT_MS,
+  answerMs: Math.round(CHECK_LIMIT_MS / 3),
+  startMs: Math.round(CHECK_LIMIT_MS / 4),
+  stopMs: Math.round(CHECK_LIMIT_MS / 24)
+};
 
 class Session {
   name;
@@ -950,7 +948,7 @@ class Session {
       capabilities: {},
       clientInfo: { name: this.name, version: "1" },
       protocolVersion: "2025-06-18"
-    }, this.limits.readyMs);
+    }, this.limits.startMs);
     if (answer.error !== undefined) {
       return { ok: false, why: `${answer.error.message} \u2014 ${this.lastStderr()}` };
     }
@@ -958,7 +956,7 @@ class Session {
     return { ok: true, why: "" };
   }
   async call(tool, args = {}) {
-    const message = await this.request("tools/call", { arguments: args, name: tool }, this.limits.stepMs);
+    const message = await this.request("tools/call", { arguments: args, name: tool }, this.limits.answerMs);
     const content = message.result?.content ?? [];
     return {
       images: content.filter((part) => part.type === "image").length,
@@ -1044,7 +1042,7 @@ async function runBrowserCheck(deps) {
     check("the browser is ready to connect", false, prerequisites.why);
     return { failed: 1, total: 1 };
   }
-  const limits = limitsFor(deps.limitsMs ?? CHECK_LIMIT_MS);
+  const limits = { ...DEFAULT_LIMITS, ...deps.limits };
   const version = extensionVersion(prerequisites.profileDir, deps.machine);
   deps.log(`This drives your own Chrome, in the "${CLAUDE_CODE_PROFILE}" profile` + `${version === null ? "" : ` (Playwright extension ${version})`}` + ": a window comes to the front, and the tabs of this connection stay behind when it ends.");
   const site = checkSite();
@@ -9756,14 +9754,18 @@ function createPrompts(term, io) {
     }
   };
 }
-function terminalPrompts(term, stdin = process.stdin, write = (text) => {
-  process.stdout.write(text);
-}) {
+var STDOUT_QUESTIONS = {
+  write: (text) => {
+    process.stdout.write(text);
+  },
+  readLine: (shown) => prompt(shown)
+};
+function terminalPrompts(term, stdin = process.stdin, shown = STDOUT_QUESTIONS) {
   if (stdin.isTTY !== true)
     return null;
   return createPrompts(term, {
-    write,
-    readLine: (shown) => prompt(shown),
+    write: shown.write,
+    readLine: shown.readLine,
     ...canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}
   });
 }
@@ -21545,6 +21547,12 @@ var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var CHECKS_SINCE = "1.1.0";
+var WORKFLOW_CREW_KEYS_SINCE = {
+  perLead: "1.1.0",
+  perLeadOpus: "1.1.0",
+  usagePercent: "1.1.0",
+  keep: "1.1.0"
+};
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -29582,7 +29590,9 @@ function isPersonPrompt(record, prompt2, nowMs) {
 }
 function isAnswerResume(record, prompt2, nowMs) {
   return record.questions.some((asked) => {
-    if (asked.answer !== prompt2 || asked.answeredAt === null)
+    if (asked.answer === null || asked.answeredAt === null)
+      return false;
+    if (asked.answer.trim() !== prompt2.trim())
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -36369,21 +36379,29 @@ function raisedRequires(existing, floor, floorVersion) {
   return floor;
 }
 function requiresFloor(file) {
-  if (Object.hasOwn(file, "checks")) {
-    return { floor: requiresFor(CHECKS_SINCE), version: CHECKS_SINCE };
-  }
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
+  const crew = isObject(workflow.crew) ? workflow.crew : {};
+  const needs = [];
+  if (Object.hasOwn(file, "checks"))
+    needs.push(CHECKS_SINCE);
+  for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
+    if (Object.hasOwn(crew, key))
+      needs.push(since);
+  }
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
+    needs.push(WORKFLOW_CREW_SINCE);
   }
-  if (Object.hasOwn(worktrees, "autoClean")) {
-    return { floor: requiresFor(WORKTREE_AUTO_CLEAN_SINCE), version: WORKTREE_AUTO_CLEAN_SINCE };
+  if (Object.hasOwn(worktrees, "autoClean"))
+    needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (needs.length === 0) {
+    return {
+      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+      version: WORKTREE_PREFIX_OPTIONAL_SINCE
+    };
   }
-  return {
-    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-    version: WORKTREE_PREFIX_OPTIONAL_SINCE
-  };
+  const version = needs.reduce((newest, one) => Bun.semver.order(one, newest) > 0 ? one : newest);
+  return { floor: requiresFor(version), version };
 }
 function leaves(value, prefix, found) {
   if (isObject(value)) {
@@ -41857,6 +41875,10 @@ function writeProjectFile(cwd, path, key, value, env) {
     removeLeaf(data, path);
   else
     setLeaf2(data, path, value);
+  const needed = requiresFloor(data);
+  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+    data.requires = raisedRequires(data.requires, needed.floor, needed.version);
+  }
   checkCcSmartDevKitConfig(data, file);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
@@ -46722,7 +46744,7 @@ function gatewayContext(options) {
     bundle: options.bundle,
     runner: options.runner,
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...terminalQuestions(terminal, options.questionOutput),
+    ...terminalQuestions(terminal, options.questionIO),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -46734,8 +46756,8 @@ function gatewayContext(options) {
     ...options.print === undefined ? { term: currentTerminal(process.env, options.platform) } : {}
   };
 }
-function terminalQuestions(terminal, write) {
-  const prompts = terminalPrompts(currentTerminal(), terminal, write);
+function terminalQuestions(terminal, shown) {
+  const prompts = terminalPrompts(currentTerminal(), terminal, shown);
   if (prompts === null)
     return {};
   return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };

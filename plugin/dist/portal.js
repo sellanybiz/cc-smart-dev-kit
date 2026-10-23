@@ -18957,6 +18957,12 @@ var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var CHECKS_SINCE = "1.1.0";
+var WORKFLOW_CREW_KEYS_SINCE = {
+  perLead: "1.1.0",
+  perLeadOpus: "1.1.0",
+  usagePercent: "1.1.0",
+  keep: "1.1.0"
+};
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -26073,7 +26079,9 @@ function isPersonPrompt(record, prompt2, nowMs) {
 }
 function isAnswerResume(record, prompt2, nowMs) {
   return record.questions.some((asked) => {
-    if (asked.answer !== prompt2 || asked.answeredAt === null)
+    if (asked.answer === null || asked.answeredAt === null)
+      return false;
+    if (asked.answer.trim() !== prompt2.trim())
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -31046,21 +31054,29 @@ function raisedRequires(existing, floor, floorVersion) {
   return floor;
 }
 function requiresFloor(file) {
-  if (Object.hasOwn(file, "checks")) {
-    return { floor: requiresFor(CHECKS_SINCE), version: CHECKS_SINCE };
-  }
   const workflow = isObject2(file.workflow) ? file.workflow : {};
   const worktrees = isObject2(file.worktrees) ? file.worktrees : {};
+  const crew = isObject2(workflow.crew) ? workflow.crew : {};
+  const needs = [];
+  if (Object.hasOwn(file, "checks"))
+    needs.push(CHECKS_SINCE);
+  for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
+    if (Object.hasOwn(crew, key))
+      needs.push(since);
+  }
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
+    needs.push(WORKFLOW_CREW_SINCE);
   }
-  if (Object.hasOwn(worktrees, "autoClean")) {
-    return { floor: requiresFor(WORKTREE_AUTO_CLEAN_SINCE), version: WORKTREE_AUTO_CLEAN_SINCE };
+  if (Object.hasOwn(worktrees, "autoClean"))
+    needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (needs.length === 0) {
+    return {
+      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+      version: WORKTREE_PREFIX_OPTIONAL_SINCE
+    };
   }
-  return {
-    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-    version: WORKTREE_PREFIX_OPTIONAL_SINCE
-  };
+  const version = needs.reduce((newest, one) => Bun.semver.order(one, newest) > 0 ? one : newest);
+  return { floor: requiresFor(version), version };
 }
 function leaves(value, prefix, found) {
   if (isObject2(value)) {
@@ -34215,6 +34231,10 @@ function writeProjectFile(cwd, path, key, value, env) {
     removeLeaf(data, path);
   else
     setLeaf2(data, path, value);
+  const needed = requiresFloor(data);
+  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+    data.requires = raisedRequires(data.requires, needed.floor, needed.version);
+  }
   checkCcSmartDevKitConfig(data, file);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
@@ -37597,7 +37617,7 @@ var API_READS = {
     if (status !== null && status !== "error" || cursor === "bad") {
       return {
         body: {
-          error: "requests takes cursor=<the id the page before ended at>, limit=1..200, slot, target, model, session and status=error"
+          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`
         },
         status: 400
       };

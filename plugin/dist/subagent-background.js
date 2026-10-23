@@ -13604,7 +13604,9 @@ function isPersonPrompt(record, prompt, nowMs) {
 }
 function isAnswerResume(record, prompt, nowMs) {
   return record.questions.some((asked) => {
-    if (asked.answer !== prompt || asked.answeredAt === null)
+    if (asked.answer === null || asked.answeredAt === null)
+      return false;
+    if (asked.answer.trim() !== prompt.trim())
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
