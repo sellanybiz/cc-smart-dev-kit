@@ -113,9 +113,9 @@ describe("crew start --continue", () => {
     const code = await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
-    expect(world.out[0]).toStartWith("started C my-app B6b portal-live 2 (");
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live 2 (");
     const records = listCrew(world.paths.stateDir, world.repo).records;
-    const next = crewNamed(records, "C my-app B6b portal-live 2");
+    const next = crewNamed(records, "C my-app master-plan B6b portal-live 2");
     expect(next).toBeDefined();
     expect(next?.branch).toBe("crew/B6b-portal-live-2");
     expect(next?.worktree).toBe(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"));
@@ -128,7 +128,7 @@ describe("crew start --continue", () => {
     const world = await handoffWorld();
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     const records = listCrew(world.paths.stateDir, world.repo).records;
-    const next = crewNamed(records, "C my-app B6b portal-live 2");
+    const next = crewNamed(records, "C my-app master-plan B6b portal-live 2");
     const brief = readFileSync(
       crewBriefFile(world.paths.stateDir, world.repo, next?.id ?? ""),
       "utf8",
@@ -138,7 +138,7 @@ describe("crew start --continue", () => {
     expect(brief).toContain("the live stream still needs its page");
     expect(brief).toContain("What only the lead may do: the version bump.");
     // The frame is written again, for the new crew session.
-    expect(brief).toContain("You are the crew session `C my-app B6b portal-live 2`");
+    expect(brief).toContain("You are the crew session `C my-app master-plan B6b portal-live 2`");
   });
 
   test("D25: the old crew session is stopped, not removed", async () => {
@@ -193,7 +193,7 @@ describe("crew start --continue", () => {
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     const next = crewNamed(
       listCrew(world.paths.stateDir, world.repo).records,
-      "C my-app B6b portal-live 2",
+      "C my-app master-plan B6b portal-live 2",
     );
     expect(next?.id).toBe("B6b-portal-live-9f8e7d");
   });
@@ -202,7 +202,7 @@ describe("crew start --continue", () => {
     const world = await handoffWorld();
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     const records = listCrew(world.paths.stateDir, world.repo).records;
-    const next = crewNamed(records, "C my-app B6b portal-live 2");
+    const next = crewNamed(records, "C my-app master-plan B6b portal-live 2");
     expect(next?.continues).toBe(ID);
     // The first crew session continues no one.
     expect(crewNamed(records, NAME)?.continues).toBeUndefined();
@@ -214,7 +214,7 @@ describe("crew start --continue", () => {
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     const next = crewNamed(
       listCrew(world.paths.stateDir, world.repo).records,
-      "C my-app B6b portal-live 2",
+      "C my-app master-plan B6b portal-live 2",
     );
     expect(next?.files).toEqual(["src/a.ts", "src/b.ts"]);
     const brief = readFileSync(
@@ -257,7 +257,7 @@ describe("crew start --continue", () => {
     );
     expect(code).toBe(1);
     expect(world.err[0]).toBe(
-      "crew start: C my-app B6b portal-live has its next crew session already: C my-app B6b portal-live 2, starting",
+      "crew start: C my-app B6b portal-live has its next crew session already: C my-app master-plan B6b portal-live 2, starting",
     );
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(2);
   });
@@ -277,7 +277,7 @@ describe("crew start --continue", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     // The failed record counts for the number: the new crew session is the third, never the second.
-    expect(world.out[0]).toStartWith("started C my-app B6b portal-live 3 (");
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live 3 (");
   });
 
   test("D25: an old crew session whose report cannot be read is not continued", async () => {
@@ -313,7 +313,7 @@ describe("crew start --continue", () => {
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
     const next = crewNamed(
       listCrew(world.paths.stateDir, world.repo).records,
-      "C my-app B6b portal-live 2",
+      "C my-app master-plan B6b portal-live 2",
     );
     const brief = readFileSync(
       crewBriefFile(world.paths.stateDir, world.repo, next?.id ?? ""),
@@ -327,7 +327,7 @@ describe("crew start --continue", () => {
     expect(await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT))).toBe(0);
     const second = crewNamed(
       listCrew(world.paths.stateDir, world.repo).records,
-      "C my-app B6b portal-live 2",
+      "C my-app master-plan B6b portal-live 2",
     );
     // The second crew session hands off too.
     const { updateCrew, writeReport } = await import("./store");
@@ -351,13 +351,13 @@ describe("crew start --continue", () => {
     });
     expect(
       await runCrew(
-        ["start", "B6b", "--continue", "C my-app B6b portal-live 2"],
+        ["start", "B6b", "--continue", "C my-app master-plan B6b portal-live 2"],
         world.ctx({ randomSuffix: () => "0a1b2c" }),
       ),
     ).toBe(0);
     const third = crewNamed(
       listCrew(world.paths.stateDir, world.repo).records,
-      "C my-app B6b portal-live 3",
+      "C my-app master-plan B6b portal-live 3",
     );
     const brief = readFileSync(
       crewBriefFile(world.paths.stateDir, world.repo, third?.id ?? ""),

@@ -157,7 +157,7 @@ describe("D25: crew start returns at once", () => {
     );
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toHaveLength(1);
-    expect(world.out[0]).toStartWith("started C my-app B6b portal-live");
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live");
   });
 
   test("a phase that already has a live crew session gets one line naming it, to remove it first", async () => {
@@ -172,7 +172,7 @@ describe("D25: crew start returns at once", () => {
     );
     expect(code).toBe(0);
     expect(world.out.slice(1)).toEqual([
-      `note: C my-app B6b portal-live is already on phase B6b (starting) — remove it first: ${COMMAND} crew rm "C my-app B6b portal-live"`,
+      `note: C my-app master-plan B6b portal-live is already on phase B6b (starting) — remove it first: ${COMMAND} crew rm "C my-app master-plan B6b portal-live"`,
     ]);
   });
 
@@ -186,7 +186,7 @@ describe("D25: crew start returns at once", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual([
-      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
+      `started C my-app master-plan B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
     ]);
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     const briefFile = crewBriefFile(world.paths.stateDir, world.repo, ID);
@@ -201,7 +201,7 @@ describe("D25: crew start returns at once", () => {
         "-w",
         "crew-B6b-portal-live",
         "--name",
-        "C my-app B6b portal-live",
+        "C my-app master-plan B6b portal-live",
         "--model",
         "sonnet",
         "--effort",
@@ -215,7 +215,7 @@ describe("D25: crew start returns at once", () => {
         mcpFile,
         "--settings",
         settingsFile,
-        `You are the crew session C my-app B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
+        `You are the crew session C my-app master-plan B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
       ],
       ["agents", "--json", "--all"],
     ]);
@@ -235,7 +235,7 @@ describe("D25: crew start returns at once", () => {
       leadSessionId: LEAD_SESSION,
       memoryMb: null,
       model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
-      name: "C my-app B6b portal-live",
+      name: "C my-app master-plan B6b portal-live",
       permissionMode: "auto",
       phase: "B6b",
       plan: "master-plan",
@@ -495,7 +495,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     mkdirSync(join(dirname(settingsFile), "mcp.json"), { recursive: true });
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
     expect(world.out[0]).toContain(
-      "failed C my-app B6b portal-live: its settings could not be written",
+      "failed C my-app master-plan B6b portal-live: its settings could not be written",
     );
     // Written before anything is made, so nothing is left to take back or to free the name.
     expect(existsSync(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"))).toBe(
@@ -531,6 +531,7 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
         leadSessionId: LEAD_SESSION,
         memoryMb: null,
         model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        // A record written before 1.1.2 keeps its old-shape name: it is still started as it is.
         name: "C my-app B6b portal-live",
         permissionMode: "auto",
         phase: "B6b",
@@ -792,7 +793,7 @@ describe("D25: the queue — still one line, at once", () => {
     await otherCrew(world.paths.stateDir, 8, "queued");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 6 of 6 crew sessions running on this machine; it starts when one finishes",
+      "queued C my-app master-plan B6b portal-live: 6 of 6 crew sessions running on this machine; it starts when one finishes",
     ]);
     const record = onlyCrew(world.paths.stateDir, world.repo);
     expect(record).toMatchObject({ base: null, baseRef: "main", state: "queued" });
@@ -812,7 +813,7 @@ describe("D25: the queue — still one line, at once", () => {
     await otherCrew(world.paths.stateDir, 4, "working");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: its lead has 2 of 2 crew sessions running; it starts when one of them finishes",
+      "queued C my-app master-plan B6b portal-live: its lead has 2 of 2 crew sessions running; it starts when one of them finishes",
     ]);
   });
 
@@ -834,13 +835,13 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app W1a launcher: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app master-plan W1a launcher: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     ]);
     // An override onto opus counts too.
     const onto = startArgs(world.brief, "--model", "opus", "--effort", "high");
     expect(await runCrew(onto, world.ctx({ randomSuffix: () => "000001" }))).toBe(0);
     expect(world.out[1]).toBe(
-      "queued C my-app B6b portal-live: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app master-plan B6b portal-live: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     );
   });
 
@@ -849,7 +850,7 @@ describe("D25: the queue — still one line, at once", () => {
     await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus", LEAD_SESSION);
     await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus", LEAD_SESSION);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out[0]).toStartWith("started C my-app B6b portal-live (");
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");
     expect(onlyCrew(world.paths.stateDir, world.repo).model.tier).toBeNull();
   });
 
@@ -870,7 +871,7 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app W1a launcher: 2 of 2 opus crew sessions running on this machine; it starts when one of them finishes",
+      "queued C my-app master-plan W1a launcher: 2 of 2 opus crew sessions running on this machine; it starts when one of them finishes",
     ]);
     // With no machine-wide count set, the same two crew sessions hold nothing back.
     world.writeConfig({});
@@ -885,7 +886,7 @@ describe("D25: the queue — still one line, at once", () => {
       world.brief,
     ];
     expect(await runCrew(second, world.ctx({ randomSuffix: () => "000002" }))).toBe(0);
-    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    expect(world.out[1]).toStartWith("started C my-app master-plan W1b launcher (");
     const started = listCrew(world.paths.stateDir, world.repo).records.find(
       (one) => one.phase === "W1b",
     );
@@ -898,7 +899,7 @@ describe("D25: the queue — still one line, at once", () => {
     await otherCrew(world.paths.stateDir, 1, "blocked");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 1 of 1 crew sessions running on this machine; it starts when one finishes",
+      "queued C my-app master-plan B6b portal-live: 1 of 1 crew sessions running on this machine; it starts when one finishes",
     ]);
   });
 
@@ -922,11 +923,11 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app W1a launcher: the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+      "queued C my-app master-plan W1a launcher: the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
     ]);
     // A sonnet crew session is not held by the window.
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out[1]).toStartWith("started C my-app B6b portal-live (");
+    expect(world.out[1]).toStartWith("started C my-app master-plan B6b portal-live (");
   });
 
   test("D54: the gateway's opus slot with its fallback chain on lifts the guard; the window still holds without it", async () => {
@@ -953,7 +954,7 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith(
-      "queued C my-app W1a launcher: the 5-hour usage window is at 90%",
+      "queued C my-app master-plan W1a launcher: the 5-hour usage window is at 90%",
     );
     // The gateway on, the chain in use with its fallback on: the guard does not hold.
     mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
@@ -972,7 +973,7 @@ describe("D25: the queue — still one line, at once", () => {
       world.brief,
     ];
     expect(await runCrew(lifted, world.ctx())).toBe(0);
-    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    expect(world.out[1]).toStartWith("started C my-app master-plan W1b launcher (");
     // The guard never watches while the chain answers past the window: no note line.
     expect(world.out).toHaveLength(2);
   });
@@ -1000,7 +1001,7 @@ describe("D25: the queue — still one line, at once", () => {
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     // The guard never watches while the chain answers past the window: no note line.
     expect(world.out).toHaveLength(1);
-    expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
+    expect(world.out[0]).toStartWith("started C my-app master-plan W1a launcher (");
   });
 
   test("D54: a window that cannot be read never holds, and the start says so once", async () => {
@@ -1016,7 +1017,7 @@ describe("D25: the queue — still one line, at once", () => {
       world.brief,
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
-    expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
+    expect(world.out[0]).toStartWith("started C my-app master-plan W1a launcher (");
     expect(world.out[1]).toBe(UNREAD);
     // A sonnet crew session has nothing to say about the window.
     expect(await runCrew(startArgs(world.brief), world.ctx({ randomSuffix: () => "000004" }))).toBe(
@@ -1031,7 +1032,7 @@ describe("D25: the queue — still one line, at once", () => {
     const ctx = world.ctx({ freeMemoryGb: () => Promise.resolve(2.04) });
     expect(await runCrew(startArgs(world.brief), ctx)).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 2 GB free, a crew session needs 3 GB; it starts when memory frees",
+      "queued C my-app master-plan B6b portal-live: 2 GB free, a crew session needs 3 GB; it starts when memory frees",
     ]);
   });
 
@@ -1039,7 +1040,7 @@ describe("D25: the queue — still one line, at once", () => {
     const world = await ledWorld();
     expect(await runCrew(startArgs(world.brief, "--waits-for", "B6a,B7"), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: waits for B6a (not started yet), B7 (not started yet); it starts when each is merged",
+      "queued C my-app master-plan B6b portal-live: waits for B6a (not started yet), B7 (not started yet); it starts when each is merged",
     ]);
     expect(onlyCrew(world.paths.stateDir, world.repo).waitsFor).toEqual(["B6a", "B7"]);
   });
@@ -1061,7 +1062,9 @@ describe("D25: the queue — still one line, at once", () => {
       world.brief,
     ];
     expect(await runCrew([...args, "--waits-for", "B6b"], world.ctx())).toBe(0);
-    expect(world.out[1]).toStartWith("queued C my-app B7 always-on: waits for B6b (done)");
+    expect(world.out[1]).toStartWith(
+      "queued C my-app master-plan B7 always-on: waits for B6b (done)",
+    );
   });
 
   test("--waits-for a phase the lead merged: it starts", async () => {
@@ -1081,7 +1084,7 @@ describe("D25: the queue — still one line, at once", () => {
       world.brief,
     ];
     expect(await runCrew([...args, "--waits-for", "B6b"], world.ctx())).toBe(0);
-    expect(world.out[1]).toStartWith("started C my-app B7 always-on (");
+    expect(world.out[1]).toStartWith("started C my-app master-plan B7 always-on (");
   });
 });
 
@@ -1091,8 +1094,8 @@ describe("a name already in use", () => {
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
     expect(world.err).toEqual([
-      "crew start: C my-app B6b portal-live is recorded already, starting, on crew/B6b-portal-live",
-      'Fix: remove it first (cc-smart-dev-kit crew rm "C my-app B6b portal-live"), or pick another --slug',
+      "crew start: C my-app master-plan B6b portal-live is recorded already, starting, on crew/B6b-portal-live",
+      'Fix: remove it first (cc-smart-dev-kit crew rm "C my-app master-plan B6b portal-live"), or pick another --slug',
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
   });
@@ -1102,7 +1105,7 @@ describe("a name already in use", () => {
     git(world.repo, "branch", "crew/B6b-portal-live");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
     expect(world.err).toEqual([
-      "crew start: the branch crew/B6b-portal-live is there already, for C my-app B6b portal-live",
+      "crew start: the branch crew/B6b-portal-live is there already, for C my-app master-plan B6b portal-live",
       "Fix: delete it, or pick another --slug",
     ]);
   });
@@ -1125,7 +1128,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     const code = await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_BG: "untrusted" }));
     expect(code).toBe(1);
     expect(world.out).toEqual([
-      "failed C my-app B6b portal-live: Workspace not trusted: open this repo once with claude and accept the trust prompt",
+      "failed C my-app master-plan B6b portal-live: Workspace not trusted: open this repo once with claude and accept the trust prompt",
     ]);
     const record = onlyCrew(world.paths.stateDir, world.repo);
     expect(record.state).toBe("failed");
@@ -1135,7 +1138,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     // stays as history, and the phase's newest crew session is the one that counts.
     const retry = world.ctx({ randomSuffix: () => "2b3c4d" });
     expect(await runCrew(startArgs(world.brief), retry)).toBe(0);
-    expect(world.out[1]).toStartWith("started C my-app B6b portal-live (");
+    expect(world.out[1]).toStartWith("started C my-app master-plan B6b portal-live (");
     expect(
       listCrew(world.paths.stateDir, world.repo).records.map((one) => [one.id, one.state]),
     ).toEqual([
@@ -1150,7 +1153,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     const retry = world.ctx({ randomSuffix: () => "2b3c4d" });
     expect(await runCrew(startArgs(world.brief), retry)).toBe(1);
     expect(world.err[0]).toBe(
-      "crew start: C my-app B6b portal-live is recorded already, failed, on crew/B6b-portal-live",
+      "crew start: C my-app master-plan B6b portal-live is recorded already, failed, on crew/B6b-portal-live",
     );
   });
 
@@ -1158,7 +1161,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     const world = await ledWorld();
     expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_BG: "fail" }))).toBe(1);
     expect(world.out).toEqual([
-      "failed C my-app B6b portal-live: claude --bg failed (exit 4): something broke",
+      "failed C my-app master-plan B6b portal-live: claude --bg failed (exit 4): something broke",
     ]);
     expect(existsSync(onlyCrew(world.paths.stateDir, world.repo).worktree)).toBe(false);
   });
@@ -1167,7 +1170,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     const world = await ledWorld();
     expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_BG: "noline" }))).toBe(1);
     expect(world.out).toEqual([
-      "failed C my-app B6b portal-live: claude --bg printed no line backgrounded · <id> · <name>: a session may have started; see claude agents",
+      "failed C my-app master-plan B6b portal-live: claude --bg printed no line backgrounded · <id> · <name>: a session may have started; see claude agents",
     ]);
     expect(world.claudeCalls()).toHaveLength(2);
     expect(existsSync(onlyCrew(world.paths.stateDir, world.repo).worktree)).toBe(true);
@@ -1182,7 +1185,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: "other" }))).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
-      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
+      `started C my-app master-plan B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
     ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toEqual([]);
     expect(onlyCrew(world.paths.stateDir, world.repo)).toMatchObject({
@@ -1204,7 +1207,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     ] as const) {
       const world = await ledWorld();
       expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: mode }))).toBe(1);
-      expect(world.out).toEqual([`failed C my-app B6b portal-live: ${reason}`]);
+      expect(world.out).toEqual([`failed C my-app master-plan B6b portal-live: ${reason}`]);
       expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin", "--bg", "agents"]);
     }
   });
@@ -1325,7 +1328,7 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual([
-      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head}`,
+      `started C my-app master-plan B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head}`,
       CLASH_LINE,
     ]);
     expect(clashEvents(world)).toMatchObject([

@@ -276,13 +276,13 @@ In the session: `/cc-smart-dev-kit:lead` (or ask it to lead this phase). Put a o
 cc-smart-dev-kit crew lead --plan windows-check
 cc-smart-dev-kit crew start K --slug first --kind docs --brief crew-brief.md
 cc-smart-dev-kit crew list
-cc-smart-dev-kit crew status "C <tag> K first"
+cc-smart-dev-kit crew status "C <tag> windows-check K first"
 ```
 
 `<tag>` is the main checkout's folder name made clean (or `workflow.crew.tag` when it is set),
 the same tag in every name and in the board.
 
-Shows: `started C <tag> K first (…) · … · crew/K-first @ <sha>`; agent view lists a session with
+Shows: `started C <tag> windows-check K first (…) · … · crew/K-first @ <sha>`; agent view lists a session with
 that name working in `.claude/worktrees/crew-K-first`; its branch `crew/K-first` gets its commit;
 the board shows its state, model and effort, and **memory `-`** (the one Linux-only figure);
 its report arrives in the lead as a `crew watch`/notes line; `crew rm` refuses until the lead

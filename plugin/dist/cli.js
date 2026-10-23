@@ -21281,6 +21281,7 @@ function withWorkers(kind, command, workers) {
 import { basename as basename6 } from "path";
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
+var MAX_CREW_PLAN = 16;
 var MAX_PHASE = 8;
 var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
@@ -21344,21 +21345,23 @@ function leadName(tag, plan) {
   const head = `${LEAD_ROLE} ${requiredPart(tag, MAX_TAG, "tag")} `;
   return `${head}${requiredPart(plan, MAX_SESSION_NAME - head.length, "plan")}`;
 }
-function crewName(tag, phase, slug, n) {
+function crewName(tag, plan, phase, slug, n) {
   const cleanTag = requiredPart(tag, MAX_TAG, "tag");
+  const cleanPlan = requiredPart(plan, MAX_CREW_PLAN, "plan");
   if (!isPhase(phase)) {
     throw new SessionNameError(`the phase "${phase}" cannot be part of a name: a phase is ${PHASE_RULE}`);
   }
   const suffix = handoffSuffix(n);
-  const head = `${CREW_ROLE} ${cleanTag} ${phase} `;
+  const head = `${CREW_ROLE} ${cleanTag} ${cleanPlan} ${phase} `;
   return `${head}${requiredPart(slug, MAX_SESSION_NAME - head.length - suffix.length, "slug")}${suffix}`;
 }
 function withoutListRef(name) {
   return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
 var PART = "[A-Za-z0-9._-]+";
+var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -33281,7 +33284,7 @@ async function plan(args, ctx) {
   }
   let name;
   try {
-    name = crewName(lead.tag, args.phase, args.slug);
+    name = crewName(lead.tag, lead.plan, args.phase, args.slug);
   } catch (error) {
     throw refusal(reasonOf3(error), undefined, 2);
   }
@@ -33332,7 +33335,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   const number = records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name;
   try {
-    name = crewName(lead.tag, old.phase, old.slug, number);
+    name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
   } catch (error) {
     throw refusal(reasonOf3(error), undefined, 2);
   }
@@ -40040,7 +40043,7 @@ Commands:
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
                  Starts one crew session: a background Claude Code session named
-                 C <tag> <phase> <slug>, in its own worktree on the branch
+                 C <tag> <plan> <phase> <slug>, in its own worktree on the branch
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
                  returns at once: started, queued (the caps, the free memory, or
                  the phases it waits for), or failed, with the reason.
