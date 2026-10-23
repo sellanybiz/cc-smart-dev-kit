@@ -29724,10 +29724,11 @@ function isPersonPrompt(record, prompt2, nowMs) {
   return !isAnswerResume(record, prompt2, nowMs);
 }
 function isAnswerResume(record, prompt2, nowMs) {
+  const bare = (text) => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (asked.answer.trim() !== prompt2.trim())
+    if (bare(asked.answer) !== bare(prompt2))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -32376,7 +32377,7 @@ function stateSince(record, events) {
   const stateEvent = events.find((one) => one.type === "state" || one.type === "created");
   return stateEvent?.at ?? record.updatedAt;
 }
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge"]);
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 function lastSaid(record, events) {
   const said = events.find((one) => one.type !== "created" && !OTHER_WORDS.has(one.type) && one.text !== null && one.text.trim() !== "");
   return said?.text ?? record.lastLine;
@@ -36523,14 +36524,24 @@ function requiresFor(version) {
 }
 function raisedRequires(existing, floor, floorVersion) {
   if (typeof existing === "string") {
-    const floorMatch = /^>=\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(existing);
-    if (floorMatch !== null) {
-      const existingFloor = `${floorMatch[1]}.${floorMatch[2]}.${floorMatch[3] ?? "0"}`;
-      if (Bun.semver.order(existingFloor, floorVersion) >= 0)
-        return existing;
-    }
+    const lowest = lowestAllowed(existing);
+    if (lowest !== null && Bun.semver.order(lowest, floorVersion) >= 0)
+      return existing;
   }
   return floor;
+}
+var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+function lowestAllowed(range) {
+  let lowest = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null)
+      return null;
+    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0)
+      lowest = version;
+  }
+  return lowest;
 }
 function requiresFloor(file) {
   const workflow = isObject(file.workflow) ? file.workflow : {};

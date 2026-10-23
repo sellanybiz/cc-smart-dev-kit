@@ -13634,10 +13634,11 @@ function isPersonPrompt(record, prompt, nowMs) {
   return !isAnswerResume(record, prompt, nowMs);
 }
 function isAnswerResume(record, prompt, nowMs) {
+  const bare = (text) => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (asked.answer.trim() !== prompt.trim())
+    if (bare(asked.answer) !== bare(prompt))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -15402,7 +15403,7 @@ var storedSchema = looseObject({
 });
 
 // src/crew/board.ts
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge"]);
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
