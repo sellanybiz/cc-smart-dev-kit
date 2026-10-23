@@ -3,6 +3,7 @@
 import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
 import { useMemo } from "react";
 import { useResource } from "@/api/hooks";
+import { PortalRequestError } from "@/api/http";
 import { CREW_REFRESH } from "@/api/refresh";
 import type { CrewDetail, CrewEvent, DiffFile, MergeCheck } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
@@ -575,7 +576,12 @@ export function CrewView() {
   const crew = useResource(
     (client) =>
       id === null
-        ? Promise.reject(new Error("No crew session is named in the address: open one from Work."))
+        ? Promise.reject(
+            new PortalRequestError(
+              "No crew session is named in the address: open one from Work.",
+              404,
+            ),
+          )
         : client.crew(id),
     `${ready}|${id ?? ""}`,
     CREW_REFRESH,
@@ -588,7 +594,10 @@ export function CrewView() {
       missing={{
         href: "/work",
         label: "Open Work",
-        text: `No crew session of this project is named "${id ?? ""}". It may have been removed after its merge.`,
+        text:
+          id === null
+            ? "No crew session is named in the address: open one from Work."
+            : `No crew session of this project is named "${id}". It may have been removed after its merge.`,
       }}
     >
       {(data) => <CrewPage data={data} />}

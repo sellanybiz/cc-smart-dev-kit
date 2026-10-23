@@ -64,13 +64,16 @@ function NeedsPage({ data }: { data: NeedsData }) {
             <NeedsList
               items={data.items}
               empty={
-                <EmptyState
-                  title="Nothing needs you"
-                  icon={<CircleCheckIcon className="size-6 text-ok" aria-hidden="true" />}
-                >
-                  Questions, prompts, failing checks and held updates show up here the moment they
-                  happen.
-                </EmptyState>
+                // With the prompts unread, "nothing needs you" is not known: the note says why.
+                data.note !== null ? null : (
+                  <EmptyState
+                    title="Nothing needs you"
+                    icon={<CircleCheckIcon className="size-6 text-ok" aria-hidden="true" />}
+                  >
+                    Questions, prompts, failing checks and held updates show up here the moment they
+                    happen.
+                  </EmptyState>
+                )
               }
             />
           </CardContent>

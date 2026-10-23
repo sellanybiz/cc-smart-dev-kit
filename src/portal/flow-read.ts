@@ -120,7 +120,31 @@ async function runReport(ctx: PortalContext, hours: number): Promise<FlowRead> {
   }
 }
 
-/** The report in the child's output: its outer shape checked, or null. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isOpenWait(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.session === "string" &&
+    typeof value.project === "string" &&
+    typeof value.at === "number" &&
+    typeof value.asker === "string" &&
+    typeof value.tool === "string"
+  );
+}
+
+function isFlowHour(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.t === "number" &&
+    typeof value.launches === "number" &&
+    typeof value.promptMs === "number"
+  );
+}
+
+/** The report in the child's output: its shape and the fields the pages read checked, or null. */
 function reportOf(output: string): FlowReport | null {
   let value: unknown;
   try {
@@ -132,5 +156,8 @@ function reportOf(output: string): FlowReport | null {
   const { hours, open, sessions, sinceMs, untilMs } = value as Record<string, unknown>;
   if (typeof sinceMs !== "number" || typeof untilMs !== "number") return null;
   if (!Array.isArray(sessions) || !Array.isArray(open) || !Array.isArray(hours)) return null;
+  // The fields the pages draw from each list: a newer CLI that renamed one is refused, never
+  // drawn as blanks.
+  if (!open.every(isOpenWait) || !hours.every(isFlowHour)) return null;
   return value as FlowReport;
 }

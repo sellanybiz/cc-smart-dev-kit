@@ -41,6 +41,7 @@ import type { Machine } from "../machine/machine";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
+import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
@@ -122,8 +123,13 @@ function sourceCliPluginFolder(): string {
   for (const name of readdirSync(join(repoPlugin, "dist"))) {
     if (name !== "cli.js") symlinkSync(join(repoPlugin, "dist", name), join(folder, "dist", name));
   }
+  // The live-router guard first, as every CLI subprocess of a test runs (`subprocessGuard`).
+  const guard = join(import.meta.dir, "..", "testing", "port-guard-preload.ts");
   const source = join(import.meta.dir, "..", "entries", "cli.ts");
-  writeFileSync(join(folder, "dist", "cli.js"), `import ${JSON.stringify(source)};\n`);
+  writeFileSync(
+    join(folder, "dist", "cli.js"),
+    `import ${JSON.stringify(guard)};\nimport ${JSON.stringify(source)};\n`,
+  );
   return folder;
 }
 
@@ -709,7 +715,8 @@ describe("every answer", () => {
       omniroute: "3.8.51",
       // A project of its own, so the crew page and the project page have one to answer for.
       projectFiles: {},
-      // The flow report's child runs this branch's CLI.
+      // The flow report's child runs this branch's CLI, under the port guard.
+      env: subprocessGuard().env,
       pluginFolder: () => ({ folder: plugin }),
     });
     try {
@@ -4508,6 +4515,7 @@ describe("the JSON API", () => {
     const plugin = sourceCliPluginFolder();
     const world = await open({
       backendPort: backend.port,
+      env: subprocessGuard().env,
       pluginFolder: () => ({ folder: plugin }),
     });
     try {
