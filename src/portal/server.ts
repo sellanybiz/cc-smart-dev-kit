@@ -223,10 +223,10 @@ export async function startPortal(
    * network read. The key is the file's text — the moment it changes, the next reader is fresh.
    */
   let remembered: { defaults: ProjectInitDefaults; key: string } | null = null;
-  function projectDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
+  async function projectDefaults(input: { env: Env; root: string }): Promise<ProjectInitDefaults> {
     const key = `${input.root}\u0000${projectFileTexts(input.root).existing ?? ""}`;
     if (remembered === null || remembered.key !== key) {
-      remembered = { defaults: workflow.projectInitDefaults(input), key };
+      remembered = { defaults: await workflow.projectInitDefaults(input), key };
     }
     return remembered.defaults;
   }
@@ -323,7 +323,7 @@ export async function startPortal(
       // The Settings page needs no gateway either: the workflow is a file of the person's
       // own and the project's, so it draws with the header's "Gateway not set up" line.
       if (path === "/settings") {
-        return html(settingsPage(shell, settingsPageData(deps)), extra);
+        return html(settingsPage(shell, await settingsPageData(deps)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
@@ -331,7 +331,7 @@ export async function startPortal(
     if (path === "/slots") return html(slotsPage(shell, await slotsData(deps, config)), extra);
     if (path === "/health") return html(healthPage(shell, await healthData(deps, config)), extra);
     if (path === "/machine") return html(machinePage(shell, await machineData(deps)), extra);
-    if (path === "/settings") return html(settingsPage(shell, settingsPageData(deps)), extra);
+    if (path === "/settings") return html(settingsPage(shell, await settingsPageData(deps)), extra);
     return html(overviewPage(shell, await overviewData(deps, config)), extra);
   }
 

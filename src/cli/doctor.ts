@@ -16,7 +16,6 @@ import {
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
-import type { CommandRunner } from "../update/apply";
 import { hasDesktop } from "../hooks/desktop-alert";
 import {
   readStartBlocks,
@@ -76,6 +75,7 @@ import {
 import { readUserJson } from "../setup/user-json";
 import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
 import { realTarget } from "../setup/write";
+import type { CommandRunner } from "../update/apply";
 import { isOlder } from "../update/check";
 import { isNewMajor, majorHeldDetail, readMajorNotes } from "../update/major";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
@@ -1282,12 +1282,12 @@ function doctorGroups(
     },
     {
       group: "project",
-      run: () =>
+      run: async () =>
         present([
           checkProjectImports(paths, local.cwd),
           ...(project === null
             ? []
-            : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
+            : await projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
         ]),
     },
     {

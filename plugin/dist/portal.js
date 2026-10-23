@@ -19865,6 +19865,10 @@ function resolveProject(cwd, options = {}) {
   const checkout = locateCheckout(cwd, options);
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
+async function resolveProjectAsync(cwd, options = {}) {
+  const checkout = await locateCheckoutAsync(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}
 
 // src/hooks/ask-log.ts
 import { join as join27 } from "path";
@@ -30751,44 +30755,50 @@ function applyProjectInit(plan, options) {
 
 // src/cli/project-init.ts
 var RUN_TIMEOUT_MS2 = 1e4;
-function realRunner(env) {
+async function runGh(ghPath, args, env) {
+  try {
+    const child = Bun.spawn([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS2
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return { ok: code === 0, out, err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
+function realRunnerAsync(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
-    git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS2),
-    gh: ghPath === null ? null : (args) => {
-      try {
-        const run = Bun.spawnSync([ghPath, ...args], {
-          env,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          timeout: RUN_TIMEOUT_MS2
-        });
-        return {
-          ok: run.exitCode === 0,
-          out: run.stdout.toString(),
-          err: run.stderr.toString()
-        };
-      } catch (error) {
-        return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-      }
-    }
+    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS2),
+    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env)
   };
 }
-function currentBranchOf(runner, root) {
-  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+async function currentBranchOf(runner, root) {
+  const head = await runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = head.ok ? head.out.trim() : "";
   return branch === "" ? null : branch;
 }
-function localBranchesOf(runner, root) {
-  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+async function localBranchesOf(runner, root) {
+  const listed = await runner.git(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads"
+  ]);
   if (!listed.ok)
     return [];
   return listed.out.split(`
 `).map((line) => line.trim()).filter((name) => name !== "");
 }
-function defaultBranchOf2(runner, root) {
-  const known = runner.git(root, [
+async function defaultBranchOf2(runner, root) {
+  const known = await runner.git(root, [
     "symbolic-ref",
     "--quiet",
     "--short",
@@ -30799,7 +30809,7 @@ function defaultBranchOf2(runner, root) {
     if (branch !== "")
       return branch;
   }
-  const locals = localBranchesOf(runner, root);
+  const locals = await localBranchesOf(runner, root);
   const only = locals.length === 1 ? locals[0] : undefined;
   if (only !== undefined)
     return only;
@@ -30807,10 +30817,10 @@ function defaultBranchOf2(runner, root) {
     return "main";
   if (locals.includes("master"))
     return "master";
-  return currentBranchOf(runner, root) ?? "main";
+  return await currentBranchOf(runner, root) ?? "main";
 }
-function originRepository(runner, root) {
-  const origin = runner.git(root, ["remote", "get-url", "origin"]);
+async function originRepository(runner, root) {
+  const origin = await runner.git(root, ["remote", "get-url", "origin"]);
   if (!origin.ok)
     return null;
   const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(origin.out.trim());
@@ -30818,13 +30828,13 @@ function originRepository(runner, root) {
     return null;
   return { owner: match[1], name: match[2] };
 }
-function protectedFromGithub(runner, root) {
+async function protectedFromGithub(runner, root) {
   if (runner.gh === null)
     return [];
-  const repo = originRepository(runner, root);
+  const repo = await originRepository(runner, root);
   if (repo === null)
     return [];
-  const rules = runner.gh([
+  const rules = await runner.gh([
     "api",
     `repos/${repo.owner}/${repo.name}/rulesets?per_page=100`,
     "--jq",
@@ -30863,10 +30873,10 @@ function defaultFastCheck(root) {
   const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
   return name === undefined ? null : `${runnerOf2(root)} ${name}`;
 }
-function detectFacts(runner, root) {
+async function detectFacts(runner, root) {
   return {
-    defaultBranch: defaultBranchOf2(runner, root),
-    protectedFromGithub: protectedFromGithub(runner, root),
+    defaultBranch: await defaultBranchOf2(runner, root),
+    protectedFromGithub: await protectedFromGithub(runner, root),
     fastCheck: defaultFastCheck(root)
   };
 }
@@ -31073,11 +31083,11 @@ function engineLines(sources, projectDir, home) {
   }
   return lines;
 }
-function worktreeLines(config, sources, checkout, env) {
+async function worktreeLines(config, sources, checkout, env) {
   const worktrees = config?.worktrees;
   const lines = [];
   if (worktrees !== undefined) {
-    const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
+    const ignored = (await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)).ok;
     if (!ignored) {
       lines.push({
         ok: true,
@@ -31085,7 +31095,7 @@ function worktreeLines(config, sources, checkout, env) {
         text: `project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it`
       });
     }
-    const defaultBranch = defaultBranchOf2(realRunner(env), checkout.root);
+    const defaultBranch = await defaultBranchOf2(realRunnerAsync(env), checkout.root);
     if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
       lines.push({
         ok: true,
@@ -31208,13 +31218,13 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-function projectChecks(cwd, env, paths, pluginHooksFile) {
+async function projectChecks(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
   let checkout;
   try {
-    checkout = existsSync47(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync47(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -31241,16 +31251,16 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
-    ...worktreeLines(config, sources, checkout, env)
+    ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
-    lines.push(...coverGitLines(checkout, env));
+    lines.push(...await coverGitLines(checkout, env));
   }
   return lines;
 }
-function coverGitLines(checkout, env) {
-  const version = parseGitVersion(runGit(checkout.root, ["--version"], env).out);
+async function coverGitLines(checkout, env) {
+  const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version))
     return [];
   return [
@@ -32088,9 +32098,9 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "project",
-      run: () => present([
+      run: async () => present([
         checkProjectImports(paths, local.cwd),
-        ...project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)
+        ...project === null ? [] : await projectChecks(project.cwd, env, paths, project.pluginHooksFile)
       ])
     },
     {
@@ -33607,8 +33617,8 @@ function writeUpdateHold(paths, value) {
 }
 
 // src/portal/workflow-adapter.ts
-function projectInitDefaults(input) {
-  const facts = detectFacts(realRunner(input.env), input.root);
+async function projectInitDefaults(input) {
+  const facts = await detectFacts(realRunnerAsync(input.env), input.root);
   const existing = readExisting(join61(input.root, ".claude", "cc-smart-dev-kit.json"));
   const answers = defaultAnswers(existing, facts, { dryRun: false, yes: false });
   const { checks, ...rest } = answers;
@@ -33624,7 +33634,7 @@ var workflowAdapter = {
   personalWorkflowOrDefault,
   planProjectInit,
   projectInitDefaults,
-  repositoryDefaultBranch: (root, env) => defaultBranchOf2(realRunner(env), root),
+  repositoryDefaultBranch: (root, env) => defaultBranchOf2(realRunnerAsync(env), root),
   resolveWorkflow,
   writePersonalSetting,
   writeProjectSetting
@@ -34316,7 +34326,10 @@ function companionRows(ctx) {
 }
 async function browserCardData(ctx) {
   const processes = legacyBrowserLeftovers(ctx.paths) ? await processCommandLinesAsync(ctx.machine.platform, ctx.runRead) : null;
-  const deps = { ...realBrowserSetupDeps(ctx.machine, ctx.paths.home), processes: () => processes };
+  const deps = {
+    ...realBrowserSetupDeps(ctx.machine, ctx.paths.home),
+    processes: () => processes
+  };
   const result = browserSetup(ctx.paths, deps, { apply: false });
   const state = result.state;
   return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
@@ -34327,9 +34340,9 @@ async function warpRow(ctx) {
   const app = warpAppFrom(system, ctx.machine, command === null ? null : await ctx.runRead(command));
   return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
-function readProject(ctx, cwd) {
+async function readProject(ctx, cwd) {
   try {
-    const project = resolveProject(cwd, { env: ctx.env });
+    const project = await resolveProjectAsync(cwd, { env: ctx.env });
     if (project === null) {
       return {
         config: null,
@@ -34348,7 +34361,7 @@ function readProject(ctx, cwd) {
     };
   } catch (error) {
     if (error instanceof CcSmartDevKitRetiredFieldError) {
-      const root = rootOf(cwd, ctx.env);
+      const root = await rootOf(cwd, ctx.env);
       if (root !== null) {
         return { config: null, configFile: null, retired: true, root, why: messageOf(error) };
       }
@@ -34362,9 +34375,9 @@ function readProject(ctx, cwd) {
     };
   }
 }
-function rootOf(cwd, env) {
+async function rootOf(cwd, env) {
   try {
-    return locateCheckout(cwd, { env })?.root ?? null;
+    return (await locateCheckoutAsync(cwd, { env }))?.root ?? null;
   } catch {
     return null;
   }
@@ -34409,7 +34422,7 @@ function settingsLineNote(settings) {
 function projectFilesHash(texts) {
   return createHash8("sha256").update(texts.existing ?? "\x00").update("\x00").update(texts.existingSettings ?? "\x00").update("\x00").update(texts.existingLocalSettings ?? "\x00").digest("hex").slice(0, 32);
 }
-function projectCardData(ctx, cwd, readDefaults, workflow) {
+async function projectCardData(ctx, cwd, readDefaults, workflow) {
   const base = {
     answers: null,
     error: null,
@@ -34420,7 +34433,7 @@ function projectCardData(ctx, cwd, readDefaults, workflow) {
     root: null,
     set: false
   };
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   if (project.root === null)
     return { ...base, error: project.why };
   const texts = projectFileTexts(project.root);
@@ -34431,7 +34444,7 @@ function projectCardData(ctx, cwd, readDefaults, workflow) {
     set: project.config !== null || project.retired
   };
   try {
-    const defaults = readDefaults({ env: ctx.env, root: project.root });
+    const defaults = await readDefaults({ env: ctx.env, root: project.root });
     return {
       ...head,
       answers: defaults.answers,
@@ -34450,7 +34463,7 @@ function projectCardData(ctx, cwd, readDefaults, workflow) {
     return { ...head, planError: messageOf(error) };
   }
 }
-function settingsData(ctx, cwd, workflow) {
+async function settingsData(ctx, cwd, workflow) {
   const empty = (why) => ({
     autoMerge: null,
     clashes: [],
@@ -34458,7 +34471,7 @@ function settingsData(ctx, cwd, workflow) {
     projectNote: null,
     rows: []
   });
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   const projectNote = project.why === null ? null : `No project's own values here: ${project.why}.`;
   let resolved;
   try {
@@ -34469,7 +34482,7 @@ function settingsData(ctx, cwd, workflow) {
   const rows = settingsRows(resolved, { projectFile: project.configFile !== null });
   const base = project.config?.worktrees?.base ?? null;
   const autoMerge = resolved.autoMerge.value ? {
-    allowed: base !== null && project.root !== null && workflow.autoMergeAllowed(resolved, project.config, base, workflow.repositoryDefaultBranch(project.root, ctx.env)),
+    allowed: base !== null && project.root !== null && workflow.autoMergeAllowed(resolved, project.config, base, await workflow.repositoryDefaultBranch(project.root, ctx.env)),
     base
   } : null;
   return {
@@ -34834,7 +34847,7 @@ async function machineData(deps) {
     doctor,
     jobs: await jobLines(deps.action),
     omniroute: await omnirouteRow(deps.action.omniroute, isOlder),
-    project: projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow),
+    project: await projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow),
     updates: {
       heldSince: updates.heldSince,
       installed: updates.installed,
@@ -34907,8 +34920,8 @@ async function healthData(deps, config) {
     router
   };
 }
-function settingsPageData(deps) {
-  return settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
+async function settingsPageData(deps) {
+  return await settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
 }
 
 // src/portal/worktrees-read.ts
@@ -35922,7 +35935,7 @@ async function projectAnswerFor(deps, id) {
   return {
     branches: branches.branches,
     branchesNote: branches.note,
-    card: projectCardData(deps.action.portal, project.root, deps.projectDefaults, deps.workflow),
+    card: await projectCardData(deps.action.portal, project.root, deps.projectDefaults, deps.workflow),
     checkedAt: branches.checkedAt,
     project
   };
@@ -35932,7 +35945,7 @@ async function projectRootById(world, id) {
   return list.projects.find((one) => one.id === id)?.root ?? null;
 }
 async function projectsAnswerFor(deps) {
-  const current = projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
+  const current = await projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
   const list = await projectsList(projectsWorldOf(deps));
   return { current, note: list.note, projects: list.projects };
 }
@@ -36386,7 +36399,7 @@ async function setWorkflowSetting(action, body) {
         ok: false
       };
     }
-    if (readProject(action.portal, action.cwd).configFile === null) {
+    if ((await readProject(action.portal, action.cwd)).configFile === null) {
       return {
         lines: [
           `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`
@@ -36466,8 +36479,8 @@ async function projectTarget(action, body) {
   const root = await projectRootById(projectsWorld(action), id);
   return root === null ? { why: `No project of the list has the id "${id}", so nothing was read or written.` } : { cwd: root };
 }
-function projectAnswers(action, body, cwd) {
-  const project = readProject(action.portal, cwd);
+async function projectAnswers(action, body, cwd) {
+  const project = await readProject(action.portal, cwd);
   if (project.root === null) {
     return { ok: false, why: project.why ?? "there is no project folder here" };
   }
@@ -36476,7 +36489,7 @@ function projectAnswers(action, body, cwd) {
     return form;
   const texts = projectFileTexts(project.root);
   try {
-    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
+    const defaults = await action.projectDefaults({ env: action.portal.env, root: project.root });
     return {
       ok: true,
       answers: { ...defaults.answers, ...form.value },
@@ -36492,7 +36505,7 @@ async function projectPreview(action, body) {
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok)
     return { lines: [built.why], ok: false };
   try {
@@ -36521,7 +36534,7 @@ async function projectWrite(action, body) {
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok)
     return { lines: [built.why], ok: false };
   if (body.previewHash !== projectFilesHash(built)) {
@@ -37105,8 +37118,8 @@ async function machineAnswer(deps) {
   }
   return answer;
 }
-function settingsAnswer(deps) {
-  return settingsPageData(deps);
+async function settingsAnswer(deps) {
+  return await settingsPageData(deps);
 }
 async function projectsAnswer(deps) {
   return await projectsAnswerFor(deps);
@@ -37173,7 +37186,7 @@ var API_READS = {
   "/api/slots": async (deps) => ok(await slotsAnswer(deps)),
   "/api/health": async (deps) => ok(await healthAnswer2(deps)),
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
-  "/api/settings": (deps) => ok(settingsAnswer(deps)),
+  "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),
@@ -39898,10 +39911,10 @@ async function startPortal(ctx, options) {
     settle = resolve;
   });
   let remembered = null;
-  function projectDefaults(input) {
+  async function projectDefaults(input) {
     const key = `${input.root}\x00${projectFileTexts(input.root).existing ?? ""}`;
     if (remembered === null || remembered.key !== key) {
-      remembered = { defaults: workflow.projectInitDefaults(input), key };
+      remembered = { defaults: await workflow.projectInitDefaults(input), key };
     }
     return remembered.defaults;
   }
@@ -39968,7 +39981,7 @@ async function startPortal(ctx, options) {
         return html(machinePage(shell, { ...await machineData(deps), ...error }), extra);
       }
       if (path === "/settings") {
-        return html(settingsPage(shell, settingsPageData(deps)), extra);
+        return html(settingsPage(shell, await settingsPageData(deps)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
@@ -39980,7 +39993,7 @@ async function startPortal(ctx, options) {
     if (path === "/machine")
       return html(machinePage(shell, await machineData(deps)), extra);
     if (path === "/settings")
-      return html(settingsPage(shell, settingsPageData(deps)), extra);
+      return html(settingsPage(shell, await settingsPageData(deps)), extra);
     return html(overviewPage(shell, await overviewData(deps, config)), extra);
   }
   async function handle(request, bunServer) {

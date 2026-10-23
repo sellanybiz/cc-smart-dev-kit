@@ -31,7 +31,7 @@ import {
   defaultBranchOf,
   detectFacts,
   readExisting,
-  realRunner,
+  realRunnerAsync,
 } from "../cli/project-init";
 import type { CcSmartDevKitConfig } from "../project/config";
 import {
@@ -101,17 +101,27 @@ export interface WorkflowAdapter {
    */
   personalWorkflowOrDefault: typeof personalWorkflowOrDefault;
   /** What the form starts with: the CLI's `detectFacts` and `defaultAnswers`, from the repo. */
-  projectInitDefaults: (input: { env: Env; root: string }) => ProjectInitDefaults;
+  projectInitDefaults: (input: {
+    env: Env;
+    root: string;
+  }) => ProjectInitDefaults | Promise<ProjectInitDefaults>;
   /** The repository's default branch: `origin/HEAD`, else `main` (`defaultBranchOf`). */
-  repositoryDefaultBranch: (root: string, env: Env) => string;
+  repositoryDefaultBranch: (root: string, env: Env) => Promise<string> | string;
   resolveWorkflow: typeof resolveWorkflow;
   writePersonalSetting: typeof writePersonalSetting;
   writeProjectSetting: typeof writeProjectSetting;
 }
 
-/** One runner, one detection: the CLI's own, so the portal reads this machine the way it does. */
-function projectInitDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
-  const facts = detectFacts(realRunner(input.env), input.root);
+/**
+ * One runner, one detection: the CLI's own, so the portal reads this machine the way it does —
+ * and the portal's asynchronous runner (`realRunnerAsync`), because git and `gh api` run inside
+ * the server's own process, where a blocking spawn freezes every page and the live stream.
+ */
+async function projectInitDefaults(input: {
+  env: Env;
+  root: string;
+}): Promise<ProjectInitDefaults> {
+  const facts = await detectFacts(realRunnerAsync(input.env), input.root);
   // `readExisting` is the CLI's own read of the project's file: a file that is there but
   // broken is no file, exactly as `project init` treats it — and a file that is broken in a
   // way the plan refuses (`planProjectInit`) is refused in words when the plan is made.
@@ -137,7 +147,7 @@ export const workflowAdapter: WorkflowAdapter = {
   personalWorkflowOrDefault,
   planProjectInit,
   projectInitDefaults,
-  repositoryDefaultBranch: (root, env) => defaultBranchOf(realRunner(env), root),
+  repositoryDefaultBranch: (root, env) => defaultBranchOf(realRunnerAsync(env), root),
   resolveWorkflow,
   writePersonalSetting,
   writeProjectSetting,

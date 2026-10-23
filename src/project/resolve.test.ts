@@ -15,6 +15,7 @@ import {
   ownHooksOf,
   readCommittedConfig,
   resolveProject,
+  resolveProjectAsync,
 } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
@@ -67,6 +68,14 @@ describe("resolveProject", () => {
 
   test("a folder outside git gives null", () => {
     expect(resolveProject(tempDir("nogit"))).toBeNull();
+  });
+
+  test("the awaited twin answers exactly what the blocking one does", async () => {
+    // The portal's pages and the merge check read the checkout off the server's event loop
+    // (`locateCheckoutAsync`, `Bun.spawn`): the same root, the shared `.git`, the same file.
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "main" } }));
+    expect(await resolveProjectAsync(repo)).toEqual(resolveProject(repo));
   });
 
   test("a machine with no git is told the fact, not the spawner's own words", () => {

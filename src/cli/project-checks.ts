@@ -32,7 +32,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
-import { runGit } from "../hooks/git";
+import { runGitAsync } from "../hooks/git";
 import {
   allWiredHandlers,
   projectSettingsFiles,
@@ -48,11 +48,11 @@ import {
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
-import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { type Checkout, loadProjectConfig, locateCheckoutAsync } from "../project/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
-import { defaultBranchOf, realRunner } from "./project-init";
+import { defaultBranchOf, realRunnerAsync } from "./project-init";
 
 /** One project line of doctor's report: a check like any other (`check.ts`). */
 export type ProjectLine = Check;
@@ -166,19 +166,21 @@ function engineLines(sources: string[], projectDir: string, home: string): Proje
  * - **A base branch that is not the default has `worktree.baseRef: "head"`.** Otherwise
  *   Claude Code cuts a new worktree from the default branch. One `!` line.
  */
-function worktreeLines(
+async function worktreeLines(
   config: CcSmartDevKitConfig | null,
   sources: string[],
   checkout: Checkout,
   env: Env,
-): ProjectLine[] {
+): Promise<ProjectLine[]> {
   const worktrees = config?.worktrees;
   const lines: ProjectLine[] = [];
   // Claude Code puts its worktrees under `<repo>/.claude/worktrees/`; a repo that does not
   // ignore the folder shows every worktree's files in `git status`. Only a project that
   // opted into the worktree workflow has the `worktrees` field, and only it gets told.
   if (worktrees !== undefined) {
-    const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
+    const ignored = (
+      await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)
+    ).ok;
     if (!ignored) {
       lines.push({
         ok: true,
@@ -188,7 +190,7 @@ function worktreeLines(
     }
     // Claude Code cuts a new worktree from the default branch, unless the project's settings
     // say `baseRef: "head"`. A base branch that is not the default needs that line.
-    const defaultBranch = defaultBranchOf(realRunner(env), checkout.root);
+    const defaultBranch = await defaultBranchOf(realRunnerAsync(env), checkout.root);
     if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
       lines.push({
         ok: true,
@@ -380,18 +382,18 @@ function ownCopyLines(
 }
 
 /** The project checks for the folder `cwd`; none outside git. */
-export function projectChecks(
+export async function projectChecks(
   cwd: string,
   env: Env,
   paths: CliPaths,
   pluginHooksFile: string,
-): ProjectLine[] {
+): Promise<ProjectLine[]> {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
   let checkout: Checkout | null;
   try {
-    checkout = existsSync(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -422,12 +424,12 @@ export function projectChecks(
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
-    ...worktreeLines(config, sources, checkout, env),
+    ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
-    lines.push(...coverGitLines(checkout, env));
+    lines.push(...(await coverGitLines(checkout, env)));
   }
   return lines;
 }
@@ -437,8 +439,8 @@ export function projectChecks(
  * (`MIN_COVER_GIT`, `src/workflow/review-cover.ts`): the review gate then counts a review of
  * the exact head only, so every fix needs a review of its own.
  */
-function coverGitLines(checkout: Checkout, env: Env): ProjectLine[] {
-  const version = parseGitVersion(runGit(checkout.root, ["--version"], env).out);
+async function coverGitLines(checkout: Checkout, env: Env): Promise<ProjectLine[]> {
+  const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version)) return [];
   return [
     {

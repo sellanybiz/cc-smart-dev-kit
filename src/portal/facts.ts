@@ -74,7 +74,7 @@ import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
 import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
-import { locateCheckout, resolveProject } from "../project/resolve";
+import { locateCheckoutAsync, resolveProjectAsync } from "../project/resolve";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import { commandContext } from "../update/apply";
 // Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
@@ -888,7 +888,10 @@ export async function browserCardData(ctx: PortalContext): Promise<BrowserCardDa
   const processes = legacyBrowserLeftovers(ctx.paths)
     ? await processCommandLinesAsync(ctx.machine.platform, ctx.runRead)
     : null;
-  const deps: BrowserSetupDeps = { ...realBrowserSetupDeps(ctx.machine, ctx.paths.home), processes: () => processes };
+  const deps: BrowserSetupDeps = {
+    ...realBrowserSetupDeps(ctx.machine, ctx.paths.home),
+    processes: () => processes,
+  };
   const result = browserSetup(ctx.paths, deps, { apply: false });
   const state = result.state;
   // A browser-less machine's note is the same sentence as the check line above it: the check
@@ -947,9 +950,9 @@ export interface ProjectRead {
   why: null | string;
 }
 
-export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
+export async function readProject(ctx: PortalContext, cwd: string): Promise<ProjectRead> {
   try {
-    const project = resolveProject(cwd, { env: ctx.env });
+    const project = await resolveProjectAsync(cwd, { env: ctx.env });
     if (project === null) {
       return {
         config: null,
@@ -970,7 +973,7 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
     // A file that fails only on a retired worktree engine field keeps its root: the Project
     // card's write is the fix (the same plan as `project init`, which takes the field out).
     if (error instanceof CcSmartDevKitRetiredFieldError) {
-      const root = rootOf(cwd, ctx.env);
+      const root = await rootOf(cwd, ctx.env);
       if (root !== null) {
         return { config: null, configFile: null, retired: true, root, why: messageOf(error) };
       }
@@ -988,9 +991,9 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
 }
 
 /** The checkout's root, or null when it cannot be found (the file's own error is the line). */
-function rootOf(cwd: string, env: Env): null | string {
+async function rootOf(cwd: string, env: Env): Promise<null | string> {
   try {
-    return locateCheckout(cwd, { env })?.root ?? null;
+    return (await locateCheckoutAsync(cwd, { env }))?.root ?? null;
   } catch {
     return null;
   }
@@ -1104,19 +1107,26 @@ export interface ProjectCardData {
  * and, when `gh` is on PATH, GitHub itself, so the server hands in the remembered reader
  * (`server.ts`) instead of calling the module for every form change.
  */
-export type ProjectDefaultsReader = (input: { env: Env; root: string }) => ProjectInitDefaults;
+export type ProjectDefaultsReader = (input: {
+  env: Env;
+  root: string;
+}) => ProjectInitDefaults | Promise<ProjectInitDefaults>;
 
 /**
  * The card's facts, read through the workflow adapter: the CLI's own detection for the form's
  * defaults, and the same pure plan the write will make. A project that cannot be read — no
  * git, a broken file — is one line in words and no form.
+ *
+ * **Awaited**: git and, when `gh` is on PATH, GitHub itself run inside the server's own process
+ * (`resolveProjectAsync`, `realRunnerAsync`), where a blocking spawn freezes every page and the
+ * live stream.
  */
-export function projectCardData(
+export async function projectCardData(
   ctx: PortalContext,
   cwd: string,
   readDefaults: ProjectDefaultsReader,
   workflow: WorkflowAdapter,
-): ProjectCardData {
+): Promise<ProjectCardData> {
   const base: ProjectCardData = {
     answers: null,
     error: null,
@@ -1127,7 +1137,7 @@ export function projectCardData(
     root: null,
     set: false,
   };
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   if (project.root === null) return { ...base, error: project.why };
   // The root is there: a missing file is the card's "not set up" state, never an error. A file
   // that is there but cannot be read is `readProject`'s own line, above.
@@ -1143,7 +1153,7 @@ export function projectCardData(
   try {
     // The defaults are the CLI's own detection over the project's file; the plan is then made
     // against the same file text this page read, so the preview and the answers agree.
-    const defaults = readDefaults({ env: ctx.env, root: project.root });
+    const defaults = await readDefaults({ env: ctx.env, root: project.root });
     return {
       ...head,
       answers: defaults.answers,
@@ -1193,11 +1203,11 @@ export interface SettingsData {
  * the page and `cc-smart-dev-kit workflow show` can never disagree; a file of the person's own
  * that is broken is a notice — never a row showing a default it does not have.
  */
-export function settingsData(
+export async function settingsData(
   ctx: PortalContext,
   cwd: string,
   workflow: WorkflowAdapter,
-): SettingsData {
+): Promise<SettingsData> {
   const empty = (why: string | null): SettingsData => ({
     autoMerge: null,
     clashes: [],
@@ -1205,7 +1215,7 @@ export function settingsData(
     projectNote: null,
     rows: [],
   });
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   // Named whether there is no project at all or its file cannot be read: a row may not show
   // `default` for a value the project really sets, and a broken file must not read as silence.
   const projectNote = project.why === null ? null : `No project's own values here: ${project.why}.`;
@@ -1226,7 +1236,7 @@ export function settingsData(
             resolved,
             project.config,
             base,
-            workflow.repositoryDefaultBranch(project.root, ctx.env),
+            await workflow.repositoryDefaultBranch(project.root, ctx.env),
           ),
         base,
       }

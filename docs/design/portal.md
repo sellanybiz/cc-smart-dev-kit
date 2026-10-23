@@ -403,9 +403,8 @@ with one line — the portal's child has none, because the portal starts detache
 (`src/hooks/detached.ts`) and is reparented away from the session that started it. **No
 synchronous spawn is reachable from these five actions**, and no action ever forces anything.
 Two others are still owed a child, named here so the rule is never read as already true
-everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synchronously,
-`src/cli/doctor.ts`) and `companion.enable` (its `claude plugin enable` through `Machine.run`)
-— and so is the lock's `ps` on every action that writes. `crew.stop`, `crew.rm` and
+everywhere: `companion.enable` (its `claude plugin enable` through `Machine.run`), and the
+lock's own `ps` on every action that writes. `crew.stop`, `crew.rm` and
 `worktrees.clean` refuse a POST without the page's confirmation (`confirm: true`).
 
 **A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
@@ -443,11 +442,24 @@ timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await i
 `portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
 `warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
 doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
-same words. Still on the loop, and owed to a later phase: the Machine page's doctor pass, whose
-gateway checks ask the service through doctor's synchronous `Runner` (`service.state`,
-`service.running`) besides that check; `doctor.run`; the project read's git (`resolveProject`, and
-`projectInitDefaults`' `gh`); and the browser card's legacy process list (`ps`, when 0.3.0's
-leftovers are on the machine).
+same words.
+**The doctor pass and the project read are reads too, and every command they ask runs off the
+loop.** The Machine page runs the doctor's own pass (`doctor.run` is that same pass), and the
+pass's own reads go through `DoctorOptions.read` — the portal's `ReadRunner`: the launcher's own
+`version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher, Warp's package
+manager, the live record's `claude --version`, and the gateway's checks, `RouterService.stateAsync`
+(does it run, and its state, in one awaited ask with the same words the synchronous pair gives)
+and `portHolderCheck`. `claude mcp get` runs through the mcp deps' own runner
+(`realMcpDoctorDeps(runRead)`), which is also how its child gets `MCP_TIMEOUT`; the 0.3.0
+leftovers' `ps` (macOS) or PowerShell listing (Windows) is read once per pass, only when 0.3.0
+left something (`legacyBrowserLeftovers`, `processCommandLinesAsync`), and handed to the check —
+the Browser card reads it the same way. The project read is awaited too:
+`resolveProjectAsync` (`locateCheckoutAsync`, `Bun.spawn`) for the Settings page and the Project
+card, `realRunnerAsync` (`runGitAsync`, and `gh api` spawned the same way) for the form's
+defaults, and `projectChecks`' own git reads (the checkout, `check-ignore`, the default branch,
+`git --version`). **Still on the loop**, named so the rule is never read as already true
+everywhere: the actions' changing commands (`ctx.runner`) and the lock's `ps` on every action
+that writes — the actions paragraph above has both.
 
 ### The pages' facts and actions (B6d)
 

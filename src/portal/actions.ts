@@ -858,7 +858,7 @@ async function setWorkflowSetting(
     }
     // The row is read-only without a project file, because there is nothing to write it into;
     // a hand-made POST gets the same answer, not another file's.
-    if (readProject(action.portal, action.cwd).configFile === null) {
+    if ((await readProject(action.portal, action.cwd)).configFile === null) {
       return {
         lines: [
           `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`,
@@ -979,11 +979,11 @@ async function projectTarget(
  * (`projectInitDefaults`), so the fields the form does not show — the workflow policy, and
  * anything the command line detects — come from the machine, never from a browser.
  */
-function projectAnswers(
+async function projectAnswers(
   action: ActionContext,
   body: Record<string, unknown>,
   cwd: string,
-):
+): Promise<
   | {
       ok: true;
       answers: ProjectInitAnswers;
@@ -994,8 +994,9 @@ function projectAnswers(
       existingSettings: null | string;
       root: string;
     }
-  | { ok: false; why: string } {
-  const project = readProject(action.portal, cwd);
+  | { ok: false; why: string }
+> {
+  const project = await readProject(action.portal, cwd);
   if (project.root === null) {
     return { ok: false, why: project.why ?? "there is no project folder here" };
   }
@@ -1003,7 +1004,7 @@ function projectAnswers(
   if (!form.ok) return form;
   const texts = projectFileTexts(project.root);
   try {
-    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
+    const defaults = await action.projectDefaults({ env: action.portal.env, root: project.root });
     return {
       ok: true,
       answers: { ...defaults.answers, ...form.value },
@@ -1023,7 +1024,7 @@ async function projectPreview(
 ): Promise<ActionResult> {
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   try {
     const plan = action.workflow.planProjectInit({
@@ -1068,7 +1069,7 @@ async function projectWrite(
   }
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   if (body.previewHash !== projectFilesHash(built)) {
     return {

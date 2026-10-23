@@ -30,10 +30,7 @@ export interface CommandAnswer {
  * The actions' own changing commands keep `runner`. `env` adds variables to the child's own
  * environment (the MCP checks' `MCP_TIMEOUT`).
  */
-export type ReadRunner = (
-  cmd: string[],
-  env?: Record<string, string>,
-) => Promise<CommandAnswer>;
+export type ReadRunner = (cmd: string[], env?: Record<string, string>) => Promise<CommandAnswer>;
 
 export interface PortalContext {
   /** `Bun.version`, for the header. */

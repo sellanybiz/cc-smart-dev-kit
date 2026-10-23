@@ -24,9 +24,11 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
-import { legacyBrowserLeftovers, legacyBrowserPaths, processCommandLinesAsync } from "../browser/legacy";
-import { realMcpDoctorDeps } from "../mcp/doctor";
-import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
+import {
+  legacyBrowserLeftovers,
+  legacyBrowserPaths,
+  processCommandLinesAsync,
+} from "../browser/legacy";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import {
@@ -42,8 +44,10 @@ import { createHistoryWriter, type HistoryRow } from "../gateway/history";
 import { askLogFile } from "../hooks/ask-log";
 import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
+import { realMcpDoctorDeps } from "../mcp/doctor";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { projectFolderName } from "../sessions/saved-sessions";
+import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";

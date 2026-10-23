@@ -22068,6 +22068,9 @@ function requireGitVersionText(out) {
 function requireGitVersion(git) {
   requireGitVersionText(git(["--version"]).stdout);
 }
+async function requireGitVersionAsync(git) {
+  requireGitVersionText((await git(["--version"])).stdout);
+}
 function mainCheckoutFrom(list, cwd) {
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
@@ -22089,6 +22092,9 @@ function mainCheckoutFrom(list, cwd) {
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+async function findMainCheckoutAsync(git, cwd) {
+  return mainCheckoutFrom(await git(["worktree", "list", "--porcelain"]), cwd);
 }
 function revParseParts(revParse) {
   const [top, gitDir, common] = revParse.stdout.trim().split(`
@@ -22130,6 +22136,34 @@ function locateCheckout(cwd, options = {}) {
   return {
     ...roots,
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+async function locateCheckoutAsync(cwd, options = {}) {
+  if (!existsSync36(cwd) || !statSync10(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const revParse = await git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    await requireGitVersionAsync(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? await findMainCheckoutAsync(git, cwd) : roots.root
   };
 }
 function ownHooksOf(checkout) {
@@ -37103,6 +37137,25 @@ function applyProjectInit(plan, options) {
 
 // src/cli/project-init.ts
 var RUN_TIMEOUT_MS = 1e4;
+async function runGh(ghPath, args, env) {
+  try {
+    const child = Bun.spawn([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return { ok: code === 0, out, err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
 function realRunner(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
@@ -37127,20 +37180,31 @@ function realRunner(env) {
     }
   };
 }
-function currentBranchOf(runner, root) {
-  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+function realRunnerAsync(env) {
+  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
+  return {
+    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS),
+    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env)
+  };
+}
+async function currentBranchOf(runner, root) {
+  const head = await runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = head.ok ? head.out.trim() : "";
   return branch === "" ? null : branch;
 }
-function localBranchesOf(runner, root) {
-  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+async function localBranchesOf(runner, root) {
+  const listed = await runner.git(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads"
+  ]);
   if (!listed.ok)
     return [];
   return listed.out.split(`
 `).map((line) => line.trim()).filter((name) => name !== "");
 }
-function defaultBranchOf2(runner, root) {
-  const known = runner.git(root, [
+async function defaultBranchOf2(runner, root) {
+  const known = await runner.git(root, [
     "symbolic-ref",
     "--quiet",
     "--short",
@@ -37151,7 +37215,7 @@ function defaultBranchOf2(runner, root) {
     if (branch !== "")
       return branch;
   }
-  const locals = localBranchesOf(runner, root);
+  const locals = await localBranchesOf(runner, root);
   const only = locals.length === 1 ? locals[0] : undefined;
   if (only !== undefined)
     return only;
@@ -37159,10 +37223,10 @@ function defaultBranchOf2(runner, root) {
     return "main";
   if (locals.includes("master"))
     return "master";
-  return currentBranchOf(runner, root) ?? "main";
+  return await currentBranchOf(runner, root) ?? "main";
 }
-function originRepository(runner, root) {
-  const origin = runner.git(root, ["remote", "get-url", "origin"]);
+async function originRepository(runner, root) {
+  const origin = await runner.git(root, ["remote", "get-url", "origin"]);
   if (!origin.ok)
     return null;
   const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(origin.out.trim());
@@ -37170,13 +37234,13 @@ function originRepository(runner, root) {
     return null;
   return { owner: match[1], name: match[2] };
 }
-function protectedFromGithub(runner, root) {
+async function protectedFromGithub(runner, root) {
   if (runner.gh === null)
     return [];
-  const repo = originRepository(runner, root);
+  const repo = await originRepository(runner, root);
   if (repo === null)
     return [];
-  const rules = runner.gh([
+  const rules = await runner.gh([
     "api",
     `repos/${repo.owner}/${repo.name}/rulesets?per_page=100`,
     "--jq",
@@ -37215,10 +37279,10 @@ function defaultFastCheck(root) {
   const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
   return name === undefined ? null : `${runnerOf2(root)} ${name}`;
 }
-function detectFacts(runner, root) {
+async function detectFacts(runner, root) {
   return {
-    defaultBranch: defaultBranchOf2(runner, root),
-    protectedFromGithub: protectedFromGithub(runner, root),
+    defaultBranch: await defaultBranchOf2(runner, root),
+    protectedFromGithub: await protectedFromGithub(runner, root),
     fastCheck: defaultFastCheck(root)
   };
 }
@@ -37547,7 +37611,7 @@ the project.
   --yes                  no questions: write the flags and the defaults
 
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
-function runProjectInit(argv, context, runner = realRunner(context.env)) {
+async function runProjectInit(argv, context, runner = realRunner(context.env)) {
   const out = context.out;
   if (argv.includes("--help") || argv.includes("-h")) {
     out.say(PROJECT_INIT_USAGE);
@@ -37563,7 +37627,7 @@ ${PROJECT_INIT_USAGE}`);
   const flags = parsed.flags;
   const file = join66(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText2(file);
-  const facts = detectFacts(runner, context.root);
+  const facts = await detectFacts(runner, context.root);
   const prompts = flags.yes || flags.dryRun ? null : context.prompts;
   out.heading(`${COMMAND} project init: ${tildify(context.root, context.home)}${flags.dryRun ? " (dry run)" : ""}`);
   out.blank();
@@ -37701,11 +37765,11 @@ function engineLines(sources, projectDir, home) {
   }
   return lines;
 }
-function worktreeLines(config, sources, checkout, env) {
+async function worktreeLines(config, sources, checkout, env) {
   const worktrees = config?.worktrees;
   const lines = [];
   if (worktrees !== undefined) {
-    const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
+    const ignored = (await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)).ok;
     if (!ignored) {
       lines.push({
         ok: true,
@@ -37713,7 +37777,7 @@ function worktreeLines(config, sources, checkout, env) {
         text: `project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it`
       });
     }
-    const defaultBranch = defaultBranchOf2(realRunner(env), checkout.root);
+    const defaultBranch = await defaultBranchOf2(realRunnerAsync(env), checkout.root);
     if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
       lines.push({
         ok: true,
@@ -37836,13 +37900,13 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-function projectChecks(cwd, env, paths, pluginHooksFile) {
+async function projectChecks(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
   let checkout;
   try {
-    checkout = existsSync56(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync56(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -37869,16 +37933,16 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
-    ...worktreeLines(config, sources, checkout, env)
+    ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
-    lines.push(...coverGitLines(checkout, env));
+    lines.push(...await coverGitLines(checkout, env));
   }
   return lines;
 }
-function coverGitLines(checkout, env) {
-  const version = parseGitVersion(runGit(checkout.root, ["--version"], env).out);
+async function coverGitLines(checkout, env) {
+  const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version))
     return [];
   return [
@@ -38716,9 +38780,9 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "project",
-      run: () => present([
+      run: async () => present([
         checkProjectImports(paths, local.cwd),
-        ...project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)
+        ...project === null ? [] : await projectChecks(project.cwd, env, paths, project.pluginHooksFile)
       ])
     },
     {
