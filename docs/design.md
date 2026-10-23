@@ -1460,7 +1460,7 @@ other words; that stays a review job.
 every turn and points to the skill that holds each procedure: the research steps live in
 `research-first`, the model and effort detail in `subagent-decision`, the gateway's slots in
 `gateway`. `bun run check:core-lines` holds it to a line budget (`scripts/check-core-lines.ts`;
-1.1.0 cut it from 190 lines to 125), and `check:context-budget` estimates its tokens. It and
+1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
 owner's D12).

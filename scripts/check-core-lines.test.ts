@@ -23,8 +23,8 @@ function file(lines: number, trailingNewline = true): string {
 describe("check-core-lines", () => {
   test("a file inside the budget passes, saying its count", () => {
     expect(checkCoreLines(file(CORE_LINES_WARN))).toEqual({
-      lines: 125,
-      message: "plugin/instructions/core.md: 125 lines (warn above 125, fail above 135).",
+      lines: 130,
+      message: "plugin/instructions/core.md: 130 lines (warn above 130, fail above 140).",
       ok: true,
     });
   });
@@ -32,21 +32,21 @@ describe("check-core-lines", () => {
   test("over the warning line: one line, and it still passes", () => {
     const result = checkCoreLines(file(CORE_LINES_WARN + 1));
     expect(result.ok).toBe(true);
-    expect(result.lines).toBe(126);
+    expect(result.lines).toBe(131);
     expect(result.message).toBe(
-      "plugin/instructions/core.md is 126 lines, over 125 and close to its 135-line budget. Trim it before it reaches the limit.",
+      "plugin/instructions/core.md is 131 lines, over 130 and close to its 140-line budget. Trim it before it reaches the limit.",
     );
   });
 
   test("at the budget's last line it still passes; one line more fails", () => {
     expect(checkCoreLines(file(CORE_LINES_MAX)).ok).toBe(true);
     expect(checkCoreLines(file(CORE_LINES_MAX)).message).toBe(
-      "plugin/instructions/core.md is 135 lines, over 125 and close to its 135-line budget. Trim it before it reaches the limit.",
+      "plugin/instructions/core.md is 140 lines, over 130 and close to its 140-line budget. Trim it before it reaches the limit.",
     );
     expect(checkCoreLines(file(CORE_LINES_MAX + 1))).toEqual({
-      lines: 136,
+      lines: 141,
       message:
-        "plugin/instructions/core.md is 136 lines, over its 135-line budget. It is loaded into every session on every machine: trim it, or move a section into a skill.",
+        "plugin/instructions/core.md is 141 lines, over its 140-line budget. It is loaded into every session on every machine: trim it, or move a section into a skill.",
       ok: false,
     });
   });

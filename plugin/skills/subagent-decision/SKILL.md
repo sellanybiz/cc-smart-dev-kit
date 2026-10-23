@@ -12,8 +12,9 @@ there.
 A subagent runs in its own context window; only its final report comes back. Every file it
 reads, every search and every dead end stays out of yours. Delegate a job whose reading would
 flood your context and that a self-contained brief can carry; a job a handful of tool calls
-finish is yours. What stays with you is in the core instructions (§ Lead the work); which model
-and effort each agent gets: their model table, and § Model and effort below.
+finish is yours. What stays with you is in the core instructions (§ Lead the work). Which model
+and effort each agent gets is in the core instructions' model table and in § Model and effort
+below.
 
 ## Which agent
 
@@ -93,9 +94,10 @@ The core instructions' model table says which model fits which job; this is the 
 - **`opus` and `fable` name the tier**, whatever model answers it: with the gateway on, a slot
   may send a family to another model (`/cc-smart-dev-kit:gateway`).
 - **Effort by the job:** `medium` for searches and reads; `high` for building, UI/UX design
-  included, and for reviews; `xhigh` for the hardest judgment — a tangled bug, an architecture
-  choice, a high-stakes review, a hard design — which you may pick yourself; `max` only when the
-  person asks for it. An affordable gateway slot runs at `max`: its reasoning costs cents.
+  included, for reviews and for a UI check; `xhigh` for the hardest judgment — a tangled bug, an
+  architecture choice, a high-stakes review, a hard design — which you may pick yourself; `max`
+  only when the person asks for it. An affordable gateway slot runs at `max`: its reasoning costs
+  cents. The session's own effort is the person's choice.
 - **Opus builds** architecture and UI/UX, at `high` or `xhigh`; every other build runs on
   `sonnet`.
 - **A fork** runs on the session's own model, at the effort you pass, or else the session's.
