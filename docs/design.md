@@ -3053,10 +3053,12 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --settings <settings.json> "<first line>"`. The
    first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
-   `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: the kit knows no model's window
-   (`gateway.json` holds none for a backend), so Claude Code's own stands. The settings are a
-   **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
-   one quoted line (`windowsRun`, the hooks' own quoting); a `claude.exe` runs as it is.
+   `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: Claude Code's own window for
+   the model stands, and its compaction comes after the crew's own hand-off share of it
+   (`workflow.crew.handoffPercent`; the window the gauge measures is `context-window.ts`). The
+   settings are a **file** on every platform. On Windows a `claude.cmd` runs through
+   `cmd /d /s /v:off /c` with one quoted line (`windowsRun`, the hooks' own quoting); a
+   `claude.exe` runs as it is.
 6. **The session id, and never the folder**: the short id is read from `backgrounded · <id> ·
    <name>` (`--session-id` is ignored with `--bg`), then `claude agents --json --all` is read once
    for the session's id. The crew session is recorded with it and `startedAt`, and stays
@@ -3319,10 +3321,23 @@ slug is `step-2` has a branch that ends in `-2` too.
 every minute and prints a line only when the crew session should act, so a crew session that is fine sees
 nothing. It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
 written and its cache read) against the window of the model that wrote that reply
-(`transcript.ts`). **The kit knows no backend's window**: a Claude model — an id, or the family
-name a crew session is launched with — has Claude Code's own 200 000 tokens, or 1 000 000 with the
-`[1m]` suffix (a family name that really has a larger window makes the crew session hand off early,
-never late), and a model the kit does not know has no window and so no context line. At
+(`context-window.ts`, the window's one home). **The window comes from three places, in order.**
+**Claude Code's own number**, when the status line recorded one for that model
+(`context_window.context_window_size` in its input, kept per model in
+`<stateDir>/context-window.json`, one entry per id exactly as reported, `[1m]` included, because
+one id can have two windows); a crew session is a `--bg` run with no footer, so the number is
+whichever session on the machine ran a status line for that model. Otherwise **the kit's table**,
+keyed by family and the version its 1M window starts at: Fable 5 and later, Opus 4.6 and later,
+Sonnet 4.6 and later and Haiku 5.5 have 1 000 000; Haiku 4.5 and the older models have 200 000;
+a family name alone (`opus`) names that family's current model, so it is 1 000 000 too;
+`[1m]` on any id is 1 000 000; and an id the table cannot place is guessed at 200 000, so a crew
+session hands off early, never late. For **a backend's bare model name** (the router answered from
+it), the window is that backend's own `/v1/models` `context_length` for the target the gateway
+config's slot chain names — a catalog id names it by its last segment too, because the answer
+leaves the provider out (`ollama-cloud/deepseek-v4.1-flash` is answered as
+`deepseek-v4.1-flash`). The list is read once, and only the models a chain names are kept in
+`<stateDir>/backend-windows.json` — never one network call per poll. A model whose window none of
+the three gives has no window and so no context line. At
 `workflow.crew.handoffPercent` (70 %) the crew session is told to **hand off**: commit the work in
 progress and run `crew report --status handoff`. At `workflow.crew.softHours` (2) it gets a
 **note** (the phase is long); at `workflow.crew.maxHours` (4) it is told to hand off again —

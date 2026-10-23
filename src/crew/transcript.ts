@@ -12,42 +12,18 @@
  * (`input_tokens`), the ones it cached (`cache_creation_input_tokens`) and the ones it read back
  * (`cache_read_input_tokens`) — the whole prompt the next turn carries.
  *
- * **The window.** The kit knows no backend's window (`gateway.json` holds none), and Claude
- * Code's own is 200 000 tokens, or 1 000 000 for a model whose name carries the `[1m]` suffix
- * (`docs/gateway.md`). A model the kit does not know has an unknown window: no percentage, and
- * so no hand-off line on context (the time lines still apply).
+ * **The window.** This module reads the use, not the window: the window of the model that
+ * wrote the reply comes from `context-window.ts`, its one home — Claude Code's own number when
+ * the status line recorded one, the kit's table otherwise, and a backend's own list for a bare
+ * backend model. A model whose window the kit cannot know has no percentage, and so no hand-off
+ * line on context (the time lines still apply).
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CLAUDE_FAMILIES, claudeFamily } from "../gateway/targets";
 import { projectFolderName } from "../sessions/saved-sessions";
-
-/** Claude Code's own context window, in tokens. */
-export const CLAUDE_CONTEXT_WINDOW = 200_000;
-
-/** The window of a model whose name carries the `[1m]` suffix, in tokens. */
-export const CLAUDE_CONTEXT_WINDOW_1M = 1_000_000;
 
 /** How much of the transcript's tail is read: the last replies, and nothing older. */
 const TAIL_BYTES = 256 * 1024;
-
-/**
- * The window of `model`, in tokens, or null when the kit does not know it. A Claude model — an
- * id (`claude-sonnet-5-5`), or the family name a crew session is launched with (`sonnet`) — has
- * 200 000 tokens, or 1 000 000 with the `[1m]` suffix; anything else is a backend whose window
- * the kit does not hold.
- *
- * A family name may really have a larger window than this (Claude Code decides it, and the kit
- * cannot read it): the guess is the smaller one, so a crew session hands off early, never late.
- */
-export function contextWindowOf(model: string): null | number {
-  const name = model.trim().toLowerCase();
-  if (name.endsWith("[1m]")) return CLAUDE_CONTEXT_WINDOW_1M;
-  if ((CLAUDE_FAMILIES as readonly string[]).includes(name) || claudeFamily(name) !== null) {
-    return CLAUDE_CONTEXT_WINDOW;
-  }
-  return null;
-}
 
 /** The transcript of the session `sessionId` that works in `folder`. */
 export function transcriptFile(projectsDir: string, folder: string, sessionId: string): string {
