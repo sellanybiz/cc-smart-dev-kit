@@ -2,7 +2,7 @@
  * The one translation from the server's answers (`wire.ts`) to the shapes the pages draw
  * (`types.ts`). Pure, and tested on its own (`adapt.test.ts`).
  *
- * The rule, from `.claude/rules/portal.md` § Never a number the machine cannot give: a fact the
+ * The rule, from `.claude/rules/portal.md` § The portal runs the command line's own code: a fact the
  * server does not send is `null` or an empty list here, and the page says it does not know —
  * never a value made up to fill a field. Where a page needs more than its own answer (the
  * Overview counts the running crew sessions from `/api/work`), the client fetches both and

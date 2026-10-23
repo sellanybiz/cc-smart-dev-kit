@@ -9,7 +9,7 @@ paths:
 
 The portal is a web page that can change every Claude session on the person's own machine.
 OmniRoute is the program those sessions' affordable answers come from. How they work and why:
-`docs/design.md` § The portal and § OmniRoute.
+`docs/design/portal.md` § The portal and § OmniRoute.
 
 ## The door is never relaxed
 
@@ -203,6 +203,6 @@ in this turn.
 
 ## Docs
 
-`README.md` § The portal and § OmniRoute updates, and `docs/design.md` § The portal and
+`README.md` § The portal and § OmniRoute updates, and `docs/design/portal.md` § The portal and
 § OmniRoute, change in the same commit as the behaviour. A screen or a command that does
 something the README does not say is a doc bug, not a nicety.

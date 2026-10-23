@@ -1,6 +1,6 @@
 /**
- * `cc-smart-dev-kit crew <command>`: the lead and its crew (`docs/design.md` § Lead and
- * crew sessions). This file reads the arguments and hands each command its checked values: `lead`
+ * `cc-smart-dev-kit crew <command>`: the lead and its crew (`docs/design/crew.md` § Lead and the
+ * crew). This file reads the arguments and hands each command its checked values: `lead`
  * (`lead.ts`), `start` (`start.ts`), `step` (`step.ts`), `report` (`report.ts`), `answer`
  * (`answer.ts`), `tell` (`tell.ts`), `watch` (`watch.ts`), `self-watch` (`self-watch.ts`), the
  * board — `list`, `status`, `kinds`, `attach` (`board.ts`) — and the end of a crew session —

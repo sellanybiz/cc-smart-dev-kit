@@ -131,7 +131,7 @@ export const CREW_PUSH_REFUSAL =
  * What a crew session reads instead of a question about a command that destroys work: the
  * command is denied, and the step does the same job without a person's yes (D24). A crew
  * session runs unattended, and a hook's `ask` cannot be silenced by "don't ask again", so an
- * ask would stall it until the person answers (`.claude/rules/hooks.md` § Fail safe). Each
+ * ask would stall it until the person answers (`.claude/rules/hooks-guards.md` § Fail safe). Each
  * step is mechanical, so the session can go on by itself.
  */
 export const CREW_STEPS = {

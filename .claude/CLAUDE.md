@@ -26,7 +26,7 @@ command that moves it: `.claude/rules/bundles-and-releases.md` § The names befo
   Its own instructions (`plugin/instructions/`), skills, agents and output style are
   written for **any** project, so they follow the plugin's rules (neutral, one home per
   rule, and they read a project's own additions), not the rules in this folder. How they
-  fit: `docs/design.md` § Instructions, skills and agents.
+  fit: `docs/design/instructions.md` § Instructions, skills and agents.
 
 Do not mix them: a rule for working on this repo never goes into `plugin/`, and a skill
 for users never goes into `.claude/`.
@@ -70,7 +70,7 @@ the first time you use it.
 | `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`; the servers' names alone in `names.ts`, which the router bundle reads), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
-| `src/crew/` | The lead and its crew (`docs/design.md` § Lead and the crew): the command and its arguments (`command.ts`, `args.ts`, `usage.ts`), the store (`store.ts`), the start with its brief, the caps and the queue (`start.ts`, `brief.ts`, `places.ts`), what a crew session says (`step.ts`, `report.ts`, `diff.ts`, `self-watch.ts`, `memory.ts`, `transcript.ts`, `telemetry.ts`), what the lead hears and answers (`watch.ts`, `answer.ts`), the board and the end of a crew session (`board.ts`, `end.ts`, `remove.ts`), and the view of Claude Code's own commands (`claude.ts`, `agents.ts`). |
+| `src/crew/` | The lead and its crew (`docs/design/crew.md` § Lead and the crew): the command and its arguments (`command.ts`, `args.ts`, `usage.ts`), the store (`store.ts`), the start with its brief, the caps and the queue (`start.ts`, `brief.ts`, `places.ts`), what a crew session says (`step.ts`, `report.ts`, `diff.ts`, `self-watch.ts`, `memory.ts`, `transcript.ts`, `telemetry.ts`), what the lead hears and answers (`watch.ts`, `answer.ts`), the board and the end of a crew session (`board.ts`, `end.ts`, `remove.ts`), and the view of Claude Code's own commands (`claude.ts`, `agents.ts`). |
 | `src/models/` | The launch policy's one home (`launch-policy.ts`): which model and effort a subagent or a crew session runs on, the crew kinds, `UI_POLICY` (D50), the premium tiers the agent guard judges. |
 | `src/worktrees/` | The `cc-smart-dev-kit worktrees` command: the finished-worktree verdict (`verdict.ts`), the machine's facts (`machine-facts.ts`), the scan and removal (`scan.ts`), and the `.worktreeinclude` copy the crew launcher uses (`include.ts`). |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
@@ -95,6 +95,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run lint` | Biome: lint and format check. `bun run format` fixes formatting. |
 | `bun run check:neutral` | Fails when a file names the publisher. |
 | `bun run check:duplicates` | Fails when a sentence of 12+ words repeats across the plugin's instructions, skills, agents, output styles and workflow scripts. |
+| `bun run check:docs` | Fails when a reference to a design page, a rule, or a section of the README names a heading that does not exist; when a design reference points at the index and no page holds that section; and when a `](#…)` link in a file names no heading in that file. Skips the plans, the research archives and the eval fixtures: those describe what was true then, or another project. |
 | `bun run check:core-lines` | Fails when `plugin/instructions/core.md` passes 140 lines, and warns above 130: every session on every machine loads that file. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |
@@ -115,9 +116,14 @@ Each rule loads itself when you touch a file it covers.
 | `neutrality.md` | every turn | No names; where project details come from. |
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions, the names before this one. |
 | `dynamic.md` | `src/`, `scripts/`, `plugin/`, `docs/`, `README.md` | One source per value: names, paths, ports, versions, lists. |
-| `hooks.md` | `src/hooks/`, the hook entries in `src/entries/`, `plugin/hooks/`, `plugin/bin/` | The hook contract (Phase 3). |
+| `hooks.md` | `src/hooks/`, the hook entries in `src/entries/`, `plugin/hooks/`, `plugin/bin/` | The hook contract: who wires it, the bun shim, the frame, quiet output, the one shell reader, timeouts, tests. |
+| `hooks-guards.md` | the guards in `src/hooks/`, `specs.ts`, `run.ts`, their entries | What a guard answers: the crew refusals, the machine-wide and `alwaysOn` rules, `ownHooks`, fail closed, and the one fail-safe table. |
+| `notify.md` | `src/hooks/notify*`, `stop-failure*`, `desktop-alert*`, `terminal*`, `alert-sound.ts`, `src/setup/user-notify-hook.ts` | The notifier: its two wirings, the desktop and terminal routes, `terminalSequence`, and the usage-limit hook. |
+| `session-start.md` | `src/update/`, `src/portal/session-start.ts`, `lifecycle.ts`, the SessionStart hooks | What a session start may do, the background self-update, and the major-version hold. |
 | `browser.md` | `src/browser/`, `src/hooks/playwright-output*`, `src/mcp/`, `src/testing/chrome-world.ts` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
-| `setup-and-managed-files.md` | `src/setup/`, `src/cli/`, `src/machine/`, `src/mcp/`, `src/update/`, `src/workflow/write.ts` | How the command changes user files and the system. |
+| `setup-and-managed-files.md` | `src/setup/`, `src/cli/restore.ts`, `src/cli/paths.ts`, `src/workflow/write.ts` | How the command changes user files: the managed writers, never take what is not ours, the lock, `--dry-run` and `restore`. |
+| `setup-commands.md` | `src/cli/setup*`, `src/cli/project-init*`, `src/machine/`, `src/mcp/` | What setup may run and when: every question first, services and restarts, root, trust rules, `Machine`. |
+| `command-output.md` | `src/cli/`, `src/gateway/commands.ts`, `install.sh`, `install.ps1` | One way to print; every mark with words; a failed check carries its fix; `doctor`'s groups and exit codes. |
 | `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; Claude judges first and only a tested worker target stands in; server tools go to Anthropic; every slot works the same way, each with its own fallback switch; secrets; restarts. |
 | `portal.md` | `src/portal/`, `src/omniroute/`, `src/entries/portal.ts` | The portal's door; OmniRoute's three-day rule. |
 | `cc-smart-dev-kit-json.md` | `src/project/`, `src/workflow/schema.ts`, `src/jobs/kinds.ts` | The `.claude/cc-smart-dev-kit.json` contract. |
@@ -133,8 +139,13 @@ Each rule loads itself when you touch a file it covers.
 
 ## Docs
 
-- `README.md` — for users: install, commands, `cc-smart-dev-kit.json`.
-- `docs/design.md` — how the parts fit, and why.
+- `README.md` — for users: install, what it does, commands, `cc-smart-dev-kit.json`;
+  release notes are in `CHANGELOG.md`.
+- `CHANGELOG.md` — what each release changed, newest first.
+- `docs/design.md` — the index to how the parts fit, and why; a page for each part under
+  `docs/design/`.
+- `docs/migrate.md` — moving a machine from the old `anymodel` names, and what a project
+  still carries from them.
 - `docs/roadmap.md` — the phases, done and ahead.
 - `.claude/plans/` and `.claude/research/` — the plan being built and the research behind it; each moves to its `archive/` folder when it is decided or done.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
@@ -148,7 +159,8 @@ Each rule loads itself when you touch a file it covers.
   four companions: `docs/windows-hooks.md`, `docs/windows-notify.md`, `docs/windows-jobs.md`
   and `docs/windows-gateway.md`.
 
-**Keep them true in the same change.** Change how a part works: update `docs/design.md`.
+**Keep them true in the same change.** Change how a part works: update its page under
+`docs/design/` (and its line in `docs/design.md`'s index if the part is new).
 Change a command or a `cc-smart-dev-kit.json` field: update `README.md`. Rely on a new Claude Code
 behaviour: add its row to `docs/claude-code-contract.md`. The tested Claude Code version
 lives in one file, `.claude-code-version` at the repo root.

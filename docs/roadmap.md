@@ -107,7 +107,7 @@ patch.
 
 The background update holds a new major version instead of installing it: it records why,
 writes `update-major.json`, and each interactive session start shows one line until the
-person runs `cc-smart-dev-kit update` (`design.md` § Updates). It ships on
+person runs `cc-smart-dev-kit update` (`docs/design/updates.md` § Updates). It ships on
 its own, before 1.0.0, so that machines take the rule first and hold 1.0.0 (a version
 before 0.7.0 installs any newer one by itself). Claude Code's own plugin auto-update for
 this marketplace goes off with it (D39: `setup` writes `autoUpdate: false`, and the
@@ -123,7 +123,7 @@ Done in this release:
   command from the lockfile; the protected branches from git and `gh`), a flag for every question, the diff shown before anything is written, a backup
   first, and a line saying to commit them. The worktree engine's three hook lines come from
   the one home that owned them (`src/hooks/project-wiring.ts`, deleted with the engine in 1.0.0).
-- **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —
+- **The workflow** (`docs/design/workflow.md` § The workflow): what cc-smart-dev-kit may do by itself —
   commit, push, open a pull request, merge — held by the project's committed file over the
   person's own `~/.config/cc-smart-dev-kit/workflow.json` over the safe built-in defaults, each
   value with where it came from. Read and written by `cc-smart-dev-kit workflow`; the four
@@ -149,7 +149,7 @@ Done in this release:
   are split instead of run in turn.
 - **Auto mode's safety checks, counted** (`usage`): the router counts the checks by day, who
   answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
-- **The merge guard** (`design.md` § The workflow): the `merge-guard` hook asks the person
+- **The merge guard** (`docs/design/workflow.md` § The workflow): the `merge-guard` hook asks the person
   before a `gh pr merge` its policy does not allow, and lets one through with no question only
   when `autoMerge` allows it, every required check is green, and the head commit's review is
   recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
@@ -157,7 +157,7 @@ Done in this release:
 - **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
   alert hooks and the status line read them — which moments alert, a sound where the platform
   has one, and the plan share the status line warns from.
-- **The Linux desktop extras of the alerts** (`design.md` § The notifier): a click on an
+- **The Linux desktop extras of the alerts** (`docs/design/hooks.md` § The notifier): a click on an
   alert raises the session's terminal window, the alert leaves the screen for the
   notification centre after a minute, one alert per session is on screen, and XFCE's Do Not
   Disturb keeps an ordinary alert's sound off — each where its tool is installed (`gdbus`,
@@ -169,7 +169,7 @@ Done in this release:
 - **The portal's Settings page and Project card**: the workflow settings with where each
   value comes from (yours, this project, default), and the project's two files planned and
   written from the form (`project init`'s own functions), never committed.
-- **The browser drives your own Chrome** (`design.md` § The browser, `README.md` § The browser):
+- **The browser drives your own Chrome** (`docs/design/browser.md` § The browser, `README.md` § The browser):
   the Playwright MCP server runs in extension mode, in a Chrome profile of its own named
   `claude-code`, with the Playwright extension's token required — `browser setup`, `browser token`
   and `browser check` are new, the plugin's own shared Chrome, its profile folder, the tab filter
@@ -193,7 +193,7 @@ Code's own LSP plugin is not added in its place (one TypeScript server per sessi
   are guarded exactly as before), and the `code-explorer` agent. The skills and the reviewer
   use Grep with a whole-word pattern, `Explore` for a wide sweep, and claude-mem's tools for a
   file's shape.
-- **Setup cleans up after it** (`design.md` § MCP servers at user scope): the `serena`
+- **Setup cleans up after it** (`docs/design/mcp.md` § MCP servers at user scope): the `serena`
   registration setup made, through `claude mcp remove` — never one of the person's own — its
   context file and the `serena-root` records; `--dry-run` shows each, and `doctor` has one ✗
   line until setup has run.
@@ -212,7 +212,7 @@ The owner's decision D11, brought forward from 0.6.0 because a session nobody ca
 - **An `opus` launch runs with no question at `high` or `xhigh`** — any agent, any purpose,
   review or not — and needs no `Opus reason:` line; **at `max` it asks the person**, and a
   `claude -p` session refuses that one, with a message saying to run it lower or interactively.
-  Fable keeps its rules exactly (`design.md` § The Agent guard).
+  Fable keeps its rules exactly (`docs/design/hooks.md` § The Agent guard).
 - **The reason list, the review-agent list and `CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`
   are gone.** An `Opus reason:` line is optional: when a prompt has one, its first word only
   names the purpose in the record, which reads `opus:<effort>` (with the word after it when
@@ -227,7 +227,7 @@ Claude Code's, which is what every project gets now.
 
 - **Every project uses Claude Code's own worktrees**: `<repo>/.claude/worktrees/<name>` on
   `worktree-<name>`, a task started with `claude -w <task-name>`, and no WorktreeCreate or
-  WorktreeRemove hook (`design.md` § Worktrees: Claude Code's own).
+  WorktreeRemove hook (`docs/design/hooks.md` § Worktrees: Claude Code's own).
 - **`"worktree": {"baseRef": "head"}`** in a project's committed `.claude/settings.json` when
   its base branch is not the repo's default branch: a worktree, and a subagent's worktree, are
   cut from the current branch. `project init` writes the line; `baseRef` takes only `"fresh"`
@@ -245,7 +245,7 @@ Claude Code's, which is what every project gets now.
 
 The owner's decisions, all about which model runs what, in one patch release:
 
-- **Fable is not only an advisor** (`design.md` § The Agent guard): `agent-guard` takes the new
+- **Fable is not only an advisor** (`docs/design/hooks.md` § The Agent guard): `agent-guard` takes the new
   reason `unsatisfied` — a fresh attempt after the person did not like the main session's
   answer — and an agent that can change files (a builder, or a fork) runs on Fable with the one
   word `build`, which the person approves, so a session whose own model is the `fable` tier can
@@ -256,7 +256,7 @@ The owner's decisions, all about which model runs what, in one patch release:
 - **Tiers, not vendors**: `opus` and `fable` mean the tier whatever answers behind them, so an
   override that points one at a backend keeps the reason line, the ask and the review rules, is
   never affordable and never forced to `max`.
-- **`fable-session`**, a new machine-wide hook (`design.md` § The Fable-session note): one
+- **`fable-session`**, a new machine-wide hook (`docs/design/hooks.md` § The Fable-session note): one
   `systemMessage` to the person, once a session, when the session's own model is the `fable`
   tier — nothing to Claude, never an error. The model is read the guard's way. **Changed in
   0.4.3**: it ran at `UserPromptSubmit`, where the model read is the PREVIOUS answer's — so it
@@ -350,7 +350,7 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   filter's endpoint carrying a private token (any other path refused, the token in the MCP's
   environment, never in `argv`), owner-only profile and output folders, and `browser check` as
   the end-to-end proof on a throwaway profile. **0.4.0 replaced all of it** with the person's own
-  Chrome through the Playwright extension (`design.md` § The browser): the plugin's own browser,
+  Chrome through the Playwright extension (`docs/design/browser.md` § The browser): the plugin's own browser,
   the profile in the data folder, the tab filter and the picker bundle are gone, and the browser
   refuses to run without the extension's token.
 - Serena, with the plugin's own context (project switching on, so a session can point it at
@@ -412,9 +412,9 @@ Only the person may reach it: a one-time link token exchanged for a session cook
 `Host` and `Origin` headers checked, a CSRF token on every change, the keys masked, and the
 whole thing stopping after 30 minutes with no request. Every action runs the same function
 the command line runs. `cc-smart-dev-kit portal` refuses inside a Claude Code session. The
-design, screen by screen, and why: [design.md](design.md) § The portal. The OmniRoute side,
+design, screen by screen, and why: [docs/design/portal.md](design/portal.md) § The portal. The OmniRoute side,
 its three-day rule and the health check that puts a bad release back:
-[design.md](design.md) § OmniRoute.
+[docs/design/omniroute.md](design/omniroute.md) § OmniRoute.
 
 ## 10 — Rollout
 
@@ -431,4 +431,4 @@ shared view: [jobs.md](jobs.md).
 ## After the rollout
 
 Each adopting project removes its own old copies of the pieces the plugin now ships,
-one piece at a time, as `design.md` § The safe switch describes.
+one piece at a time, as `docs/design/hooks.md` § The safe switch describes.

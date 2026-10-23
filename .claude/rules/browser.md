@@ -11,15 +11,15 @@ paths:
 The Playwright MCP server drives **the person's own Google Chrome**, through the **Playwright
 extension**, in ONE Chrome profile of its own named `claude-code`. There is no browser of ours and
 no shared profile: `browser mcp` starts `@playwright/mcp` with `--extension` and lets Playwright
-connect to the Chrome that is already there. How it works, and why: `docs/design.md` § The browser.
+connect to the Chrome that is already there. How it works, and why: `docs/design/browser.md` § The browser.
 The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The browser.
 
 ## The rules that break something when they move
 
-- **🔴 Never write to stdout in the launcher.** The launcher's stdout IS the Playwright MCP's
+- **Never write to stdout in the launcher.** The launcher's stdout IS the Playwright MCP's
   protocol stream; one stray line and the server shows as failed. Every line goes through the
   `log` callback (stderr).
-- **🔴 The token is required, and it never reaches `argv`.** Without it the extension opens an
+- **The token is required, and it never reaches `argv`.** Without it the extension opens an
   approval page and waits for a click on EVERY connection, so `browser mcp` refuses to start
   (exit 2, one stderr line) and names the command that adds it. It lives in a 0600 file
   (`cliPaths().browserTokenFile`), goes into the MCP child's ENVIRONMENT only
@@ -39,8 +39,7 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   `profile.info_cache.<dir>.name`, and the profile's own `Preferences` → `profile.name` — only
   while no Chrome runs on that user data folder (Chrome rewrites both from memory; when it runs,
   the page says to close Chrome and run `browser setup` again), and through the managed-file
-  helpers (`src/setup/`), never by hand. `Local State` alone left the profile looking unnamed
-  (live, 2026-10-17).
+  helpers (`src/setup/`), never by hand. `Local State` alone leaves the profile looking unnamed.
 - **Chrome's `Preferences` and `Secure Preferences` are otherwise READ ONLY.** They are
   hash-signed for the prefs Chrome protects, and it resets such an edit. `allowsFileUrls` only
   reads them; the one key written in `Preferences` is the profile's own `profile.name`, which
@@ -51,13 +50,13 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   `was_installed_by_default: true` (Chromium's `ManifestLocation`,
   `extensions/common/mojom/manifest.mojom`). An entry with no folder is left out: Chrome keeps
   one after an extension is gone. A real extra extension is named by its manifest name
-  (`__MSG_…__` resolved from its own `_locales`). Live, 2026-10-17: `doctor` named Chrome's
-  `Temp` folder and Web Store Payments, and the person could find neither in
+  (`__MSG_…__` resolved from its own `_locales`). Why: judging by folders named Chrome's own
+  `Temp` folder and Web Store Payments, neither of which a person can find in
   `chrome://extensions`.
 - **A secret line is cleaned where it is read** (`src/cli/secret-line.ts`, `cleanSecretLine`):
   the bracketed-paste markers a terminal wraps a paste in, and every other control character,
-  go before anything judges the text — a token pasted with them was refused as the wrong shape
-  and saved nowhere (live, 2026-10-17). The installers strip the same markers their own way
+  go before anything judges the text — a token pasted with them would be refused as the wrong shape
+  and saved nowhere. The installers strip the same markers their own way
   (`clean_secret`, `Clear-Secret`): keep the three in step.
 - **The extension must be the only one in that profile.** A second extension that injects a frame
   from its own `chrome-extension://` origin breaks the session (microsoft/playwright#43230, open),
@@ -83,7 +82,7 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   after the MCP's 30-second deadline. So `browser mcp` starts the Chrome `chrome.ts` finds, with the
   profile's folder name, ON THE PERSON'S DESKTOP (`chrome-start.ts`): this session's display
   variables, else on Linux the ones the systemd user manager holds (a session the Claude daemon
-  starts has no `DISPLAY`; measured 2026-10-23), then it waits for Chrome's own singleton lock
+  starts has no `DISPLAY`), then it waits for Chrome's own singleton lock
   (`chromeMayBeRunning`, the same question `browser setup` asks before it writes). No display, a
   spawn that throws, a Chrome that exits at once (its own stderr in the line) or one not up within
   `CHROME_START_LIMIT_MS`: one stderr line naming the one step, exit 2 — never a retry, never the

@@ -1618,7 +1618,7 @@ export function agentGuard(
  * The guard's crew part (D36): a crew session is a background session nobody watches, so every
  * launch the guard would ask the person about is refused, with the step that reaches its lead —
  * whatever the project's `ownHooks` says, since a project could otherwise switch the guard off
- * (`.claude/rules/hooks.md` § A crew session's own limits). It is a **judgment only**: nothing
+ * (`.claude/rules/hooks-guards.md` § A crew session's own limits). It is a **judgment only**: nothing
  * is recorded, because the run records a launch that runs and this part only ever refuses; the
  * launch it refuses never runs, so it is recorded nowhere, exactly as for `claude -p`.
  *

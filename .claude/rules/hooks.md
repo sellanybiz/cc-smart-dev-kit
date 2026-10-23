@@ -2,23 +2,20 @@
 paths:
   - "src/hooks/**"
   - "src/entries/after-merge.ts"
-  - "src/entries/agent-guard.ts"
+  - "src/entries/agent-usage.ts"
+  - "src/entries/crew-role.ts"
   - "src/entries/fable-session.ts"
-  - "src/entries/git-guard.ts"
-  - "src/entries/job-route.ts"
-  - "src/entries/main-folder-guard.ts"
-  - "src/entries/merge-guard.ts"
-  - "src/entries/message-guard.ts"
+  - "src/entries/lead-notes.ts"
   - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
   - "src/entries/review-record.ts"
-  - "src/entries/session-escape-guard.ts"
   - "src/entries/session-name.ts"
   - "src/entries/stop-failure.ts"
   - "src/entries/subagent-background.ts"
   - "src/entries/update-check.ts"
   - "src/entries/verify-gate.ts"
   - "src/entries/worktree-leftovers.ts"
+  - "src/entries/worktrees-clean.ts"
   - "plugin/hooks/**"
   - "plugin/bin/**"
 ---
@@ -26,16 +23,21 @@ paths:
 # Hooks: The Contract
 
 A hook is a program Claude Code runs at a fixed moment (a session starts, a tool is
-about to run, a worktree is made). This is the contract the hooks follow; how they fit
-together is `docs/design.md` § The hooks. The Claude Code behaviour behind each point, and
+about to run, a worktree is made). This is the contract every hook follows; how they fit
+together is `docs/design/hooks.md` § The hooks. The Claude Code behaviour behind each point, and
 the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
 hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
+
+What a **guard** answers — its crew refusals, its fail-safe table, `ownHooks`, and what a
+broken project file does — is `hooks-guards.md`. The notifier and its two wirings are
+`notify.md`. What a session start may do, the self-update included, is `session-start.md`.
 
 ## Who wires it
 
 Every spec in `src/hooks/specs.ts` is a **plugin** hook (`HOOKS`): in
 `plugin/hooks/hooks.json`, so it runs in every project. It stays silent in a project without
-`cc-smart-dev-kit.json`, and in one whose `ownHooks` names it (§ The project's own copy).
+`cc-smart-dev-kit.json`, and in one whose `ownHooks` names it (`hooks-guards.md` § The project's
+own copy).
 
 **Every project uses Claude Code's own worktrees** (`<repo>/.claude/worktrees/<name>` on
 `worktree-<name>`), and they need no hook. The plugin's old worktree engine is retired
@@ -63,7 +65,7 @@ WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside
 list it names (`review-record` on SubagentStart; `review-record`, `subagent-background` and
 `agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
 feeds stops mistakes, not a same-user process set on getting past it
-(`docs/design.md` § The review record).
+(`docs/design/workflow.md` § The review record).
 
 ## The plugin's hooks: shell form, through the bun shim
 
@@ -122,82 +124,21 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   entry, its `hooks.json` entry, and a row in `src/hooks/matrix.test.ts`. `entries.test.ts`
   fails when the four do not match.
 
-## The user's hook: `cc-smart-dev-kit hook notify`
-
-- The command is a shell string with the launcher's full path:
-  `"$HOME/.local/bin/cc-smart-dev-kit" hook notify`. The shell fills in `$HOME`, so it works
-  whatever PATH Claude Code has; the launcher runs its baked bun. The bare name `cc-smart-dev-kit`
-  would need `~/.local/bin` on that PATH.
-- **The same line works on Windows**, where the shell is Git Bash: no `args`, so Claude Code
-  passes the string to a shell; Git Bash sets `$HOME`; and it runs the extensionless
-  `#!/bin/sh` launcher on the strength of its `#!` first two characters, since Windows has no
-  execute bit (`docs/windows-hooks.md`). The Windows CI job runs this exact line
-  (`scripts/windows-hook-smoke.sh`).
-- `setup` writes the line into the person's own settings (`src/setup/user-notify-hook.ts`);
-  what the hook does is in § The notifier.
-- The worktree engine's names are retired: `cc-smart-dev-kit hook worktree-create` and the
-  other two print the fix and exit 1 — never 2, which blocks a `SubagentStop` and would loop
-  every subagent (`src/hooks/settings-hooks.ts`).
-
 ## The frame: every hook runs through `run.ts`
 
 `handleHook` runs each hook in this order; never skip a step in a new hook.
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
 2. **A guard's crew part** (`HookSpec.crewLimits`), before `ownHooks` and before the file (§ A
-   crew session's own limits).
-3. **`ownHooks`** (below).
-4. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (below).
-5. **Run.** A guard's crash answers through `onCrash` (§ Fail safe).
-6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`.
+   crew session's own limits, `hooks-guards.md`).
+3. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
+4. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
+5. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
+6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
+   (`hooks-guards.md` § Fail safe).
 
 The frame stays general: later hooks (notifications, the routing of heavy jobs) are new
 specs in it.
-
-## A crew session's own limits
-
-D24, D36 and D47 give a crew session refusals that **no project can switch off**. Nobody
-watches a crew session, and a hook's `ask` cannot be silenced by "don't ask again" (§ Fail
-safe), so every question a guard would put to the person where the step is mechanical is a
-**deny that names the step**:
-
-| Guard | What a crew session is denied, and the step it reads |
-|---|---|
-| `git-guard` | a push (it commits on its branch, and the lead merges); every ask above that destroys work — a discarding `checkout`/`switch -f`/`restore`, `reset --hard`, `reset --merge`, `clean -f`, `worktree remove -f`, `branch -D`, `stash clear`, an unnamed `stash drop`, a bare `git stash` — each with the step doing the same job without a question (`CREW_STEPS`) |
-| `merge-guard` | opening a pull request (`CREW_PR_REFUSAL`), and every question before a merge — the policy off, `--admin`, another repository, a check not green, no covering review, a policy or a form it cannot read, its own budget — as the one merge refusal (`CREW_MERGE_REFUSAL`): it commits on its branch and the lead merges locally. A merge the policy would allow is refused too, never `allow` |
-| `message-guard` | a message to another crew session without the `crew tell` tag, and a raw message to its own lead (which goes through `crew report`) |
-| `agent-guard` | every launch it would ask the person about — Fable, an Opus-family model it cannot read, Opus at `max`, an unreadable Workflow — judged as a session nobody watches, with the step `crew report --question` (`CREW_QUESTION_STEP`) |
-| `job-route` | a `claude -p` launch the launch policy questions, and a heavy command whose routing cannot be read because the project's file is broken or too new |
-| `session-escape-guard` | a write into the kit's own files (its project file, settings, state, installed plugin), a computed write or computed kit command, and any reach at the portal |
-
-The first four are the **crew part** of the guards that own their detectors — `crewGitAnswer`
-(`git-guard.ts`), `crewPullRequestAnswer` (`merge-guard.ts`), `crewAgentAnswer`
-(`agent-guard.ts`), `crewMessageAnswer` (`message-guard.ts`) — and the frame runs each before
-`ownHooks` and before `cc-smart-dev-kit.json` is read (`HookSpec.crewLimits`). So the refusal
-holds in a project that never opted in, in one whose file is broken or too new, and in one
-whose `ownHooks` lists its own copy of the guard. Without `CC_SMART_DEV_KIT_CREW` the part is
-silent: an ordinary session pays nothing, and the guard's other answers are exactly as they
-were.
-
-`job-route` and `session-escape-guard` are `alwaysOn` (§ A machine-wide hook), so a project
-cannot switch them off either; their crew answer lives in their own `run` and in
-`onConfigProblem`/`outsideGit`, so no call is judged twice. Each guard's detector is shared
-with its own `run` — one function, never a copy — so a spelling that gets past one gets past
-both.
-
-**The bun shim answers the same way.** With `--missing=ask` and `CC_SMART_DEV_KIT_CREW` set,
-the answers a guard gets when it cannot run (no bun, a Bun older than `MIN_BUN`, a missing
-bundle) are denies: they say to end the turn and say so in its last message, and to report
-with `crew report --question` only while shell commands still run — with no bun, or one too
-old, a guard that cannot run refuses every shell call, so the report command could not run
-either. Its `--missing=quiet` and `--missing=fail` modes are unchanged.
-
-Two asks can still reach a crew session. A guard's own crash, or input that is not JSON
-(`onCrash`), asks as it does for any session: that is a bug path, and the ask is what shows
-it. And `main-folder-guard` and `message-guard` ask through `onConfigProblem` on a broken or
-too new `cc-smart-dev-kit.json`, where they cannot read the policy they judge with (the other
-guards deny or stay silent there, § Fail safe). `"onFailure": "block"` in `hooks.json` stays
-for the same reason.
 
 ## Find the project from the input's `cwd`
 
@@ -208,167 +149,6 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 - Never `process.cwd()`.
 - Without a `.claude/cc-smart-dev-kit.json`, every plugin hook stays silent. A project that never
   opted in must not notice the plugin.
-
-## A machine-wide hook
-
-Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on), `job-route` (the shell judge, on Bash and PowerShell: a raw `--bg` launch, a `-p` run's
-model and effort, a crew session's lead commands — `crew start`, `answer`, `stop`, `rm`,
-`resume`, `watch`, `lead`, `lead tell` — a polling loop), `fable-session` (the model the
-session itself runs on),
-`crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
-`lead-notes` (a lead's missed crew news) and `notify` (the alerts).
-`playwright-output` is machine-wide too — it puts a file the
-CALLER names into the browser's own output folder (only while the live `playwright`
-registration is the one setup recorded; a server of the person's own is left alone entirely),
-and the browser is the machine's —
-and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
-`cc-smart-dev-kit.json`, no `ownHooks`. `notify` is a `USER_HOOKS` bundle like `update-check`: it
-never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
-thing it reads from a project that has one is its `workflow.alerts` settings — which moments
-alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
-`Notification` (the types a session's own process raises: `PLUGIN_NOTIFY_TYPES`), `Stop`,
-`PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
-(`rate_limit` only where the `stop-failure` hook will not show its own alert —
-`stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
-on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. A background session
-(`CLAUDE_JOB_DIR`, `src/hooks/background-session.ts`) shows no alert of its own — it inherits
-the daemon's display and terminal variables, and agent view alerts for it while the list is
-open — and the usage-limit alert stays silent there too. The route is the desktop
-(`notify-send` — on a Linux desktop with the right tools the detached `alert-worker` in its
-place, which waits for a click and raises the session's window, `src/hooks/desktop-alert.ts`
-— `osascript`, with the freedesktop sound), or — with no desktop route here and
-an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777, or in Warp's own agent
-format when the far end is Warp (`farEndIsWarp`: Warp's own variables, else `LC_TERMINAL=WarpTerminal`,
-else the `sshWarp` setting); inside Warp whose own plugin is on it stays quiet but for the sound,
-a waiting question, a waiting agent and agent view's finished/failed alert; with nowhere to show it, nothing. The whole contract, the marks and the
-three settings: `docs/design.md` § The notifier.
-
-**The notifier has a second wiring, in the person's user settings.** Agent view
-(`claude agents`, the list of sessions) raises `Notification` with `agent_needs_input` and
-`agent_completed` in its own process, and runs **only the hooks in settings files, never a
-plugin's `hooks.json`** (proved live on 2.1.302; `docs/claude-code-contract.md`). So `setup`
-manages one entry under `hooks.Notification` in `~/.claude/settings.json`
-(`src/setup/user-notify-hook.ts`): matcher `AGENT_VIEW_MATCHER`, the command
-`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
-bundle's entry runs (`src/hooks/notify-entry.ts`), through the launcher, so an update that
-deletes the old version folder cannot break it. `plugin/hooks/hooks.json` therefore matches
-only `NOTIFY_MATCHER` (a session's own types): with both wirings the alert would run twice
-there. The code accepts both lists (`NOTIFY_TYPES`, one home in `src/hooks/notify-types.ts`);
-`setup` writes the entry through the managed-hook path (`src/setup/managed-hook.ts`: backup,
-atomic write, `owned-hooks.json`, `restore` removes it) and replaces a hand-written entry
-that runs the plugin's own `dist/notify.js` rather than adding a second. `doctor` checks the
-entry. On Windows the same line holds in Git Bash (`docs/windows-hooks.md`).
-
-**A hook's answer can carry `terminalSequence`** (Claude Code 2.1.141+): the OSC in that
-output field is written to the session's terminal by Claude Code itself — the only route for
-a hook with no controlling terminal — and Claude Code wraps it for tmux itself, so the field
-carries the **bare** sequence and a wrapped one is rejected whole
-(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`), and agent
-view's own alerts (the list, `claude agents`, reads the field but never writes it out), write a
-terminal device instead: `/dev/tty` first, wrapped for tmux there (`forTty`), and, where the
-hook has no controlling terminal at all (2.1.301: ENXIO), the session's own device — the pty
-Claude Code is attached to, found from its pid (`src/hooks/terminal.ts`) — never both.
-
-`agent-guard` is a plugin hook (`HOOKS`) that is machine-wide all the same: it runs with or
-without `cc-smart-dev-kit.json`, a broken or too new file does not change its answer, and a folder
-that is not in git is judged the same way. The frame hands such a hook the input and the
-environment (`HookEnvContext`) where its checkout or config step does not apply, and the
-spec's `onConfigProblem` and `outsideGit` judge on. It is still in `PLUGIN_HOOK_NAMES`, so
-a project that runs its own Agent guard silences it through `ownHooks`, which is read on its
-own, before the file.
-
-`session-escape-guard` is machine-wide in the same way, and **`alwaysOn`** (`HookSpec.alwaysOn`):
-the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out, because the
-project's file is one of the things it guards (a session could list the guard there first).
-**`job-route` is `alwaysOn` too**, for the same reason one step out: it limits what the session
-itself may launch and run, and a session could otherwise switch the judge off by listing it in
-the project's file. A guard whose answer limits what the session itself may do is `alwaysOn`;
-any other machine-wide guard may be silenced by a project that runs its own copy. A name a
-project file may already list for an `alwaysOn` hook that used to be switchable
-(`UNSWITCHABLE_HOOK_NAMES`, today `job-route`) still parses, it silences nothing, and `doctor`
-says it can go. `matrix.test.ts` checks both halves.
-
-```json
-{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "…" } } }
-```
-
-`updatedInput` (PreToolUse only, proved live on 2.1.301) replaces the tool's input for that
-call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`, and — in a
-lead — to add `run_in_background: true` to a CI watch, a queued job or the full check (proved
-honoured on 2.1.308, and in L1a.1 on 2.1.306). The rewritten
-command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
-live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
-
-## A user-level hook
-
-A hook about the person, not a project (the StopFailure usage-limit alert) reads no
-`cc-smart-dev-kit.json`. Its opt-in is the gateway: it acts only when `gateway.json` exists, so a
-person who never set the gateway up does not notice it. It replaces nothing a project
-wires, so it has no `ownHooks` step. Work that waits (a notification with buttons) runs in a
-detached worker started through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`),
-never from the plugin's version folder, which an update may delete while it waits; the
-hook itself exits at once. A `claude -p` run may exit before the hook finishes and cut
-it off (seen live, 2.1.300): keep the hook's own work short.
-
-## The project's own copy: `ownHooks`
-
-A project may still have its own copy of a piece the plugin now ships (a guard, a note).
-Where both exist, **the project says which plugin hooks to keep quiet**: `ownHooks` in its
-`.claude/cc-smart-dev-kit.json` lists them by name (`["git-guard"]`), and exactly those plugin hooks
-**exit 0 and print nothing**, so the project's copy runs alone.
-
-- It is explicit on purpose. A project hook on the same event is *not* enough to silence a
-  plugin hook: it may be a logger, a different check, or a copy that does not cover the same
-  commands — and a guard that goes quiet for something that does not replace it leaves the
-  person unguarded.
-- **A listed name silences a guard's project part only.** A crew session's four refusals —
-  its push, its work-destroying git commands (each denied with the step), its pull request,
-  its peer message without the tag — are the guard's crew part, which the frame has already
-  run before this step (§ A crew session's own limits): no `ownHooks` list, and no missing
-  file, can switch them off.
-- Only `ownHooks` is read there (`ownHooksOf` in `src/project/resolve.ts`, on its own, like
-  `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
-- The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
-  `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
-- **A retired plugin hook keeps its name** (`RETIRED_HOOK_NAMES` in the same file; today
-  `serena-root`, 0.6.0): a project file that lists it still parses, the name silences
-  nothing, and `doctor` prints one `·` line that it can go. **A hook a project can no longer
-  switch off keeps its name the same way** (`UNSWITCHABLE_HOOK_NAMES`; today `job-route`, which
-  became `alwaysOn` in 1.0.0): the file still parses, the name silences nothing, and `doctor`
-  says it can go. Dropping a name from the schema
-  would fail the strict parse, and every guard would then ask on every call. A hook you
-  retire, or make `alwaysOn`, goes there.
-- `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
-  when a listed hook's event has no project hook left to answer, and warns when a project
-  hook runs next to a plugin hook the list does not name (both may answer).
-
-**The safe switch** (`docs/design.md` § The safe switch): the project lists its copies while
-it still has them → removes them → empties the list → raises `requires`. Every hook gets an
-`ownHooks` test (the matrix does it for all: a plugin hook listed there goes silent; one that
-is not listed still speaks).
-
-## Fail closed when `cc-smart-dev-kit.json` cannot be used
-
-When the project's `cc-smart-dev-kit.json` needs a newer plugin (`CcSmartDevKitVersionError`) or
-is broken (`CcSmartDevKitConfigError`), the hook cannot do what the project asked for. It
-never goes on as if there were no file; it fails closed in the way that suits its event, and
-the message (which names the update command, the file and field) reaches someone:
-
-| Kind | Fails closed by |
-|---|---|
-| A guard (PreToolUse) | **asking** the person before every call in its domain: every command that runs git, every edit in the repo, every message |
-| An informational hook | one line of context (`cc-smart-dev-kit: <message>`); `after-merge` only after a merge, `session-name` only on stderr |
-
-For a plugin hook's project part `ownHooks` still comes first: a project that lists its own
-copy there keeps it running. A guard's crew part has already run before both (§ A crew
-session's own limits), so a broken or too new file never lets a crew session push, merge,
-run a work-destroying git command, open a pull request, launch an agent or run a command
-nobody could answer for, write into the kit's own files, or send an untagged peer message.
-For `git-guard` and `merge-guard` the file cannot change a crew session's answer at all —
-their crew rule reads no project value — so their `onConfigProblem` stays silent for a crew
-session instead of asking a person who is not there; `agent-guard`, `job-route` and
-`session-escape-guard` judge the call anyway and deny where the person would be asked.
 
 ## Quiet output
 
@@ -431,164 +211,6 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   skipped whole. A hook that starts a child with the time left gives it no call at zero or
   less (`Bun.spawnSync` reads a timeout of 0 as no limit at all).
 - A guard gets a short timeout; a hook that waits gets a long one.
-
-## Fail safe
-
-A bug in an informational hook must never stop a user's work. A bug in a **guard** must never
-let a call through. Each hook's answer to its own failure, in one table (the same in
-`docs/design.md` § One frame for every hook):
-
-| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard`, `crew-role` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
-|---|---|---|---|
-| Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
-| The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard`, `session-escape-guard`, `crew-role` and `lead-notes` judge the call anyway); in a crew session: silence for `git-guard`/`merge-guard`, a deny for `agent-guard`/`job-route`/`session-escape-guard`, and an ask still for `main-folder-guard`/`message-guard` (§ A crew session's own limits) | one line of context, or on stderr | not read |
-| No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask**; in a crew session: a **deny** naming what the session can do | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
-| The bundle file is gone (an update removed the version folder) | the shim **asks**; in a crew session: a **deny** naming what the session can do | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
-| The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |
-
-**The portal's start part is inside the `update-check` hook, and its failures never reach that
-hook's answer.** A port held by another program, a bundle that is missing, a server that does
-not answer: each is one line in `<stateDir>/portal.log` by the detached starter, and the hook
-still exits 0 with nothing on stdout. The next session start tries again, and `doctor`'s
-portal line says what is wrong (`src/portal/lifecycle.ts`).
-
-`"onFailure": "block"` sits on a guard's **PreToolUse** entry and on nothing else: Claude Code
-ignores it on `Stop` and `SubagentStop` (and two other events), and on PostToolUse the call
-already ran (`docs/claude-code-contract.md` § Hooks). `plugin/bin/cc-smart-dev-kit`, the command, runs
-through the same shim with `--missing=fail`: no bun is one line on stderr and **exit 1**, because
-a command must never report success when it did not run.
-
-- A guard's `onCrash` is `guardCrash(what, inDomain)` in `specs.ts`; `entries.test.ts` runs every
-  guard on an input that is not JSON and expects an ask, so a guard without one fails a test.
-  An `onCrash` that throws is one stderr line, exit 0: never worse than the line.
-- No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
-- **A Stop hook blocks at most once per change, and never gives context.** A turn a block caused
-  carries `stop_hook_active: true`, and the hook is silent there; a Stop answer's
-  `additionalContext` keeps the turn going. The two Stop hooks that block are `crew-role` (a
-  crew session's turn ended on a step with no report) and `verify-gate` (the project's
-  `checks.fast` did not run after the last change); `verify-gate` is silent in a crew session,
-  which has its own report gate. Its block's own feedback line in the transcript is its mark,
-  so no change is reminded about twice, a change made after a reminder earns the next one, and a
-  check that fails never traps a turn.
-- **`subagent-background` never blocks on a failure.** A broken input, a broken or too new
-  `cc-smart-dev-kit.json`, and a transcript it cannot read are no block (one stderr line where
-  the frame says one, exit 0): it can only block when it has read the agent's own transcript
-  (JSONL, line by line) and found that agent's background task in a **tool result of its own
-  Bash or Agent call** (`Command running in background with ID: <id>`, `agentId: <id>`) — never
-  an id in its brief or in a file it read, so a subagent can always finish and a parent's task
-  is never mistaken for its own.
-- **`agent-usage` only appends its record.** An unreadable transcript, and a record that
-  cannot be written, are one stderr line and exit 0; it never blocks and never prints on
-  stdout, so a bug in it never stops a subagent (`src/hooks/agent-usage.ts`).
-- **Every ask is recorded.** The frame appends one JSON line to `guard-asks.jsonl` in the state
-  folder (`src/hooks/ask-log.ts`: the time, the hook, the session, the tool, a short reason put
-  through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
-  stderr line and never changes the answer.
-- A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
-- **Only the merge guard answers `allow`, and only for D31's exact form:** a command line that
-  is nothing but `gh pr merge <n>` with flags gh 2.102.0 has, when the whole policy passed
-  (`autoMerge` on, the base plain, the checks green, a review covering the fixes after it). An
-  `allow` skips auto mode's own "Merge Without Review" rule for that call (proved live, L1a.5),
-  so the guard's checks are what protect it; every other passing form — a wrapper, a second
-  command, an alias, an unknown flag, an armed `--auto` merge — stays silent (so auto mode
-  still applies), an unknown `gh pr merge` flag asks, and a crew session never gets it.
-  The judgment itself is `src/workflow/merge-check.ts`, shared with `workflow merge-check`.
-- A guard asks rather than denies when the person may mean it (a force-push, a pull request
-  opening outside the project's base); it denies
-  only what is never right in that project (an edit in a guarded main checkout, a message
-  to another project's session, a crew session's push, work-destroying git command, merge,
-  pull request, launch, kit-file write or raw message to its lead — D24, D36, D47: the lead
-  merges locally and hears its crew through `crew report`).
-  The crew refusals are the guard's crew part: they hold with no file and whatever
-  `ownHooks` says (§ A crew session's own limits).
-- **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
-  call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
-  live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard
-  asks only where the person's judgment is the point. When the fix is mechanical and Claude
-  can do it itself, the guard denies and says the step, and the person is not interrupted on
-  every call.
-- Anything a guard cannot work out (a session record it cannot read, a branch it cannot
-  name) lets the call through.
-- **A hook may start a background program, and never run it.** D48: `after-merge` (a pull
-  request merged into the base) and `worktree-leftovers` (an attended session start, at most
-  once an hour per repo) make one call, `startAutoClean` (`src/worktrees/auto-start.ts`), which
-  starts `src/entries/worktrees-clean.ts` detached and returns. The hook waits for nothing,
-  judges nothing and removes nothing; the clean takes the machine-wide lock, and **its errors
-  go to its own log** (`<stateDir>/worktrees-auto-clean.log`), never to the hook's answer. A
-  hook test hands in a recorder (`recordingStarter`, `src/testing/hooks.ts`), so no process
-  runs there. `worktrees.autoClean: false` starts neither. The clean **backs off when git's
-  own lock files are held in the repo** (`index.lock`, `HEAD.lock`, `packed-refs.lock`, a ref
-  lock; a project's own after-merge step may hold them): it skips this round with one line in
-  its log and writes no hourly mark, so the next trigger runs — no sleep, no retry until
-  success (`gitLockHeld`, `src/worktrees/auto-clean.ts`).
-
-## Session start never changes anything that matters
-
-A SessionStart hook adds context, or refreshes managed files through `src/setup/` under its
-lock. It never restarts a service, never changes a permission, and never asks a question.
-Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
-must stay quick: no fetch.
-
-**The one exception is the portal (D10, the owner's):** the SessionStart part starts the
-portal when it does not answer, and restarts it onto a newer version when an older one does
-(`src/portal/session-start.ts`). It is not a service that changes sessions: it is a page on
-this machine, it starts nothing when another program holds its port, it never asks, and it
-never waits — the hook starts a detached starter and returns (`src/portal/lifecycle.ts`). It
-never runs in `claude -p`, never on a `clear` or a `compact`, and its lines go to
-`<stateDir>/portal.log`, never to the session.
-
-The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
-(`fable-session`, machine-wide), the crew session's role card (`crew-role`, machine-wide), the
-lead's notes (`lead-notes`, machine-wide), the portal's start (D10) and the
-background self-update (`src/update/`, the owner's decision of 2026-10-15). The leftovers note
-also adds at most one short line about the **main checkout** at an attended start — on another
-branch than `worktrees.base`, behind `origin/<base>` as git already knows it, or in the middle
-of a merge, a rebase or a cherry-pick — read-only and with no fetch (`mainFolderNotes`,
-`src/hooks/worktree-leftovers.ts`). `update-check`
-also brings the managed instructions copy up to this version when it is behind
-(`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
-`CLAUDE.md` block, never a question, one stderr line on failure.
-
-The self-update hook (`src/entries/update-check.ts`) is machine-wide, not a project's
-piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
-
-- **Return at once.** No network and no lock in the hook: it starts the check in a
-  detached process (`detached: true`, stdio all `"ignore"`, so no pipe keeps Claude Code
-  waiting) and returns. The test with a slow fake `claude` fails when it waits.
-- **At most one check an hour**, decided again under the update lock in the background,
-  so sessions that start together check once. Nothing while `update-hold` exists.
-- **Claude Code's switches for updates win.** `DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`
-  or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set (environment or the settings' `env`)
-  without `FORCE_AUTOUPDATE_PLUGINS`: the hook only records "skipped: <name> is set",
-  and the background check asks again under its lock. One list: `src/update/opt-out.ts`.
-- **Silent on success.** It prints only one `systemMessage`, once, after a failed
-  background update, and only to an attended session (`CLAUDE_CODE_SESSION_ATTENDED` is
-  `0` for `claude -p`, whose hook input looks the same; `docs/claude-code-contract.md`).
-  A marketplace that cannot be read is a failure only after 24 h in a row. The one other
-  line: while a major version is held (D33, `src/update/major.ts`), one line at each session
-  start (the input's `source` is `startup` or `resume`), never on a `clear` or a `compact`.
-- **A major version is never installed in the background** (D33): the check holds it in
-  `update-major.json` until the person's `cc-smart-dev-kit update`. An installed version
-  that cannot be read (no `version` in `installed_plugins.json`, or not a version) is no
-  major step: the check installs the newer one, as before the rule (`src/update/major.ts`).
-- **Claude Code's own plugin auto-update stays off** (D39): it knows nothing of the hold.
-  Each check first turns setup's own leftover `autoUpdate: true` to `false`
-  (`turnOffLeftoverAutoUpdate`, `src/setup/auto-update.ts`): through `applyManagedJson`,
-  under the state lock with no wait, and only while the key still holds setup's `true`. A
-  value the person set, a busy lock or a broken settings file goes to `update.log` only;
-  the check goes on.
-- **Only Claude Code's own commands install:** `claude plugin marketplace update`, then
-  `claude plugin update … --scope user`. Never `-y` (a marketplace-declared command needs
-  a person), never a restart of the router or a session. They and the detached process
-  run in the home folder with `gitEnv` (`commandContext`), and their output reaches a
-  record only through `redactUrlsIn`.
-- **The same entry starts the portal (D10).** `startPortalAtSessionStart` resolves the
-  *installed* version's `dist/portal.js` (never this hook's own folder: an old session's hook
-  after an update must not start an older portal), starts it detached with `--ensure`, and
-  returns at once — nothing on stdout, nothing waited for. It does nothing in `claude -p`, on
-  a `clear` or a `compact`, or when the install has no portal bundle (`doctor` says so). A
-  failure is the starter's own line in `<stateDir>/portal.log`; the hook never fails on it.
 
 ## Tests
 

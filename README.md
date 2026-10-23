@@ -211,476 +211,41 @@ step below runs the plugin through it.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
 
-## What's new in 1.0.1
+## What it does
 
-A hotfix for **crew sessions**: `crew start` failed and stopped every crew session it started.
-It read `claude agents --json` once, right after `claude --bg -w …`, and that read reports the
-folder the session was launched in until the session has entered its worktree — so every new
-crew session looked like it worked in the main checkout. `crew start` now records the session's
-id and leaves it `starting`; the session's own start hook checks its real folder, and a session
-in any other folder is marked failed and stopped.
+| Part | What you get |
+|---|---|
+| The `cc-smart-dev-kit` command | Sets a machine up, checks it, updates it and takes it back out: [Install](#install), [Commands](#commands), [`doctor`](#doctor), `restore`. |
+| The AI gateway (optional) | A local router that sends each Claude model family's work to the models you choose, with a fallback, a breaker and a tested judge: [The AI gateway](#the-ai-gateway-optional). |
+| The portal | A page on this machine with the same facts and actions as the commands, always up with your sessions: [The portal](#the-portal). |
+| The hooks and guards | Small programs at the moments that matter: a guard before a git push, a merge, an agent launch or an edit of your settings; the notifier; the self-update: [The hooks](#the-hooks). |
+| The browser | Claude Code's browser tools on **your own** Google Chrome, in a profile of its own: [The browser](#the-browser). |
+| MCP servers | `playwright`, `sequential-thinking` and `tavily-websearch`, registered for your user: [MCP servers](#mcp-servers). |
+| The heavy-job queue | One queue for the machine's type checks, lints, tests and builds, so they do not run all at once: [Heavy jobs](#heavy-jobs-one-queue-for-the-machine). |
+| The crew | A lead session that starts background crew sessions for a plan's phases, each in its own worktree, and merges their branches: [The workflow](#the-workflow). |
+| Worktrees and sessions | Claude Code's own worktrees, a command that clears the finished ones, and one that brings a session back: [Worktrees](#worktrees), [Sessions](#sessions). |
 
-**What to run:** `cc-smart-dev-kit update` — a patch version also installs by itself within the
-hour. No `gateway setup`: the router did not change.
+## Release notes
 
-## What's new in 1.0.0
+What each release changed — the "What's new" an update message points you to — is in
+[CHANGELOG.md](CHANGELOG.md), newest first. This version is **1.1.0**: the portal, crew caps
+per lead, and a verification gate.
 
-**1.0.0 is a major version, and the first one the hold covers.** It refuses three retired
-fields in a project's `.claude/cc-smart-dev-kit.json` — `worktrees.prefix`, `worktrees.setup`
-and `worktrees.engine` — and the worktree engine they configured is gone. A patch or a minor
-version still installs by itself; this one waits until you run `cc-smart-dev-kit update`
-([The background update](#the-background-update)). Run these steps in your own terminal, in
-this order:
+## Older versions
 
-1. **`cc-smart-dev-kit update`** — installs 1.0.0. It lists every repository your saved
-   sessions worked in that still carries a retired field or an engine hook line, one `!` line
-   each with its fix.
-2. **`cc-smart-dev-kit setup`** — refreshes the instructions' copy for this version and turns
-   claude-mem's two start blocks off ([claude-mem](#claude-mem)).
-3. **`cc-smart-dev-kit gateway setup`** — **run this one yourself**: a Claude Code session must
-   never restart its own router. The router changed in this release (the breaker, Anthropic's
-   server tools, the judge), so this puts the new copy in place. It asks before it restarts
-   the router. A restart lets the answers in flight finish (up to 120 s; an answer still
-   running then is cut, and Claude Code retries it), and new requests wait in the socket
-   meanwhile.
-4. **`cc-smart-dev-kit project init`** in each project — takes the retired fields and the
-   engine hook lines out ([`project init`](#project-init)); commit the two files it writes.
-5. **`cc-smart-dev-kit doctor`** — every line ✓.
+The removals and migrations an upgrade still acts on. Everything else about an older release
+is in [CHANGELOG.md](CHANGELOG.md).
 
-Then restart every open Claude Code session: an update makes a new version folder, and a
-running session keeps the old one.
+### 0.6.0: Serena is removed
 
-The changes, one line each:
+The plugin no longer registers the Serena MCP server. `cc-smart-dev-kit setup` takes back what
+an older setup made for it; a Serena of your own stays. When it ran, why it went, and what to
+remove by hand: [CHANGELOG.md](CHANGELOG.md) § 0.6.0: Serena is removed.
 
-- **Crew sessions** ([The workflow](#the-workflow)): a small lead session starts background
-  crew sessions for a plan's phases, each in its own worktree, never waits, and merges their
-  branches. Off by default: turn it on with `cc-smart-dev-kit workflow set crew.enabled true`,
-  or with [`crew.enabled`](#the-workflow) in your own file or a project's.
-- **Less Opus** ([Instructions, skills and agents](#instructions-skills-and-agents)): Opus
-  builds architecture and UI/UX work only, and the other kinds build on the worker slot; a
-  review runs on Opus only for a risky change set. UI/UX design runs only on `opus` or
-  `fable`, at `high` or above, and the agent guard refuses it anywhere else.
-- **One updater** ([The background update](#the-background-update)): `setup` writes
-  `autoUpdate: false`, so Claude Code's own plugin update cannot install a major version past
-  the hold.
-- **`cc-smart-dev-kit search` is gone**: use Claude Code's own WebSearch and WebFetch, or
-  the Tavily MCP server ([MCP servers](#mcp-servers)).
-- **Server tools go to Anthropic** ([The AI gateway](#the-ai-gateway-optional)): a request that
-  carries Anthropic's own web search tool goes to Anthropic as it came, whatever the slot, so
-  the search really runs; at a Claude limit it gets a short note naming Tavily.
-- **The breaker** ([The AI gateway](#the-ai-gateway-optional)): when every target of a slot is
-  limited or down, the router holds the request (up to 240 s) and then answers a 429 Claude
-  Code retries; the status line and the alert name it.
-- **The judge** ([First setup](#first-setup)): Claude judges auto mode's checks first; while
-  Claude is limited or down, the targets of your worker slot that passed the judge test judge
-  in its place.
-- **Finished worktrees clean themselves** ([Worktrees](#worktrees)): after a merge into the
-  base, and at an attended session start at most once an hour, the kit removes the ones the
-  verdict proves finished; [`worktrees.autoClean`](#a-projects-claudecc-smart-dev-kitjson)
-  turns it off.
-- **New guards** ([The hooks](#the-hooks)): `session-escape-guard` stops a session loosening
-  its own limits; the shell judge (`job-route`) judges a raw `claude --bg`, `claude -p` and a
-  crew session's launches, and refuses polling; `workflow merge-check` prints the merge
-  guard's verdict without merging.
-- **A subagent never hands back with its own background work running**
-  ([The hooks](#the-hooks)): `subagent-background` blocks the stop once, with one plain reason
-  (BG1).
-- **Native Windows** ([Windows](#windows), [docs/windows-setup.md](docs/windows-setup.md)): the
-  installer, the launcher, the hooks, the gateway, the job queue and the crew work there; the
-  doc holds the checklist for a real PC.
-- **`medium` effort is allowed**; a review recorded before 1.0.0 no longer counts, because a
-  record now names the agent that wrote it, and the merge guard asks until one does
-  ([The workflow](#the-workflow)).
-- **claude-mem's two start blocks are off** ([claude-mem](#claude-mem)): `setup` turns both
-  off and turns Claude Code's own task tools on; set one back to `"true"` in
-  `~/.claude-mem/settings.json` to turn it on.
+### Anymodel (0.2.x): the old names
 
-## What's new in 0.7.0
-
-**A major version now waits for your `cc-smart-dev-kit update`.** A patch or a minor version
-still installs by itself, within the hour. A major version (the first number grows) does
-not: each interactive session start shows one line until you run `cc-smart-dev-kit update`
-([The background update](#the-background-update)).
-
-1.0.0 is such a version. It refuses the old worktree fields in a project's
-`.claude/cc-smart-dev-kit.json`; its `cc-smart-dev-kit project init`, run in each project,
-fixes them. Read its What's new before you run `cc-smart-dev-kit update`.
-
-**Claude Code's own plugin auto-update is now off for this marketplace.** It knows nothing of
-the hold, so it would install a major version by itself. The kit's own background update is
-the one updater now. `setup` writes `autoUpdate: false` (an explicit `false`: a removed key
-leaves Claude Code's own record at `true`). On a machine that got 0.7.0 by itself, the next
-background check turns an older setup's `true` to `false` (a `true` you set stays yours:
-`doctor` says what to do).
-
-**After this update, restart your running Claude sessions.** Until then, a session that
-loaded 0.6.0 may run 0.6.0's hook again on a `/clear` or a compaction, and that older check
-would install a newer major version by itself.
-
-## 0.6.0: Serena is removed
-
-The plugin no longer registers the Serena MCP server, and its `serena-root` hook and its
-`code-explorer` agent are gone. One Serena server ran for each Claude session, at about 3 GB of
-memory each in a large project; sessions seldom used it, and Grep, Glob and Read do most code
-search. For a file's shape — its functions and exports — claude-mem's `smart_outline`,
-`smart_search` and `smart_unfold` do the job (claude-mem is a [companion
-plugin](#companion-plugins) setup installs).
-
-**After you update, run `cc-smart-dev-kit setup` once.** It takes back what an older setup made
-for Serena, and nothing else:
-
-- the `serena` MCP server, with Claude Code's own `claude mcp remove serena --scope user` —
-  only while setup's record says setup registered it, and it still holds exactly what setup
-  registered (or, after a pin update an older setup left half done, it still has setup's own
-  shape: `uvx`, Serena's repository, and setup's own context file);
-- Serena's context file, `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`
-  (a backup goes to the state folder first), and its folder once it is empty;
-- the `serena-root` hook's records, `~/.claude/cc-smart-dev-kit/serena-root/`.
-
-`--dry-run` shows each of these first. Until setup has run, `doctor` prints one ✗ line that
-says so; after it, nothing.
-
-**A Serena of your own stays.** A `serena` server that setup did not register (or one you
-changed since) is never touched: `doctor` shows it as a `·` line. Its context file stays too,
-while a registration still starts Serena with it. The main-folder guard no longer looks at
-Serena's edit tools, so a Serena you keep can edit a guarded main checkout without a refusal.
-To remove a Serena of your own by hand:
-`claude mcp remove serena -s user`. A project's own `.serena/` folder (Serena's project
-settings and memories) is the project's: delete it when nothing uses it any more.
-
-A project whose `.claude/cc-smart-dev-kit.json` lists `serena-root` in `ownHooks` keeps working:
-the name is still accepted, silences nothing, and `doctor` says it can go.
-
-## What's new in 0.5.0
-
-**After you update, run these in your own terminal, in this order:**
-
-1. `cc-smart-dev-kit gateway setup` — updates the router copy on this machine (a plugin update
-   alone never does: until this step the older router keeps answering). It also takes out the
-   model keys 0.4.3 wrote (`ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL`, only where
-   cc-smart-dev-kit set them), and drops the hidden `claude-sonnet-5-5` from a scout or worker
-   chain that is still 0.4.x's default. A slot is reached by the model's family now, so those
-   keys are no longer needed.
-2. **Restart every open Claude session right after.** A session that is still running may keep
-   sending `haiku` / `sonnet` work by the slot's old name; when that slot has no chain, the
-   router refuses it with a 400 that says what to do.
-3. `cc-smart-dev-kit gateway on` — only if the gateway is not on yet.
-
-Check your scout and worker chains (`cc-smart-dev-kit gateway status`): a Claude model answers
-there only if you put it in the chain. Setup took out the `claude-sonnet-5-5` 0.4.x added at
-the end of its default chains; a chain you changed is left as it is.
-
-An opus or fable chain set before 0.5.0 starts with its fallback **off**: it moved on only at
-the plan's usage limit, and "on" now moves on at any rate limit or server error. Turn it on
-with `cc-smart-dev-kit gateway fallback <slot> on` when you want that. An opus or fable chain now
-also takes every Opus or Fable id, not only the one 0.4.x keyed it by, and a `claude-…` first
-target answers for all of them.
-
-A judge set before 0.5.0 is ignored until it is tested and set again
-(`cc-smart-dev-kit gateway slot judge <target>[,…]`), because the judge's job changed: it judged
-only when Claude could not, and then judged every check in Claude's place. Now Claude
-judges first again, and your worker slot's tested targets judge while Claude is limited or down.
-
-The gateway:
-
-- **Every slot works the same way** ([The AI gateway](#the-ai-gateway-optional)). Opus and Fable
-  take any chain, a backend first included (`gateway slot opus omniroute:<model>`), and the scout
-  and the worker keep theirs. Every slot is **Claude or Custom**: a slot with no chain in use is
-  Claude — that model is plain Claude, on your own login. `gateway slot <slot> claude` switches it
-  to Claude and **saves its chain** (`kept` in the config, never used), `gateway slot <slot>
-  custom` uses it again with its fallback switch, and `gateway slot <slot> clear` deletes it
-  (`off` still means `claude`). A fresh setup writes no chain, so the plugin picks no model for
-  you; and there is no hidden Claude step — a chain whose targets are used up returns its error.
-  The old portal's saved chains move into `kept` on `gateway setup`.
-- **Each slot has a fallback switch** ([The AI gateway](#the-ai-gateway-optional)):
-  `cc-smart-dev-kit gateway fallback <slot> on|off`. On: the next target answers when the one
-  before it fails or rests. Off: only the first answers, and the rest stay saved. On by default
-  for scout, worker and judge, off for opus and fable.
-- **A request reaches its slot by the model's family**, so `gateway on` no longer pins `haiku`
-  and `sonnet`. A newer version of a family (`claude-opus-6-0`) reaches its slot with no change.
-- **Claude judges auto mode's checks first** ([First setup](#first-setup)). While Claude is limited
-  or down, the targets of your worker slot that passed the judge test (`gateway setup` and
-  `gateway slot worker` run it) judge in its place; `gateway fallback judge off` keeps Claude
-  alone. A judge chain you set wins, and may hold a `claude-…` target.
-- **WebSearch goes to Anthropic** ([The AI gateway](#the-ai-gateway-optional)): a request that
-  carries Anthropic's web search tool is sent to Anthropic as it came, whatever the slot of the
-  model. When Claude is at its limit or down, the search result is a short note from the router
-  that points at the Tavily MCP server's search tool.
-- **An affordable model's thinking stays visible** ([The AI gateway](#the-ai-gateway-optional)): the
-  router keeps it, marked as its own with the backend's signature inside. It removes it only on a
-  request to Claude (no "Invalid `signature`" 400), and gives a backend its own signature back.
-- **The usage-limit alert names no model of its own** ([The usage
-  limit](#the-usage-limit-the-alert-the-status-line-and-usage)): it offers your model first, then
-  targets from your own chains, and its action also turns that slot's fallback on. It covers
-  every family that has a slot.
-- **`agent-guard` reads affordability from `gateway.json`** ([The hooks](#the-hooks)): a `haiku`
-  or `sonnet` launch is affordable while the gateway is on and that family's slot has a chain
-  whose first target is a backend — no longer from the model keys 0.4.3 wrote.
-- **claude-mem follows the scout slot only** ([claude-mem on the
-  gateway](#claude-mem-on-the-gateway)): setup points it at the scout chain's first target when
-  that is a backend, writes no quota fallback model any more, and takes out the fixed Claude
-  Haiku fallback 0.4.3 wrote there.
-
-Worktrees:
-
-- **`worktrees --remove <path>` no longer finds itself** ([Worktrees](#worktrees)). The command's
-  own line (`… worktrees --remove /path/wt`) and the shell that ran it name the folder being
-  removed, so on Linux and macOS every removal answered "kept …: programs run from its files:
-  bash, bun". Each process's parent is read now (`ps -ww -o pid=,ppid=,args=`, `ParentProcessId`
-  on Windows), and the command's own process and those that started it are left out of the
-  command-line match; a process whose working folder is inside the worktree still counts, so a
-  session or a shell really sitting there keeps it.
-
-The merge guard:
-
-- **`--admin` always asks** ([The hooks](#the-hooks)). The merge guard asks you about every
-  `gh pr merge … --admin` (or `--admin=<anything>`), even when `autoMerge` would let the merge
-  through: `--admin` merges past the repository's required reviews, required checks and merge
-  queue. It asks, never refuses, so a release flow can still use it after your yes.
-- **An exact allowed merge is `allow`** ([The hooks](#the-hooks)). For `gh pr merge <n>` with
-  flags gh has, when `autoMerge` is on, the checks are green and a review covers the head under
-  `fixesAfterReview`, the guard answers `allow`: no question, and no auto-mode "Merge Without
-  Review" block for that call. Every other merge form keeps the policy's silence, so auto mode's
-  rule still applies to it, and a crew session never gets `allow`.
-
-The installer:
-
-- **The marketplace is added over HTTPS when SSH to GitHub is refused** ([Install](#install)).
-  Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH key (or a
-  port-22 block) failed with nothing added. The installer retries that one source once as
-  `https://github.com/<owner>/cc-smart-dev-kit.git`, says so in one line, and goes on — the
-  marketplace's name comes from the repository's own marketplace file, so it lands under the
-  same name.
-- **An account that cannot read the repository is named** ([Install](#install)). With `gh`
-  installed and logged in, the installer asks `gh repo view <owner>/cc-smart-dev-kit --json name`
-  before it adds anything: the run stops (exit 1) with the account, the line to ask the
-  repository's owner for read access, and the invitation page. `doctor`'s marketplace check
-  names the same two causes with the same fix lines.
-
-## What's new in 0.4.3
-
-Every change here comes from the installer's FIRST real run, on 2026-10-17, and from what it
-left behind on that machine.
-
-- **The marketplace is refreshed before any version is compared** ([Install](#install)). The
-  live run had the marketplace added hours earlier at 0.4.1: the installer compared the
-  installed 0.4.1 with that stale clone's 0.4.1, saw them equal, updated nothing — and then
-  called an option the installed 0.4.1 CLI did not have, so the run died at the Tavily step.
-  The installer now runs `claude plugin marketplace update` first (the same order
-  `cc-smart-dev-kit update` uses), and then reads the installed CLI's own version: older than the
-  release the installer ships with means it stops, with the two exact commands and exit 1,
-  instead of calling an option that CLI may not have.
-- **A backend key is tested before it is saved** ([The AI gateway](#the-ai-gateway-optional)).
-  A person pasted their Ollama Cloud key where the router's OmniRoute key was asked for; it was
-  saved unchecked, OmniRoute answered 401 to every request after that, and every affordable
-  subagent fell back to Claude until the key was read back out of OmniRoute's own database. Now
-  `gateway setup --backend-key-stdin` makes one cheap authenticated request first
-  (`GET /v1/models`): a 401 or 403 refuses the key, keeps the one in the file and exits 1, saying
-  which key the backend wants. A backend that cannot be asked (unreachable, or a 5xx) saves
-  nothing either — unless `--save-unchecked` says you know. And the file is backed up before a
-  key that is really changing replaces one.
-- **No key yet? setup can make one.** ([First setup](#first-setup))
-  `cc-smart-dev-kit gateway setup --omniroute-password` (or `--omniroute-password-stdin`) takes
-  your OmniRoute **dashboard** password — asked with no echo, never stored — logs in to the local
-  OmniRoute, makes the router's key named `cc-smart-dev-kit-router-<machine>`, tests it and saves
-  it. No dashboard trip, no copy-paste.
-- **The installer asks before it touches an MCP server of yours** ([MCP
-  servers](#mcp-servers)). A project's own script had registered `playwright`, `serena`,
-  `sequential-thinking` and `tavily-websearch` at user scope first; setup left them alone (the
-  rule) and printed one `!` line nobody saw, so the old browser kept starting and the plugin's
-  own never took over. The installer now runs `cc-smart-dev-kit mcp status --json`, shows what
-  runs instead, and asks per server: "Replace it with cc-smart-dev-kit's?" — a yes removes it and
-  runs setup again (so the plugin registers its own **with its record**), a no lists it under
-  "What is left" with the exact command. `doctor` gained a `!` line for the same case.
-- **The gateway is asked about only when it is not working** ([First
-  setup](#first-setup)). A new read-only `cc-smart-dev-kit gateway check` answers one question
-  with an exit code: 0 the key works, 1 no key yet and OmniRoute answers (setup can make one),
-  3 it could not be judged, 4 the key in the file is one OmniRoute refuses. The installer asks
-  for a key only on 1 and 4 — showing what runs instead and never a key — and asks again **once**
-  after a refusal, keeping the old key.
-- **A pasted secret no longer arrives broken.** Warp and other terminals wrap a paste in the
-  bracketed-paste markers `ESC[200~` … `ESC[201~`, and a read that echoes nothing keeps every
-  character: a token a person pasted was refused as "55 characters" and never saved. Every
-  secret read now strips those markers and any other control character — in the plugin (one
-  home: `src/cli/secret-line.ts`), and in both installers. The token step is also ONE question
-  now (paste it, or Enter to skip): a paste can no longer land in a yes/no answer, and every
-  path of `browser token` that saves nothing exits non-zero.
-- **The `claude-code` profile is named in BOTH of Chrome's files**
-  ([The browser](#the-browser)). Chrome reads the display name from `Local State` and falls back
-  to the profile's own `Preferences` (`profile.name`); only the first was written, and the person
-  saw the profile unnamed. Both are written now, still only while Chrome is closed — while it
-  runs, the page says "close Chrome, then run `cc-smart-dev-kit browser setup` again".
-- **`doctor` no longer invents extensions.** It judged the profile by the folders on disk, and
-  named Chrome's own `Temp` folder and Chrome Web Store Payments — neither of which a person can
-  find in `chrome://extensions`. It reads Chrome's own record now: a folder with a manifest, and
-  a location that is not a component or an install Chrome made for itself. A real extra
-  extension is named by its manifest name (a `__MSG_…__` name resolved from its own locales).
-- **Tavily is never asked for twice** ([MCP servers](#mcp-servers)). The person had
-  `TAVILY_API_KEY` in their environment and a project already running a Tavily MCP server; the
-  installer asked anyway. It says one line instead — "Tavily: using TAVILY_API_KEY from your
-  environment" — and asks only when neither the environment, the key file, nor your settings
-  have one.
-- **The Fable warning is at the switch, or right after Fable's first answer — never after a
-  switch away** ([The hooks](#the-hooks)). `fable-session` read the transcript's last answer at
-  every prompt, which is the PREVIOUS turn's model: it missed the switch to Fable, and then
-  warned while the person was back on Opus. It runs on `PostModelSwitch` (the model the session
-  moved TO), on `Stop` (the answer that just finished) and on `SessionStart`, and no longer on
-  `UserPromptSubmit`.
-- **The portal's log is newest first** ([The portal](#the-portal)): the Health page's Log and the
-  Overview's "Latest warnings" both show the newest line at the top, with the times as they are.
-- **`gateway setup --omniroute-password` works on a real terminal** ([First
-  setup](#first-setup)): the flag asks for the dashboard password with no echo, and the context it
-  reads from never carried the reader — every run answered "this terminal cannot hide what you
-  type", even on a terminal. It reads the line now, and a key it makes but does not save (a key
-  the backend refuses, an unchecked save without `--save-unchecked`) is **deleted again** in
-  OmniRoute, so the dashboard keeps no unused key; a delete that fails names the key and its id.
-- **Nothing that names a server can print a key** ([MCP servers](#mcp-servers)): a URL's query,
-  fragment and userinfo are hidden, an argument after a key-like flag (`--api-key X`) and a
-  `name=value` whose name looks like a key (`--token=X`) show `•••`, and the command is shown by
-  its own name — in `mcp status`, its `--json`, the installer's question and `doctor`'s line.
-- **A Tavily key that lives only in your `settings.json` is a key setup uses** ([MCP
-  servers](#mcp-servers)): Claude Code fills `Bearer ${TAVILY_API_KEY}` from the settings' `env`
-  as well as from your environment, so setup now reads that copy too — it registers the server
-  instead of saying there is no key, while the installer had already stopped asking for one.
-- **`tavily-websearch` is offered for replacement like the other three** ([MCP
-  servers](#mcp-servers)): the check used to leave it out when the machine had no Tavily key, so
-  a server a project's own script had registered under that name was never mentioned. And the
-  installer asks again after the Tavily step, when the key has arrived.
-- **`doctor` names a same-name server that wins over the plugin's**
-  ([MCP servers](#mcp-servers)): a copy at the local scope (`~/.claude.json`,
-  `projects[<folder>].mcpServers`) or in a project's `.mcp.json` takes precedence over the
-  user-scope one, so that copy is the one Claude Code starts.
-
-## What's new in 0.4.2
-
-- **One command installs the plugin** ([Install](#install)): `install.sh` for macOS and
-  Linux, `install.ps1` for native Windows, the same steps, the same words and the same exit
-  codes. Each step prints one line and is skipped when it is already done, so a second run
-  only fixes what is missing. It asks before it installs or upgrades Bun, asks for the
-  browser's token, the gateway's key and the Tavily key (each skippable, never echoed, never
-  printed), and ends with `doctor` and — when something is left — the list of what is left,
-  each item with the exact line that finishes it. `--dry-run` prints the plan for this
-  machine and changes nothing. A step that fails stops with the command that retries it;
-  running the installer again goes on from there. It refuses inside a Claude Code session,
-  and it never writes a secret file or passes a secret on a command line: each key reaches
-  the plugin's own command on stdin. Exit codes: 0 done, 3 installed with items left, 1 a
-  step failed, 2 refused.
-- **The move runs on every machine, and `setup` always follows it** ([Moving from
-  anymodel](#moving-from-anymodel)): `migrate` decides by itself what to move and says
-  "Nothing to move." on a machine without the old names, so the installer no longer guesses
-  for it — and the old `anymodel` plugin, when it is still installed, is asked about
-  afterwards. `setup` then installs the instructions and the launcher, which the move alone
-  does not.
-- **`cc-smart-dev-kit setup --tavily-key-stdin`** ([MCP servers](#mcp-servers)): the Tavily
-  key on stdin, never an argument. setup writes it to the key file it reads a key from
-  (`~/.claude/cc-smart-dev-kit/tavily.key`, mode 600, through the same atomic writer as the
-  browser's token) and then treats it as a key from that file, so a later setup keeps it.
-- **Adding the new marketplace does not reuse the old one** ([Moving from
-  anymodel](#moving-from-anymodel)): proved live on a machine that still had the `anymodel`
-  marketplace — adding this repo's source made a SECOND marketplace, named
-  `cc-smart-dev-kit`. The installer and the move both rely on it, so "already added" is a
-  marketplace's own name, never its source.
-
-## What's new in 0.4.1
-
-- **Fable may be a fresh attempt** ([Instructions, skills and agents](#instructions-skills-and-agents)):
-  when you are not satisfied with Claude's own answer — a UI/UX design, an engineering problem, a
-  fix — the session may launch a read-only Fable advisor for a fresh attempt, with the reason
-  `Fable reason: unsatisfied - <what you disliked>`. It proposes a design, a plan or a fix; you
-  or a crew session build it, and you approve each launch.
-- **Fable may build, and a session may run on Fable** ([The hooks](#the-hooks), and the model
-  table in [Instructions, skills and agents](#instructions-skills-and-agents)): an agent that can
-  change files — a builder, or a fork — runs on Fable with `Fable reason: build - <what you asked
-  for>`, which you approve each time; anything else there keeps being refused. Nothing objects to
-  a session whose own model is Fable: it is your choice. For a hard or high-stakes change —
-  security, money, permissions, a big architecture change — the session may also run the
-  second-opinion review on Fable by its own judgment, with the reason
-  `Fable reason: review - <why>`, and the guard asks you.
-- **A note when the session itself runs on Fable** ([The hooks](#the-hooks)): the new
-  `fable-session` hook shows you one line, once a session, when the session's own model is the
-  `fable` tier — it uses your plan's limits faster than Opus, so switch with `/model` if you did
-  not mean to. Nothing goes to Claude, it never blocks anything, and a `/model` switch to Fable
-  is caught once Fable has answered, at the prompt after that. That the line reaches you at all
-  is **not yet proved live** (see the owed check in
-  [docs/claude-code-contract.md](docs/claude-code-contract.md) § Relied on, not proved yet).
-- **A review at effort `max` asks instead of being refused** ([The hooks](#the-hooks)):
-  `agent-guard` now asks you to approve a review at `max` — reviews run at `xhigh` unless you asked
-  for a deeper one — and records it, so `cc-smart-dev-kit usage` lists it. In `claude -p`, where
-  nobody can answer, it is still refused.
-- **`opus` and `fable` mean the tier, whatever model answers** ([The hooks](#the-hooks)): an
-  `ANTHROPIC_DEFAULT_OPUS_MODEL` / `…_FABLE_MODEL` override (or a model slot) that points one at
-  another vendor's model keeps the tier's rules — the reason line, your approval, the review
-  rules, and never a forced `max` — and the guard's question names both, like
-  `` `opus` (answered by openai:gpt-5.5) ``.
-
-## What's new in 0.4.0
-
-- **`cc-smart-dev-kit project init`** sets a project up: its `.claude/cc-smart-dev-kit.json`
-  and, unless the project runs an engine of its own, the worktree engine's three hook lines
-  ([`project init`](#project-init)).
-- **The workflow, and `cc-smart-dev-kit workflow`**: what cc-smart-dev-kit may do by itself
-  here — commit, push, open a pull request, merge. The project's committed file wins over
-  your own defaults, and `show` prints each value with where it came from
-  ([The workflow](#the-workflow)).
-- **A base per branch prefix** (`worktrees.bases`): a `hotfix/…` or `release/…` worktree
-  starts from the base that prefix names, not from the integration base
-  ([Worktrees](#worktrees)).
-- **`worktrees.engine: "own"`**: a project that runs its own worktree engine says so, and
-  `doctor` expects no cc-smart-dev-kit hook lines there ([A project's
-  `.claude/cc-smart-dev-kit.json`](#a-projects-claudecc-smart-dev-kitjson)).
-- **Windows**: native Windows, with Git Bash for the parts that are `sh` scripts — the
-  hooks, setup, the launcher, the gateway as a Scheduled Task, the job queue, the toasts
-  ([Windows](#windows)).
-- **`cc-smart-dev-kit usage`** also shows auto mode's safety checks, which the gateway's
-  router counted, by day, with the tokens each answer reported
-  ([The usage limit: the alert, the status line, and `usage`](#the-usage-limit-the-alert-the-status-line-and-usage)).
-- **The browser drives your own Chrome**, through the Playwright extension, in a profile of its
-  own named `claude-code`: `cc-smart-dev-kit browser setup` makes it and prints the steps,
-  `browser token` saves the token its status page shows — and `browser mcp` refuses to start
-  without that token, so nothing ever waits for an approval click ([The
-  browser](#the-browser)). The plugin's own shared Chrome, its profile and the tab filter are
-  gone; the profile folder 0.3.0 left stays on disk, `doctor` names it and the command that
-  deletes it, and nothing here deletes it for you.
-- **The instructions work in parallel**: the plugin's general instructions tell Claude to
-  start every independent phase at once, and never to wait for a merge, a release, a review
-  or an answer it does not need ([Instructions, skills and agents](#instructions-skills-and-agents)).
-- **The merge guard, and the review record** ([The workflow](#the-workflow)): the `merge-guard`
-  hook asks you before a `gh pr merge` your policy does not allow, and tells auto mode nothing
-  for an exact `gh pr merge <n>` whose whole policy — `autoMerge`, the checks, a review covering
-  the fixes after it — passed; `workflow show` says whether the commit here has a recorded
-  review, and `workflow merge-check` prints the same verdict without merging.
-- **The effort rule** ([The hooks](#the-hooks)): `agent-guard` allows a subagent only at
-  `high`, `xhigh` or `max` — `low`, `medium` or a level it does not know is refused, as
-  before a launch with no model or no effort. An affordable slot still runs at `max`; a
-  review runs at `xhigh`, unless you asked for a deeper one — `max` then asks you (0.4.1).
-- **The alert settings** ([Notifications](#notifications)): `alerts.events` says which moments
-  alert, `alerts.sound` adds the platform's sound, and `alerts.usagePercent` is the plan share
-  the status line warns from.
-- **The Linux desktop extras of the alerts** ([Notifications](#notifications)): a click
-  raises the session's window, the alert moves to the notification centre after a minute, one
-  alert per session is on screen, and XFCE's Do Not Disturb keeps an ordinary alert quiet —
-  each only where its tool is installed.
-- **The portal's Settings page, its Project card and its Browser card** ([The
-  portal](#the-portal)): the workflow settings with where each value comes from, the project's
-  two files planned and written from the form, and the browser's state with the button that
-  runs `browser setup`.
-- **"Dynamic, not hard-coded"** ([Instructions, skills and agents](#instructions-skills-and-agents)):
-  the instructions tell Claude to read every value — a name, a path, a port, a URL, a version,
-  a branch, a list — from the one place that owns it, never from a copy in the text.
-
-**After you update, run `cc-smart-dev-kit gateway setup` on every machine with the gateway.**
-The router changed in this release (it counts auto mode's safety checks, which `usage` reads),
-and that command puts the new copy in place. It asks before it restarts the router, because a
-restart cuts the answers in flight.
-
-**The browser needs its two steps too** ([The browser](#the-browser)): the `playwright` server
-refuses to start until `cc-smart-dev-kit browser setup` has made the `claude-code` profile and
-`cc-smart-dev-kit browser token` has saved the token from the extension's status page. A machine
-that ran 0.3.0 also still has its old shared profile at
-`~/.local/share/cc-smart-dev-kit/playwright`, and possibly the Chrome 0.3.0 started: nothing uses
-either now, and `doctor` names both — where the folder is, the command that deletes it, and the
-pid of that Chrome, whose debug port any program on your machine can drive. Neither is deleted
-for you: the folder may hold sign-ins, so that call is yours.
+[Moving from anymodel](#moving-from-anymodel), and [docs/migrate.md](docs/migrate.md) for a
+machine and for a project.
 
 ## Windows
 
@@ -723,9 +288,11 @@ Five pages say how, and what still has to be tested there:
 
 ## Commands
 
+### Setup, updates and reports
+
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Installs the launcher, turns Claude Code's own plugin auto-update off for this marketplace (`extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: false`: the background update below is the one updater, so a major version waits for you), writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and names the command that applies it to a running tmux server as a next step. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: true`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"), and, with no `CLAUDE_CODE_RETRY_WATCHDOG` in your settings, [Claude Code's retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) (once, default no; it remembers a "no"); `--yes` offers neither, and remembers no "no". A question shows its default and takes Enter for it; an answer it cannot read is asked again once. The report has a section per part, one verdict line, and the next steps to run, in order. |
+| `cc-smart-dev-kit setup` | Installs and refreshes everything it owns — the launcher, the instructions, the companions, the MCP servers, the tmux line, claude-mem's keys and the auto-mode entries — and prints a section per part, then the next steps in order. Every question comes first. Full text: [below](#cc-smart-dev-kit-setup). |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -735,37 +302,77 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit setup --retry-watchdog` | Turns on [Claude Code's retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) without asking: two keys under `env` in `settings.json`, owned by cc-smart-dev-kit. A value you set yourself is never overwritten: a different one stops setup before it writes anything; the same one is named and left alone. |
 | `cc-smart-dev-kit setup --no-retry-watchdog` | Takes cc-smart-dev-kit's two keys out again and remembers it as a "no" (`~/.claude/cc-smart-dev-kit/retry-watchdog-declined`), so a later plain setup does not ask. A key you wrote yourself is not touched. |
-| `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, any gateway fallback in use, and a slot whose every target is limited or down (the breaker). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the crew's opus usage guard ([`crew.usagePercent`](#the-workflow), D54). |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>] [--json]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Each subagent's own record adds its type, its replies by model, its input/output/cache tokens and an estimated cost (Claude's list price; a backend whose price is unknown is counted with no cost). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). `--json` prints the same facts as one object. Read only; no message text. |
 | `cc-smart-dev-kit report [--hours <n> \| --days <n>] [--project <folder or name>] [--session <id>] [--json]` | What this machine's Claude Code sessions did in the window (default: the last 7 days; at most 8): per session, the time Claude Code timed for its turns, agent launches and the parallel share, the minutes blocked on permission prompts and which guard asked, the questions, the waits on background work, the idle time until the person wrote, the compactions, auto-mode's blocks by rule, and the merges that asked — then the totals, every prompt's cause, and the calls waiting on you now. Read only; no message text. A prompt's wait is an upper bound: from the tool call's line to the person's answer. `--json` prints the whole report. |
 | `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--verbose] [--json] [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below), in groups. A group that passed shows one line; a group with a ✗ or a `!` shows every line, and each ✗ has a `Fix:` line under it. `·` is information and `!` a warning (neither is a failure). The last line is the verdict, and the exit code is 1 when a check fails. `--verbose` opens every group; `--json` prints the whole report for a program (the installers read it). `--live` also proves the hooks and Claude Code's own worktrees on the Claude Code installed here (below); it never runs without the flag. |
+| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added and keeps everything else, including any value you changed since, `gateway.json`, and the state it still needs. With the gateway on it runs in two stages, so running sessions are not cut off. Full text: [below](#cc-smart-dev-kit-restore). |
+| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
+| `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
+| `cc-smart-dev-kit version` | Prints the version. |
+
+#### `cc-smart-dev-kit setup`
+
+Installs the launcher, turns Claude Code's own plugin auto-update off for this marketplace (`extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: false`: the background update below is the one updater, so a major version waits for you), writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and names the command that applies it to a running tmux server as a next step. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: true`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"), and, with no `CLAUDE_CODE_RETRY_WATCHDOG` in your settings, [Claude Code's retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) (once, default no; it remembers a "no"); `--yes` offers neither, and remembers no "no". A question shows its default and takes Enter for it; an answer it cannot read is asked again once. The report has a section per part, one verdict line, and the next steps to run, in order.
+
+#### `cc-smart-dev-kit restore`
+
+Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys (also the ones you chose in the [portal](#claude-mem-from-the-portal), with the record of those choices), its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, the two [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) keys, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing.
+
+### The project and its workflow
+
+| Command | What it does |
+|---|---|
+| `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, any gateway fallback in use, and a slot whose every target is limited or down (the breaker). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the crew's opus usage guard ([`crew.usagePercent`](#the-workflow), D54). |
 | `cc-smart-dev-kit hook <notify>` | The notifier hook (below): `setup` wires `hook notify` in your user settings for agent view; it reads the hook's input on stdin and answers as Claude Code expects. The three worktree names of the plugin's retired worktree engine (**retired in 1.0.0**) only print the fix on stderr and exit 1 — a non-blocking error, so a leftover line never blocks a subagent's stop; `cc-smart-dev-kit project init` takes such a line out of the project's settings (§ Worktrees). |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. A lead uses `--branch` as its hand-back gate (§ [The workflow](#the-workflow)). |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys (also the ones you chose in the [portal](#claude-mem-from-the-portal), with the record of those choices), its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, the two [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) keys, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
-| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
+
+### The gateway and OmniRoute
+
+| Command | What it does |
+|---|---|
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
+| `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
+
+### The browser
+
+| Command | What it does |
+|---|---|
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. When Chrome is closed — after a machine restart, say — it starts your own Chrome with that profile first and waits for it, so the first browser call works with nobody at the desktop; a Chrome that cannot be started (no reachable desktop, an error) is one line naming the one step, at once. |
 | `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
 | `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token` (mode 600 on Linux and macOS; on Windows your profile's own permissions keep it yours), and is never printed again. `--clear` removes it. |
 | `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. It always ends: one limit bounds the whole run, and shorter ones the start, each answer and each stop — a Chrome that cannot start fails it at once instead of hanging it. |
-| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
-| `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch] [--json]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--json` prints the same facts as one object, changes nothing and fetches nothing (it takes neither `--clean` nor `--remove`): it is the answer the portal's Worktrees page reads. `--clean` and `--remove` run in the main checkout only, one at a time. |
-| `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
+
+### The portal and the job queue
+
+| Command | What it does |
+|---|---|
 | `cc-smart-dev-kit portal [status\|stop] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It starts with Claude Code, like claude-mem's worker: a new session starts it when it is not running, and a plugin update restarts it onto the new version. It binds `127.0.0.1` only and stays up until you stop it. `portal` opens it (starting it when needed), `status` says whether it runs and on which version, `stop` ends it, and `--no-open` prints the address instead of opening your browser. There is no sign-in: any program or account on this machine can open it (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
+
+### Sessions and worktrees
+
+| Command | What it does |
+|---|---|
+| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
+| `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch] [--json]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--json` prints the same facts as one object, changes nothing and fetches nothing (it takes neither `--clean` nor `--remove`): it is the answer the portal's Worktrees page reads. `--clean` and `--remove` run in the main checkout only, one at a time. |
+
+### The crew
+
+| Command | What it does |
+|---|---|
 | `cc-smart-dev-kit crew lead [--plan <slug>] [--tag <tag>]` | Records the Claude Code session that runs it (from its own Bash tool) as the lead of a plan in this repository, named `LEAD <tag> <plan>`. The tag is `--tag`, else [`crew.tag`](#the-workflow), else the main checkout's folder name; the plan is `--plan`, else the plan this session already leads, else the branch. The session takes that name at its next prompt by itself (no setting), replacing the name it had; a name you give it with `/rename` after that stays. Only a session id no name record can be made for, or a project running its own `lead-notes` hook, gets a `/rename` line to type. Refused outside a Claude Code session, in a crew session, in a session in bypass mode, and while crew sessions are off ([`crew.enabled`](#the-workflow)). |
 | `cc-smart-dev-kit crew lead tell <lead…> --kind contract\|question "<text>"` | Tells one or more **other leads of this repository** a contract change, or asks them a contract question (a text that starts with `--` goes after a bare `--`) — the same two kinds `crew tell` has, tagged with the sending lead's name (`[LEAD <tag> <plan>] CONTRACT: …`, which ends "No reply needed.", or `[LEAD <tag> <plan>] QUESTION: …`). A `<lead>` is a session that ran `crew lead` here: its name, its session id, or the first 8 characters of it. The store decides: a lead this repository does not record (another repository's lead included), yourself, and a session that never ran `crew lead` are each refused, and **nothing is recorded or printed**. A crew session never runs it: it talks to its own lead through `crew report`. Each receiving lead gets one store event, so its watch and its missed-news note show the line, and the command prints one `SendMessage` line per lead. |
-| `cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file\|-> [--base <ref>] [--files <glob,…>] [--model <model>] [--effort <effort>] [--waits-for <phase,…>]` | Starts one crew session for a lead: a background Claude Code session named `C <tag> <phase> <slug>`, in its own worktree `.claude/worktrees/crew-<phase>-<slug>` on the branch `crew/<phase>-<slug>`, cut from `--base` or the lead's branch. **It returns at once** with one line: `started` (with the session's short id, the model and effort, the branch and its base commit), `queued` (and why: the phases it waits for, its lead's [`crew.perLead`](#the-workflow) or `crew.perLeadOpus` reached, the machine's [`crew.max`](#the-workflow) ceiling or an optional `crew.maxOpus`, too little free memory, or — for an opus-tier crew session — the 5-hour usage window past [`crew.usagePercent`](#the-workflow); the lead's watch starts it later), or `failed` (and why). One note line may follow a start: an opus-tier crew session that starts while no usage-window reading is stored says the opus guard does not hold. **A file clash is one more line**: when the phase's `--files` overlap those of a running or queued crew session of **another lead** in this repository, `clash: …` names that lead, its crew session and the files they share (the tracked files decide; for files that do not exist yet, two patterns under one folder count as shared). It never blocks — two leads may mean to share a file — and the other lead's watch says the same line. **A phase that already has a live crew session of yours**, under another slug, gets one line more: `note: … is already on phase …` names it and says to remove it first — two crew sessions on one phase is a mistake. The kind gives the model and effort (`build`, `docs`, `tests`, `security`, `money`, `permissions`, `schema`, `deploy` on sonnet; `architecture` on opus at `xhigh`; `ui` on opus at `high`, never an affordable model — UI/UX design is not affordable work); `--model`/`--effort` override them, judged by the agent guard's rules — a `ui` session's override that would put it below `high` or on an affordable model is refused with one line naming the allowed models — and one the guard would ask you about (opus at `max`, Fable) is refused: start that session yourself. The brief (`-`: stdin) is saved with a fixed frame: commit on your branch and never push (the lead handles git), how to hand back, and how to ask the lead a question — a crew session never asks you. Run `crew lead` in the session first. A repository you never opened with `claude` is refused ("Workspace not trusted"): open it once and accept the trust prompt. `--waits-for` counts a phase as finished only when the lead **merged** it (or the crew session was removed after that merge), so a dependent phase never branches before the merge. A phase whose crew session you removed before merging its work releases nothing: the watch says so once, and the dependent stays queued until you start and merge that phase again, or drop the wait (`crew rm` the queued crew session, then start its phase again). Each crew session's own settings turn Claude Code's retry watchdog on with no wait limit, so a turn waits out a model limit instead of ending; what still ends is marked `paused` and resumed by the lead's watch. **A crew session starts lean:** it loads this plugin and the project's own instructions, keeps Tavily for research (and the browser for a `ui` kind), and turns every other plugin and MCP server off for itself — so its context goes to the phase, not to the machine's other tools. A project whose phases need more names it in [`crew.keep`](#the-workflow). The launcher records the session's id and leaves the crew session `starting`: `claude agents` reports the folder a session was launched in until it has entered its worktree, so the session's own start hook decides — a session in any other folder is marked failed and stopped. |
+| `cc-smart-dev-kit crew start <phase> --sl | Starts one crew session for a lead: a background session in its own worktree and branch, and it returns at once with `started`, `queued` (and why) or `failed`. It also warns on a file clash with another lead and on a phase that already has a session. Full text: [below](#cc-smart-dev-kit-crew-start). |
 | `cc-smart-dev-kit crew start <phase> --continue <crew session>` | The hand-off: starts the next crew session of a phase that ran out of room. The same phase, cut from the **old crew session's head** (not the lead's branch), with the old brief and what the old crew session left behind (its report and its own words), and the next number in its name (`C <tag> <phase> <slug> 2`, then ` 3`); its branch and worktree carry the same number (`crew/<phase>-<slug>-2`). The old crew session's **session is stopped, not removed**: its record stays `handoff`, and its branch and worktree stay for `crew rm`. Only a crew session that handed off (`crew report --status handoff`) can be continued, once; the model and effort are judged by the agent guard again, as for any start. |
 | `cc-smart-dev-kit crew step <step> [--note <text>]` | Records one milestone of a crew session's phase: the step's name, the time and HEAD's sha (the command reads the sha itself). A crew session runs it; the lead sees one line. The steps: `tests-red`, `tests-green`, `suite-green`, `review-started`, `review-done`, `fixes-done`, `committed`, `pr-opened`, `handoff`. Refused outside a crew session. |
 | `cc-smart-dev-kit crew report --status done\|blocked\|failed\|handoff [--file <file\|->]` | The hand-back report a crew session gives its lead. The command fills the mechanical facts — the branch and its head, the base, the diff counts, the files outside the brief, the review the record holds, the pull request — and the crew session gives the rest: the targeted tests and the whole suite, the other checks, the review's findings, the docs, what only the lead may do, what is still open. The file holds that part as JSON (checked field by field) or as prose (kept as the report's summary). A report that claims a review the record does not hold is refused, and so is a diff git cannot give (the report never says "no file changed" for a base that is gone). The report ends the phase: the crew session's state becomes the status, and a `blocked` report names the question it waits on (the crew session's own, or else the one it asked that nobody answered). |
 | `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" [--recommend <n>]` | Records a question for the lead. **The crew session goes on** with everything the question does not block; its state does not move. A crew session never asks you. Two options at least, and a recommendation that is one of them. |
 | `cc-smart-dev-kit crew answer <crew session> "<the answer>"` | The lead's answer to a crew session's question (an answer that starts with `--` goes after a bare `--`). A running crew session gets it as a message: the command prints the one line the lead sends it with (`SendMessage {"to":"…","message":"…"}`, the tool's arguments as JSON). A stopped crew session is resumed with the answer as its next prompt (`claude --bg --resume <session id> "<text>"`); the conversation stays on disk. A crew session that had been waiting for the answer is working again. A crew session the store does not know is never answered, and neither is one that ended its phase. The portal answers through the same command, with `--as-person`: its click is the person's, not a crew session's (D52). The flag says no Claude Code session runs the command, so one that does is refused with one line — it is the portal's, and it never skips a check. |
 | `cc-smart-dev-kit crew tell <name…> --kind contract\|question "<text>"` | Tells one or more other crew sessions of your lead a contract change, or asks them a contract question (a text that starts with `--` goes after a bare `--`). Every `<name>` must be a live crew session of the same lead in the store — the name or id `crew list` shows; your lead, another lead's crew session, and one whose session is not running are each refused, and nothing is recorded or printed. It records the note for the lead (`crew watch` shows one line) and prints one `SendMessage` line per receiver, to send as it is: only a session can send a message. The first line is the tag the receiver sees — `[<phase>] CONTRACT: <what changed: file:symbol, commit>`, which ends the note with "No reply needed.", or `[<phase>] QUESTION: <the ask>`. Status, and that a phase is done, go to the lead with `crew report`, never to a peer. |
-| `cc-smart-dev-kit crew watch [--lead <session>] [--once] [--timeout <seconds>]` | The lead's window on its crew: **one line per change** — their steps, their reports, their questions, the person writing to one (read its next report against the brief), what they need from you (a permission prompt reads "needs you"), **a note another lead of this repository told you** (`LEAD <tag> <plan>: contract from another lead · …`), **a file clash** between a crew session of yours and another lead's phase (`clash: …`), **a pull request another lead merged into the base** (the line says what to merge, and when), a crew session that crashed or that you stopped by hand (it stops holding a place), a crew session that has gone quiet ([`crew.quietMinutes`](#the-workflow)), one whose turn ended with no report, one whose own start hook never confirmed it reached its worktree (after 3 minutes: the hook may have crashed, be silenced by `ownHooks`, or run outside git), one that **paused** at a model limit (it says what it waits for), and a queued crew session held by a phase that was removed before its work was merged (said once, with the way to drop the wait). It also starts the queued crew sessions when a place frees, **resumes the paused ones once the gateway answers again** — one first, the others 30 s apart and only after the router answered a request since, never while a slot's breaker is open or a Claude limit is current, and a crew session that pauses again within 15 minutes waits 5, then 10, then 20 minutes — ends the ones whose work is done (`claude stop`, so a crew session never outlives its work), and marks the ones whose branch you merged (in your own folder: a merge commit, a fast-forward or a squash merge, the same answer `crew rm` gives). Only sessions the kit's crew store records are ever stopped or resumed. `--once` ends on the next change: the fallback where the plugin's monitors do not run (the lead runs it in the background, and again after each event). `--timeout` bounds the wait. |
+| `cc-smart-dev-kit crew wat | The lead's window on its crew: one line per change, and it starts, resumes and ends crew sessions as places free and limits lift. Full text: [below](#cc-smart-dev-kit-crew-watch). |
 | `cc-smart-dev-kit crew self-watch [--once]` | The crew session's own line about its context and its time, run by the crew session's monitor: it keeps looking, and at [`crew.handoffPercent`](#the-workflow) of its context the crew session is told to hand off (commit the work in progress, then `crew report --status handoff`), at [`crew.softHours`](#the-workflow) it gets a note, and at [`crew.maxHours`](#the-workflow) it is told to hand off again — the hours count from when its session started. The line repeats every 15 minutes while it is ignored; a crew session that is fine sees nothing. A model the kit does not know the window of has no context line (the time lines still apply). `--once` checks once and exits. |
 | `cc-smart-dev-kit crew list [--all] [--json]` | The board: every crew session of this repository, newest first (`--all`: every repository on this machine). One block each: its name, phase and kind, the model it runs on (and the gateway slot that answers it), its effort, its state and since when (from its last state change, not its last write), its branch, the files its brief gives it, the memory its session holds (once the lead's watch has read it; Linux only — a `-` on macOS and Windows), its lead, and the last step or line it said. So it is the address book and the ownership map in one: two crew sessions that list one file collide. A queued crew session says what holds it: the phases it waits for, its lead's [`crew.perLead`](#the-workflow) or `crew.perLeadOpus` reached, the machine's [`crew.max`](#the-workflow) ceiling or an optional `crew.maxOpus`, too little free memory, or the 5-hour usage window past [`crew.usagePercent`](#the-workflow). With a queued opus crew session waiting only for its lead's watch, and no window reading stored, one line says the opus usage guard does not hold. `--json` prints the crew records as one JSON list, newest first. Read only. |
 | `cc-smart-dev-kit crew status <name\|id>` | One crew session in full: its record, where its brief and its report are, the question it asked its lead that has no answer yet, and its last events. `<name\|id>` is the crew session's name (put a name with spaces in quotes), its id, or its session's short id; a name that matches two **live** crew sessions is refused, and both are named — one whose other matches are `removed` means the live one. Read only. |
@@ -775,8 +382,14 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit crew resume --paused [--lead <session>]` | Brings every **paused** crew session of the lead back at once, the way on after you ran `/login` on another account. Each goes back the way the lead's watch brings one back: a session whose process still lives gets the message line to send (never a copy), one whose process is gone is resumed in its worktree with its own files; its record is `working` again with its wait cleared. `--lead` names the lead when the command's own session is not whose crew sessions to resume. One that cannot come back — or whose worktree is gone — is named and the others still go (exit 1). Never `claude respawn --all`. |
 | `cc-smart-dev-kit crew attach <name\|id>` | Prints `claude attach <id>`, the command that opens the crew session's Claude session in a terminal (Ctrl+Z drops back to your shell and the session keeps running). It needs a terminal, so it is not run for you. |
 | `cc-smart-dev-kit crew kinds` | The kinds of crew phase (`crew start --kind`): the model each runs on, its effort on Claude and on an affordable gateway slot (`never` for `ui`, which runs only on a tier), and what it is for. Built from the same table the launcher and the agent guard read. |
-| `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
-| `cc-smart-dev-kit version` | Prints the version. |
+
+#### `cc-smart-dev-kit crew start`
+
+<slug> --kind <kind> --brief <file\|-> [--base <ref>] [--files <glob,…>] [--model <model>] [--effort <effort>] [--waits-for <phase,…>]` | Starts one crew session for a lead: a background Claude Code session named `C <tag> <phase> <slug>`, in its own worktree `.claude/worktrees/crew-<phase>-<slug>` on the branch `crew/<phase>-<slug>`, cut from `--base` or the lead's branch. **It returns at once** with one line: `started` (with the session's short id, the model and effort, the branch and its base commit), `queued` (and why: the phases it waits for, its lead's [`crew.perLead`](#the-workflow) or `crew.perLeadOpus` reached, the machine's [`crew.max`](#the-workflow) ceiling or an optional `crew.maxOpus`, too little free memory, or — for an opus-tier crew session — the 5-hour usage window past [`crew.usagePercent`](#the-workflow); the lead's watch starts it later), or `failed` (and why). One note line may follow a start: an opus-tier crew session that starts while no usage-window reading is stored says the opus guard does not hold. **A file clash is one more line**: when the phase's `--files` overlap those of a running or queued crew session of **another lead** in this repository, `clash: …` names that lead, its crew session and the files they share (the tracked files decide; for files that do not exist yet, two patterns under one folder count as shared). It never blocks — two leads may mean to share a file — and the other lead's watch says the same line. **A phase that already has a live crew session of yours**, under another slug, gets one line more: `note: … is already on phase …` names it and says to remove it first — two crew sessions on one phase is a mistake. The kind gives the model and effort (`build`, `docs`, `tests`, `security`, `money`, `permissions`, `schema`, `deploy` on sonnet; `architecture` on opus at `xhigh`; `ui` on opus at `high`, never an affordable model — UI/UX design is not affordable work); `--model`/`--effort` override them, judged by the agent guard's rules — a `ui` session's override that would put it below `high` or on an affordable model is refused with one line naming the allowed models — and one the guard would ask you about (opus at `max`, Fable) is refused: start that session yourself. The brief (`-`: stdin) is saved with a fixed frame: commit on your branch and never push (the lead handles git), how to hand back, and how to ask the lead a question — a crew session never asks you. Run `crew lead` in the session first. A repository you never opened with `claude` is refused ("Workspace not trusted"): open it once and accept the trust prompt. `--waits-for` counts a phase as finished only when the lead **merged** it (or the crew session was removed after that merge), so a dependent phase never branches before the merge. A phase whose crew session you removed before merging its work releases nothing: the watch says so once, and the dependent stays queued until you start and merge that phase again, or drop the wait (`crew rm` the queued crew session, then start its phase again). Each crew session's own settings turn Claude Code's retry watchdog on with no wait limit, so a turn waits out a model limit instead of ending; what still ends is marked `paused` and resumed by the lead's watch. **A crew session starts lean:** it loads this plugin and the project's own instructions, keeps Tavily for research (and the browser for a `ui` kind), and turns every other plugin and MCP server off for itself — so its context goes to the phase, not to the machine's other tools. A project whose phases need more names it in [`crew.keep`](#the-workflow). The launcher records the session's id and leaves the crew session `starting`: `claude agents` reports the folder a session was launched in until it has entered its worktree, so the session's own start hook decides — a session in any other folder is marked failed and stopped.
+
+#### `cc-smart-dev-kit crew watch`
+
+[--lead <session>] [--once] [--timeout <seconds>]` | The lead's window on its crew: **one line per change** — their steps, their reports, their questions, the person writing to one (read its next report against the brief), what they need from you (a permission prompt reads "needs you"), **a note another lead of this repository told you** (`LEAD <tag> <plan>: contract from another lead · …`), **a file clash** between a crew session of yours and another lead's phase (`clash: …`), **a pull request another lead merged into the base** (the line says what to merge, and when), a crew session that crashed or that you stopped by hand (it stops holding a place), a crew session that has gone quiet ([`crew.quietMinutes`](#the-workflow)), one whose turn ended with no report, one whose own start hook never confirmed it reached its worktree (after 3 minutes: the hook may have crashed, be silenced by `ownHooks`, or run outside git), one that **paused** at a model limit (it says what it waits for), and a queued crew session held by a phase that was removed before its work was merged (said once, with the way to drop the wait). It also starts the queued crew sessions when a place frees, **resumes the paused ones once the gateway answers again** — one first, the others 30 s apart and only after the router answered a request since, never while a slot's breaker is open or a Claude limit is current, and a crew session that pauses again within 15 minutes waits 5, then 10, then 20 minutes — ends the ones whose work is done (`claude stop`, so a crew session never outlives its work), and marks the ones whose branch you merged (in your own folder: a merge commit, a fast-forward or a squash merge, the same answer `crew rm` gives). Only sessions the kit's crew store records are ever stopped or resumed. `--once` ends on the next change: the fallback where the plugin's monitors do not run (the lead runs it in the background, and again after each event). `--timeout` bounds the wait.
 
 **Help on one command:** `cc-smart-dev-kit help <command>`, or `<command> --help` — for a
 subcommand too, as in `cc-smart-dev-kit gateway setup --help`. Either prints that command's own
@@ -889,6 +502,8 @@ it works when Claude Code was started with a PATH that has no bun. It starts bun
 gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun older than
 1.4.3 cannot start a hook at all: the shim stops first, and a guard asks instead (see
 [Install](#install)).
+
+## doctor
 
 `doctor` prints its checks in groups (the plugin, updates, companion plugins, MCP servers,
 the browser, alerts and limits, this project, the gateway, the live check), each as soon as it
@@ -1090,6 +705,8 @@ Claude Code made its own worktree, and that it removed it. When everything passe
 the Claude Code version in `~/.claude/cc-smart-dev-kit/live-check.json`. The temp folder is
 removed.
 
+## Backups and config folders
+
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/cc-smart-dev-kit/backups/` (a private folder, one subfolder per file), never beside
 the file. A backup is never executable.
@@ -1102,157 +719,21 @@ launcher another one still uses. A launcher started without `CLAUDE_CONFIG_DIR` 
 
 ## Moving from anymodel
 
-Until 0.3.0 the plugin, its marketplace, its command and its slots were named
-`anymodel` (the plugin id was `anymodel@anymodel`). A machine that ran 0.2.x still has
-that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
-`~/.local/share/anymodel`, `~/.local/state/anymodel`), its launcher
-(`~/.local/bin/anymodel`), its router units (`anymodel-router`), the slots in
-`gateway.json`, and the old names in `settings.json` and `~/.claude/CLAUDE.md`.
+Until 0.3.0 the plugin, its marketplace, its command and its slots were named `anymodel`,
+and a machine that ran 0.2.x still carries that version's folders, launcher, router units and
+slot names. **The [one command](#install) does the move**: it installs this version, runs
+`migrate` (which decides by itself what to move), then `setup`. How to move a machine by
+hand, what `migrate` moves, and the order it moves it in: **[docs/migrate.md](docs/migrate.md)**.
+`migrate` refuses inside a Claude Code session, because it replaces the router that session's
+own model traffic goes through.
 
-**The [one command](#install) does the move.** It adds the marketplaces, installs this
-version, runs `migrate` (which decides by itself what to move, and says "Nothing to move."
-on a machine without the old names), then runs `setup` — and asks about the old plugin if it
-is still installed. Run it in your own terminal: `migrate` refuses inside a Claude Code
-session, because it replaces the router that session's own model traffic goes through, and
-it says to restart your sessions afterwards.
-
-**Name the marketplace in the install line** either way. While the old `anymodel` marketplace
-is added, a bare `claude plugin install cc-smart-dev-kit` installs the copy that comes from
-`anymodel` (`cc-smart-dev-kit@anymodel`), and removing that marketplace later takes its copy
-with it: `cc-smart-dev-kit@cc-smart-dev-kit` is the one to install. The one command does that
-itself.
-
-By hand: the `cc-smart-dev-kit` command does not exist on your machine yet — the old launcher
-`~/.local/bin/anymodel` is the only one there — so run `migrate` from the plugin folder,
-exactly as step 3 of [Install](#install) runs `setup`. Put the installed version in place of
-`<version>`: the install prints no version, so read it with
-`ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
-
-```sh
-plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
-claude plugin marketplace add <owner>/cc-smart-dev-kit
-claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
-bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" migrate
-```
-
-Add the marketplace by its **new** name, as the first line does. Adding it makes a SECOND
-marketplace: it does **not** reuse the one already added from the same source. **Proved live**
-(Claude Code 2.1.301, 2026-10-16) on a machine that had the old marketplace added — the source
-`<owner>/anymodel` — where `claude plugin marketplace add <owner>/cc-smart-dev-kit` cloned the
-repo and added a marketplace named `cc-smart-dev-kit` (`✔ Successfully added marketplace:
-cc-smart-dev-kit (declared in user settings)`), and `claude plugin marketplace list` then
-showed both. So "a marketplace is already added" means a marketplace with that **name**, which
-is the key `known_marketplaces.json` uses — and the old `anymodel` marketplace stays added,
-with its plugins, until the end of the move: `migrate`'s last step uninstalls the old plugin
-and removes the old marketplace (it asks first), and the two commands near the end of this
-section are the by-hand way. Removing a marketplace also uninstalls the plugins installed from
-it (`docs/claude-code-contract.md` § Install and update), which is why the old one goes last.
-
-The new plugin shows `✘ failed to load` too, until its two companions' marketplaces are
-added: `claude plugin marketplace add thedotmack/claude-mem` and
-`claude plugin marketplace add anthropics/claude-plugins-official`. The install says so
-("will not load without them"), and the `cc-smart-dev-kit setup` at the end of the move adds
-both and installs the companions.
-
-Until the move, `claude plugin list` shows the old plugin as broken:
-
-```
-❯ anymodel@anymodel
-  Status: ✘ failed to load
-  Error: Plugin anymodel not found in marketplace anymodel
-```
-
-That is expected once 0.3.0 is on `main` **and the old marketplace's catalog has been
-refreshed**. The refreshed catalog declares `cc-smart-dev-kit`, so the old plugin's entry has
-nothing left to load; a refresh never renames the marketplace itself. Two ways it happens:
-`claude plugin marketplace update anymodel`, or an update the session runs by itself (the
-auto-update was not seen live from a 0.2.x clone, only a clone already on the new catalog).
-Until then, the old clone still lists `anymodel` and its plugin stays ✔ enabled. Either way
-it is only that entry: the router keeps running from its own copy
-(`~/.local/share/anymodel/router.js`), so model traffic is unaffected until `migrate`
-replaces it, and `migrate`'s last step removes the old plugin.
-
-After that one run the launcher `~/.local/bin/cc-smart-dev-kit` is in place, and every
-later command uses it (`cc-smart-dev-kit migrate` for a run that has to be repeated).
-
-Run it in your own terminal: it refuses inside a Claude Code session (it replaces the
-router that session's own model traffic goes through), and it says to restart your
-sessions afterwards.
-
-`migrate` moves every folder, rewrites the state folder's records and backups (so
-`restore` still undoes what the old setup added), gives the settings keys the old setup
-owned this version's value (the slots' names, and the words of their descriptions),
-rewrites the instructions block in `~/.claude/CLAUDE.md` to the new markers and import
-path and refreshes the copy (0.2.x shipped no instructions, so a 0.2.x machine has no
-block: there the move installs none), renames the gateway config's slots — and adds an
-`alias` for each old slot name, so Claude sessions that are still running keep working
-until they restart; an alias of a project's own that pointed at an old slot is pointed at
-the renamed one — replaces the `anymodel-router` units with this version's, and then
-tells you to uninstall the old plugin (it does it after a yes on a terminal, and only
-when it is still installed). Each changed file gets a backup first, and every step is
-printed.
-
-**Then run `cc-smart-dev-kit setup`.** One `migrate` run does not install the
-instructions: it only rewrites the block a machine already has. A 0.2.x machine has none,
-so it ends the move without them, and without the copy `setup` would have made. `setup`
-installs both, and refreshes the launcher and the companions with them. `migrate` says
-this in its closing lines when it applies to your machine.
-
-The order matters, and it is fixed: it reads and checks everything (the plugin install,
-the folders, the gateway config through its schema, the settings, the records), then
-**asks every question**, and writes nothing before they are answered — so a "no" to the
-router question, or a run with no terminal to ask on and no `--yes`, leaves the machine
-exactly as it was. It then prints the steps it will do and walks them in order: the
-folders, the state folder's records and backups, the gateway config, the limit state, the
-settings, the instructions, the launcher, the router, the old plugin. A step that fails
-says which one, keeps everything the steps before it did, and the next run goes on from
-there — each step is safe to repeat, and each finished step is recorded in
-`~/.claude/cc-smart-dev-kit/migrate-progress.json` while the move is unfinished.
-`--dry-run` prints that same plan, the same changes, and the question it would ask, and
-writes, runs and stops nothing. A second run after a finished one says "Nothing to move.".
-
-Two things it refuses, on purpose:
-
-- **It does not run inside a Claude Code session.** Run it in a terminal, then restart
-  your sessions.
-- **It stops before writing anything when a target folder is already there** — say, a
-  `~/.config/cc-smart-dev-kit` you already made. Move or remove one of them by hand, then
-  run it again; it never merges two folders by itself. The one exception is its own state
-  folder `~/.claude/cc-smart-dev-kit` when it holds nothing but what a Claude session's
-  start wrote there (its `sessions/` record, an update check, the update log): the move
-  goes into it. Anything else in it, and it says which folder holds what, and stops.
-
-Before it moves anything it also warns you about Claude sessions that started with the old
-plugin and are still running (their `sessions/` records, in the old state folder, name
-them): close them first, and start them again here — until then one of them may write the
-old folders again.
-
-The old plugin goes **last**, after `migrate` (`claude plugin uninstall
-anymodel@anymodel`, `claude plugin marketplace remove anymodel`): two copies of the same
-hooks would otherwise run, and removing a marketplace also deletes its plugins' saved data.
-That is why the order is add the new marketplace, install the new plugin, then `migrate`:
-`migrate`'s last step already uninstalls the old plugin when you say yes on a terminal, and
-the two `claude plugin` commands above are for a "no" (or no terminal). One more thing: a
-judge target's test proof does not carry
-over (the proof's own text changed with the name), so a judge needs its test
-again: `cc-smart-dev-kit gateway slot judge <targets>`. Without it the judge is simply
-not used, and `doctor` says so. `migrate` prints that line when the old config had a
-tested judge.
-
-## Projects that used the old name
+### Projects that used the old name
 
 `migrate` moves your **machine's** own files. A project keeps what 0.2.x wrote in its own
 `.claude/` folder, so run `cc-smart-dev-kit doctor` inside the project: it warns about each
-one, with the name it becomes.
-
-- **`.claude/anymodel.json`** — the old name of `.claude/cc-smart-dev-kit.json`, the file the
-  plugin reads now. Rename it (merge the two when both are there): with only the old file, the
-  project looks like one that never opted in, and every plugin hook stays silent in it.
-- **`.claude/anymodel/`** — the old name of `.claude/cc-smart-dev-kit/`, where a skill reads the
-  project's own add-ons (`review.md`, `plan-task.md`, …). Rename the folder.
-- **A hook in `.claude/settings.json`** that still calls `"$HOME/.local/bin/anymodel" hook
-  <name>` — that launcher went with 0.2.x. Change it to
-  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>` (`cc-smart-dev-kit hook` prints the lines).
+one, with the name it becomes. The three cases — `.claude/anymodel.json`,
+`.claude/anymodel/`, and a hook that still calls the old launcher — are in
+[docs/migrate.md](docs/migrate.md) § Projects that used the old name.
 
 ## The AI gateway (optional)
 
@@ -1379,7 +860,7 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   the registry has no time for, and a version npm marks deprecated, are never installed. A
   release that reaches a machine the hour it is published reaches it before anyone else has
   run it — and OmniRoute is the model path of every affordable slot here
-  ([docs/design.md](docs/design.md) § OmniRoute).
+  ([docs/design/omniroute.md](docs/design/omniroute.md) § OmniRoute).
 - **`--to <version>` follows the same rule.** It installs one release instead of the newest,
   and only when it is a plain `x.y.z` the registry lists and that is at least three days old.
   A version published this morning, a canary tag, a `https://…` tarball and a `github:…` spec
@@ -1656,7 +1137,7 @@ that no router answers here rather than naming a port. A config that is there bu
 named as such, with its own error.
 
 **Everything it does is real**, and every action runs the same function the command line
-runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What
+runs — the same checks, the same lock, the same words (`docs/design/portal.md` § The portal). What
 needs `sudo` is not run: the Machine page's Warp card shows `cc-smart-dev-kit setup --warp`
 and `--remove-warp` as commands to copy, and never runs them.
 Writing the auto-mode trust rules needs an explicit confirmation on the page, which stands in
@@ -1814,7 +1295,7 @@ none is pinned in their files). Each loads the `impact-analysis` skill at start,
 `skills:` field, and `rules-maintainer` also loads `self-evolve`. Each can use claude-mem's
 `smart_outline`, `smart_search` and `smart_unfold`, and Claude Code's `LSP` tool where a
 language server runs; without them, Grep and Read do the job (why each agent has the tools it
-has: `docs/design.md` § Instructions, skills and agents):
+has: `docs/design/instructions.md` § Instructions, skills and agents):
 
 | Agent | Job | Needs |
 |---|---|---|
@@ -3032,7 +2513,11 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 ## Docs
 
-- [Design](docs/design.md): how the parts fit, and why.
+- [Design](docs/design.md): how the parts fit, and why — an index to a page per part under
+  `docs/design/`.
+- [Changelog](CHANGELOG.md): what each release changed, newest first.
+- [Moving from anymodel](docs/migrate.md): the move for a machine that ran 0.2.x, and what a
+  project keeps from those names.
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
 - [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
