@@ -320,7 +320,16 @@ describe("the SessionStart hook and the background check, end to end", () => {
     const marker = join(m.home, "portal-starter.txt");
     writeFileSync(
       join(folder, "dist", "portal.js"),
-      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, process.argv.join(" "));\n`,
+      [
+        'const fs = require("node:fs");',
+        `const marker = ${JSON.stringify(marker)};`,
+        // A temp file beside the marker, then a rename: the marker exists only once its
+        // whole text is there, so the test never reads it half-written.
+        'const partial = marker + "." + process.pid + ".tmp";',
+        'fs.writeFileSync(partial, process.argv.join(" "));',
+        "fs.renameSync(partial, marker);",
+        "",
+      ].join("\n"),
     );
     const run = await m.hook();
     expect(run.stdout).toBe("");
