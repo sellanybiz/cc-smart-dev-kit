@@ -499,6 +499,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **Owner: Remote Control is not needed.** Claude Code turns it off while `ANTHROPIC_BASE_URL` points away from Anthropic, so it stays off while the gateway is on (as documented); 1.2.0 keeps its order (GP2, GP3, GP4, GP5), and GP3's `launch --no-gateway` check of Remote Control stays a check, not a priority.
 
+- 2026-10-23: **Follow-up for 1.1.1 — a session-escape guard false alarm.** A computed command (`$(...)`, a loop variable as a program) whose text holds the word `cc-smart-dev-kit` asks the person; in a repo named after the command, every absolute path holds that word, so harmless loops ask (the lead and C5b both hit it). Fix: read `cc-smart-dev-kit` as a program word (the command position, or a path whose last segment is the launcher), never as a substring of a folder path.
+
 ### For the owner in the morning
 
 1. **C1 first (it is not merged):** read `.claude/worktrees/crew-C1-core-trim/plugin/instructions/core.md` (128 lines) and its report's list of rules moved and **deleted** (`~/.claude/cc-smart-dev-kit/crew/<repo>/reports/C1-core-trim-*.json`). The deleted ones are yours: say which come back. Then, in a normal terminal, `cd <the repo>/.claude/worktrees/crew-C1-core-trim && bun run evals fast` (no `--save-baseline`): no case may score below today's baseline. Then the lead merges C1 and opens the PR. Read **Decided overnight** below too.
