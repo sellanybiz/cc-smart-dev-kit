@@ -271,8 +271,13 @@ function Invoke-PowerShellLine($World, [string]$Line) {
   }
   $previous = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
+  # The line goes as -EncodedCommand (base64 of its UTF-16 text), never as -Command: Windows
+  # PowerShell 5.1 passes a native argument with its inner double quotes stripped, so a line
+  # with `-replace "-.*$", ""` in it arrived broken. A person pastes it whole; this keeps it
+  # whole too.
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Line))
   try {
-    $out = (& $shell -NoProfile -ExecutionPolicy Bypass -Command $Line 2>&1 | ForEach-Object {
+    $out = (& $shell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | ForEach-Object {
       if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { [string]$_ }
     }) -join "`n"
   } finally {
