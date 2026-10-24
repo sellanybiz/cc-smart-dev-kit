@@ -44,7 +44,7 @@ import {
   recordStart,
 } from "./auto-state";
 import { type CleanLock, cleanFinished, holdCleanLock, type KeptWorktree } from "./clean";
-import { baseBranch } from "./command";
+import { baseBranch, crewOfWorktree, crewRecordsOf } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
 
 export interface AutoCleanDeps {
@@ -217,8 +217,17 @@ export async function runAutoClean(
       facts: { ...deps.facts, sessions: sessionsToKeep(deps, paths.claudeConfigDir) },
     };
     const scanned = scanWorktrees(main, judged);
+    // A crew session's worktree is its lead's to remove (`crew rm`, or the watch once merged):
+    // this clean would leave the record, the branch and the session behind (D62).
+    const crewRecords = crewRecordsOf(paths, main);
     // The lines the command prints are not kept: the report holds what a person needs.
-    const report = cleanFinished(main, scanned, judged, () => undefined);
+    const report = cleanFinished(
+      main,
+      scanned,
+      judged,
+      () => undefined,
+      (one) => crewOfWorktree(crewRecords, one.listed.path) !== null,
+    );
     recordRun(files, main, { base, kept: report.kept, now, removed: report.removed });
     log(
       summary(

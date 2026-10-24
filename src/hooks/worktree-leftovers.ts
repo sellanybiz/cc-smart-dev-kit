@@ -39,8 +39,10 @@
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
+import { listCrew } from "../crew/store";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
+import { isParkedWorktree } from "../worktrees/scan";
 import { isAttended } from "./attended";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -49,6 +51,7 @@ import {
   type ListedWorktree,
   listWorktrees,
   runGit,
+  samePath,
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
@@ -302,9 +305,21 @@ export function worktreeLeftovers(context: HookContext): HookResult {
     return answer(null);
   }
   const now = Date.now();
+  // The crew store's worktrees are their leads' to remove (`crew rm`, or the watch once the
+  // branch is merged): `--clean` keeps them, so naming one sends the person to a command that
+  // does nothing (D62). A store that cannot be read names none, and every other rule stands.
+  let crewWorktrees: string[] = [];
+  try {
+    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+  } catch {
+    crewWorktrees = [];
+  }
   const finished: ListedWorktree[] = [];
   const gone: ListedWorktree[] = [];
   for (const listed of linked) {
+    // A folder a removal moved aside is the clean's own to finish (`src/worktrees/scan.ts`).
+    if (isParkedWorktree(listed.path)) continue;
+    if (crewWorktrees.some((path) => samePath(path, listed.path))) continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished") finished.push(listed);
     if (verdict === "gone") gone.push(listed);

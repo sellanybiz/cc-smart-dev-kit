@@ -30,7 +30,9 @@
  *   line saying which was used.
  */
 import { basename, resolve } from "node:path";
+import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { type CrewRecord, listCrew } from "../crew/store";
 import { runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -78,10 +80,60 @@ export function baseBranch(
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 
-function describe(worktree: ScannedWorktree): string {
+/** The crew sessions of `repo`, for naming the worktrees the store knows; none when it cannot be read. */
+export function crewRecordsOf(paths: CliPaths, repo: string): CrewRecord[] {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    // The store's own reader names a broken record and goes on; a read that cannot happen at
+    // all leaves the worktrees judged as usual.
+    return [];
+  }
+}
+
+/** The crew session whose worktree is `path`, in any state and of any lead, or null. */
+export function crewOfWorktree(records: readonly CrewRecord[], path: string): null | CrewRecord {
+  return records.find((one) => samePath(one.worktree, path)) ?? null;
+}
+
+/**
+ * The step a crew session's worktree waits for, in its state's own words. A crew session's work
+ * goes to its **lead's** branch, and the lead merges it there: `worktrees --clean` judges against
+ * `origin/<base>` and is the wrong tool, so the line names `crew rm` or the watch (D62).
+ */
+export function crewWorktreeStep(record: CrewRecord): string {
+  switch (record.state) {
+    case "merged":
+      return `merged into its lead's branch — its lead removes it with \`${COMMAND} crew rm\`, or the watch does`;
+    case "done":
+      return `done, waiting for its lead's merge; then \`${COMMAND} crew rm\` or the watch removes it`;
+    case "handoff":
+      return `handed off; it goes once its continuation and the lead's merge are past`;
+    case "failed":
+      return `failed; its lead removes it with \`${COMMAND} crew rm\` once its work is merged`;
+    case "stopped":
+      return `stopped; its removal is its lead's call (\`${COMMAND} crew rm\`)`;
+    case "queued":
+      return "queued; it has not started";
+    case "removed":
+      return `removed already; a folder it left behind is finished by \`${COMMAND} worktrees --clean\``;
+    default:
+      return `still running (${record.state}); its lead's watch ends it, and removes it once merged`;
+  }
+}
+
+/** The line a crew session's worktree is named with: whose it is, and what happens to it. */
+export function crewWorktreeLine(record: CrewRecord): string {
+  return `crew session \`${record.name}\` (lead \`${record.leadName}\`), ${crewWorktreeStep(record)}`;
+}
+
+function describe(worktree: ScannedWorktree, crew: null | CrewRecord = null): string {
   const { state } = worktree;
   if (state === "main") return "the main checkout";
   if (state === "gone") return "GONE — its folder no longer exists";
+  // A crew session's worktree is never cleared by `--clean`: its record, branch and Claude
+  // session go with `crew rm`, which judges the branch the lead merged into (D62).
+  if (crew !== null) return `kept: ${crewWorktreeLine(crew)}`;
   return state.finished ? "FINISHED" : `kept: ${state.why}`;
 }
 
@@ -99,12 +151,16 @@ const CONSOLE_SINKS: WorktreesSinks = {
   print: (line) => console.log(line),
 };
 
-function show(scanned: ScannedWorktree[], print: (line: string) => void): void {
+function show(
+  scanned: ScannedWorktree[],
+  crewRecords: readonly CrewRecord[],
+  print: (line: string) => void,
+): void {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
     const name = basename(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
-    print(`  ${name} ${on} ${describe(worktree)}`);
+    print(`  ${name} ${on} ${describe(worktree, crewOfWorktree(crewRecords, path))}`);
   }
   print("");
 }
@@ -154,7 +210,7 @@ export interface WorktreesAnswer {
 }
 
 /** One scanned worktree in the answer's shape. */
-function worktreeItemOf(worktree: ScannedWorktree): WorktreeItem {
+function worktreeItemOf(worktree: ScannedWorktree, crew: null | CrewRecord = null): WorktreeItem {
   const { branch, head, path } = worktree.listed;
   // The main checkout is never one to clear, and a folder that is gone has no git files to
   // read: neither has an idle time.
@@ -169,6 +225,17 @@ function worktreeItemOf(worktree: ScannedWorktree): WorktreeItem {
       kind: "gone",
       path,
       why: "its folder no longer exists",
+    };
+  }
+  // A crew session's worktree is its lead's to remove, never `--clean`'s (D62).
+  if (crew !== null) {
+    return {
+      branch,
+      head,
+      idleMinutes: worktree.idleMinutes,
+      kind: "kept",
+      path,
+      why: crewWorktreeLine(crew),
     };
   }
   return worktree.state.finished
@@ -248,12 +315,15 @@ export function worktreesAnswerOf(
       });
       note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
     }
+    const crewRecords = crewRecordsOf(paths, repo);
     return {
       autoClean: autoCleanOf(paths, repo),
       base: chosen.base,
       from: chosen.from,
       note,
-      worktrees: scanned.map(worktreeItemOf),
+      worktrees: scanned.map((one) =>
+        worktreeItemOf(one, crewOfWorktree(crewRecords, one.listed.path)),
+      ),
     };
   } catch (error) {
     return none(error instanceof Error ? error.message : String(error));
@@ -308,6 +378,9 @@ export async function runWorktrees(
       print(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
     }
 
+    const crewRecords = crewRecordsOf(paths, repo);
+    const crewAt = (path: string): null | CrewRecord => crewOfWorktree(crewRecords, path);
+
     if (options.remove !== null) {
       const target = resolve(options.remove);
       // `--remove` is the session that has just finished in it, so the one-hour wait is out;
@@ -336,6 +409,14 @@ export async function runWorktrees(
         }
         return 0;
       }
+      // A crew session's worktree is its lead's to remove: `crew rm` takes the record, its
+      // branch and its Claude session with the folder, which this command does not (D62).
+      const crew = crewAt(found.listed.path);
+      if (crew !== null) {
+        error(`Kept ${found.listed.path}: ${crewWorktreeLine(crew)}.`);
+        error(`Fix: its lead removes it: ${COMMAND} crew rm "${crew.name}"`);
+        return 1;
+      }
       if (typeof found.state === "object" && found.state.finished) {
         print(`removing ${found.listed.path} …`);
         const removal = removeWorktree(repo, found.listed, judged);
@@ -351,20 +432,39 @@ export async function runWorktrees(
     const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
     const scanned = scanWorktrees(repo, judged);
     print(`Worktrees of ${repo}\n`);
-    show(scanned, print);
+    show(scanned, crewRecords, print);
 
-    const going = scanned.filter(canGo);
+    // A crew session's worktree is never cleared here: its lead removes it with `crew rm`, or
+    // the watch does once the branch is merged (D62). The summary says so, so a person is not
+    // sent to a command that does nothing for them.
+    const going = scanned.filter((one) => canGo(one) && crewAt(one.listed.path) === null);
+    const crewCount = scanned.filter(
+      (one) => one.state !== "main" && crewAt(one.listed.path) !== null,
+    ).length;
+    const crewLine =
+      crewCount === 0
+        ? null
+        : `${String(crewCount)} crew worktree${crewCount === 1 ? "" : "s"}: their leads remove them (\`${COMMAND} crew rm\`)`;
     if (!options.clean) {
-      print(
-        going.length === 0
-          ? "Nothing finished to clear."
-          : `${String(going.length)} can go. \`cc-smart-dev-kit worktrees --clean\` in the main checkout removes them.`,
-      );
+      if (going.length > 0) {
+        print(
+          `${String(going.length)} can go. \`${COMMAND} worktrees --clean\` in the main checkout removes them.`,
+        );
+      }
+      if (crewLine !== null) print(crewLine);
+      if (going.length === 0 && crewLine === null) print("Nothing finished to clear.");
       return 0;
     }
 
-    cleanFinished(repo, scanned, judged, (line) => print(line));
-    if (going.length === 0) print("Nothing finished to clear.");
+    cleanFinished(
+      repo,
+      scanned,
+      judged,
+      (line) => print(line),
+      (one) => crewAt(one.listed.path) !== null,
+    );
+    if (crewLine !== null) print(crewLine);
+    if (going.length === 0 && crewLine === null) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();

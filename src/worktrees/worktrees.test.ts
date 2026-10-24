@@ -6,9 +6,19 @@
  * nothing here reads the host.
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { createCrew, type NewCrew } from "../crew/store";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
@@ -98,6 +108,56 @@ echo '[{"number":7,"headRefOid":"${head}"}]'
 
 /** A machine-wide clean lock nobody else holds: the real port is never reached from a test. */
 const freeLock = async (): Promise<{ close(): void }> => ({ close: () => undefined });
+
+/** Makes git's own files of a worktree look an hour and a half old, as a finished one is. */
+function makeIdle(worktree: string): void {
+  const admin = resolve(
+    worktree,
+    readFileSync(join(worktree, ".git"), "utf8")
+      .trim()
+      .replace(/^gitdir:\s*/, ""),
+  );
+  const old = new Date(Date.now() - 90 * 60_000);
+  for (const file of ["index", "HEAD", join("logs", "HEAD")]) {
+    try {
+      utimesSync(join(admin, file), old, old);
+    } catch {
+      // Not every worktree has every file.
+    }
+  }
+}
+
+/** One crew record whose worktree is `worktree`, as the store writes one. */
+function crewAt(repo: string, worktree: string): NewCrew {
+  return {
+    base: null,
+    baseRef: "main",
+    branch: "fix/login",
+    effort: "high",
+    files: [],
+    id: "B7-tidy-1a2b3c",
+    kind: "build",
+    lastLine: null,
+    leadName: "LEAD app master-plan",
+    leadSessionId: "11111111-1111-4111-8111-111111111111",
+    memoryMb: null,
+    model: { named: "sonnet", resolved: "claude-sonnet-5-5", slot: null, tier: null },
+    name: "C app B7 tidy",
+    permissionMode: "auto",
+    phase: "B7",
+    plan: "master-plan",
+    pr: null,
+    questions: [],
+    reportPath: null,
+    repo,
+    sessionId: null,
+    shortId: null,
+    slug: "tidy",
+    state: "merged",
+    waitsFor: [],
+    worktree,
+  };
+}
 
 describe("the verdict on one worktree", () => {
   test("everything clean: finished", () => {
@@ -980,6 +1040,135 @@ describe("the worktrees command", () => {
     const answer = JSON.parse(out[0] ?? "") as { note: null | string; worktrees: unknown[] };
     expect(answer.note).toContain("cc-smart-dev-kit.json");
     expect(answer.worktrees).toEqual([]);
+  });
+
+  test("D62: a crew session's worktree is named as one, with its lead and who removes it", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    // Plain `worktrees`: the line names the session, its lead and the step; the summary says
+    // their leads remove them, in place of a bare "Nothing finished to clear".
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: false, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain(
+      "kept: crew session `C app B7 tidy` (lead `LEAD app master-plan`), merged into its lead's branch — its lead removes it with `cc-smart-dev-kit crew rm`, or the watch does",
+    );
+    expect(text).toContain("1 crew worktree: their leads remove them (`cc-smart-dev-kit crew rm`)");
+    expect(text).not.toContain("Nothing finished to clear");
+    expect(text).not.toContain("FINISHED");
+  });
+
+  test("D62: --clean leaves a crew session's worktree alone, though every commit is on the base", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(existsSync(worktree)).toBe(true);
+    expect(out.join("\n")).not.toContain(`removing ${worktree}`);
+    expect(out.join("\n")).toContain(
+      "1 crew worktree: their leads remove them (`cc-smart-dev-kit crew rm`)",
+    );
+    // `--remove <path>` is the same: a crew session's worktree is its lead's to remove.
+    out.length = 0;
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: false, json: false, noFetch: true, remove: worktree },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(1);
+    expect(existsSync(worktree)).toBe(true);
+    expect(out.join("\n")).toContain("crew session `C app B7 tidy` (lead `LEAD app master-plan`)");
+    expect(out.join("\n")).toContain(
+      'Fix: its lead removes it: cc-smart-dev-kit crew rm "C app B7 tidy"',
+    );
+  });
+
+  test("D62: a worktree the crew store does not know is judged as before", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    // A record for some other folder: this one has none.
+    await createCrew(paths.stateDir, crewAt(main, join(main, "elsewhere")), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(existsSync(worktree)).toBe(false);
+    expect(out.join("\n")).toContain(`removed ${worktree}`);
+  });
+
+  test("D62: --json names the crew session in the page's reason too", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          undefined,
+          freeLock,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    const answer = JSON.parse(out[0] ?? "") as WorktreesAnswer;
+    const item = answer.worktrees.find((one) => one.path === worktree);
+    expect(item?.kind).toBe("kept");
+    expect(item?.why).toContain("crew session `C app B7 tidy` (lead `LEAD app master-plan`)");
   });
 
   test("D62: a removal that stopped halfway is finished by --clean, with no record of it", async () => {
