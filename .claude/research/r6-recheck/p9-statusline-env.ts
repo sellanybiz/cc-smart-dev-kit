@@ -52,7 +52,13 @@ async function session(world: World, fakes: Fakes, name: string, from: "settings
       command: `cat > '${join(dump, "stdin.json")}'; env > '${envFile}'; echo r6-statusline`,
     },
   });
-  const args = ["--model", "haiku", "--strict-mcp-config"];
+  const args = [
+    "--model",
+    "haiku",
+    "--strict-mcp-config",
+    "--debug-file",
+    join(world.root, `debug-${name}.txt`),
+  ];
   if (from === "settings") {
     const flagFile = join(world.root, `flag-${name}.json`);
     placeSettings(fakes, flagFile, "S");

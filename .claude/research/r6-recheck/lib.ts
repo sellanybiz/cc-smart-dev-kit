@@ -564,7 +564,11 @@ export class Tmux {
       ...args,
     );
     await this.tmux("set-option", "-t", "main", "remain-on-exit", "on");
+    // `env` execs claude, so the pane's process is the session's.
+    this.pid = Number((await this.tmux("list-panes", "-t", "main", "-F", "#{pane_pid}")).trim());
   }
+
+  private pid = 0;
 
   keys(...keys: string[]): Promise<string> {
     return this.tmux("send-keys", "-t", "main", ...keys);
@@ -586,8 +590,17 @@ export class Tmux {
     return out.trim() === "0";
   }
 
+  /**
+   * End the server, and wait until the session's process is gone: a claude that is still
+   * exiting saves `.claude.json` from memory, which drops a trust record the next probe wrote
+   * meanwhile (seen: the next session then opened on the trust dialog). Then remove the socket
+   * file, which the server can leave behind.
+   */
   async kill(): Promise<void> {
     await this.tmux("kill-server");
+    if (this.pid > 0) await waitFor(() => !existsSync(`/proc/${this.pid}`), 15_000, 100);
+    const folder = join(process.env.TMUX_TMPDIR ?? "/tmp", `tmux-${process.getuid?.() ?? 0}`);
+    rmSync(join(folder, this.socket), { force: true });
   }
 }
 
