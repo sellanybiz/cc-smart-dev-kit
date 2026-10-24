@@ -38,7 +38,10 @@ already moved its briefs by hand (the lead, 2026-10-25): `.claude/plans/2026-10-
    merge conflicts between leads; pick the format, say why), written by the kit at each change the
    store already records, through the store's one writer (no second log):
    - at the start: the crew id, name, phase, slug, kind, model and effort, the base ref and its
-     commit, the branch, the brief's path and a hash of it, the lead's session id;
+     commit, the branch, the brief's path and a hash of it, and the lead: its session id and its
+     name (the owner: "also which was the lead session id"). A lead that hands over is a new lead
+     session: each later event names the lead that made it (who answered, who merged, who
+     removed);
    - every Claude Code session id it ran under (the start and each resume; a continuation is its
      own run, linked both ways);
    - the times: queued, started, each pause (its reason and length), each question (asked,
@@ -46,7 +49,12 @@ already moved its briefs by hand (the lead, 2026-10-25): `.claude/plans/2026-10-
      lead), removed;
    - derived: the wall time, the working time (without queued and paused time), and the context
      used at the end when the transcript gives it cheaply (`contextUseOf`, `src/crew/transcript.ts`);
-   - kept after `crew rm`: that is the point. Atomic writes; the store's lock where two writers
+   - **never deleted** (the owner, 2026-10-25: "those records are not going to be deleted;
+     instead they will be moved to an archived folder, just like plans"): `crew rm` and the
+     clean-up of finished work (D62) leave it; when the plan is archived, its whole folder
+     (briefs and runs) moves with the plan file to `<plans dir>/archive/<plan stem>/`, the same
+     move the plan-task skill makes for the plan, and `crew history --plan <stem>` still reads it
+     there. Atomic writes; the store's lock where two writers
      can meet (the watch and the CLI). A crew session never writes it (its worktree has no plan
      folder). A plan outside the repo gets its record there too.
    - The lead commits the folder with its plan; the kit never commits.
@@ -79,7 +87,9 @@ or run git in another worktree. Tests never touch the real `~/.claude`, `~/.conf
 
 1. Tests, each seen failing first: a start with no `--brief` (the plan's file taken, and said);
    no brief found (refused, with the path); the record at start, a resume (a second session id),
-   a pause, a report, a merge and `crew rm` (the record stays); a continuation (two runs, linked);
+   a pause, a report, a merge and `crew rm` (the record stays); a lead hand-over (the new lead
+   named on the later events); the plan archived (the folder moved, `crew history` still reads it);
+   a continuation (two runs, linked);
    two writers at once; the times (wall and working); `crew history`.
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
 3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
