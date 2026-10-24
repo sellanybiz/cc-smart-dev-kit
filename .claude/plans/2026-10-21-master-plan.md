@@ -371,8 +371,8 @@ Close (before 2026-10-25): integration review, 1.2.0, the release skill, the own
 Branch `release-1.2.1`, cut from `main` after 1.2.0's merge. Merged in first, in this order:
 `release-1.1.3` (CL1, CL1F), `crew/CL2-cleanup-rest-10` (`6cad48b`), `crew/CL2B-hook-boundary`
 (`2953b08`; the old lead's full check on its branch: 6,246 pass, 0 fail, though its report said
-red), EF2 (`784d67b`), WF1. Then the six phases below start at once from it, each on opus `xhigh`
-(the owner's word for every crew phase). The owner picked all twelve follow-ups (2026-10-25).
+red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR1 started early), each on opus `xhigh`
+(the owner's word for every crew phase). The owner picked all twelve follow-ups (2026-10-25); JW1 came later the same night.
 
 | Phase | Kind | What |
 |---|---|---|
@@ -382,6 +382,7 @@ red), EF2 (`784d67b`), WF1. Then the six phases below start at once from it, eac
 | WN1 the lead hears each thing once | build | "quiet" once per stretch; each clash pair once, a warning on a very broad `--files` glob; the after-merge note never names the merging lead. Brief `briefs/wn1.md`. |
 | LH1 load | build | `crew.loadPerCore`: a start waits while the 1-minute load is past it; the crew frame says "install your own dependencies"; three tests that fail only under load. Brief `briefs/lh1.md`. |
 | AR1 a finished crew session leaves `/resume` (the owner's ask; from `crew/CL2B-hook-boundary`, started at once) | build | On removal the conversation (its `.jsonl`, its subagent folder, the empty project folder) moves to `<state>/crew-archive/<repo>/<crew id>/`, compressed, beside the report; pruned after `crew.archiveDays` (7); unmerged work only on removal; leads never; a one-time sweep in `sessions --finished`; the transcript readers decide; a contract row, and the owner's `/resume` check. Brief `briefs/ar1.md`. |
+| JW1 `workflow set` keeps the project file's layout | build | `workflow set\|unset --project` rewrote `.claude/cc-smart-dev-kit.json` in a layout Biome refuses (a one-line array became three), so a project's `bun run check` fails; one edit that keeps untouched lines byte for byte, for every writer of that file and the personal one; a new dependency only with the owner's yes. Brief `briefs/jw1.md`. |
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
