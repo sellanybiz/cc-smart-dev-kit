@@ -8,9 +8,11 @@ merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
 **The owner's ask (2026-10-25):** the instructions must let Claude Code know whether the models
 behind the worker and scout slots are Claude models right now, so it picks the effort the task
 needs. In the owner's words: Claude models are not like Codex and other cheap models, so they
-do not always need `max` effort; they do well at `high` and `xhigh`, according to the task. So a
-Claude tier takes `medium`, `high` or `xhigh` by the task (`max` only when the person asks), and
-only an affordable backend runs at `max`.
+do not always need `max` effort; they do well at `high` and `xhigh`, according to the task. And:
+Claude Code can also pick `max` for the worker and scout tiers when the task wants it, with no
+restriction. So a Claude `haiku` or `sonnet` tier takes the effort its task needs, `medium` to
+`max`, Claude's own choice; an affordable backend always runs at `max`. The `opus` tier keeps the
+agent guard's rule (`max` asks the person), unchanged.
 
 **Today:** the general instructions say "an affordable gateway slot runs at `max`"
 (`plugin/instructions/core.md` ~73-74), and the subagent-decision skill calls `haiku` and
@@ -26,8 +28,8 @@ only for a backend-first chain). The guard knows the truth; the session does not
 1. **A note to Claude at every session start** (startup, resume, clear, compact): one short line
    per tier the Agent tool's `model` names (`haiku`, `sonnet`, `opus`, `fable`): what really runs
    for this session, and the effort rule that follows. For example:
-   `Subagent tiers now: haiku → Claude Haiku, sonnet → Claude Sonnet, opus → Claude Opus: pick the
-   effort the task needs (medium, high, xhigh). An affordable backend would say: sonnet →
+   `Subagent tiers now: haiku → Claude Haiku, sonnet → Claude Sonnet: pick the effort the task
+   needs, medium to max; opus → Claude Opus: medium to xhigh, max asks the person. An affordable backend would say: sonnet →
    <backend model> (runs at max).`
    - Read it the agent guard's way, never a second list: `resolveLaunchModel` and the guard's
      reading of a slot chain's first target, through the session's own gateway view
@@ -45,8 +47,10 @@ only for a backend-first chain). The guard knows the truth; the session does not
    timeout, `specs.ts`, the entry, `hooks.json`).
 4. **The words, in place:**
    - `plugin/instructions/core.md` line ~74: rewrite in place so it says the session-start note
-     names what each tier runs now; a Claude model takes the effort its task needs; an
-     affordable backend runs at `max`. **The file is at 130 lines, its warning line**
+     names what each tier runs now; a Claude `haiku` or `sonnet` takes the effort its task needs,
+     `max` included (the owner: no restriction); `opus` at `max` asks the person; an affordable
+     backend runs at `max`. The "`max` only when the person asks" words change with it, in
+     `core.md` and the subagent-decision skill (~104). **The file is at 130 lines, its warning line**
      (`bun run check:core-lines`): it must not grow.
    - `plugin/skills/subagent-decision/SKILL.md`: § Briefing an affordable model and the effort
      lines (~75-105) name an affordable tier by the note, never by "while the gateway is on".
