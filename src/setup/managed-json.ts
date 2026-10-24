@@ -27,6 +27,14 @@ const OWNED_FILE = "owned.json";
 export const TAKEN_SECRET_LEFT =
   "a taken-over key's value is never kept; its claim is dropped and the key stays";
 
+/**
+ * What a removal says about a taken-over value the file already holds: there is nothing to put
+ * back, and the claim goes. Same reason as `TAKEN_SECRET_LEFT`: one text for the reader of
+ * `skipped`.
+ */
+export const TAKEN_VALUE_HELD =
+  "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
+
 export type JsonObject = Record<string, unknown>;
 
 /**
@@ -574,6 +582,12 @@ function applyOnce(
     // release would; a secret's is never kept, so its key stays exactly as it is.
     const held = ownedHere.find((entry) => samePath(entry.path, path));
     if (held?.was !== undefined) {
+      // The file may already hold it (a claim, and the kit never replaced the value): nothing to
+      // write, so no change, no backup. The claim goes either way (`dropped` above).
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
       setKey(data, path, held.was);
       changes.push({ path, before: current.value, after: held.was });
       continue;

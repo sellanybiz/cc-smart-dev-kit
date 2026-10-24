@@ -12240,6 +12240,7 @@ import { existsSync as existsSync10, readFileSync as readFileSync14 } from "fs";
 import { join as join11 } from "path";
 var OWNED_FILE = "owned.json";
 var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
+var TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -12539,6 +12540,10 @@ function applyOnce(file, options, owned) {
       continue;
     const held = ownedHere.find((entry) => samePath(entry.path, path));
     if (held?.was !== undefined) {
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
       setKey(data, path, held.was);
       changes.push({ path, before: current.value, after: held.was });
       continue;

@@ -194,6 +194,29 @@ describe("restore: a value cc-smart-dev-kit took over (MS1)", () => {
   });
 });
 
+describe("restore: a taken-over value in a file the take-over's own pass does not read (F8)", () => {
+  test("F8: it is put back and named, not 'set to' a value, and the file is forgotten", async () => {
+    const { options, paths } = machine();
+    // `restoreTakenOver` puts back claude-mem's file alone, so a claim in any other file reaches
+    // the plain removal with its record still holding the value to put back.
+    const file = join(paths.home, "other.json");
+    writeFileSync(file, `${JSON.stringify({ a: "theirs", b: "keep" }, null, 2)}\n`);
+    applyManagedJson({ file, stateDir: paths.stateDir, claim: [[["a"], "theirs"]] });
+    applyManagedJson({ file, stateDir: paths.stateDir, set: [[["a"], "ours"]] });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ a: "theirs", b: "keep" });
+    expect(printed.join("\n")).toContain(
+      "~ ~/other.json: put back a (yours again); everything else kept",
+    );
+    expect(printed.join("\n")).not.toContain("set a to");
+    // Nothing of ours is left in it: the second run has nothing to say about it.
+    printed.length = 0;
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(printed.join("\n")).not.toContain("other.json");
+  });
+});
+
 describe("restore: claude-mem's choices from the portal (PM1)", () => {
   test("PM1: restore removes the record of the person's portal choices, and says so", async () => {
     const { options, paths } = machine();

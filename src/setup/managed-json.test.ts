@@ -803,6 +803,28 @@ describe("a key cc-smart-dev-kit takes over, and one it gives back", () => {
     expect(read(join(stateDir, "owned.json"))).toEqual({});
   });
 
+  test("removal: a taken-over value the file already holds is not written again", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({ file, stateDir, remove: [["a"]] });
+    // Nothing differs from what is on disk: no change, no write, no backup, no new file.
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(result.backup).toBeNull();
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(listBackups(stateDir, file)).toEqual([]);
+    expect(result.skipped).toEqual([
+      {
+        path: ["a"],
+        reason:
+          "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped",
+      },
+    ]);
+    // The claim still goes: nothing of ours is left in the key.
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
   test("removal: a taken-over secret is left as it is, and its claim goes", () => {
     const { file, stateDir } = setup({ key: "sk-planted-0001" });
     const secret = (path: KeyPath) => path.at(-1) === "key";

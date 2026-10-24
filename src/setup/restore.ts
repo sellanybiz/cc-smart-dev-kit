@@ -10,6 +10,7 @@ import {
   formatKeyPath,
   type KeyPath,
   ownedKeys,
+  samePath,
 } from "./managed-json";
 import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
@@ -40,6 +41,12 @@ export interface RestoreResult {
   savedAs?: string;
   /** Keys this restore **wrote again** instead of removing them (`RestoreOptions.writeInstead`). */
   written?: { path: string; value: unknown }[];
+  /**
+   * Keys that got the value they held before a take-over back (`applyManagedJson`'s `was`): the
+   * person's own value, not one of ours, so the file keeps nothing of ours and is forgotten. Key
+   * paths only — a value is never printed here, the caller knows which ones are secrets.
+   */
+  putBack?: string[];
 }
 
 export interface RestoreOptions {
@@ -113,6 +120,7 @@ function restorePartly(
 ): RestoreResult {
   const details: string[] = [];
   const written: { path: string; value: unknown }[] = [];
+  const putBack: string[] = [];
   let savedAs: string | null = null;
 
   if (entry.kinds.includes("json-keys")) {
@@ -128,10 +136,15 @@ function restorePartly(
         remove,
         createdObject: createdObjects(stateDir, file),
       });
-      // A key set again is not "taken out": it is named on its own (`written`).
+      // A key set again is not "taken out": it is named on its own (`written`). Only a key of the
+      // `writeInstead` list is one — a change with a value that is not on it is the person's
+      // own taken-over value coming back (`putBack`), which leaves nothing of ours in the file.
       for (const change of result.changes) {
-        if (change.after === undefined) details.push(formatKeyPath(change.path));
-        else written.push({ path: formatKeyPath(change.path), value: change.after });
+        const path = formatKeyPath(change.path);
+        if (change.after === undefined) details.push(path);
+        else if (write.some(([key]) => samePath(key, change.path)))
+          written.push({ path, value: change.after });
+        else putBack.push(path);
       }
       savedAs ??= result.backup;
     }
@@ -159,16 +172,15 @@ function restorePartly(
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0) {
-    return written.length === 0
-      ? { file, action: "unchanged", details }
-      : { file, action: "cleaned", details, written, ...(savedAs && { savedAs }) };
+  if (details.length === 0 && written.length === 0 && putBack.length === 0) {
+    return { file, action: "unchanged", details };
   }
   return {
     file,
     action: "cleaned",
     details,
     ...(written.length > 0 && { written }),
+    ...(putBack.length > 0 && { putBack }),
     ...(savedAs && { savedAs }),
   };
 }

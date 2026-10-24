@@ -57,6 +57,11 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
       // the line says what the file holds now, not only what it lost.
       const parts = [
         ...(result.written ?? []).map((one) => `set ${one.path} to ${shownValue(one.value)}`),
+        // A taken-over value back: the person's own, so it is named, never printed (it may be a
+        // key or an address with one in it; the take-over's own lines show it the way it should).
+        ...(result.putBack === undefined
+          ? []
+          : [`put back ${result.putBack.join(", ")} (yours again)`]),
         ...(result.details.length === 0 ? [] : [`removed ${result.details.join(", ")}`]),
       ];
       return `~ ${file}: ${parts.join(", ")}; everything else kept`;

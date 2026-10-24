@@ -738,6 +738,7 @@ function removeManagedFile(stateDir, file) {
 // src/setup/managed-json.ts
 var OWNED_FILE = "owned.json";
 var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
+var TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -1029,6 +1030,10 @@ function applyOnce(file, options, owned) {
       continue;
     const held = ownedHere.find((entry) => samePath(entry.path, path));
     if (held?.was !== undefined) {
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
       setKey(data, path, held.was);
       changes.push({ path, before: current.value, after: held.was });
       continue;
@@ -1962,6 +1967,7 @@ function isEmpty(file) {
 function restorePartly(file, entry, stateDir, options) {
   const details = [];
   const written = [];
+  const putBack = [];
   let savedAs = null;
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
@@ -1975,10 +1981,13 @@ function restorePartly(file, entry, stateDir, options) {
         createdObject: createdObjects(stateDir, file)
       });
       for (const change of result.changes) {
+        const path = formatKeyPath(change.path);
         if (change.after === undefined)
-          details.push(formatKeyPath(change.path));
+          details.push(path);
+        else if (write.some(([key]) => samePath(key, change.path)))
+          written.push({ path, value: change.after });
         else
-          written.push({ path: formatKeyPath(change.path), value: change.after });
+          putBack.push(path);
       }
       savedAs ??= result.backup;
     }
@@ -2004,14 +2013,15 @@ function restorePartly(file, entry, stateDir, options) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0) {
-    return written.length === 0 ? { file, action: "unchanged", details } : { file, action: "cleaned", details, written, ...savedAs && { savedAs } };
+  if (details.length === 0 && written.length === 0 && putBack.length === 0) {
+    return { file, action: "unchanged", details };
   }
   return {
     file,
     action: "cleaned",
     details,
     ...written.length > 0 && { written },
+    ...putBack.length > 0 && { putBack },
     ...savedAs && { savedAs }
   };
 }
