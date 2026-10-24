@@ -4,7 +4,7 @@ import { InfoIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useId, useState } from "react";
 import { proposeValueText, workflowValueText } from "@/api/adapt";
 import { useResource } from "@/api/hooks";
-import { PROJECT_REFRESH } from "@/api/refresh";
+import { WORKFLOW_CARD_REFRESH } from "@/api/refresh";
 import type { GhLoginState, ProjectListRow, ProjectWorkflowValue, SettingsRow } from "@/api/types";
 import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -202,7 +202,7 @@ function OtherValues({ values }: { values: ProjectWorkflowValue[] }) {
           <div key={one.key} className="contents">
             <dt className="wrap-any font-mono text-xs leading-6">{one.key}</dt>
             <dd className="flex min-w-0 flex-wrap items-center gap-2 pb-2 @xl/main:pb-0">
-              <span className="wrap-any">{workflowValueText(one.value)}</span>
+              <span className="wrap-any">{workflowValueText(one.value, one.unsetWords)}</span>
               <SourceBadge source={one.source} />
             </dd>
           </div>
@@ -222,7 +222,7 @@ export function WorkflowCard({ project }: { project: ProjectListRow }) {
   const workflow = useResource(
     (client) => client.projectWorkflow(project.id),
     project.id,
-    PROJECT_REFRESH,
+    WORKFLOW_CARD_REFRESH,
   );
   const base = workflow.status === "ready" ? workflow.data.base : null;
   // The row whose proposal runs now: one at a time across the card.

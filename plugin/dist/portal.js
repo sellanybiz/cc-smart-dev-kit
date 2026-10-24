@@ -14068,6 +14068,8 @@ var workflowDefaults = {
     tag: null
   }
 };
+var CREW_TAG_UNSET = "the main checkout's folder name";
+var CREW_MAX_OPUS_UNSET = "no machine-wide opus count";
 var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
 var POLICY_KEYS = [
   "autoCommit",
@@ -14187,6 +14189,15 @@ function parseWorkflowValue(key, text) {
   if (value === "true" || value === "false")
     return { ok: true, value: value === "true" };
   return { ok: false, why: `${key} is true or false` };
+}
+function showValue(key, value) {
+  if (key === "crew.tag" && value === null)
+    return `(${CREW_TAG_UNSET})`;
+  if (key === "crew.maxOpus" && value === null)
+    return `(${CREW_MAX_OPUS_UNSET})`;
+  if (Array.isArray(value))
+    return value.length === 0 ? "(nothing)" : value.join(", ");
+  return String(value);
 }
 
 // src/project/version-range.ts
@@ -39328,10 +39339,11 @@ async function projectWorkflowAnswerFor(deps, id) {
       base,
       gh,
       note: null,
-      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => ({
-        key,
-        ...resolvedValueOf(read.gate.resolved, key)
-      }))
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => {
+        const resolved = resolvedValueOf(read.gate.resolved, key);
+        const unsetWords = resolved.value === null ? showValue(key, null) : "null";
+        return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
+      })
     };
   } catch (error) {
     return {

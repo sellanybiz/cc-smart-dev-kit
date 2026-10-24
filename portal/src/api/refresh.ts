@@ -69,6 +69,19 @@ export const SETTINGS_REFRESH: RefreshOn = settingsChanged;
 export const PROJECT_REFRESH: RefreshOn = (message) =>
   settingsChanged(message) || message.name === "crew" || actionResult(message, "crew.");
 
+/**
+ * A project's Workflow card: the committed policy and `gh`, which a crew event never changes.
+ * Each read costs the server a few git children, so it follows only what can change it.
+ */
+export const WORKFLOW_CARD_REFRESH: RefreshOn = settingsChanged;
+
+/**
+ * A project's Gateway card: the project's settings files, and the machine's gateway it reads
+ * its profiles and states from (a slot or switch result). Not a crew event, for the same cost.
+ */
+export const GATEWAY_CARD_REFRESH: RefreshOn = (message) =>
+  settingsChanged(message) || actionResult(message, "slot.") || actionResult(message, "switch");
+
 export const GUARDS_REFRESH: RefreshOn = ["guard-ask"];
 
 /** Work and a crew page: a crew event, and a crew action's result. */
