@@ -22,8 +22,11 @@ import {
   gitRepo,
   makeWorld,
   messagesTo,
+  OTHER_ENV,
+  OTHER_KEY_ONLY,
   report,
   StreamSession,
+  settingsFor,
   startFakes,
   trust,
   urlSettings,
@@ -35,6 +38,7 @@ type Step =
   | { turn: string }
   | { write: string | null; atomic?: boolean; file?: "local" | "user" | "shared" }
   | { remove: "local" | "user" }
+  | { restart: true }
   | { wait: number };
 
 type SessionPlan = {
@@ -42,6 +46,8 @@ type SessionPlan = {
   local?: string;
   shared?: string;
   user?: string;
+  /** The local file's `env` holds `OTHER_ENV` beside the URL. */
+  localOther?: boolean;
   /** Run the session in a linked worktree whose own settings.local.json names this fake. */
   worktreeLocal?: string;
   steps: Step[];
@@ -66,7 +72,7 @@ const PLANS: SessionPlan[] = [
     steps: [{ turn: "t1" }, { write: "C" }, { wait: 500 }, { turn: "t2" }],
   },
   {
-    name: "local file: changed after 1 s; then the key removed (3 s, 5 s more), then the file removed",
+    name: "local file: changed after 1 s; then the key removed (3 s, 5 s more), then the file removed; then a new session in the same folder",
     local: "B",
     steps: [
       { turn: "t1" },
@@ -81,9 +87,10 @@ const PLANS: SessionPlan[] = [
       { remove: "local" },
       { wait: 3000 },
       { turn: "t5" },
+      { restart: true },
+      { turn: "t6" },
     ],
   },
-  { name: "a fresh session with the key gone", steps: [{ turn: "t1" }] },
   {
     name: "user file: changed after 1.5 s; then the key removed",
     user: "B",
@@ -129,6 +136,21 @@ const PLANS: SessionPlan[] = [
     ],
   },
   {
+    name: "local URL removed, another env key kept, while the user file names U",
+    local: "B",
+    localOther: true,
+    user: "U",
+    steps: [{ turn: "t1" }, { write: OTHER_KEY_ONLY }, { wait: 3000 }, { turn: "t2" }],
+  },
+  {
+    name: "in a linked worktree with its own local file (E): the main root's URL removed, another env key kept",
+    local: "B",
+    localOther: true,
+    user: "U",
+    worktreeLocal: "E",
+    steps: [{ turn: "t1" }, { write: OTHER_KEY_ONLY }, { wait: 3000 }, { turn: "t2" }],
+  },
+  {
     name: "in a linked worktree with its own local file (E): the main root's local key removed",
     local: "B",
     user: "U",
@@ -138,7 +160,7 @@ const PLANS: SessionPlan[] = [
 ];
 
 function place(fakes: Fakes, file: string, label: string | null, atomic: boolean): void {
-  const value = label === null ? {} : urlSettings(fakes.url(label));
+  const value = label === null ? {} : settingsFor(fakes, label);
   if (!atomic) {
     writeJson(file, value);
     return;
@@ -157,7 +179,11 @@ async function runPlan(world: World, fakes: Fakes, index: number, plan: SessionP
     user: join(world.configDir, "settings.json"),
   };
   rmSync(files.user, { force: true });
-  if (plan.local) writeJson(files.local, urlSettings(fakes.url(plan.local)));
+  if (plan.local) {
+    const local = urlSettings(fakes.url(plan.local)) as { env: Record<string, string> };
+    if (plan.localOther) Object.assign(local.env, OTHER_ENV);
+    writeJson(files.local, local);
+  }
   if (plan.shared) writeJson(files.shared, urlSettings(fakes.url(plan.shared)));
   if (plan.user) writeJson(files.user, urlSettings(fakes.url(plan.user)));
   let cwd = dir;
@@ -171,7 +197,7 @@ async function runPlan(world: World, fakes: Fakes, index: number, plan: SessionP
     );
   }
 
-  const session = new StreamSession();
+  let session = new StreamSession();
   session.start(cwd, baseEnv(world, fakes.url("D")));
   const events: string[] = [];
   let lastWrite = 0;
@@ -190,8 +216,13 @@ async function runPlan(world: World, fakes: Fakes, index: number, plan: SessionP
       place(fakes, files[step.file ?? "local"], step.write, step.atomic === true);
       lastWrite = Date.now();
       events.push(
-        `${step.file ?? "local"} ${step.write === null ? "key removed ({})" : `-> ${step.write}`}${step.atomic ? " (atomic)" : ""}`,
+        `${step.file ?? "local"} ${step.write === null ? "key removed ({})" : step.write === OTHER_KEY_ONLY ? "URL removed, R6_OTHER_KEY kept" : `-> ${step.write}`}${step.atomic ? " (atomic)" : ""}`,
       );
+    } else if ("restart" in step) {
+      await session.close();
+      session = new StreamSession();
+      session.start(cwd, baseEnv(world, fakes.url("D")));
+      events.push("a new session started in the same folder");
     } else if ("remove" in step) {
       rmSync(files[step.remove], { force: true });
       lastWrite = Date.now();

@@ -22,6 +22,7 @@ import {
   makeWorld,
   messagesTo,
   NO_KEY,
+  OTHER_KEY_ONLY,
   placeSettings,
   printArgs,
   report,
@@ -141,6 +142,18 @@ const CASES: Case[] = [
     name: "17 a folder outside any git repo, its own local",
     cwd: "plain",
     files: { plainLocal: "C" },
+    gp0: "(not run)",
+  },
+  {
+    name: "18 subfolder, its own local; the main root's local env holds another key only",
+    cwd: "sub",
+    files: { mainLocal: OTHER_KEY_ONLY, subLocal: "C" },
+    gp0: "(not run)",
+  },
+  {
+    name: "19 worktree, its own local; the main root's local env holds another key only",
+    cwd: "wt",
+    files: { mainLocal: OTHER_KEY_ONLY, wtLocal: "C" },
     gp0: "(not run)",
   },
 ];

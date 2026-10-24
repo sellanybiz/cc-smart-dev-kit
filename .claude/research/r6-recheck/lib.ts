@@ -626,15 +626,25 @@ export type CaseResult = {
 
 /** `placeSettings`'s label for a file that is there but sets no `env` key. */
 export const NO_KEY = "-";
+/** `placeSettings`'s label for a file whose `env` holds another key, not the URL. */
+export const OTHER_KEY_ONLY = "+";
+/** The other key: a name no program reads. */
+export const OTHER_ENV = { R6_OTHER_KEY: "1" };
+
+/** The settings a label stands for: a fake's URL, `{}`, or an `env` without the URL. */
+export function settingsFor(fakes: Fakes, label: string): unknown {
+  if (label === NO_KEY) return {};
+  if (label === OTHER_KEY_ONLY) return { env: OTHER_ENV };
+  return urlSettings(fakes.url(label));
+}
 
 /**
- * Place a settings file naming `label`'s fake; remove the file when `label` is undefined;
- * write `{}` (a file with no `env` key) for `NO_KEY`.
+ * Place a settings file for `label` (`settingsFor`); remove the file when `label` is
+ * undefined.
  */
 export function placeSettings(fakes: Fakes, file: string, label: string | undefined): void {
   if (label === undefined) rmSync(file, { force: true });
-  else if (label === NO_KEY) writeJson(file, {});
-  else writeJson(file, urlSettings(fakes.url(label)));
+  else writeJson(file, settingsFor(fakes, label));
 }
 
 /** One `claude -p` in `dir` (a git repo made when missing) with these sources in play. */
