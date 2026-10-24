@@ -21976,10 +21976,17 @@ function readWaitFacts(paths, nowMs) {
   };
 }
 function targetsNow(config) {
-  return Object.fromEntries(Object.entries(config.slots).map(([slot, chain]) => [
-    slot,
-    targetsInUse(chain, fallbackOn(config, slot))
-  ]));
+  const inUse = (view, profile) => Object.entries(view.slots).map(([slot, chain]) => [
+    stateKeyFor(slot, profile),
+    targetsInUse(chain, fallbackOn(view, slot))
+  ]);
+  return Object.fromEntries([
+    ...inUse(config, null),
+    ...profileNames(config).flatMap((name) => {
+      const view = profileView(config, name);
+      return view === null ? [] : inUse(view, name);
+    })
+  ]);
 }
 function healthNow(body, nowMs) {
   if (typeof body !== "object" || body === null)
@@ -22064,8 +22071,8 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
-function waitFor(record, facts, nowMs) {
-  const slot = record.model.slot;
+function waitFor(record, facts, nowMs, profile = null) {
+  const slot = record.model.slot === null ? null : stateKeyFor(record.model.slot, profile);
   const breaker = slot === null ? undefined : facts.breakers[slot];
   if (slot !== null && breaker !== undefined) {
     return { kind: "slot", since: iso2(breaker.since), slot };
@@ -22096,8 +22103,11 @@ function lastPauseOf(previous, nowMs) {
 function pauseText(waiting, error, nowMs, timeZone) {
   const goesOn = "goes on by itself when it answers";
   switch (waiting.kind) {
-    case "slot":
-      return `${slotShortName(waiting.slot)} slot limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    case "slot": {
+      const { profile, slot } = scopeOfStateKey(waiting.slot);
+      const where = profile === null ? "slot" : `slot in profile ${profile}`;
+      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    }
     case "claude-limit": {
       const reset = waiting.resetsAt === null ? "at its limit, no reset time named" : `at its limit, resets ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
       return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts`;
@@ -45470,10 +45480,10 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
-    return await stopFailureAnswer(input, id, repo, paths, options);
+    return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
-async function stopFailureAnswer(input, id, repo, paths, options) {
+async function stopFailureAnswer(input, id, repo, paths, env, options) {
   const error = stringField(input.error);
   if (!pausesCrew(error))
     return SILENT;
@@ -45484,7 +45494,8 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   if (!RUNNING_STATES.includes(record.state))
     return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
