@@ -627,7 +627,12 @@ switches `--fallback-model` (a 529 does after three).
    **never** an `anthropic-ratelimit-unified-*` header, and the message
    `cc-smart-dev-kit-router: every target of cc-smart-dev-kit-worker is limited or down since
    21:05 (omniroute:a: HTTP 429, until 21:07; …); change it: cc-smart-dev-kit gateway slot worker
-   <targets>`. The request line reads `→ breaker(cc-smart-dev-kit-worker) 429 240013ms held
+   <targets>`. For a request under a profile it reads `… in profile <name> is limited or
+   down …` and ends with the profile's command, `cc-smart-dev-kit gateway profile <name> slot
+   worker <targets>`; a profile that names no chain of its own for the slot uses the machine's,
+   so the message also names `gateway slot worker <targets>` and says it is the chain this
+   profile uses (`breakerChangeHint`; the reminder line, the alert and the status line say the
+   same). The request line reads `→ breaker(cc-smart-dev-kit-worker) 429 240013ms held
    probes=1` (`not-held` when the 65th or a hold of 0 answered at once).
 6. **Why 429, not 529.** A 429 is retried for every login type, never switches a
    `--fallback-model`, and is not dropped for Claude Code's own background calls (a 529 is).
@@ -980,7 +985,8 @@ fallback (`⚠ claude-opus-5-5 at its limit → <target> until 13:00`), a limit 
 fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose breaker is open
 (`worker slot: every target limited since 21:05 → gateway slot worker <targets>`, from
 `currentBreakers`, so only while the router keeps the record fresh; a profile's reads
-`worker slot in profile <name>: … → profiles.<name> in gateway.json`), and the plan usage
+`worker slot in profile <name>: … → gateway profile <name> slot worker <targets>`, the command
+that works whether the profile names the slot or uses the machine's chain), and the plan usage
 `5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on

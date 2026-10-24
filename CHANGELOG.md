@@ -16,7 +16,11 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   lists them all. A **profile** is a set of chains a project can use instead of the machine's
   (`gateway profile <name> slot …`). Projects you never set keep the machine's gateway. A profile
   needs this version's router: until `gateway setup` puts it in place, `--profile` (here and in
-  `launch`) is refused and `doctor` fails a project whose address names one.
+  `launch`) is refused and `doctor` fails a project whose address names one. When every target
+  of a profile's slot is limited, the router's message, its reminder, the alert and the status
+  line name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
+  `gateway slot …` too when the profile uses the machine's chain), not a hand edit of
+  `gateway.json`.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and

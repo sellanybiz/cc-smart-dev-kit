@@ -133,6 +133,7 @@ import {
   messageOf,
   plainClaudeView,
   profileNames,
+  profileNamesSlot,
   profileView,
   watchConfig,
   workerJudgeTargets,
@@ -2586,6 +2587,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     let targets = targets0;
     let outcome = first;
     let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
+    /**
+     * A profile that names no chain for this slot uses the machine's: the hint then names both
+     * commands (`breakerChangeHint`). Read from the machine's config at each use, like the rest
+     * of the hold, so a chain added meanwhile is named at once.
+     */
+    const inherited = (): boolean =>
+      profile !== null && !profileNamesSlot(deps.getConfig(), profile, slot);
     let counted: OpenBreaker | null = null;
     /** The router was told to stop (SIGTERM). */
     const stopping = (): boolean => deps.shutdown?.aborted === true;
@@ -2604,7 +2612,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS) return;
       open.reminderAt = nowMs;
       deps.log(
-        `WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`,
+        `WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile, inherited())}`,
       );
     };
     try {
@@ -2617,6 +2625,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         const reply = (nowMs: number, retryAfterSec?: number, message?: string): Response =>
           breakerAnswer({
             failures,
+            inherited: inherited(),
             nowMs,
             profile,
             sinceMs: open.since,

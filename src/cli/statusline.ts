@@ -20,8 +20,8 @@
  *   - a slot whose breaker is open (`worker slot: every target limited since 21:05 →
  *     gateway slot worker <targets>`, `currentBreakers`): every target is limited or down, so
  *     the router holds its requests and then asks Claude Code to retry; a profile's record
- *     reads `worker slot in profile <name>` and names its key in the config, never the
- *     `gateway slot` command, which would change the machine's chain;
+ *     reads `worker slot in profile <name>` and names `gateway profile <name> slot worker
+ *     <targets>`, never the `gateway slot` command, which would change the machine's chain;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
  * It reads two small files and prints; no network. **The warning share is a setting**
@@ -40,7 +40,7 @@
 import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { recordClaudeWindow } from "../crew/context-window";
-import { slotShortName } from "../gateway/breaker";
+import { breakerChangeCommand, slotShortName } from "../gateway/breaker";
 import {
   currentBreakers,
   currentFallbacks,
@@ -90,16 +90,13 @@ export function statuslineText(
     }
     for (const [key, record] of currentBreakers(state, nowMs)) {
       // A profile's record is keyed `<profile>/<slot>` (owner D29): its chain is not the
-      // `gateway slot` one, so the line says where it lives instead.
+      // `gateway slot` one, so the line names the profile's own command (one home with the
+      // router's answer and the alert: `breakerChangeCommand`).
       const { profile, slot } = scopeOfStateKey(key);
       const short = slotShortName(slot);
       const where = profile === null ? `${short} slot` : `${short} slot in profile ${profile}`;
-      const change =
-        profile === null
-          ? `gateway slot ${short} <targets>`
-          : `profiles.${profile} in gateway.json`;
       parts.push(
-        `${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → ${change}`,
+        `${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → ${breakerChangeCommand(slot, profile)}`,
       );
     }
   }

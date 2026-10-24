@@ -7,6 +7,8 @@ import { describe, expect, it } from "bun:test";
 import {
   BREAKER_MAX_HELD,
   breakerAnswer,
+  breakerChangeCommand,
+  breakerChangeHint,
   breakerMessage,
   breakerStatusLines,
   capRetryAfter,
@@ -56,6 +58,40 @@ describe("the retry-after Claude Code accepts", () => {
 
   it("at most 64 requests are held per slot", () => {
     expect(BREAKER_MAX_HELD).toBe(64);
+  });
+});
+
+describe("what the breaker tells a person to change (RV3: a command that exists, for the chain that fails)", () => {
+  it("the machine's chain: gateway slot", () => {
+    expect(breakerChangeHint("cc-smart-dev-kit-worker")).toBe(
+      "cc-smart-dev-kit gateway slot worker <targets>",
+    );
+    expect(breakerChangeCommand("cc-smart-dev-kit-worker", null)).toBe(
+      "gateway slot worker <targets>",
+    );
+  });
+
+  it("a profile's own chain: gateway profile <name> slot, never a hand edit of gateway.json", () => {
+    expect(breakerChangeHint("cc-smart-dev-kit-worker", "my-project")).toBe(
+      "cc-smart-dev-kit gateway profile my-project slot worker <targets>",
+    );
+    expect(breakerChangeCommand("cc-smart-dev-kit-worker", "my-project")).toBe(
+      "gateway profile my-project slot worker <targets>",
+    );
+  });
+
+  it("a profile with no chain of its own uses the machine's: both commands, each said what it changes", () => {
+    expect(breakerChangeHint("cc-smart-dev-kit-worker", "my-project", true)).toBe(
+      "cc-smart-dev-kit gateway profile my-project slot worker <targets> (a chain of its own for this profile), or cc-smart-dev-kit gateway slot worker <targets> (the machine's chain, which this profile uses)",
+    );
+  });
+
+  it("the answer's message carries it, for a profile that inherits the chain too", () => {
+    expect(
+      breakerMessage("cc-smart-dev-kit-worker", NOW, [], NOW, "my-project", true).endsWith(
+        "change it: cc-smart-dev-kit gateway profile my-project slot worker <targets> (a chain of its own for this profile), or cc-smart-dev-kit gateway slot worker <targets> (the machine's chain, which this profile uses)",
+      ),
+    ).toBe(true);
   });
 });
 

@@ -628,7 +628,7 @@ describe("the breaker's 429", () => {
       alert: {
         // A profile's chain is not the machine's: no `gateway slot` action is offered.
         action: null,
-        body: `cc-smart-dev-kit-worker in profile my-project: every target limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash HTTP 429 until 10:07; omniroute:ollama-cloud/deepseek-v4.1-flash HTTP 503 until 10:09). Change it: the chain of worker under profiles.my-project in gateway.json. Then send a message to go on.`,
+        body: `cc-smart-dev-kit-worker in profile my-project: every target limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash HTTP 429 until 10:07; omniroute:ollama-cloud/deepseek-v4.1-flash HTTP 503 until 10:09). Change it: cc-smart-dev-kit gateway profile my-project slot worker <targets>. Then send a message to go on.`,
         title: "Gateway slot limited",
       },
       mark: `my-project/${BREAKER_SLOT}`,

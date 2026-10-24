@@ -7020,7 +7020,7 @@ describe("profiles: the /p/<profile> path (D29)", () => {
     expect(held.headers.get("retry-after")).toBe("30");
     expect(held.headers.get("x-should-retry")).toBe("true");
     expect(((await held.json()) as { error: { message: string } }).error.message).toBe(
-      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: the chain of worker under profiles.down in gateway.json`,
+      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: cc-smart-dev-kit gateway profile down slot worker <targets>`,
     );
     expect(
       logs.some((line) => line.startsWith(`WARN down/${WORKER}: every target limited or down`)),
@@ -7048,5 +7048,32 @@ describe("profiles: the /p/<profile> path (D29)", () => {
     // And the record under the profile's key is still the only breaker.
     const after = JSON.parse(states.at(-1) ?? "") as { breakers?: Record<string, unknown> };
     expect(Object.keys(after.breakers ?? {})).toEqual([`down/${WORKER}`]);
+  });
+
+  it("a profile that names no chain for the slot is told both commands: the machine's chain is the one failing (RV3)", async () => {
+    const inheriting: GatewayConfig = {
+      ...config(),
+      profiles: { shared: { slots: { "cc-smart-dev-kit-scout": ["claude-haiku-5-5"] } } },
+      slots: {
+        ...config().slots,
+        [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      },
+      timeouts: { breakerHoldMs: 0, firstByteMs: 1000 },
+    };
+    const { handle } = router([down, down], { breaker: true, config: inheriting });
+    const held = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/shared/v1/messages?beta=true",
+      }),
+    );
+    expect(held.status).toBe(429);
+    const text = ((await held.json()) as { error: { message: string } }).error.message;
+    expect(text).toContain(`every target of ${WORKER} in profile shared is limited or down`);
+    expect(
+      text.endsWith(
+        "change it: cc-smart-dev-kit gateway profile shared slot worker <targets> (a chain of its own for this profile), or cc-smart-dev-kit gateway slot worker <targets> (the machine's chain, which this profile uses)",
+      ),
+    ).toBe(true);
   });
 });

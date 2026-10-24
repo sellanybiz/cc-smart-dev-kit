@@ -132,7 +132,7 @@ describe("statusline", () => {
       },
     };
     expect(statuslineText(input(null, null), profile, NOW, "UTC")).toBe(
-      "Opus 5.5 · worker slot in profile my-project: every target limited since 09:55 → profiles.my-project in gateway.json",
+      "Opus 5.5 · worker slot in profile my-project: every target limited since 09:55 → gateway profile my-project slot worker <targets>",
     );
     // A record the router stopped touching 15 minutes ago is stale: it goes with the breaker.
     const stale: LimitState = {
