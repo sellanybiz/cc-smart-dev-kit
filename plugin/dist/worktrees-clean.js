@@ -7970,6 +7970,18 @@ function judgeOne(repo, listed, all, look, idle) {
   const aheadOfBase = Number(ahead.out);
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
+  if (parked) {
+    if (look.mounts === "unknown") {
+      return {
+        finished: false,
+        held: false,
+        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it"
+      };
+    }
+    const mounted = look.mounts.find((path) => isInside(realPath(path), realPath(listed.path)));
+    if (mounted !== undefined)
+      return { finished: false, held: false, why: `a mount point lies inside it: ${mounted}` };
+  }
   const facts = {
     aheadOfBase,
     base: look.label,

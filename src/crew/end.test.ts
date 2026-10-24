@@ -21,6 +21,7 @@ import {
   listCrew,
   readCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
 } from "./store";
 
@@ -391,6 +392,45 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(world.err).toEqual([]);
     expect(existsSync(worktree)).toBe(false);
     expect(git(world.repo, "branch", "--list", branch)).toBe("");
+  });
+
+  test("a continuation is removed against the first base while the lead is on another branch", async () => {
+    const world = await boardWorld();
+    const original = await world.addCrew({ state: "handoff" });
+    commitWork(original.worktree);
+    const previousHead = git(original.worktree, "rev-parse", "HEAD").trim();
+    const next = await world.addCrew({ slug: "next", state: "done" });
+    git(next.worktree, "merge", "--ff-only", original.branch);
+    commitOtherWork(next.worktree);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      next.id,
+      {
+        base: { ref: original.branch, sha: previousHead },
+        baseRef: original.branch,
+        continues: original.id,
+      },
+      NOW,
+    );
+    const leadFolder = join(world.repo, ".claude", "worktrees", "lead-other");
+    git(world.repo, "worktree", "add", "-b", "lead-other", leadFolder, "HEAD");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: leadFolder,
+        name: original.leadName,
+        plan: original.plan,
+        repo: world.repo,
+        sessionId: original.leadSessionId,
+        tag: "my-app",
+      },
+      NOW,
+    );
+    leadMerges(world.repo, next.branch);
+    expect(await runCrew(["rm", next.id], world.ctx())).toBe(0);
+    expect(existsSync(next.worktree)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, next.id)?.state).toBe("removed");
   });
 
   test("a lead whose folder is gone: the ref the crew session was cut from stands in", async () => {
@@ -914,6 +954,34 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       }
     },
   );
+
+  test("local files keep the session's owned program alive", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    writeFileSync(join(record.worktree, ".env.local"), "LOCAL=1\n");
+    const child = await startProgram(record.worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [{ parentPid: 1, path: join(record.worktree, "check.sh"), pid: child.pid }],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(child.exitCode).toBeNull();
+      expect(world.err[0]).toContain("local files git does not keep");
+      expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
 
   test("a file git does not keep would be lost with the worktree, so it stays", async () => {
     const world = await boardWorld();

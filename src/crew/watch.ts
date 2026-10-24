@@ -681,14 +681,28 @@ export async function watchPass(
       // merged all the same — what waits for its phase starts on the merge — and left for
       // `crew rm`. The store keeps the fact (`mergedWhileStopped`), so a later pass sees it too.
       if (wasStopped || record.mergedWhileStopped === true) continue;
-      // A queued or starting continuation is cut from this branch when it starts: keep the branch
-      // until then, and say so once.
+      // Keep the chain's records until every later continuation's work is on its first base.
+      // The records are also the proof of that base for later removals.
+      const descendants = new Set([record.id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const one of allRecords) {
+          if (one.continues != null && descendants.has(one.continues) && !descendants.has(one.id)) {
+            descendants.add(one.id);
+            grew = true;
+          }
+        }
+      }
       const continuations = allRecords.filter(
         (one) =>
-          one.continues === record.id && (one.state === "queued" || one.state === "starting"),
+          one.id !== record.id &&
+          descendants.has(one.id) &&
+          !(one.state === "merged" || (one.state === "removed" && one.mergedBeforeRemoval)) &&
+          !branchMerged(one, ctx),
       );
       if (continuations.length > 0) {
-        const line = `${record.name}: merged — waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to start`;
+        const line = `${record.name}: merged — waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to merge`;
         if (said[stopKey] !== line) {
           say(line);
           said[stopKey] = line;
@@ -725,6 +739,16 @@ export async function watchPass(
         captured.push(`crew rm: ${reasonOf(error)}`);
         code = 1;
       }
+      if (code !== 0) {
+        refusal =
+          captured.find((line) => line.startsWith("crew rm:")) ??
+          captured.at(-1) ??
+          "the removal refused";
+        if (said[stopKey] !== refusal) {
+          say(refusal);
+          said[stopKey] = refusal;
+        }
+      }
       for (const line of captured.filter(
         (one) =>
           one.startsWith("Fix:") || one.startsWith("note:") || one.startsWith("  the worktree"),
@@ -734,12 +758,6 @@ export async function watchPass(
           say(line);
           said[key] = line;
         }
-      }
-      if (code !== 0 && refusal === null) {
-        refusal =
-          captured.find((line) => line.startsWith("crew rm:")) ??
-          captured.at(-1) ??
-          "the removal refused";
       }
       // A removal that stopped the programs a finished turn left running says so once (D62):
       // the lead needs to know, and the rest of the removal's own lines stay captured.

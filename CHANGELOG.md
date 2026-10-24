@@ -54,8 +54,8 @@ you open it.
 - **Finished crew work cleans itself up (D62).** A project with seven leads held 39 crew
   worktrees, 13 working and the rest finished work nobody had removed (7 merged, 11 handed off,
   6 stopped), plus 2 folders a removal left half done. The lead's watch now removes a merged crew
-  session with `crew rm`'s own steps and says a refusal once; it waits while a queued
-  continuation still needs the branch, and never removes a `stopped` one (that stays your call,
+  session with `crew rm`'s own steps and says a refusal once; it waits until every later
+  continuation's work is merged into the first record's base, and never removes a `stopped` one (that stays your call,
   though it is still marked merged, so a phase that waits for it starts).
   The merge is judged against the branch the session was cut from, not the lead's current one.
   The programs a finished session's own turn left running (its background `bun run check` and

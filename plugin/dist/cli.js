@@ -32356,6 +32356,18 @@ function judgeOne(repo, listed, all, look, idle) {
   const aheadOfBase = Number(ahead.out);
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
+  if (parked) {
+    if (look.mounts === "unknown") {
+      return {
+        finished: false,
+        held: false,
+        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it"
+      };
+    }
+    const mounted = look.mounts.find((path) => isInside(realPath(path), realPath(listed.path)));
+    if (mounted !== undefined)
+      return { finished: false, held: false, why: `a mount point lies inside it: ${mounted}` };
+  }
   const facts = {
     aheadOfBase,
     base: look.label,
@@ -34478,7 +34490,7 @@ async function runCrewRm(ref, ctx, options = {}) {
   const finished = options.skipParked ? { kept: [], removed: [] } : await finishParkedWorktrees(repo, ctx, { label: lead.label, ref: lead.sha }, (line) => ctx.print(line), facts);
   const stuck = finished.kept.find((one) => {
     const original = parkedOriginal(one.path);
-    return original !== null && samePath3(original, record.worktree);
+    return samePath3(one.path, repo) || original !== null && samePath3(original, record.worktree);
   });
   if (stuck !== undefined) {
     return refuseKept(failure2(`crew rm: ${relative4(repo, stuck.path)} is kept: ${stuck.why}`, "Fix: clear that, then run crew rm again; it never forces"));
@@ -36052,9 +36064,20 @@ async function watchPass(state, ctx, scope) {
       }
       if (wasStopped || record.mergedWhileStopped === true)
         continue;
-      const continuations = allRecords.filter((one) => one.continues === record.id && (one.state === "queued" || one.state === "starting"));
+      const descendants = new Set([record.id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const one of allRecords) {
+          if (one.continues != null && descendants.has(one.continues) && !descendants.has(one.id)) {
+            descendants.add(one.id);
+            grew = true;
+          }
+        }
+      }
+      const continuations = allRecords.filter((one) => one.id !== record.id && descendants.has(one.id) && !(one.state === "merged" || one.state === "removed" && one.mergedBeforeRemoval) && !branchMerged(one, ctx));
       if (continuations.length > 0) {
-        const line = `${record.name}: merged \u2014 waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to start`;
+        const line = `${record.name}: merged \u2014 waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to merge`;
         if (said[stopKey] !== line) {
           say(line);
           said[stopKey] = line;
@@ -36085,15 +36108,19 @@ async function watchPass(state, ctx, scope) {
         captured.push(`crew rm: ${reasonOf3(error)}`);
         code = 1;
       }
+      if (code !== 0) {
+        refusal = captured.find((line) => line.startsWith("crew rm:")) ?? captured.at(-1) ?? "the removal refused";
+        if (said[stopKey] !== refusal) {
+          say(refusal);
+          said[stopKey] = refusal;
+        }
+      }
       for (const line of captured.filter((one) => one.startsWith("Fix:") || one.startsWith("note:") || one.startsWith("  the worktree"))) {
         const key = `${record.id}:detail:${line}`;
         if (said[key] !== line) {
           say(line);
           said[key] = line;
         }
-      }
-      if (code !== 0 && refusal === null) {
-        refusal = captured.find((line) => line.startsWith("crew rm:")) ?? captured.at(-1) ?? "the removal refused";
       }
       const stopped = captured.find((line) => line.includes(LEFTOVER_STOP_MARK));
       if (code === 0 && stopped !== undefined && said[stopKey] !== stopped) {

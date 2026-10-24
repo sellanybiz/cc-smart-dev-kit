@@ -995,7 +995,7 @@ describe("crew watch", () => {
     expect(world.out).toEqual([]);
   });
 
-  test("D35: a merged one with a queued continuation is kept until that continuation starts", async () => {
+  test("D35: a merged one with a queued continuation is kept until that continuation merges", async () => {
     const world = await leadWorld();
     const original = await addCrew(world, "done");
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
@@ -1017,7 +1017,7 @@ describe("crew watch", () => {
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toContain(
-      "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to start",
+      "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to merge",
     );
     const [kept] = listCrew(world.paths.stateDir, world.repo).records;
     expect(kept?.state).toBe("merged");
@@ -1026,7 +1026,7 @@ describe("crew watch", () => {
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).not.toContain("waiting for its continuation");
-    // The continuation starts: the branch was cut from it, so the original goes.
+    // Starting is not enough: the original stays until the continuation merges.
     await updateCrew(
       world.paths.stateDir,
       world.repo,
@@ -1037,9 +1037,42 @@ describe("crew watch", () => {
     );
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    const [gone] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(gone?.state).toBe("removed");
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      continuation.id,
+      { state: "merged" },
+      T0 + 2000,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("a handed-off ancestor stays while its continuation has unmerged work", async () => {
+    const world = await leadWorld();
+    const original = await addCrew(world, "handoff");
+    const worktree = original.worktree;
+    git(world.repo, "worktree", "add", "-q", "-b", original.branch, worktree);
+    writeFileSync(join(worktree, "part-one.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "part one");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", original.branch);
+    await addCrew(world, "working", {
+      branch: "crew/next",
+      continues: original.id,
+      id: "next-1a2b3c",
+      name: "C my-app B6b next",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-next"),
+    });
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b next to merge",
+    );
   });
 
   test("D62: a handoff is removed once its continuation's work is merged", async () => {

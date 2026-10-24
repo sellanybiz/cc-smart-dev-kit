@@ -572,8 +572,8 @@ the store records — a session the kit does not know is the person's own:
   A stop that fails is said once, not on every pass;
 - it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
   and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy). A
-  queued or starting continuation of it holds the removal back until it starts (it is cut from the
-  branch then), and the line says so once; a refusal — a program runs from its worktree, or work
+  continuation holds the removal back until its work and every later continuation's work are
+  merged into the first record's base. The line says so once; a refusal — a program runs from its worktree, or work
   nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged
   too, because what waits for its phase starts on the merge, but **never removed by the watch**:
   stopping it was the lead's call, and so is its removal (the store keeps the fact from the state

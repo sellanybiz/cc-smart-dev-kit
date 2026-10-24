@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import * as machineFacts from "./machine-facts";
 import { isParkedWorktree, parkedOriginal } from "./scan";
-import { finishStrays, strayKeptWhy, strayParkedFolders } from "./scan-parked";
+import { finishParked, finishStrays, strayKeptWhy, strayParkedFolders } from "./scan-parked";
 
 const ROOT = "/work/app/.claude/worktrees";
 const QUIET = { containers: [], programs: [], sessions: [], mounts: [] };
@@ -39,6 +39,32 @@ describe("leftover folder marks", () => {
 });
 
 describe("mount points", () => {
+  test("a registered parked worktree with a bind mount stays", () => {
+    const repo = tempDir("registered-mount");
+    git(repo, "init", "-b", "main");
+    writeFileSync(join(repo, "file.txt"), "x\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "initial");
+    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const pass = finishParked(
+      repo,
+      [parked],
+      {
+        against: { label: "main", ref: "main" },
+        base: "main",
+        claudeConfigDir: tempDir("config"),
+        env: cleanGitEnv(),
+        facts: { ...QUIET, mounts: [join(parked, "bound")] },
+        idleLimit: 0,
+      },
+      () => {},
+    );
+    expect(existsSync(parked)).toBe(true);
+    expect(pass.kept).toEqual([
+      { path: parked, why: `a mount point lies inside it: ${join(parked, "bound")}` },
+    ]);
+  });
   test("parses and decodes mountinfo paths", () => {
     const text = [
       "1 0 8:1 / / rw - ext4 /dev/sda1 rw",

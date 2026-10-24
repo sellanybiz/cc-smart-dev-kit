@@ -246,7 +246,7 @@ export async function runCrewRm(
       );
   const stuck = finished.kept.find((one) => {
     const original = parkedOriginal(one.path);
-    return original !== null && samePath(original, record.worktree);
+    return samePath(one.path, repo) || (original !== null && samePath(original, record.worktree));
   });
   if (stuck !== undefined) {
     return refuseKept(

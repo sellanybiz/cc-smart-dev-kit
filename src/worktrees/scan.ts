@@ -403,6 +403,7 @@ export function workOnRef(
 
 /** What one look at this machine gives every worktree of the scan. */
 interface MachineLook {
+  mounts: "unknown" | string[];
   containers: "unknown" | ContainerMounts[];
   env: Env;
   idleLimit: number | undefined;
@@ -444,6 +445,18 @@ function judgeOne(
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
+  if (parked) {
+    if (look.mounts === "unknown") {
+      return {
+        finished: false,
+        held: false,
+        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it",
+      };
+    }
+    const mounted = look.mounts.find((path) => isInside(realPath(path), realPath(listed.path)));
+    if (mounted !== undefined)
+      return { finished: false, held: false, why: `a mount point lies inside it: ${mounted}` };
+  }
   const facts: WorktreeFacts = {
     aheadOfBase,
     base: look.label,
