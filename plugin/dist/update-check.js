@@ -737,6 +737,7 @@ function removeManagedFile(stateDir, file) {
 
 // src/setup/managed-json.ts
 var OWNED_FILE = "owned.json";
+var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -786,6 +787,8 @@ function toRecord(entry, file) {
       record.sha256 = entry.sha256;
     if (Object.hasOwn(entry, "was"))
       record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
     if (entry.taken === true)
       record.taken = true;
     return record;
@@ -929,6 +932,7 @@ function applyOnce(file, options, owned) {
     return {
       ...recordOf(path, value, isSecret(path)),
       ...held?.was !== undefined && { was: held.was },
+      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
       ...held?.taken === true && { taken: true }
     };
   };
@@ -971,7 +975,9 @@ function applyOnce(file, options, owned) {
     }
     const record = recordFor(path, value);
     record.taken = true;
-    if (!isSecret(path))
+    if (isSecret(path))
+      record.wasSha256 = hashOf(value);
+    else
       record.was = value;
     updated.push(record);
   }
@@ -980,6 +986,16 @@ function applyOnce(file, options, owned) {
     if (ownership(ownedHere, path, current) !== "ours") {
       dropped.push(path);
       skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    if (value === undefined) {
+      const held = ownedHere.find((entry) => samePath(entry.path, path));
+      if (held?.taken === true) {
+        dropped.push(path);
+        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+        continue;
+      }
+      skipped.push({ path, reason: "no value to write back; left as it is" });
       continue;
     }
     dropped.push(path);
@@ -1011,6 +1027,16 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    if (held?.was !== undefined) {
+      setKey(data, path, held.was);
+      changes.push({ path, before: current.value, after: held.was });
+      continue;
+    }
+    if (held?.wasSha256 !== undefined) {
+      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+      continue;
+    }
     const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
     for (const parentPath of emptied) {
@@ -1033,7 +1059,15 @@ function applyOnce(file, options, owned) {
   if (changedPaths.length > 0) {
     const pending = [
       ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
-      ...changedPaths.map((change) => ({ path: [...change.path] }))
+      ...changedPaths.map((change) => {
+        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
+        return {
+          path: [...change.path],
+          ...held?.was !== undefined && { was: held.was },
+          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+          ...held?.taken === true && { taken: true }
+        };
+      })
     ];
     writeOwned(options.stateDir, nextState(pending));
   }

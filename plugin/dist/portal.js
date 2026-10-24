@@ -12024,6 +12024,7 @@ import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync10, readFileSync as readFileSync14 } from "fs";
 import { join as join11 } from "path";
 var OWNED_FILE = "owned.json";
+var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -12073,6 +12074,8 @@ function toRecord(entry, file) {
       record.sha256 = entry.sha256;
     if (Object.hasOwn(entry, "was"))
       record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
     if (entry.taken === true)
       record.taken = true;
     return record;
@@ -12224,6 +12227,7 @@ function applyOnce(file, options, owned) {
     return {
       ...recordOf(path, value, isSecret(path)),
       ...held?.was !== undefined && { was: held.was },
+      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
       ...held?.taken === true && { taken: true }
     };
   };
@@ -12266,7 +12270,9 @@ function applyOnce(file, options, owned) {
     }
     const record = recordFor(path, value);
     record.taken = true;
-    if (!isSecret(path))
+    if (isSecret(path))
+      record.wasSha256 = hashOf(value);
+    else
       record.was = value;
     updated.push(record);
   }
@@ -12275,6 +12281,16 @@ function applyOnce(file, options, owned) {
     if (ownership(ownedHere, path, current) !== "ours") {
       dropped.push(path);
       skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    if (value === undefined) {
+      const held = ownedHere.find((entry) => samePath(entry.path, path));
+      if (held?.taken === true) {
+        dropped.push(path);
+        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+        continue;
+      }
+      skipped.push({ path, reason: "no value to write back; left as it is" });
       continue;
     }
     dropped.push(path);
@@ -12306,6 +12322,16 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    if (held?.was !== undefined) {
+      setKey(data, path, held.was);
+      changes.push({ path, before: current.value, after: held.was });
+      continue;
+    }
+    if (held?.wasSha256 !== undefined) {
+      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+      continue;
+    }
     const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
     for (const parentPath of emptied) {
@@ -12328,7 +12354,15 @@ function applyOnce(file, options, owned) {
   if (changedPaths.length > 0) {
     const pending = [
       ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
-      ...changedPaths.map((change) => ({ path: [...change.path] }))
+      ...changedPaths.map((change) => {
+        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
+        return {
+          path: [...change.path],
+          ...held?.was !== undefined && { was: held.was },
+          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+          ...held?.taken === true && { taken: true }
+        };
+      })
     ];
     writeOwned(options.stateDir, nextState(pending));
   }
@@ -35322,18 +35356,23 @@ function readClaudeMemFacts(paths) {
     version
   };
 }
-function keyFor(read, keyName, gatewayKey, gatewayKeys) {
+function keyFor(read, keyName, gatewayKey, gatewayKeys, backendBaseUrl) {
   const current = textOf(read, keyName);
   const source = sourceOf2(read, keyName);
   const taken = read.records.some((record) => record.taken === true && samePath(record.path, read.at(keyName)));
   if (current !== "" && !gatewayKeys.includes(current) && (taken || source === "portal" || source === "hand")) {
-    return { key: current, set: false };
+    if (!taken || textOf(read, pairedAddress(keyName)) === compatBaseUrl(backendBaseUrl)) {
+      return { key: current, set: false };
+    }
   }
   return { key: gatewayKey, set: true };
 }
+function pairedAddress(keyName) {
+  return keyName === OPENROUTER_API_KEY ? OPENROUTER_BASE_URL : BASE_URL;
+}
 function compatKeys(read, backend, model) {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
   return {
     set: [
       [PRESET, CUSTOM_PRESET],
@@ -35346,7 +35385,7 @@ function compatKeys(read, backend, model) {
 }
 function openRouterKeys(read, backend, model) {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
   return {
     set: [
       [OPENROUTER_BASE_URL, baseUrl],
@@ -35464,7 +35503,11 @@ async function chooseRoute(paths, choice, check = checkAffordableTarget) {
   if ("blocked" in ready)
     return { lines: [ready.blocked.text], ok: false };
   if (choice.kind === "claude") {
-    return save(paths, ready.read, [[PROVIDER, CLAUDE_PROVIDER]], routeLine("Claude, on your own Claude login"));
+    const result = await save(paths, ready.read, [[PROVIDER, CLAUDE_PROVIDER]], routeLine("Claude, on your own Claude login"));
+    if (result.ok && fallbackProvider(ready.read, ready.version) === CLAUDE_PROVIDER) {
+      result.lines.push("! claude-mem's fallback is Claude, the same as the route now, so claude-mem ignores it: choose the fallback again, or off.");
+    }
+    return result;
   }
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found)
@@ -35618,7 +35661,7 @@ async function takeOver(paths) {
   if (claims.length === 0) {
     return {
       lines: [
-        `Nothing to take over: every value claude-mem holds in ${read.short} is cc-smart-dev-kit's own, or claude-mem's own default.`
+        `Nothing to take over: every value claude-mem holds in ${read.short} is ${COMMAND}'s own, or claude-mem's own default.`
       ],
       ok: true
     };
@@ -35645,9 +35688,10 @@ async function takeOver(paths) {
     const short = tildify(paths.claudeMemSettingsFile, paths.home);
     return {
       lines: [
-        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as cc-smart-dev-kit's: each stays exactly as it is until you pick another.`,
+        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as ${COMMAND}'s: each stays exactly as it is until you pick another.`,
         ...taken.map((path) => `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`),
         "restore puts them back.",
+        `A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
         ...moved.map((key) => `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`)
       ],
       ok: true

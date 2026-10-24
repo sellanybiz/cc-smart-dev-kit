@@ -6592,6 +6592,8 @@ function toRecord(entry, file) {
       record.sha256 = entry.sha256;
     if (Object.hasOwn(entry, "was"))
       record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
     if (entry.taken === true)
       record.taken = true;
     return record;
