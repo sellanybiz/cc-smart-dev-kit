@@ -184,6 +184,14 @@ puts `record.name` back on the title when the title says something else, through
 It is the fix for a session 1.1.1 renamed after its task and 1.1.2 left renamed, which lost the
 address its lead, `crew answer` and the message guard reach it by. A session id no naming record
 can be made for (not a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
+**A name whose record cannot be written is not set, and the turn goes on.** `titleToSet` writes
+its record into the temp folder before it answers, and that write can fail (a `TMPDIR` that is
+not a folder, a full disk). `titleToSetOrProblem` then sets no title — setting a name the kit
+cannot remember setting would set it again every turn and override a `/rename` — and returns the
+reason, which `crew-role` and `lead-notes` say as one stderr line beside the rest of their
+answer: the person's `person` event and prompt context, a lead's news. The throw it replaces
+crashed `crew-role` before the event was written (its `onCrash` is silent on a prompt) and
+lost a lead's news after the cursor had passed it.
 
 **The lead's role** (D61): a lead plans, writes the briefs, starts the phases, answers the
 questions, merges each branch with one full check after it, keeps the plan file true and talks to
