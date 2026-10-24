@@ -1973,6 +1973,36 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
   });
 
+  test("the pass reads the service through the runner it is handed: an async one, the same words", async () => {
+    // The portal hands the pass its asynchronous runner (`RunRead`, `Bun.spawn`): one Machine
+    // page load must never freeze every page and the stream on `systemctl`. The question asked
+    // and the line printed are the command line's own.
+    const m = machine();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    const asked: string[] = [];
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      fetch: m.probe.fetch,
+      read: async (cmd) => {
+        asked.push(cmd.join(" "));
+        return cmd.join(" ").endsWith(".socket")
+          ? { exitCode: 0, output: "active\n" }
+          : { exitCode: 3, output: "inactive\n" };
+      },
+      runner: () => {
+        throw new Error("a read went through the blocking runner");
+      },
+      service: "systemd",
+    });
+    expect(asked[0]).toBe("systemctl --user is-active cc-smart-dev-kit-router.service");
+    expect(checks[0]).toEqual({
+      fix: "cc-smart-dev-kit gateway setup",
+      ok: false,
+      text: "the router service (cc-smart-dev-kit-router.service) is inactive",
+    });
+  });
+
   /**
    * The router's two lines when it does not answer, with a systemctl that answers per
    * command: the service's state, the socket's state, and the socket's `Result`.

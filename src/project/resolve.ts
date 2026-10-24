@@ -424,3 +424,17 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
   const checkout = locateCheckout(cwd, options);
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
+
+/**
+ * `resolveProject`, without blocking the caller: the same checkout and the same file, found with
+ * `Bun.spawn` (`locateCheckoutAsync`). The portal's pages read this inside the server's own
+ * process, where a blocking spawn freezes every page and the live stream
+ * (`.claude/rules/portal.md`).
+ */
+export async function resolveProjectAsync(
+  cwd: string,
+  options: ResolveOptions = {},
+): Promise<Project | null> {
+  const checkout = await locateCheckoutAsync(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}

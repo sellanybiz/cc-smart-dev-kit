@@ -36,6 +36,7 @@ import { basename, dirname, join } from "node:path";
 import { bunTooOld, COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
 import { atomicWrite, type WriteOutcome, writeManagedFile } from "../setup/write";
+import type { CommandRunner } from "../update/apply";
 import { type HealthProbe, probeRouterPort, waitForRouter, waitWhileRouterAnswers } from "./health";
 
 /** The systemd user unit's name. */
@@ -89,6 +90,13 @@ export const START_LIMIT_SECONDS = 60;
 
 /** Runs a command and waits; a test passes its own. */
 export type Runner = (cmd: string[]) => { exitCode: number; output: string };
+
+/** Whether a service's router runs now, and its state as the platform names it. */
+export interface ServiceState {
+  running: boolean;
+  /** `active`, `deactivating`, `inactive`, `failed`, … (systemd); `Running`, `Ready`, … (a task). */
+  state: string;
+}
 
 /** Which service this machine can run the router under. */
 export type RouterServiceKind = "none" | "scheduled-task" | "systemd";
@@ -173,6 +181,13 @@ export interface RouterService {
   running(runner: Runner): boolean;
   /** Its state, as the platform names it (`active`, `Running`, `not registered`, …). */
   state(runner: Runner): string;
+  /**
+   * Whether it runs, and its state, **awaited**: one question to the platform. A caller off the
+   * server's event loop (the portal's doctor pass) passes its asynchronous runner and never
+   * freezes a page on `systemctl`; the command line's own synchronous runner answers at once,
+   * and `await` takes a value as it is.
+   */
+  stateAsync(runner: CommandRunner): Promise<ServiceState>;
   /** What this restart does, from what changed: the warning said before the question. */
   plan(
     listenerUp: boolean,
@@ -313,8 +328,20 @@ export function unitActive(runner: Runner, unitName = UNIT_NAME): boolean {
  * `activating`, `inactive`, `failed`, …); `unknown` when it printed nothing.
  */
 export function unitState(runner: Runner, unitName = UNIT_NAME): string {
-  const result = runner(["systemctl", "--user", "is-active", unitName]);
-  return result.output.trim().split("\n")[0]?.trim() || "unknown";
+  return unitStateFrom(runner(["systemctl", "--user", "is-active", unitName])).state;
+}
+
+/**
+ * Whether the unit runs, and its state, from one `is-active` answer: the same two answers the
+ * synchronous `unitActive` and `unitState` give, asked once. `is-active` exits 0 for a running
+ * unit, and prints the state either way (`--quiet` only hides that text). A caller off the
+ * server's event loop (`stateAsync`) awaits the command and hands its answer here.
+ */
+export function unitStateFrom(answer: { exitCode: number; output: string }): ServiceState {
+  return {
+    running: answer.exitCode === 0,
+    state: answer.output.trim().split("\n")[0]?.trim() || "unknown",
+  };
 }
 
 /** Said by `gateway setup` before a restart that waits for an old router's drain. */
@@ -640,6 +667,9 @@ export function systemdService(options: { unitPath: string; socketPath: string }
     started: `enabled and (re)started ${unitName} and ${socketName}`,
     state(runner): string {
       return unitState(runner, unitName);
+    },
+    async stateAsync(runner): Promise<ServiceState> {
+      return unitStateFrom(await runner(["systemctl", "--user", "is-active", unitName]));
     },
     warnings: INSTALL_WARNINGS,
   };

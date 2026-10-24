@@ -206,9 +206,12 @@ export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> 
   return answer;
 }
 
-/** `/api/settings`: the Settings page. Needs no gateway config. */
-export function settingsAnswer(deps: PageDataDeps): SettingsAnswer {
-  return settingsPageData(deps);
+/**
+ * `/api/settings`: the Settings page. Needs no gateway config. Awaited: the page reads the
+ * project's own file through the portal's async readers (`resolveProjectAsync`), off the loop.
+ */
+export async function settingsAnswer(deps: PageDataDeps): Promise<SettingsAnswer> {
+  return await settingsPageData(deps);
 }
 
 /** `/api/projects`: every project the person works in, newest use first (B8, `projects.ts`). */

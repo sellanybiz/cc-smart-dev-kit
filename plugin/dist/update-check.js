@@ -1141,19 +1141,25 @@ function lsRemote(url, ref, baseEnv) {
     });
     if (result.exitCode === 0)
       return { ok: true, stdout: result.stdout.toString() };
-    const said = redactUrlsIn(result.stderr.toString().trim());
-    const detail = result.signalCode ? "timed out" : (said.split(`
-`).at(-1) ?? "").trim();
-    const output = said || `git exited with ${result.exitCode}`;
-    return {
-      detail: detail || `git exited with ${result.exitCode}`,
-      ok: false,
-      output
-    };
+    return lsRemoteFailure(result.exitCode, Boolean(result.signalCode), result.stderr.toString());
   } catch (error) {
-    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
-    return { detail: said, ok: false, output: said };
+    return lsRemoteUnspawned(error);
   }
+}
+function lsRemoteFailure(exitCode, timedOut, stderrText) {
+  const said = redactUrlsIn(stderrText.trim());
+  const detail = timedOut ? "timed out" : (said.split(`
+`).at(-1) ?? "").trim();
+  const output = said || `git exited with ${exitCode}`;
+  return {
+    detail: detail || `git exited with ${exitCode}`,
+    ok: false,
+    output
+  };
+}
+function lsRemoteUnspawned(error) {
+  const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+  return { detail: said, ok: false, output: said };
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
   const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;

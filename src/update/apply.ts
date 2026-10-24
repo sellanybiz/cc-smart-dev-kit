@@ -29,10 +29,13 @@ export const CLAUDE_TIMEOUT_MS = 180_000;
 /**
  * Runs a command; `output` is what it printed (empty when it printed to the terminal). It may
  * be async: the portal's runner spawns the child without blocking its server (B6b), and the
- * command line's own runner stays synchronous.
+ * command line's own runner stays synchronous. `env` adds variables to the child's own
+ * environment (a caller that needs one, such as the MCP checks' `MCP_TIMEOUT`); a runner that
+ * sets the environment itself ignores it.
  */
 export type CommandRunner = (
   argv: string[],
+  env?: Record<string, string>,
 ) => { exitCode: number; output: string } | Promise<{ exitCode: number; output: string }>;
 
 export interface ApplyResult {

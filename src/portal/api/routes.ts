@@ -103,7 +103,7 @@ export const API_READS: Readonly<
   "/api/slots": async (deps) => ok(await slotsAnswer(deps)),
   "/api/health": async (deps) => ok(await healthAnswer(deps)),
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
-  "/api/settings": (deps) => ok(settingsAnswer(deps)),
+  "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),

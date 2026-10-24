@@ -1388,10 +1388,10 @@ function processCommandLines(platform, run) {
   if (platform === "linux")
     return linuxProcessCommandLines();
   if (platform === "darwin") {
-    return run === undefined ? null : parsedLines(run(["ps", "-ww", "-axo", "pid=,command="]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.darwin));
   }
   if (platform === "win32") {
-    return run === undefined ? null : parsedLines(run(["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.win32));
   }
   return null;
 }
@@ -1414,6 +1414,10 @@ function parsedLines(result) {
   return processes;
 }
 var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+var PROCESS_LIST_ARGV = {
+  darwin: ["ps", "-ww", "-axo", "pid=,command="],
+  win32: ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]
+};
 function linuxProcessCommandLines() {
   let names;
   try {
@@ -1464,13 +1468,17 @@ function runningLine(first, others, profile, platform, home) {
 function unknownLine(profile, home) {
   return `cannot read this machine's process list, so whether the 0.3.0 shared Chrome is still running ` + `with --user-data-dir=${tildify(profile, home)} is unknown: if that Chrome is open, close it`;
 }
+function legacyBrowserLeftovers(paths, exists = existsSync5) {
+  const { picker, profile } = legacyBrowserPaths(paths);
+  return exists(profile) || exists(picker);
+}
 function legacyBrowserFacts(paths, deps) {
   const exists = deps.exists ?? existsSync5;
+  if (!legacyBrowserLeftovers(paths, exists))
+    return [];
   const { picker, profile } = legacyBrowserPaths(paths);
   const profileThere = exists(profile);
   const pickerThere = exists(picker);
-  if (!profileThere && !pickerThere)
-    return [];
   const facts = [];
   if (profileThere) {
     facts.push({
@@ -15807,9 +15815,14 @@ function unitActive(runner, unitName = UNIT_NAME) {
   return runner(["systemctl", "--user", "is-active", "--quiet", unitName]).exitCode === 0;
 }
 function unitState(runner, unitName = UNIT_NAME) {
-  const result = runner(["systemctl", "--user", "is-active", unitName]);
-  return result.output.trim().split(`
-`)[0]?.trim() || "unknown";
+  return unitStateFrom(runner(["systemctl", "--user", "is-active", unitName])).state;
+}
+function unitStateFrom(answer) {
+  return {
+    running: answer.exitCode === 0,
+    state: answer.output.trim().split(`
+`)[0]?.trim() || "unknown"
+  };
 }
 var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
@@ -15997,6 +16010,9 @@ ${refused.output.trim()}`);
     state(runner) {
       return unitState(runner, unitName);
     },
+    async stateAsync(runner) {
+      return unitStateFrom(await runner(["systemctl", "--user", "is-active", unitName]));
+    },
     warnings: INSTALL_WARNINGS
   };
 }
@@ -16090,7 +16106,10 @@ function taskFacts(runner) {
   return taskFactsFrom(runner(taskQueryCommand()));
 }
 function taskRunning(runner) {
-  return taskFacts(runner).state === "Running";
+  return taskRunningFrom(taskFacts(runner));
+}
+function taskRunningFrom(facts) {
+  return facts.state === "Running";
 }
 function runTask(runner, script, what) {
   const result = runner([POWERSHELL, ...PS_FLAGS, script]);
@@ -16310,6 +16329,10 @@ function scheduledTaskService(options) {
     },
     state(runner) {
       return taskFacts(runner).state;
+    },
+    async stateAsync(runner) {
+      const facts = taskFactsFrom(await runner(taskQueryCommand()));
+      return { running: taskRunningFrom(facts), state: facts.state };
     },
     started: `registered and (re)started ${TASK_LABEL}`,
     warnings: TASK_WARNINGS
@@ -17970,6 +17993,7 @@ function isCostly(model) {
 var SETUP = `${COMMAND} gateway setup`;
 async function gatewayChecks(options) {
   const { paths } = options;
+  const read = options.read ?? options.runner;
   const short = (path) => tildify(path, paths.home);
   const checks = [];
   const service = routerService({
@@ -18006,8 +18030,8 @@ async function gatewayChecks(options) {
       fix: `run the router in a terminal of its own (${COMMAND} gateway serve), or turn the gateway off: ${COMMAND} gateway off`
     });
   } else {
-    const state = service.state(options.runner);
-    checks.push(service.running(options.runner) ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state}`, fix: SETUP });
+    const state = await service.stateAsync(read);
+    checks.push(state.running ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP });
   }
   if (!existsSync17(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
@@ -18041,7 +18065,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const holder = await portHolderCheck(options, config.port);
+  const holder = await portHolderCheck({ paths: options.paths, runner: read, service: options.service }, config.port);
   checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
@@ -18572,8 +18596,8 @@ function hasOwnSshCommand(env) {
     return false;
   }
 }
-function canReadGitRemote(url, baseEnv = process.env) {
-  const result = lsRemote(url, "HEAD", baseEnv);
+async function canReadGitRemoteAsync(url, baseEnv = process.env) {
+  const result = await lsRemoteAsync(url, "HEAD", baseEnv);
   return result.ok ? { ok: true, detail: "" } : result;
 }
 function gitAccessEnv(baseEnv) {
@@ -18606,19 +18630,48 @@ function lsRemote(url, ref, baseEnv) {
     });
     if (result.exitCode === 0)
       return { ok: true, stdout: result.stdout.toString() };
-    const said = redactUrlsIn(result.stderr.toString().trim());
-    const detail = result.signalCode ? "timed out" : (said.split(`
-`).at(-1) ?? "").trim();
-    const output = said || `git exited with ${result.exitCode}`;
-    return {
-      detail: detail || `git exited with ${result.exitCode}`,
-      ok: false,
-      output
-    };
+    return lsRemoteFailure(result.exitCode, Boolean(result.signalCode), result.stderr.toString());
   } catch (error) {
-    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
-    return { detail: said, ok: false, output: said };
+    return lsRemoteUnspawned(error);
   }
+}
+async function lsRemoteAsync(url, ref, baseEnv) {
+  const env = gitAccessEnv(baseEnv);
+  try {
+    const child = Bun.spawn(["git", "ls-remote", url, ref], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: ACCESS_TIMEOUT_MS
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const timedOut = child.signalCode !== null;
+    if (!timedOut && code === 0)
+      return { ok: true, stdout };
+    return lsRemoteFailure(timedOut ? null : code, timedOut, stderr);
+  } catch (error) {
+    return lsRemoteUnspawned(error);
+  }
+}
+function lsRemoteFailure(exitCode, timedOut, stderrText) {
+  const said = redactUrlsIn(stderrText.trim());
+  const detail = timedOut ? "timed out" : (said.split(`
+`).at(-1) ?? "").trim();
+  const output = said || `git exited with ${exitCode}`;
+  return {
+    detail: detail || `git exited with ${exitCode}`,
+    ok: false,
+    output
+  };
+}
+function lsRemoteUnspawned(error) {
+  const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+  return { detail: said, ok: false, output: said };
 }
 async function canReadHttp(url) {
   try {
@@ -20097,8 +20150,11 @@ function warpPluginRemoveSteps(paths) {
 function showCommand(argv) {
   return argv.map((arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
 }
-function warpCheck(machine, paths) {
-  return warpCheckFrom(detectWarpApp(machine, detectSystem(machine)), paths);
+async function warpCheck(machine, paths, read) {
+  const system = detectSystem(machine);
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(system, machine, command === null ? null : await (read ?? machine.run)(command));
+  return warpCheckFrom(app, paths);
 }
 function warpCheckFrom(app, paths) {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
@@ -20894,9 +20950,13 @@ function readKeyFile(paths, platform) {
 
 // src/mcp/doctor.ts
 var FIRST_START_LIMIT_MS = 180000;
-function realMcpDoctorDeps() {
+function realMcpDoctorDeps(read) {
   return {
-    run: (argv, extraEnv) => {
+    run: async (argv, extraEnv) => {
+      if (read !== undefined) {
+        const answer = await read(argv, extraEnv);
+        return { ok: answer.exitCode === 0, output: answer.output };
+      }
       try {
         const result = Bun.spawnSync(argv, {
           env: { ...process.env, ...extraEnv },
@@ -20919,7 +20979,7 @@ function field(report, label) {
   const line = report.split(/\r?\n/).find((text) => text.trim().startsWith(`${label}:`));
   return line === undefined ? "unknown" : line.slice(line.indexOf(":") + 1).trim();
 }
-function mcpChecks(paths, deps, env, cwd = process.cwd()) {
+async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
   const names = SERVER_NAMES.filter((name) => name !== "tavily-websearch" || readTavilyKey(paths, env).source !== "none");
   const checks = [];
   const servers = readUserServers(paths.userConfigFile);
@@ -20974,9 +21034,9 @@ function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    const report = deps.run(["claude", "mcp", "get", name], {
+    const report = (await deps.run(["claude", "mcp", "get", name], {
       MCP_TIMEOUT: String(FIRST_START_LIMIT_MS)
-    }).output;
+    })).output;
     const scope = field(report, "Scope");
     const status = field(report, "Status").replace(/^[^A-Za-z]+/, "");
     if (status === "" || status === "unknown") {
@@ -22905,9 +22965,9 @@ function tmuxServerRunning(run) {
     return false;
   }
 }
-function tmuxPassthroughOf(run) {
+async function tmuxPassthroughOf(run) {
   try {
-    const result = run(["tmux", "show-options", "-gv", "allow-passthrough"]);
+    const result = await run(["tmux", "show-options", "-gv", "allow-passthrough"]);
     if (result.exitCode !== 0)
       return null;
     const value = result.output.trim();
@@ -38186,44 +38246,71 @@ function applyProjectInit(plan, options) {
 
 // src/cli/project-init.ts
 var RUN_TIMEOUT_MS = 1e4;
+async function runGh(ghPath, args, env) {
+  try {
+    const child = Bun.spawn([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return { ok: code === 0, out, err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
+function runGhSync(ghPath, args, env) {
+  try {
+    const run = Bun.spawnSync([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS
+    });
+    return { ok: run.exitCode === 0, out: run.stdout.toString(), err: run.stderr.toString() };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
 function realRunner(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS),
-    gh: ghPath === null ? null : (args) => {
-      try {
-        const run = Bun.spawnSync([ghPath, ...args], {
-          env,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          timeout: RUN_TIMEOUT_MS
-        });
-        return {
-          ok: run.exitCode === 0,
-          out: run.stdout.toString(),
-          err: run.stderr.toString()
-        };
-      } catch (error) {
-        return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-      }
-    }
+    gh: ghPath === null ? null : (args) => runGhSync(ghPath, args, env)
   };
 }
-function currentBranchOf(runner, root) {
-  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+function realRunnerAsync(env) {
+  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
+  return {
+    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS),
+    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env)
+  };
+}
+async function currentBranchOf(runner, root) {
+  const head = await runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = head.ok ? head.out.trim() : "";
   return branch === "" ? null : branch;
 }
-function localBranchesOf(runner, root) {
-  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+async function localBranchesOf(runner, root) {
+  const listed = await runner.git(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads"
+  ]);
   if (!listed.ok)
     return [];
   return listed.out.split(`
 `).map((line) => line.trim()).filter((name) => name !== "");
 }
-function defaultBranchOf2(runner, root) {
-  const known = runner.git(root, [
+async function defaultBranchOf2(runner, root) {
+  const known = await runner.git(root, [
     "symbolic-ref",
     "--quiet",
     "--short",
@@ -38234,7 +38321,7 @@ function defaultBranchOf2(runner, root) {
     if (branch !== "")
       return branch;
   }
-  const locals = localBranchesOf(runner, root);
+  const locals = await localBranchesOf(runner, root);
   const only = locals.length === 1 ? locals[0] : undefined;
   if (only !== undefined)
     return only;
@@ -38242,10 +38329,10 @@ function defaultBranchOf2(runner, root) {
     return "main";
   if (locals.includes("master"))
     return "master";
-  return currentBranchOf(runner, root) ?? "main";
+  return await currentBranchOf(runner, root) ?? "main";
 }
-function originRepository(runner, root) {
-  const origin = runner.git(root, ["remote", "get-url", "origin"]);
+async function originRepository(runner, root) {
+  const origin = await runner.git(root, ["remote", "get-url", "origin"]);
   if (!origin.ok)
     return null;
   const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(origin.out.trim());
@@ -38253,13 +38340,13 @@ function originRepository(runner, root) {
     return null;
   return { owner: match[1], name: match[2] };
 }
-function protectedFromGithub(runner, root) {
+async function protectedFromGithub(runner, root) {
   if (runner.gh === null)
     return [];
-  const repo = originRepository(runner, root);
+  const repo = await originRepository(runner, root);
   if (repo === null)
     return [];
-  const rules = runner.gh([
+  const rules = await runner.gh([
     "api",
     `repos/${repo.owner}/${repo.name}/rulesets?per_page=100`,
     "--jq",
@@ -38298,10 +38385,10 @@ function defaultFastCheck(root) {
   const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
   return name === undefined ? null : `${runnerOf2(root)} ${name}`;
 }
-function detectFacts(runner, root) {
+async function detectFacts(runner, root) {
   return {
-    defaultBranch: defaultBranchOf2(runner, root),
-    protectedFromGithub: protectedFromGithub(runner, root),
+    defaultBranch: await defaultBranchOf2(runner, root),
+    protectedFromGithub: await protectedFromGithub(runner, root),
     fastCheck: defaultFastCheck(root)
   };
 }
@@ -38630,7 +38717,7 @@ the project.
   --yes                  no questions: write the flags and the defaults
 
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
-function runProjectInit(argv, context, runner = realRunner(context.env)) {
+async function runProjectInit(argv, context, runner = realRunner(context.env)) {
   const out = context.out;
   if (argv.includes("--help") || argv.includes("-h")) {
     out.say(PROJECT_INIT_USAGE);
@@ -38646,7 +38733,7 @@ ${PROJECT_INIT_USAGE}`);
   const flags = parsed.flags;
   const file = join67(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText2(file);
-  const facts = detectFacts(runner, context.root);
+  const facts = await detectFacts(runner, context.root);
   const prompts = flags.yes || flags.dryRun ? null : context.prompts;
   out.heading(`${COMMAND} project init: ${tildify(context.root, context.home)}${flags.dryRun ? " (dry run)" : ""}`);
   out.blank();
@@ -38784,11 +38871,11 @@ function engineLines(sources, projectDir, home) {
   }
   return lines;
 }
-function worktreeLines(config, sources, checkout, env) {
+async function worktreeLines(config, sources, checkout, env) {
   const worktrees = config?.worktrees;
   const lines = [];
   if (worktrees !== undefined) {
-    const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
+    const ignored = (await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)).ok;
     if (!ignored) {
       lines.push({
         ok: true,
@@ -38796,7 +38883,7 @@ function worktreeLines(config, sources, checkout, env) {
         text: `project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it`
       });
     }
-    const defaultBranch = defaultBranchOf2(realRunner(env), checkout.root);
+    const defaultBranch = await defaultBranchOf2(realRunnerAsync(env), checkout.root);
     if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
       lines.push({
         ok: true,
@@ -38919,13 +39006,13 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-function projectChecks2(cwd, env, paths, pluginHooksFile) {
+async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
   let checkout;
   try {
-    checkout = existsSync58(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync58(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -38952,16 +39039,16 @@ function projectChecks2(cwd, env, paths, pluginHooksFile) {
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
-    ...worktreeLines(config, sources, checkout, env)
+    ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
-    lines.push(...coverGitLines(checkout, env));
+    lines.push(...await coverGitLines(checkout, env));
   }
   return lines;
 }
-function coverGitLines(checkout, env) {
-  const version = parseGitVersion(runGit(checkout.root, ["--version"], env).out);
+async function coverGitLines(checkout, env) {
+  const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version))
     return [];
   return [
@@ -38986,15 +39073,15 @@ function readSettings2(file) {
     return null;
   }
 }
-function run2(argv) {
+var syncRead = (argv) => {
   try {
     const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", timeout: 20000 });
     const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
-    return { ok: result.exitCode === 0, output };
+    return { exitCode: result.exitCode ?? 1, output };
   } catch (error) {
-    return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
-}
+};
 function checkPlugin(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (!install) {
@@ -39035,7 +39122,7 @@ function isExecutable(file) {
 function isUsableBun(bun, platform) {
   return platform === "win32" ? existsSync59(bun) : isExecutable(bun);
 }
-function checkLauncher(paths, platform) {
+async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
   const launcher = join69(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
@@ -39066,17 +39153,17 @@ function checkLauncher(paths, platform) {
   }
   if (win)
     return [
-      checkLauncherCmd(paths, where),
+      await checkLauncherCmd(paths, where, read),
       { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` }
     ];
-  const result = run2([launcher, "version"]);
-  if (!result.ok)
+  const result = await read([launcher, "version"]);
+  if (result.exitCode !== 0)
     return [
       { ok: false, text: `the launcher ${where} does not run: ${result.output}`, fix: SETUP_FIX }
     ];
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
-function checkLauncherCmd(paths, shLauncher) {
+async function checkLauncherCmd(paths, shLauncher, read) {
   const cmd = join69(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
   if (!existsSync59(cmd)) {
@@ -39102,8 +39189,8 @@ function checkLauncherCmd(paths, shLauncher) {
       fix: SETUP_FIX
     };
   }
-  const result = run2(launcherCmdArgv(cmd, ["version"]));
-  if (!result.ok)
+  const result = await read(launcherCmdArgv(cmd, ["version"]));
+  if (result.exitCode !== 0)
     return {
       ok: false,
       text: `the Windows launcher ${where} does not run: ${result.output}`,
@@ -39146,7 +39233,7 @@ async function checkMarketplaceAccess(paths, env) {
       let cause = "unknown";
       let repo = null;
       for (const url of source.urls) {
-        const result = canReadGitRemote(url, env);
+        const result = await canReadGitRemoteAsync(url, env);
         if (result.ok)
           return { ok: true, text: `can read the marketplace at ${redactUrl(url)}` };
         failures.push(`${redactUrl(url)}: ${result.detail}`);
@@ -39385,7 +39472,7 @@ function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
   return isJsonObject15(node) && Object.hasOwn(node, key);
 }
-function checkOldPlugin(settings, paths) {
+async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject15(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync59(join69(paths.claudeConfigDir, OLD_NAME2))) {
@@ -39409,7 +39496,7 @@ function checkOldPlugin(settings, paths) {
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync59(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync59(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -39458,11 +39545,11 @@ function checkInstructions(paths, source) {
     text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`
   };
 }
-function checkLiveRecord(paths) {
+async function checkLiveRecord(paths, read) {
   const record = readLiveRecord(paths.stateDir);
   if (record === null)
     return null;
-  const now = parseClaudeVersion(run2(["claude", "--version"]).output);
+  const now = parseClaudeVersion((await read(["claude", "--version"])).output);
   if (now !== null && now !== record.claudeCode) {
     return {
       ok: true,
@@ -39626,7 +39713,7 @@ async function omnirouteCheck(paths, env, gateway) {
   });
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
 }
-function checkTmux(paths, env, machine) {
+async function checkTmux(paths, env, machine, read) {
   if (machine.platform === "win32") {
     return [
       {
@@ -39647,7 +39734,7 @@ function checkTmux(paths, env, machine) {
       text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`
     });
   }
-  if ((env.TMUX ?? "") !== "" && tmuxPassthroughOf(machine.run) !== "all") {
+  if ((env.TMUX ?? "") !== "" && await tmuxPassthroughOf(read) !== "all") {
     checks.push({
       info: true,
       ok: true,
@@ -39745,10 +39832,11 @@ function checkPortal(state, port = DEFAULT_PORTAL_PORT) {
     text: `${running}, newer than this install (${VERSION}); it is left as it is`
   };
 }
-function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, project, live }) {
+function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, project, read, live }) {
   const settings = readSettings2(paths.settingsFile);
   const runtime = checkBun(bun, paths);
   const machine = gateway.machine;
+  const readCommand = read ?? syncRead;
   const present = (checks) => checks.filter((check) => check !== null);
   const groups = [
     {
@@ -39758,11 +39846,11 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
         checkPlugin(paths),
         checkInstalledVersion(paths),
         ...portal == null ? [] : [checkPortal(await portal())],
-        ...checkLauncher(paths, machine.platform),
+        ...await checkLauncher(paths, machine.platform, readCommand),
         checkGitBash(machine.platform, env, machine),
         checkInstructions(paths, local.instructionsSource),
         checkNameClash(settings),
-        checkOldPlugin(settings, paths)
+        await checkOldPlugin(settings, paths, readCommand)
       ])
     },
     {
@@ -39776,7 +39864,11 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "companions",
-      run: () => [...companionChecks(paths), ...claudeMemChecks(paths), warpCheck(machine, paths)]
+      run: async () => [
+        ...companionChecks(paths),
+        ...claudeMemChecks(paths),
+        await warpCheck(machine, paths, readCommand)
+      ]
     },
     {
       group: "mcp",
@@ -39785,18 +39877,18 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     { group: "browser", run: () => browser == null ? [] : browserChecks(paths, browser) },
     {
       group: "alerts",
-      run: () => [
+      run: async () => [
         checkUserNotifyHook(paths),
-        ...checkTmux(paths, env, machine),
+        ...await checkTmux(paths, env, machine, readCommand),
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths)
       ]
     },
     {
       group: "project",
-      run: () => present([
+      run: async () => present([
         checkProjectImports(paths, local.cwd),
-        ...project === null ? [] : projectChecks2(project.cwd, env, paths, project.pluginHooksFile)
+        ...project === null ? [] : await projectChecks2(project.cwd, env, paths, project.pluginHooksFile)
       ])
     },
     {
@@ -39814,7 +39906,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "live",
-      run: () => live === null ? present([checkLiveRecord(paths)]) : runLiveCheck(paths, env, live)
+      run: async () => live === null ? present([await checkLiveRecord(paths, readCommand)]) : runLiveCheck(paths, env, live)
     }
   ];
   return groups.map(({ group, run }) => ({

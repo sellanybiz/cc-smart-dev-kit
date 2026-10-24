@@ -392,8 +392,10 @@ describe("a crew session on Work", () => {
 });
 
 describe("the crew caps on Settings", () => {
-  test("the four caps, in the crew card, with their values and where each came from", () => {
-    const rows = settingsAnswer(depsOf(world().ctx)).rows.filter((row) => row.card === "crew");
+  test("the four caps, in the crew card, with their values and where each came from", async () => {
+    const rows = (await settingsAnswer(depsOf(world().ctx))).rows.filter(
+      (row) => row.card === "crew",
+    );
     expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly, row.unit])).toEqual([
       ["crew.perLead", 4, "default", false, undefined],
       ["crew.perLeadOpus", 2, "default", false, undefined],

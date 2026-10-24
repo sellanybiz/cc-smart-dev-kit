@@ -694,7 +694,12 @@ export async function projectAnswerFor(
   return {
     branches: branches.branches,
     branchesNote: branches.note,
-    card: projectCardData(deps.action.portal, project.root, deps.projectDefaults, deps.workflow),
+    card: await projectCardData(
+      deps.action.portal,
+      project.root,
+      deps.projectDefaults,
+      deps.workflow,
+    ),
     checkedAt: branches.checkedAt,
     project,
   };
@@ -825,7 +830,7 @@ export async function projectWorkflowAnswerFor(
 
 /** `/api/projects`: the current card, every row, and why the list may be short (B8). */
 export async function projectsAnswerFor(deps: PageDataDeps): Promise<ProjectsAnswer> {
-  const current = projectCardData(
+  const current = await projectCardData(
     deps.action.portal,
     deps.action.cwd,
     deps.projectDefaults,

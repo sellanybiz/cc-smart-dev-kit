@@ -120,12 +120,12 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
   const updates = updateFacts(deps.action);
   return {
     autoMode: autoModeCard(deps),
-    browser: browserCardData(deps.action.portal),
+    browser: await browserCardData(deps.action.portal),
     companions: companionRows(deps.action.portal),
     doctor,
     jobs: await jobLines(deps.action),
     omniroute: await omnirouteRow(deps.action.omniroute, isOlder),
-    project: projectCardData(
+    project: await projectCardData(
       deps.action.portal,
       deps.action.cwd,
       deps.projectDefaults,
@@ -217,7 +217,7 @@ export async function healthData(deps: PageDataDeps, config: GatewayConfig): Pro
   };
 }
 
-/** The Settings page's data: no gateway needed. */
-export function settingsPageData(deps: PageDataDeps): SettingsData {
-  return settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
+/** The Settings page's data: no gateway needed. Awaited: the project read is off the loop. */
+export async function settingsPageData(deps: PageDataDeps): Promise<SettingsData> {
+  return await settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
 }

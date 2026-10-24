@@ -25,6 +25,7 @@
 
 import { join } from "node:path";
 import { realBrowserDoctorDeps } from "../browser/doctor";
+import { legacyBrowserLeftovers, processCommandLinesAsync } from "../browser/legacy";
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
@@ -77,9 +78,12 @@ const runner: Runner = (cmd) => {
  * action and the live stream while it ran. The same command, the same timeout and the same
  * words as `runner`, which the actions' changing commands keep.
  */
-const runRead: ReadRunner = async (cmd) => {
+const runRead: ReadRunner = async (cmd, extraEnv) => {
   try {
     const child = Bun.spawn(cmd, {
+      // A read that needs its own variable (`MCP_TIMEOUT` for `claude mcp get`) adds it over
+      // this process's own environment.
+      env: extraEnv === undefined ? process.env : { ...process.env, ...extraEnv },
       stderr: "pipe",
       stdin: "ignore",
       stdout: "pipe",
@@ -213,16 +217,26 @@ async function runServer(
    * copy in `~/.local/share/`, so a path made here at startup points into a version folder Claude
    * Code may delete during the run. `{ error }` in words when there is no folder left at all.
    */
-  const doctor = (): DoctorOptions | { error: string } => {
+  const doctor = async (): Promise<DoctorOptions | { error: string }> => {
     const found = ctx.pluginFolder();
     if ("error" in found) return found;
     const { folder } = found;
+    // The 0.3.0 browser's process list, off the server's loop: on macOS it is `ps`, on Windows
+    // PowerShell. It is read only when 0.3.0 left something — its own first question — so a
+    // machine that never ran it spawns nothing (B6e's rule, `.claude/rules/portal.md`).
+    const processes = legacyBrowserLeftovers(ctx.paths)
+      ? await processCommandLinesAsync(machine.platform, runRead)
+      : null;
     return {
-      browser: realBrowserDoctorDeps(machine, ctx.paths.home),
+      browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
         bundle: join(folder, "dist", "router.js"),
         machine,
+        // The pass's own reads — the service's state, what holds the port — run off the loop:
+        // one Machine page load must never freeze every page and the stream on `systemctl`
+        // (B6e's rule, `.claude/rules/portal.md`).
+        read: runRead,
         runner,
         service: ctx.systemd ? "systemd" : "none",
         // The per-project doctor lines read the portal's own list: the same reader the
@@ -239,9 +253,13 @@ async function runServer(
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },
-      mcp: realMcpDoctorDeps(),
+      mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
       project: { cwd: process.cwd(), pluginHooksFile: join(folder, "hooks", "hooks.json") },
+      // The pass's own reads — the launcher's `version`, the old launcher's, Warp's package
+      // manager, `claude --version` for the live record — run off the loop too: the Machine
+      // page shows this pass, and a page load must never freeze on one (B6e's rule).
+      read: runRead,
     };
   };
 

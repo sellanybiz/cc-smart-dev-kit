@@ -236,6 +236,20 @@ export function canReadGitRemote(
 }
 
 /**
+ * `canReadGitRemote`, awaited: the same question, the same words, spawned with `Bun.spawn`.
+ * The portal's doctor pass asks it on every Machine page load (`canReadGitRemote` is
+ * `Bun.spawnSync`), and `git ls-remote` waits for a remote host — up to
+ * `ACCESS_TIMEOUT_MS` — so a page load must never freeze on it (`.claude/rules/portal.md`).
+ */
+export async function canReadGitRemoteAsync(
+  url: string,
+  baseEnv: Record<string, string | undefined> = process.env,
+): Promise<{ ok: true; detail: "" } | GitReadFailure> {
+  const result = await lsRemoteAsync(url, "HEAD", baseEnv);
+  return result.ok ? { ok: true, detail: "" } : result;
+}
+
+/**
  * The environment for git reading a remote: never asks for a password, and ssh in batch
  * mode unless the user has an ssh command of their own (see `canReadGitRemote`).
  */
@@ -285,18 +299,68 @@ function lsRemote(
       timeout: ACCESS_TIMEOUT_MS,
     });
     if (result.exitCode === 0) return { ok: true, stdout: result.stdout.toString() };
-    const said = redactUrlsIn(result.stderr.toString().trim());
-    const detail = result.signalCode ? "timed out" : (said.split("\n").at(-1) ?? "").trim();
-    const output = said || `git exited with ${result.exitCode}`;
-    return {
-      detail: detail || `git exited with ${result.exitCode}`,
-      ok: false,
-      output,
-    };
+    return lsRemoteFailure(result.exitCode, Boolean(result.signalCode), result.stderr.toString());
   } catch (error) {
-    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
-    return { detail: said, ok: false, output: said };
+    return lsRemoteUnspawned(error);
   }
+}
+
+/**
+ * `lsRemote`, awaited (`Bun.spawn`): the same argv, environment, timeout, parse and words.
+ * One home for both readers: only the spawn differs, which is the one thing a caller off the
+ * server's event loop cannot share.
+ */
+async function lsRemoteAsync(
+  url: string,
+  ref: string,
+  baseEnv: Record<string, string | undefined>,
+): Promise<{ ok: true; stdout: string } | GitReadFailure> {
+  const env = gitAccessEnv(baseEnv);
+  try {
+    const child = Bun.spawn(["git", "ls-remote", url, ref], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: ACCESS_TIMEOUT_MS,
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    // A signal ended it (the timeout kill is SIGTERM): the sync reader's own "timed out".
+    const timedOut = child.signalCode !== null;
+    if (!timedOut && code === 0) return { ok: true, stdout };
+    return lsRemoteFailure(timedOut ? null : code, timedOut, stderr);
+  } catch (error) {
+    return lsRemoteUnspawned(error);
+  }
+}
+
+/**
+ * What a `git ls-remote` that did not answer says, in the readers' own words: redacted, the
+ * LAST line as the detail, and everything git said as the output (`gitFailureCause` reads it).
+ */
+function lsRemoteFailure(
+  exitCode: null | number,
+  timedOut: boolean,
+  stderrText: string,
+): GitReadFailure {
+  const said = redactUrlsIn(stderrText.trim());
+  const detail = timedOut ? "timed out" : (said.split("\n").at(-1) ?? "").trim();
+  const output = said || `git exited with ${exitCode}`;
+  return {
+    detail: detail || `git exited with ${exitCode}`,
+    ok: false,
+    output,
+  };
+}
+
+/** What a `git ls-remote` that could not be started at all says, in the readers' own words. */
+function lsRemoteUnspawned(error: unknown): GitReadFailure {
+  const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+  return { detail: said, ok: false, output: said };
 }
 
 /** True when an HTTP marketplace URL answers with a success status. The detail is redacted. */

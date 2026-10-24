@@ -6,6 +6,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { messageOf } from "../gateway/config";
 import { findUserInstall } from "../setup/installed-plugins";
 import { removeManagedFile } from "../setup/write";
+import type { CommandRunner } from "../update/apply";
 import { MARKETPLACE_SOURCES, marketplaceAdded, pluginEnabled } from "./companions";
 import type { Machine } from "./machine";
 
@@ -502,8 +503,21 @@ export function showCommand(argv: readonly string[]): string {
  * Warp is optional, and so is its plugin: the app without the plugin, or with the plugin
  * turned off, is information, never a failure.
  */
-export function warpCheck(machine: Machine, paths: CliPaths): Check {
-  return warpCheckFrom(detectWarpApp(machine, detectSystem(machine)), paths);
+export async function warpCheck(
+  machine: Machine,
+  paths: CliPaths,
+  read?: CommandRunner,
+): Promise<Check> {
+  const system = detectSystem(machine);
+  const command = warpAppCommand(system);
+  // The app's read runs through the caller's own runner when it has one: the portal's page
+  // awaits `Bun.spawn` there, and its server never freezes on the package manager.
+  const app = warpAppFrom(
+    system,
+    machine,
+    command === null ? null : await (read ?? machine.run)(command),
+  );
+  return warpCheckFrom(app, paths);
 }
 
 /**
