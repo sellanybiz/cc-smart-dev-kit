@@ -60,7 +60,10 @@ you open it.
   The merge is judged against the branch the session was cut from, not the lead's current one.
   The programs a finished session's own turn left running (its background `bun run check` and
   their `sh` and `bash`) are stopped, SIGTERM then SIGKILL, instead of refusing the removal; a
-  dev server you started there still keeps it. A `…-removing-<time>` folder is finished by the
+  dev server you started there still keeps it. Ownership requires a readable environment naming
+  that crew session; an unreadable environment (including macOS) keeps the folder. Other blockers
+  are judged before its programs are stopped. Older records rewritten to `stopped` need a manual
+  `crew rm`; the watch does not guess whether their stop was intentional. A `…-removing-<time>` folder is finished by the
   next `crew rm`, `worktrees --clean` or watch pass: while git lists it, under the usual checks;
   when git no longer lists it (5 of the 8 found on one machine), only when nothing runs from it
   and no file in it is newer than the move its name records. `worktrees` names a crew worktree as one,

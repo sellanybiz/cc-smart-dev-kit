@@ -575,6 +575,7 @@ export async function watchPass(
 ): Promise<{ lines: number; state: WatchState }> {
   const { repo, resolved } = scope;
   const said = { ...state.said };
+  const removals = { ...state.removals };
   let noted = state.noted;
   let lines = 0;
   const say = (line: string): void => {
@@ -658,7 +659,10 @@ export async function watchPass(
     let refusal: null | string = null;
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
-    if (OVER_STATES.includes(record.state) && branchMerged(record, ctx)) {
+    if (
+      OVER_STATES.includes(record.state) &&
+      (record.state === "merged" || branchMerged(record, ctx))
+    ) {
       const wasStopped = record.state === "stopped";
       // Marked once: a record that is merged already is not written again on every pass.
       if (record.state !== "merged") {
@@ -691,6 +695,18 @@ export async function watchPass(
         }
         continue;
       }
+      // Retry refusals only when the folder changes, or after the parked-folder interval.
+      const head = runGit(record.worktree, ["rev-parse", "HEAD"], ctx.env);
+      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
+      const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
+      const previous = removals[record.id];
+      if (
+        previous !== undefined &&
+        previous.signature === signature &&
+        ctx.now() - previous.at < PARKED_PASS_MS
+      )
+        continue;
+      removals[record.id] = { at: ctx.now(), signature };
       // The watch removes it by itself, with the same steps `crew rm` runs.
       const captured: string[] = [];
       const capture = {
@@ -702,7 +718,23 @@ export async function watchPass(
           captured.push(line);
         },
       };
-      const code = await runCrewRm(record.id, capture);
+      let code: number;
+      try {
+        code = await runCrewRm(record.id, capture, { skipParked: true });
+      } catch (error) {
+        captured.push(`crew rm: ${reasonOf(error)}`);
+        code = 1;
+      }
+      for (const line of captured.filter(
+        (one) =>
+          one.startsWith("Fix:") || one.startsWith("note:") || one.startsWith("  the worktree"),
+      )) {
+        const key = `${record.id}:detail:${line}`;
+        if (said[key] !== line) {
+          say(line);
+          said[key] = line;
+        }
+      }
       if (code !== 0 && refusal === null) {
         refusal =
           captured.find((line) => line.startsWith("crew rm:")) ??
@@ -772,7 +804,7 @@ export async function watchPass(
   if (parkedAt === undefined || ctx.now() - parkedAt >= PARKED_PASS_MS) {
     parkedAt = ctx.now();
     try {
-      finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+      await finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
     } catch (error) {
       // A look that fails never ends the watch: it is said once, and tried again later.
       const line = `crew watch: could not look for folders a removal left half done: ${reasonOf(error)}`;
@@ -828,6 +860,7 @@ export async function watchPass(
     lines,
     state: {
       noted,
+      removals,
       offset,
       said,
       ...(resumedAt === undefined ? {} : { resumedAt }),

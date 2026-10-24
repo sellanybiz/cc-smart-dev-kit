@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanGitEnv, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import * as machineFacts from "./machine-facts";
 import { isParkedWorktree, parkedOriginal } from "./scan";
 import { finishStrays, strayKeptWhy, strayParkedFolders } from "./scan-parked";
@@ -28,6 +28,7 @@ describe("leftover folder marks", () => {
 
   test("does not list a short mark as a stray", () => {
     const repo = tempDir("leftover-repo");
+    git(repo, "init", "-b", "main");
     mkdirSync(join(repo, ".claude", "worktrees"), { recursive: true });
     const unsafe = join(repo, ".claude", "worktrees", "crew-B1-removing-2");
     const safe = join(repo, ".claude", "worktrees", "crew-B1-help-removing-1761300000000");
@@ -45,7 +46,7 @@ describe("mount points", () => {
       "3 1 0:2 / /proc rw - proc proc rw",
       "4 1 0:3 / /work/heavy\\040jobs rw - tmpfs tmpfs rw",
       "5 1 0:4 / /work/slash\\134name rw - tmpfs tmpfs rw",
-    ].join("\\n");
+    ].join("\n");
     expect(machineFacts.parseMountPoints(text)).toEqual([
       "/",
       "/dev",
@@ -55,9 +56,34 @@ describe("mount points", () => {
     ]);
   });
 
+  test("rejects incomplete mount information", () => {
+    expect(machineFacts.parseMountPoints("")).toBeNull();
+    expect(machineFacts.parseMountPoints("broken")).toBeNull();
+    expect(machineFacts.parseMountPoints("1 0 8:1 / / rw - ext4 disk rw\ninvalid")).toBeNull();
+    expect(machineFacts.mountPoints("darwin")).toBe("unknown");
+  });
+
+  test("keeps a leftover whose files cannot be inspected", () => {
+    const root = tempDir("unreadable-leftover");
+    expect(strayKeptWhy({ path: join(root, "missing"), parkedAt: Date.now() }, QUIET)).toBe(
+      "its files could not all be read",
+    );
+  });
+
+  test("detects a same-disk bind mount from mountinfo", () => {
+    const dir = tempDir("bind-mount");
+    const mounts = machineFacts.parseMountPoints(
+      `1 0 8:1 / / rw - ext4 /dev/sda1 rw\n2 1 8:1 /source ${dir}/bound rw - ext4 /dev/sda1 rw\n`,
+    );
+    expect(mounts).toEqual(["/", `${dir}/bound`]);
+    expect(
+      strayKeptWhy({ path: dir, parkedAt: Date.now() }, { ...QUIET, mounts: mounts ?? "unknown" }),
+    ).toBe(`a mount point lies inside it: ${dir}/bound`);
+  });
+
   test("keeps a stray for a mount inside it, but not one above it", () => {
     const dir = tempDir("mount-why");
-    const stray = { path: dir, parkedAt: 1 };
+    const stray = { path: dir, parkedAt: Date.now() };
     const machine = { ...QUIET, mounts: ["/", join(dir, "sub")] };
     expect(strayKeptWhy(stray, machine)).toBe(`a mount point lies inside it: ${join(dir, "sub")}`);
     expect(strayKeptWhy(stray, { ...QUIET, mounts: [dir] })).toBe(
@@ -74,7 +100,7 @@ describe("mount points", () => {
     const folder = join(repo, "stray");
     mkdirSync(folder);
     writeFileSync(join(folder, "left.txt"), "left\n");
-    const stray = { path: folder, parkedAt: 1 };
+    const stray = { path: folder, parkedAt: Date.now() };
     const kept = finishStrays(
       repo,
       {
@@ -101,7 +127,7 @@ describe("mount points", () => {
     expect(existsSync(folder)).toBe(false);
   });
 
-  test("reads the Linux mount list", () => {
+  test.skipIf(process.platform !== "linux")("reads the Linux mount list", () => {
     expect(machineFacts.mountPoints()).toContain("/");
   });
 });

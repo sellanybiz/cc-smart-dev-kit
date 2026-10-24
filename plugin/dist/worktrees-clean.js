@@ -6887,9 +6887,9 @@ var LOCK_PORTS = {
 };
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync8, mkdtempSync, readdirSync as readdirSync7, rmSync as rmSync2, statSync as statSync7 } from "fs";
+import { existsSync as existsSync9, mkdtempSync, readdirSync as readdirSync8, rmSync as rmSync3, statSync as statSync7 } from "fs";
 import { tmpdir } from "os";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync6, readlinkSync as readlinkSync2 } from "fs";
@@ -6945,8 +6945,8 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8, statSync as statSync6 } from "fs";
-import { basename as basename3, isAbsolute, join as join11, resolve as resolve4 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync10, statSync as statSync6 } from "fs";
+import { basename as basename3, isAbsolute, join as join12, resolve as resolve4 } from "path";
 
 // src/crew/store.ts
 import {
@@ -7205,6 +7205,7 @@ function listCrew(stateDir, repo) {
   return listRecords(crewRecordSchema, join10(crewStoreDir(stateDir, repo), "crew"));
 }
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
@@ -7219,33 +7220,12 @@ var stopStateFields = object({
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
 
-// src/hooks/worktree-leftovers.ts
-function idleMinutesOrNull(worktree, now) {
-  let admin;
-  try {
-    admin = readFileSync8(join11(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
-  } catch {
-    return null;
-  }
-  if (!isAbsolute(admin))
-    admin = resolve4(worktree, admin);
-  let last = 0;
-  for (const file of ["index", "HEAD", join11("logs", "HEAD")]) {
-    try {
-      last = Math.max(last, statSync6(join11(admin, file)).mtimeMs);
-    } catch {}
-  }
-  return last === 0 ? null : (now - last) / 60000;
-}
-
-// src/workflow/review-cover.ts
-function parseGitVersion(out) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
-  return match === null ? null : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-}
+// src/worktrees/scan-parked.ts
+import { existsSync as existsSync7, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync9, rmSync as rmSync2 } from "fs";
+import { dirname as dirname5, join as join11, relative } from "path";
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync6, readlinkSync as readlinkSync3 } from "fs";
+import { readdirSync as readdirSync6, readFileSync as readFileSync8, readlinkSync as readlinkSync3 } from "fs";
 import { platform } from "os";
 var DOCKER_TIMEOUT_MS = 5000;
 var PROGRAMS_TIMEOUT_MS = 15000;
@@ -7487,6 +7467,30 @@ function runningPrograms(on = platform()) {
   }
   return programs;
 }
+function parseMountPoints(text) {
+  const mounts = [];
+  for (const line of text.split(`
+`)) {
+    if (line === "")
+      continue;
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    const destination = fields[4];
+    if (separator < 6 || fields.length < separator + 4 || !/^\d+$/.test(fields[0] ?? "") || !/^\d+$/.test(fields[1] ?? "") || !/^\d+:\d+$/.test(fields[2] ?? "") || destination === undefined || !destination.startsWith("/") || /\\(?!040|011|012|134)/.test(destination))
+      return null;
+    mounts.push(destination.replace(/\\(040|011|012|134)/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8))));
+  }
+  return mounts.includes("/") ? mounts : null;
+}
+function mountPoints(on = platform()) {
+  if (on !== "linux")
+    return "unknown";
+  try {
+    return parseMountPoints(readFileSync8("/proc/self/mountinfo", "utf8")) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 // src/worktrees/verdict.ts
 var MIN_MERGE_TREE_GIT = "2.38.0";
@@ -7577,8 +7581,239 @@ function programsWhy(names) {
   return names.length === 1 ? `a program runs from its files: ${shown}` : `programs run from its files: ${shown}${more}`;
 }
 
+// src/worktrees/scan-parked.ts
+function parkedAtOf(path) {
+  if (!isParkedWorktree(path))
+    return null;
+  const found = /-removing-(\d{13})$/.exec(path);
+  return found?.[1] === undefined ? null : Number(found[1]);
+}
+function strayParkedFolders(repo, env) {
+  let all;
+  try {
+    all = listWorktrees(repo, env);
+  } catch {
+    return [];
+  }
+  const folders = new Set([join11(repo, ".claude", "worktrees")]);
+  for (const listed of all.slice(1))
+    folders.add(dirname5(listed.path));
+  const found = [];
+  for (const folder of folders) {
+    let names;
+    try {
+      names = readdirSync7(folder);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const path = join11(folder, name);
+      const parkedAt = parkedAtOf(path);
+      if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
+        continue;
+      try {
+        if (!lstatSync3(path).isDirectory())
+          continue;
+      } catch {
+        continue;
+      }
+      found.push({ parkedAt, path });
+    }
+  }
+  return found.sort((a, b) => a.path.localeCompare(b.path));
+}
+var MTIME_SLACK_MS = 2000;
+var MAX_ENTRIES = 1e5;
+function walkLeftover(root, limitMs) {
+  const walk = {
+    crossesMount: false,
+    unreadable: false,
+    newer: { count: 0, first: [] },
+    tooMany: false
+  };
+  let rootDevice;
+  try {
+    rootDevice = lstatSync3(root).dev;
+  } catch {
+    walk.unreadable = true;
+    return walk;
+  }
+  const folders = [root];
+  let seen = 0;
+  for (let folder = folders.pop();folder !== undefined; folder = folders.pop()) {
+    let names;
+    try {
+      names = readdirSync7(folder);
+    } catch {
+      walk.unreadable = true;
+      continue;
+    }
+    for (const name of names) {
+      seen += 1;
+      if (seen > MAX_ENTRIES) {
+        walk.tooMany = true;
+        return walk;
+      }
+      const path = join11(folder, name);
+      let stat;
+      try {
+        stat = lstatSync3(path);
+      } catch {
+        walk.unreadable = true;
+        continue;
+      }
+      if (stat.dev !== rootDevice) {
+        walk.crossesMount = true;
+        continue;
+      }
+      if (stat.isDirectory()) {
+        folders.push(path);
+      } else if (stat.mtimeMs > limitMs) {
+        walk.newer.count += 1;
+        if (walk.newer.first.length < 3)
+          walk.newer.first.push(relative(root, path));
+      }
+    }
+  }
+  return walk;
+}
+function gitEntryWhy(folder) {
+  const dotGit = join11(folder, ".git");
+  let stat;
+  try {
+    stat = lstatSync3(dotGit);
+  } catch (error) {
+    return error.code === "ENOENT" ? null : "its .git entry cannot be read";
+  }
+  if (stat.isDirectory())
+    return "it holds a git repository of its own";
+  if (!stat.isFile())
+    return "its .git entry is neither a file nor a folder";
+  try {
+    const target = readFileSync9(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
+    return target !== "" && existsSync7(target) ? `git still has an administrative folder for it: ${target}` : null;
+  } catch {
+    return "its .git file cannot be read";
+  }
+}
+function strayKeptWhy(stray, machine) {
+  if (machine.mounts === "unknown")
+    return "its mount points could not be read, so it cannot be shown that nothing is mounted in it";
+  const mounted = machine.mounts.find((path) => isInside(realPath(path), realPath(stray.path)));
+  if (mounted !== undefined)
+    return `a mount point lies inside it: ${mounted}`;
+  const entry = gitEntryWhy(stray.path);
+  if (entry !== null)
+    return entry;
+  const session = machine.sessions.find((one) => isInside(realPath(one.cwd), realPath(stray.path)));
+  const facts = {
+    aheadOfBase: 0,
+    base: "",
+    containers: machine.containers === "unknown" ? "unknown" : containersUsing(stray.path, machine.containers),
+    gitTooOld: null,
+    idleMinutes: 0,
+    innerWorktree: null,
+    locked: false,
+    mergedBy: null,
+    parked: true,
+    programs: machine.programs === "unknown" ? "unknown" : programsInside(machine.programs, stray.path),
+    sessionName: session?.name ?? null
+  };
+  const judged = verdict(facts, () => ({ localFiles: [], uncommitted: false }), 0);
+  if (!judged.finished)
+    return judged.why;
+  const walk = walkLeftover(stray.path, stray.parkedAt + MTIME_SLACK_MS);
+  if (walk.unreadable)
+    return "its files could not all be read";
+  if (walk.crossesMount)
+    return "it crosses a mount point";
+  if (walk.tooMany)
+    return `it holds more than ${String(MAX_ENTRIES)} entries, too many for a remnant`;
+  if (walk.newer.count > 0) {
+    const more = walk.newer.count > walk.newer.first.length ? ` and ${String(walk.newer.count - walk.newer.first.length)} more` : "";
+    return `files were written in it after the removal moved it: ${walk.newer.first.join(", ")}${more}`;
+  }
+  return null;
+}
+function finishStrays(repo, options, say, strays = strayParkedFolders(repo, options.env)) {
+  const pass = { kept: [], removed: [] };
+  if (strays.length === 0)
+    return pass;
+  const machine = machineFactsOf(options);
+  for (const stray of strays) {
+    const why = strayKeptWhy(stray, machine);
+    if (why !== null) {
+      pass.kept.push({ path: stray.path, why });
+      continue;
+    }
+    try {
+      rmSync2(stray.path, { recursive: true });
+    } catch (error) {
+      pass.kept.push({
+        path: stray.path,
+        why: `it could not be removed: ${error instanceof Error ? error.message : String(error)}`
+      });
+      continue;
+    }
+    pass.removed.push(stray.path);
+    say(`removed ${stray.path} (left by a removal that stopped halfway; git no longer lists it)`);
+  }
+  return pass;
+}
+
+// src/worktrees/command.ts
+var DEFAULT_BASE = "main";
+function baseBranch(checkout, env, repo) {
+  if (checkout !== null) {
+    const config = loadProjectConfig(checkout).config;
+    const base = config?.worktrees?.base;
+    if (base !== undefined)
+      return { base, from: "config" };
+  }
+  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
+  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
+}
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
+function isCrewWorktree(worktree, records) {
+  if (worktree.state === "main" || worktree.state === "gone")
+    return false;
+  return crewOfWorktree(records, worktree.listed.path) !== null;
+}
+
+// src/hooks/worktree-leftovers.ts
+function idleMinutesOrNull(worktree, now) {
+  let admin;
+  try {
+    admin = readFileSync10(join12(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+  } catch {
+    return null;
+  }
+  if (!isAbsolute(admin))
+    admin = resolve4(worktree, admin);
+  let last = 0;
+  for (const file of ["index", "HEAD", join12("logs", "HEAD")]) {
+    try {
+      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
+    } catch {}
+  }
+  return last === 0 ? null : (now - last) / 60000;
+}
+
+// src/workflow/review-cover.ts
+function parseGitVersion(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  return match === null ? null : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+}
+
 // src/worktrees/scan.ts
-var PARKED_END = /(?:-removing-\d+)+$/;
+var PARKED_END = /(?:-removing-\d{13})+$/;
 function parkedOriginal(path) {
   const found = PARKED_END.exec(path);
   return found === null || found.index === 0 ? null : path.slice(0, found.index);
@@ -7596,17 +7831,17 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join12(worktree, ".claude", "worktrees");
+  const claudeOwn = join13(worktree, ".claude", "worktrees");
   let entries;
   try {
-    entries = readdirSync7(claudeOwn);
+    entries = readdirSync8(claudeOwn);
   } catch {
     return null;
   }
   for (const entry of entries) {
-    const folder = join12(claudeOwn, entry);
+    const folder = join13(claudeOwn, entry);
     try {
-      if (statSync7(folder).isDirectory() && readdirSync7(folder).length > 0)
+      if (statSync7(folder).isDirectory() && readdirSync8(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -7668,8 +7903,8 @@ function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);
   if (!common.ok || common.out === "")
     return null;
-  const dir = mkdtempSync(join12(tmpdir(), `${COMMAND}-worktrees-`));
-  const objects = join12(common.out, "objects");
+  const dir = mkdtempSync(join13(tmpdir(), `${COMMAND}-worktrees-`));
+  const objects = join13(common.out, "objects");
   return {
     dir,
     own: {
@@ -7695,7 +7930,7 @@ function replayOntoBase(repo, baseRef, head, env) {
       return "unknown";
     return tree === base.out ? "nothing" : "changes";
   } finally {
-    rmSync2(objects.dir, { recursive: true, force: true });
+    rmSync3(objects.dir, { recursive: true, force: true });
   }
 }
 function replayerFor(repo, env) {
@@ -7753,6 +7988,7 @@ function judgeOne(repo, listed, all, look, idle) {
 function machineFactsOf(options) {
   return {
     containers: options.facts?.containers ?? dockerMounts(),
+    mounts: options.facts?.mounts ?? mountPoints(),
     programs: options.facts?.programs ?? runningPrograms(),
     sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir)
   };
@@ -7788,7 +8024,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync8(listed.path)) {
+    if (listed.prunable || !existsSync9(listed.path)) {
       scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
@@ -7798,9 +8034,14 @@ function scanWorktrees(repo, options) {
   return scanned;
 }
 function removeWorktree(repo, listed, options) {
-  const all = listWorktrees(repo, options.env);
+  let all;
+  try {
+    all = listWorktrees(repo, options.env);
+  } catch {
+    return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
+  }
   const current = all.find((one) => samePath(one.path, listed.path));
-  if (current === undefined || !existsSync8(current.path)) {
+  if (current === undefined || !existsSync9(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -7944,199 +8185,6 @@ function cleanFinished(repo, scanned, judged, say, skip) {
     }
   }
   return { failed, forgotten, kept, removed };
-}
-
-// src/worktrees/scan-parked.ts
-import { existsSync as existsSync9, lstatSync as lstatSync3, readdirSync as readdirSync8, readFileSync as readFileSync9, rmSync as rmSync3 } from "fs";
-import { dirname as dirname5, join as join13, relative } from "path";
-function parkedAtOf(path) {
-  if (!isParkedWorktree(path))
-    return null;
-  const found = /-removing-(\d+)$/.exec(path);
-  return found?.[1] === undefined ? null : Number(found[1]);
-}
-function strayParkedFolders(repo, env) {
-  let all;
-  try {
-    all = listWorktrees(repo, env);
-  } catch {
-    return [];
-  }
-  const folders = new Set([join13(repo, ".claude", "worktrees")]);
-  for (const listed of all.slice(1))
-    folders.add(dirname5(listed.path));
-  const found = [];
-  for (const folder of folders) {
-    let names;
-    try {
-      names = readdirSync8(folder);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const path = join13(folder, name);
-      const parkedAt = parkedAtOf(path);
-      if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
-        continue;
-      try {
-        if (!lstatSync3(path).isDirectory())
-          continue;
-      } catch {
-        continue;
-      }
-      found.push({ parkedAt, path });
-    }
-  }
-  return found.sort((a, b) => a.path.localeCompare(b.path));
-}
-var MTIME_SLACK_MS = 2000;
-var MAX_ENTRIES = 1e5;
-function walkLeftover(root, limitMs) {
-  const walk = { crossesMount: false, newer: { count: 0, first: [] }, tooMany: false };
-  let rootDevice;
-  try {
-    rootDevice = lstatSync3(root).dev;
-  } catch {
-    return walk;
-  }
-  const folders = [root];
-  let seen = 0;
-  for (let folder = folders.pop();folder !== undefined; folder = folders.pop()) {
-    let names;
-    try {
-      names = readdirSync8(folder);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      seen += 1;
-      if (seen > MAX_ENTRIES) {
-        walk.tooMany = true;
-        return walk;
-      }
-      const path = join13(folder, name);
-      let stat;
-      try {
-        stat = lstatSync3(path);
-      } catch {
-        continue;
-      }
-      if (stat.dev !== rootDevice) {
-        walk.crossesMount = true;
-        continue;
-      }
-      if (stat.isDirectory()) {
-        folders.push(path);
-      } else if (stat.mtimeMs > limitMs) {
-        walk.newer.count += 1;
-        if (walk.newer.first.length < 3)
-          walk.newer.first.push(relative(root, path));
-      }
-    }
-  }
-  return walk;
-}
-function gitEntryWhy(folder) {
-  const dotGit = join13(folder, ".git");
-  let stat;
-  try {
-    stat = lstatSync3(dotGit);
-  } catch {
-    return null;
-  }
-  if (stat.isDirectory())
-    return "it holds a git repository of its own";
-  if (!stat.isFile())
-    return "its .git entry is neither a file nor a folder";
-  try {
-    const target = readFileSync9(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
-    return target !== "" && existsSync9(target) ? `git still has an administrative folder for it: ${target}` : null;
-  } catch {
-    return "its .git file cannot be read";
-  }
-}
-function strayKeptWhy(stray, machine) {
-  const entry = gitEntryWhy(stray.path);
-  if (entry !== null)
-    return entry;
-  const session = machine.sessions.find((one) => isInside(realPath(one.cwd), realPath(stray.path)));
-  const facts = {
-    aheadOfBase: 0,
-    base: "",
-    containers: machine.containers === "unknown" ? "unknown" : containersUsing(stray.path, machine.containers),
-    gitTooOld: null,
-    idleMinutes: 0,
-    innerWorktree: null,
-    locked: false,
-    mergedBy: null,
-    parked: true,
-    programs: machine.programs === "unknown" ? "unknown" : programsInside(machine.programs, stray.path),
-    sessionName: session?.name ?? null
-  };
-  const judged = verdict(facts, () => ({ localFiles: [], uncommitted: false }), 0);
-  if (!judged.finished)
-    return judged.why;
-  const walk = walkLeftover(stray.path, stray.parkedAt + MTIME_SLACK_MS);
-  if (walk.crossesMount)
-    return "it crosses a mount point";
-  if (walk.tooMany)
-    return `it holds more than ${String(MAX_ENTRIES)} entries, too many for a remnant`;
-  if (walk.newer.count > 0) {
-    const more = walk.newer.count > walk.newer.first.length ? ` and ${String(walk.newer.count - walk.newer.first.length)} more` : "";
-    return `files were written in it after the removal moved it: ${walk.newer.first.join(", ")}${more}`;
-  }
-  return null;
-}
-function finishStrays(repo, options, say, strays = strayParkedFolders(repo, options.env)) {
-  const pass = { kept: [], removed: [] };
-  if (strays.length === 0)
-    return pass;
-  const machine = machineFactsOf(options);
-  for (const stray of strays) {
-    const why = strayKeptWhy(stray, machine);
-    if (why !== null) {
-      pass.kept.push({ path: stray.path, why });
-      continue;
-    }
-    try {
-      rmSync3(stray.path, { recursive: true });
-    } catch (error) {
-      pass.kept.push({
-        path: stray.path,
-        why: `it could not be removed: ${error instanceof Error ? error.message : String(error)}`
-      });
-      continue;
-    }
-    pass.removed.push(stray.path);
-    say(`removed ${stray.path} (left by a removal that stopped halfway; git no longer lists it)`);
-  }
-  return pass;
-}
-
-// src/worktrees/command.ts
-var DEFAULT_BASE = "main";
-function baseBranch(checkout, env, repo) {
-  if (checkout !== null) {
-    const config = loadProjectConfig(checkout).config;
-    const base = config?.worktrees?.base;
-    if (base !== undefined)
-      return { base, from: "config" };
-  }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
-  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
-}
-function crewRecordsOf(paths, repo) {
-  try {
-    return listCrew(paths.stateDir, repo).records;
-  } catch {
-    return [];
-  }
-}
-function isCrewWorktree(worktree, records) {
-  if (worktree.state === "main" || worktree.state === "gone")
-    return false;
-  return crewOfWorktree(records, worktree.listed.path) !== null;
 }
 
 // src/worktrees/auto-clean.ts

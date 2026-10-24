@@ -33,6 +33,7 @@
 import { existsSync } from "node:fs";
 import { tildify } from "../cli/paths";
 import { hasChanges, listWorktrees, runGit, samePath } from "../hooks/git";
+import { holdCleanLock } from "../worktrees/clean";
 import {
   deleteBranchOnRef,
   isParkedWorktree,
@@ -51,15 +52,17 @@ import {
   claudeFailure,
   commitsNotOn,
   failure,
+  findOwnLeftovers,
   GIT_TIMEOUT_MS,
   leadRef,
   markState,
   mergedIntoBase,
+  programsWithoutOwn,
   reasonOf,
   refuse,
   relative,
   sessionUnknown,
-  stopLeftoverProcesses,
+  stopOwnLeftovers,
   stopSession,
 } from "./end";
 import { appendCrewEvent, listCrew } from "./store";
@@ -70,7 +73,11 @@ function commits(count: number): string {
 }
 
 /** `crew rm <name|id>`; the exit code. */
-export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> {
+export async function runCrewRm(
+  ref: string,
+  ctx: CrewContext,
+  options: { skipParked?: boolean } = {},
+): Promise<number> {
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
@@ -88,6 +95,10 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   // 2. The lead's branch decides whether the work is kept (D24).
   const lead = leadRef(record, ctx);
   if ("why" in lead) return refuse(failure(`crew rm: ${lead.why}`), ctx);
+  const mergeStep =
+    lead.folder === null
+      ? `merge ${record.branch} into ${lead.label}`
+      : `git merge ${record.branch}, in ${lead.folder}`;
   const branchThere = runGit(
     repo,
     ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`],
@@ -100,7 +111,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
       return refuse(
         failure(
           `crew rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`,
-          `Fix: merge it first (git merge ${record.branch}, in ${lead.folder}) so that it is an ancestor, then run crew rm again`,
+          `Fix: ${mergeStep} so that it is an ancestor, then run crew rm again`,
         ),
         ctx,
       );
@@ -113,7 +124,9 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         return refuse(
           failure(
             `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
-            `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`,
+            lead.folder === null
+              ? `Fix: the lead must ${mergeStep}, then run crew rm again`
+              : `Fix: the lead merges it first (${mergeStep}), then run crew rm again`,
           ),
           ctx,
         );
@@ -210,28 +223,27 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
 
   // 5b. A finished crew session's own leftover programs are not a reason to keep it (D62):
   // the check, the test run its turn left going. Only when every program there is its own —
-  // the session is gone or stopped, and each descends from it or carries its crew id (or, where
-  // that cannot be read, started while it lived); one line says what went. A program that is
+  // the session is gone or stopped, and each has a readable environment carrying its crew id;
+  // an unreadable environment is never proof. One line says what went. A program that is
   // not the session's stays, and the verdict below keeps the worktree with its reason, as before.
-  const leftovers = await stopLeftoverProcesses(record, ctx);
-  if (leftovers.line !== null) ctx.print(leftovers.line);
-  // The verdict judges the worktree by the programs left after the stop. A test hands in its
-  // own list; on the real machine the scan reads the processes again, after the signals.
-  const facts =
-    ctx.scanFacts === undefined ? undefined : { ...ctx.scanFacts, programs: leftovers.programs };
+  const leftovers = findOwnLeftovers(record, ctx);
+  // Judge every other blocker before stopping any owned program.
+  const facts = { ...ctx.scanFacts, programs: programsWithoutOwn(leftovers) };
 
   // 5c. A removal that stopped halfway left a folder at `<path>-removing-<time>` (D62): git
   // lists it there and the record still names the old path, or git lists it no more and half of
   // it stays. Finish them now, under the same safe checks — this record's and any other's — so
   // none is left behind. This record's own, if it stays, refuses the command: the record is about
   // to say removed, and nothing would come back for the folder.
-  const finished = finishParkedWorktrees(
-    repo,
-    ctx,
-    { label: lead.label, ref: lead.sha },
-    (line) => ctx.print(line),
-    facts,
-  );
+  const finished = options.skipParked
+    ? { kept: [], removed: [] }
+    : await finishParkedWorktrees(
+        repo,
+        ctx,
+        { label: lead.label, ref: lead.sha },
+        (line) => ctx.print(line),
+        facts,
+      );
   const stuck = finished.kept.find((one) => {
     const original = parkedOriginal(one.path);
     return original !== null && samePath(original, record.worktree);
@@ -276,6 +288,8 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
           ),
         );
       }
+      const stopped = await stopOwnLeftovers(record, leftovers, ctx);
+      if (stopped.line !== null) ctx.print(stopped.line);
       const removal = removeWorktree(repo, judged.listed, {
         against: { label: lead.label, ref: lead.sha },
         base: lead.label,
@@ -383,52 +397,64 @@ export interface ParkedWorktreesPass {
  * stopped a finished session's own programs. Nothing is said about a folder that stays — the
  * caller reads `kept` — because the next pass judges it again.
  */
-export function finishParkedWorktrees(
+export async function finishParkedWorktrees(
   repo: string,
   ctx: CrewContext,
   base: null | { label: string; ref: string },
   say: (line: string) => void,
   facts: CrewContext["scanFacts"] = ctx.scanFacts,
-): ParkedWorktreesPass {
-  const pass: ParkedWorktreesPass = { kept: [], removed: [] };
-  const options = {
-    claudeConfigDir: ctx.paths.claudeConfigDir,
-    env: ctx.env,
-    ...(facts === undefined ? {} : { facts }),
-    idleLimit: 0,
-  };
-  const parked = listWorktrees(repo, ctx.env).filter((one) => isParkedWorktree(one.path));
-  if (parked.length > 0) {
-    const records = listCrew(ctx.paths.stateDir, repo).records;
-    // One scan per ref: a whole scan is judged against one branch.
-    const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
-    for (const one of parked) {
-      const original = parkedOriginal(one.path) ?? one.path;
-      const record = records.find((two) => samePath(two.worktree, original));
-      let chosen: null | { label: string; ref: string } = null;
-      if (record !== undefined) {
-        const lead = leadRef(record, ctx);
-        if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+): Promise<ParkedWorktreesPass> {
+  const lock = await holdCleanLock();
+  if (lock === null)
+    return { kept: [{ path: repo, why: "another worktree clean is running" }], removed: [] };
+  try {
+    const pass: ParkedWorktreesPass = { kept: [], removed: [] };
+    const options = {
+      claudeConfigDir: ctx.paths.claudeConfigDir,
+      env: ctx.env,
+      ...(facts === undefined ? {} : { facts }),
+      idleLimit: 0,
+    };
+    let parked: ReturnType<typeof listWorktrees>;
+    try {
+      parked = listWorktrees(repo, ctx.env).filter((one) => isParkedWorktree(one.path));
+    } catch (error) {
+      return { kept: [{ path: repo, why: reasonOf(error) }], removed: [] };
+    }
+    if (parked.length > 0) {
+      const records = listCrew(ctx.paths.stateDir, repo).records;
+      // One scan per ref: a whole scan is judged against one branch.
+      const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
+      for (const one of parked) {
+        const original = parkedOriginal(one.path) ?? one.path;
+        const record = records.find((two) => samePath(two.worktree, original));
+        let chosen: null | { label: string; ref: string } = null;
+        if (record !== undefined) {
+          const lead = leadRef(record, ctx);
+          if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+        }
+        chosen = chosen ?? base;
+        if (chosen === null) continue;
+        const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
+        group.paths.push(one.path);
+        groups.set(chosen.ref, group);
       }
-      chosen = chosen ?? base;
-      if (chosen === null) continue;
-      const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
-      group.paths.push(one.path);
-      groups.set(chosen.ref, group);
+      for (const group of groups.values()) {
+        const done = finishParked(
+          repo,
+          group.paths,
+          { ...options, against: { label: group.label, ref: group.ref }, base: group.label },
+          say,
+        );
+        pass.removed.push(...done.removed);
+        pass.kept.push(...done.kept);
+      }
     }
-    for (const group of groups.values()) {
-      const done = finishParked(
-        repo,
-        group.paths,
-        { ...options, against: { label: group.label, ref: group.ref }, base: group.label },
-        say,
-      );
-      pass.removed.push(...done.removed);
-      pass.kept.push(...done.kept);
-    }
+    const strays = finishStrays(repo, { ...options, base: base?.label ?? "" }, say);
+    pass.removed.push(...strays.removed);
+    pass.kept.push(...strays.kept);
+    return pass;
+  } finally {
+    lock.close();
   }
-  const strays = finishStrays(repo, { ...options, base: base?.label ?? "" }, say);
-  pass.removed.push(...strays.removed);
-  pass.kept.push(...strays.kept);
-  return pass;
 }

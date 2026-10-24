@@ -39,9 +39,10 @@
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { type CrewRecord, crewOfWorktree, listCrew } from "../crew/store";
+import { crewOfWorktree } from "../crew/store";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
+import { crewRecordsOf } from "../worktrees/command";
 import { isAttended } from "./attended";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -306,12 +307,7 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   // The crew store's worktrees are their leads' to remove (`crew rm`, or the watch once the
   // branch is merged): `--clean` keeps them, so naming one sends the person to a command that
   // does nothing (D62). A store that cannot be read names none, and every other rule stands.
-  let crewRecords: CrewRecord[] = [];
-  try {
-    crewRecords = listCrew(paths.stateDir, repo).records;
-  } catch {
-    crewRecords = [];
-  }
+  const crewRecords = crewRecordsOf(paths, repo);
   const finished: ListedWorktree[] = [];
   const gone: ListedWorktree[] = [];
   for (const listed of linked) {

@@ -9,14 +9,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSy
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
-import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { OTHER_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
 import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses } from "./end";
 import {
-  appendCrewEvent,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
@@ -936,7 +935,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     commitWork(worktree);
     leadMerges(world.repo, branch);
     // What `removeWorktree` leaves when git could not remove the folder it moved aside.
-    const parked = `${worktree}-removing-1234`;
+    const parked = `${worktree}-removing-1761300000000`;
     git(world.repo, "worktree", "move", worktree, parked);
     expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
     expect(existsSync(parked)).toBe(false);

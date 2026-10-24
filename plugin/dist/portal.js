@@ -21831,6 +21831,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
@@ -28101,12 +28102,7 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
-  let crewRecords = [];
-  try {
-    crewRecords = listCrew(paths.stateDir, repo).records;
-  } catch {
-    crewRecords = [];
-  }
+  const crewRecords = crewRecordsOf(paths, repo);
   const finished = [];
   const gone = [];
   for (const listed of linked) {
@@ -28401,6 +28397,15 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
+
 // src/crew/board.ts
 function findNamed(records, ref, look) {
   const plain = withoutListRef(ref);

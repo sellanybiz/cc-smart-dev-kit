@@ -107,7 +107,7 @@ export interface StrayFolder {
 /** The time in the last mark of a moved-aside folder's name, or null when it carries none. */
 function parkedAtOf(path: string): null | number {
   if (!isParkedWorktree(path)) return null;
-  const found = /-removing-(\d+)$/.exec(path);
+  const found = /-removing-(\d{13})$/.exec(path);
   return found?.[1] === undefined ? null : Number(found[1]);
 }
 
@@ -159,6 +159,7 @@ const MAX_ENTRIES = 100_000;
 /** What a walk of a leftover folder found. */
 interface Walk {
   crossesMount: boolean;
+  unreadable: boolean;
   /** Files written after the move: how many, and the first few by name. */
   newer: { count: number; first: string[] };
   tooMany: boolean;
@@ -170,11 +171,17 @@ interface Walk {
  * the removal's own work. A file's time does not move then.
  */
 function walkLeftover(root: string, limitMs: number): Walk {
-  const walk: Walk = { crossesMount: false, newer: { count: 0, first: [] }, tooMany: false };
+  const walk: Walk = {
+    crossesMount: false,
+    unreadable: false,
+    newer: { count: 0, first: [] },
+    tooMany: false,
+  };
   let rootDevice: number;
   try {
     rootDevice = lstatSync(root).dev;
   } catch {
+    walk.unreadable = true;
     return walk;
   }
   const folders = [root];
@@ -184,6 +191,7 @@ function walkLeftover(root: string, limitMs: number): Walk {
     try {
       names = readdirSync(folder);
     } catch {
+      walk.unreadable = true;
       continue;
     }
     for (const name of names) {
@@ -197,6 +205,7 @@ function walkLeftover(root: string, limitMs: number): Walk {
       try {
         stat = lstatSync(path);
       } catch {
+        walk.unreadable = true;
         continue;
       }
       if (stat.dev !== rootDevice) {
@@ -220,9 +229,11 @@ function gitEntryWhy(folder: string): null | string {
   let stat: Stats;
   try {
     stat = lstatSync(dotGit);
-  } catch {
-    // No `.git` at all: git deleted it with the registration, as it does.
-    return null;
+  } catch (error) {
+    // Only an absent entry proves git left no bookkeeping behind.
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? null
+      : "its .git entry cannot be read";
   }
   if (stat.isDirectory()) return "it holds a git repository of its own";
   if (!stat.isFile()) return "its .git entry is neither a file nor a folder";
@@ -245,6 +256,10 @@ function gitEntryWhy(folder: string): null | string {
  * registration, and no file in it is newer than its move.
  */
 export function strayKeptWhy(stray: StrayFolder, machine: MachineFacts): null | string {
+  if (machine.mounts === "unknown")
+    return "its mount points could not be read, so it cannot be shown that nothing is mounted in it";
+  const mounted = machine.mounts.find((path) => isInside(realPath(path), realPath(stray.path)));
+  if (mounted !== undefined) return `a mount point lies inside it: ${mounted}`;
   const entry = gitEntryWhy(stray.path);
   if (entry !== null) return entry;
   const session = machine.sessions.find((one) => isInside(realPath(one.cwd), realPath(stray.path)));
@@ -268,6 +283,7 @@ export function strayKeptWhy(stray: StrayFolder, machine: MachineFacts): null | 
   const judged = verdict(facts, () => ({ localFiles: [], uncommitted: false }), 0);
   if (!judged.finished) return judged.why;
   const walk = walkLeftover(stray.path, stray.parkedAt + MTIME_SLACK_MS);
+  if (walk.unreadable) return "its files could not all be read";
   if (walk.crossesMount) return "it crosses a mount point";
   if (walk.tooMany)
     return `it holds more than ${String(MAX_ENTRIES)} entries, too many for a remnant`;

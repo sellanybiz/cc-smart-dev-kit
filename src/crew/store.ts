@@ -1204,9 +1204,11 @@ export interface WatchState {
    * minutes, not on every pass (D62). Absent on a state a kit wrote before the field.
    */
   parkedAt?: number | undefined;
+  removals?: Record<string, { at: number; signature: string }> | undefined;
 }
 
 const watchStateFields = z.object({
+  removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
   parkedAt: z.number().int().min(0).optional(),
   noted: z.boolean().default(false),
   offset: count,

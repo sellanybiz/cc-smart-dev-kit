@@ -1523,7 +1523,7 @@ describe("the worktrees command", () => {
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
     // What `removeWorktree` leaves when `git worktree remove` fails on the folder it moved
     // aside: no crew record names the parked path, and the move itself is the removal's touch.
-    const parked = `${worktree}-removing-1234`;
+    const parked = `${worktree}-removing-1761300000000`;
     git(main, "worktree", "move", worktree, parked);
     const out: string[] = [];
     const sinks = {

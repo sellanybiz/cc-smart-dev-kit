@@ -29,6 +29,7 @@ import {
   type ContainerMounts,
   containersUsing,
   dockerMounts,
+  mountPoints,
   programsInside,
   type RunningProgram,
   runningPrograms,
@@ -48,7 +49,7 @@ import {
  * stopped halfway, and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it
  * (D62). An older kit moved such a folder aside again, so the mark may stand more than once.
  */
-const PARKED_END = /(?:-removing-\d+)+$/;
+const PARKED_END = /(?:-removing-\d{13})+$/;
 
 /** The folder a half-done removal moved aside was at, or null when `path` is not one. */
 export function parkedOriginal(path: string): null | string {
@@ -184,6 +185,7 @@ export interface ScanOptions {
   /** A test hands in fakes; the default reads this machine. */
   facts?: {
     containers?: "unknown" | ContainerMounts[];
+    mounts?: "unknown" | string[];
     programs?: "unknown" | RunningProgram[];
     sessions?: SessionRecord[];
   };
@@ -467,6 +469,7 @@ function judgeOne(
 
 /** What this machine says about the Docker containers, the programs and the sessions at work. */
 export interface MachineFacts {
+  mounts: "unknown" | string[];
   containers: "unknown" | ContainerMounts[];
   programs: "unknown" | RunningProgram[];
   sessions: SessionRecord[];
@@ -479,6 +482,7 @@ export interface MachineFacts {
 export function machineFactsOf(options: ScanOptions): MachineFacts {
   return {
     containers: options.facts?.containers ?? dockerMounts(),
+    mounts: options.facts?.mounts ?? mountPoints(),
     programs: options.facts?.programs ?? runningPrograms(),
     sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
   };
@@ -577,7 +581,12 @@ export function removeWorktree(
 ): Removal {
   // The listing is read again too: a worktree's head moves when a session commits, and a
   // verdict on the head the scan saw would miss exactly that.
-  const all = listWorktrees(repo, options.env);
+  let all: ListedWorktree[];
+  try {
+    all = listWorktrees(repo, options.env);
+  } catch {
+    return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
+  }
   const current = all.find((one) => samePath(one.path, listed.path));
   if (current === undefined || !existsSync(current.path)) {
     return {

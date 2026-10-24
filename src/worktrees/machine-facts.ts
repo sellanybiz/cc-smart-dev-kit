@@ -32,7 +32,7 @@
  * this came from did — and a folder a program still uses cannot be renamed there anyway, so
  * the move that starts a removal fails and nothing is touched.
  */
-import { readdirSync, readlinkSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { IGNORE_CASE, isInside, realPath } from "../hooks/git";
 
@@ -495,4 +495,42 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
     else known.cwd = cwd;
   }
   return programs;
+}
+
+/** Mount destinations from Linux mountinfo, including same-device bind mounts. */
+export function parseMountPoints(text: string): string[] | null {
+  const mounts: string[] = [];
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    const destination = fields[4];
+    if (
+      separator < 6 ||
+      fields.length < separator + 4 ||
+      !/^\d+$/.test(fields[0] ?? "") ||
+      !/^\d+$/.test(fields[1] ?? "") ||
+      !/^\d+:\d+$/.test(fields[2] ?? "") ||
+      destination === undefined ||
+      !destination.startsWith("/") ||
+      /\\(?!040|011|012|134)/.test(destination)
+    )
+      return null;
+    mounts.push(
+      destination.replace(/\\(040|011|012|134)/g, (_, octal: string) =>
+        String.fromCharCode(Number.parseInt(octal, 8)),
+      ),
+    );
+  }
+  return mounts.includes("/") ? mounts : null;
+}
+
+/** Unknown on unsupported systems or an unreadable listing: never assume no mounts. */
+export function mountPoints(on: NodeJS.Platform = platform()): "unknown" | string[] {
+  if (on !== "linux") return "unknown";
+  try {
+    return parseMountPoints(readFileSync("/proc/self/mountinfo", "utf8")) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }

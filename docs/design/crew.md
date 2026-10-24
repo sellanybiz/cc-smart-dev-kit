@@ -409,10 +409,10 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   left running are stopped too** — SIGTERM, a 3 s grace, then SIGKILL, one line said — when the
   session is gone or stopped and every program there is the session's own (`stopLeftoverProcesses`,
   the one function `crew rm` and the watch's removal share). A program is its own when it
-  descends from the session, or when its environment carries the session's crew id —
-  everything its Bash started inherits `CC_SMART_DEV_KIT_CREW`, and keeps it when init adopts it
-  after the session ends (`/proc/<pid>/environ`, Linux) — and, where the environment cannot be
-  read, when it started while the session lived. A program that is not — a shell or a dev
+  has a readable environment carrying the session's crew id — everything its Bash started
+  inherits `CC_SMART_DEV_KIT_CREW`, and keeps it when init adopts it after the session ends
+  (`/proc/<pid>/environ`, Linux). An unreadable environment is never proof, including on macOS.
+  The verdict first ignores those owned programs; only a finished verdict permits stopping them. A program that is not — a shell or a dev
   server the person started there, however long it has run, another crew session's program, a
   container — keeps the worktree, as before, and one such program keeps them all; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges

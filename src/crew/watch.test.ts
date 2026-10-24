@@ -956,6 +956,16 @@ describe("crew watch", () => {
     }
   });
 
+  test("a merged record with a deleted branch is removed on the next pass", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "merged", { shortId: null });
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
+    );
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
+  });
+
   test("D35: a merged one with uncommitted work is kept, with one line said once", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");
