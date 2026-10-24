@@ -43,6 +43,7 @@ import {
   projectStateOf,
 } from "./commands-project";
 import {
+  aliasesAtClaudeSlots,
   breakerOn,
   breakerWords,
   ConfigError,
@@ -65,7 +66,13 @@ import {
   saveConfig,
   workerJudgeTargets,
 } from "./config";
-import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
+import {
+  type HealthFetch,
+  type HealthProbe,
+  routerFeature,
+  routerHealth,
+  routerLacksClaudeSlotAliases,
+} from "./health";
 import { HISTORY_RETENTION_DAYS, historyDbBytes, historyDbExists } from "./history";
 import {
   bucketWords,
@@ -1500,6 +1507,41 @@ function slotChangeLines(plan: SlotPlan): string[] {
 /** The verdict of every command that changes a slot: the config is read at each request. */
 const ROUTER_TAKES_IT = "The router uses it from its next request.";
 
+/** The verdict when no running router could be asked: saved, and read by the one that runs next. */
+const SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+
+/**
+ * Before `gateway slot` saves: will the router that runs read this config? 1.2.0 accepts an
+ * alias that points at a slot in Claude mode; a 1.1.x router (the one still running until
+ * `gateway setup` replaces it) refuses the whole file, keeps its last good config and ignores
+ * every later change. The router carries no version, so its health page's features say
+ * (`routerFeature`). An older router refuses the change before anything is written; one that
+ * does not answer cannot say, so the change is saved with a warning (`unproved`). A config with
+ * no such alias asks no router.
+ */
+async function routerReadsAliases(
+  ctx: GatewayContext,
+  out: Out,
+  config: GatewayConfig,
+): Promise<{ unproved: boolean }> {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined) return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line(
+      "warn",
+      `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" → ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`,
+    );
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(
+      `${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`,
+    );
+  }
+  return { unproved: false };
+}
+
 /** A slot's change: its first line marked `~`, the lines under it as they are (indented). */
 function printSlotChange(out: Out, lines: readonly string[]): void {
   const [first, ...rest] = lines;
@@ -1530,6 +1572,8 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
   const out = gatewayOut(ctx);
+  // The router is asked outside the lock, like the model lists: it is the network.
+  const router = await routerReadsAliases(ctx, out, first.config);
   /** Each target that passed the test, and the backend URL it passed on. */
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
@@ -1616,7 +1660,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     }
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {

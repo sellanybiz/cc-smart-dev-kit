@@ -2960,8 +2960,8 @@ describe("local-only guard", () => {
       breakers: {},
       cooling: {},
       fallbacks: 0,
-      // This router knows profiles (D29), and this config sets none.
-      features: ["profiles"],
+      // This router knows profiles (D29) and an alias at a slot in Claude mode; this config sets none.
+      features: ["profiles", "claude-slot-aliases"],
       ok: true,
       port: 20100,
       profiles: [],
@@ -6800,7 +6800,7 @@ describe("profiles: the /p/<profile> path (D29)", () => {
       slots: Record<string, string[]>;
     };
     expect(body.ok).toBe(true);
-    expect(body.features).toEqual(["profiles"]);
+    expect(body.features).toEqual(["profiles", "claude-slot-aliases"]);
     expect(body.profiles).toEqual(["held", "proj", "two"]);
     // The slots are the machine's: the profile changes what its own requests see.
     expect(body.slots[WORKER]).toEqual(["claude-sonnet-5-5"]);

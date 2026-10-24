@@ -147,7 +147,8 @@ http://127.0.0.1:20100/p/my-project
   name the path carried, and null for the machine's default. A database from before the column
   keeps every row, and those rows read as null. The history's reader filters by it
   (`HistoryFilters.profile`).
-- **The health page names what this router knows**: `features: ["profiles"]`, and `profiles`
+- **The health page names what this router knows**: `features: ["profiles",
+  "claude-slot-aliases"]` (the second: § Aliases), and `profiles`
   lists the configured names. A command or the portal reads it to tell a running router that
   knows profiles from an older one, which carries no version. One reader asks it
   (`routerFeature`, `src/gateway/health.ts`): after the background self-update the CLI is new
@@ -1198,6 +1199,16 @@ A config may map old model names to new ones:
   request under such an alias while the slot is Claude gets the answer a slot-named request
   gets: the 400 that says what to do (the router never picks a Claude model for it). A
   machine's own slot that is cleared is no slot any more: its alias goes first.
+- **A 1.1.x router refuses such a file.** Its schema wants an alias's slot in `slots`, so it
+  logs the error, keeps its last good config and ignores every later change; restarted, it
+  comes up with every slot off. The router that runs after the background update may still be
+  that copy (`gateway setup` replaces it), and it carries no version, so the health page lists
+  `claude-slot-aliases` among its `features` and `gateway slot` asks for it before it saves a
+  config that has such an alias (`aliasesAtClaudeSlots`). An older router refuses the change
+  before anything is written, with `gateway setup` as the fix (the portal's slot actions run
+  the same command, so they refuse too). A router that does not answer cannot say: the change
+  is saved, with a warning, and the verdict does not claim the router uses it. A config with no
+  such alias asks no router.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
 - **The plugin ships no aliases.** A project that moves from its own gateway writes them
   in its migration, and removes them once every machine uses the new names. The one the

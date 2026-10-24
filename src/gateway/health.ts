@@ -99,6 +99,19 @@ export function routerLacksProfiles(port: number): string {
 }
 
 /**
+ * Why a config with an alias at a slot in Claude mode would be ignored by the router running
+ * on `port`: it answers, but from before `claude-slot-aliases`. A 1.1.x router refuses the
+ * whole file for such an alias, keeps its last good config, and ignores every later change.
+ * `alias` is the first one `aliasesAtClaudeSlots` found.
+ */
+export function routerLacksClaudeSlotAliases(
+  port: number,
+  alias: readonly [string, string],
+): string {
+  return `the router running on 127.0.0.1:${port} is an older copy that refuses an alias to a slot that is Claude (alias "${alias[0]}" → ${alias[1]}), so it would keep its old config and ignore this change`;
+}
+
+/**
  * True when nothing listens on the port: the connection was refused. Bun's `fetch` says so
  * with `code: "ConnectionRefused"`; Node's with `ECONNREFUSED`. One home, also read by the
  * portal's probe (`src/portal/health.ts`).

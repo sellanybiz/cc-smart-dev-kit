@@ -66,7 +66,13 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
 - **`gateway slot <slot> claude` works on a machine with old slot names.** An alias that
   pointed at a slot (`migrate` writes them) made the move fail and write nothing, because a
   slot in Claude mode is not in `slots`. An alias to a slot now stays valid in both modes; a
-  request under it while the slot is Claude gets the 400 that says what to do.
+  request under it while the slot is Claude gets the 400 that says what to do. Until
+  `gateway setup` has replaced a 1.1.x router that still runs, the command refuses that move
+  before it writes anything (the old router would refuse the file, keep its last config and
+  ignore every later change), and names `gateway setup`; the router's health page now lists
+  `claude-slot-aliases` so the command can tell. This is a change to `router.js`, which
+  1.2.0's `gateway setup` installs anyway. If the router does not answer, the change is saved
+  with a warning.
 
 - **claude-mem's route, key and fallback are yours to change — from the portal or your own
   terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every

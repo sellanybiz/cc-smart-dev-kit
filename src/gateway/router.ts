@@ -329,8 +329,11 @@ export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
  * router carries no version, so a command or the portal tells a running router that knows a
  * feature from one that does not by this list, never by guessing. `profiles`: a project's
  * `…/p/<profile>` path names its own chains (owner D29, `docs/gateway.md` § Profiles).
+ * `claude-slot-aliases`: the config may hold an alias that points at a slot in Claude mode (a
+ * slot not in `slots`); a 1.1.x router refuses such a file, keeps its last good config and
+ * ignores every later change (`aliasesAtClaudeSlots`, `gateway slot`).
  */
-export const ROUTER_FEATURES = ["profiles"] as const;
+export const ROUTER_FEATURES = ["profiles", "claude-slot-aliases"] as const;
 
 /** How many routed requests the health answer lists (`recent`), the last ones first in. */
 export const RECENT_MAX = 200;

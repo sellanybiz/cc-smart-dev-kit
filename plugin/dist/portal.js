@@ -7688,6 +7688,9 @@ function aliasError(name, to, config) {
   }
   return null;
 }
+function aliasesAtClaudeSlots(config) {
+  return Object.entries(config.aliases).filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to)).sort(([a], [b]) => a < b ? -1 : 1);
+}
 function slotMode(config, slot) {
   return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
 }
@@ -9352,7 +9355,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
-var ROUTER_FEATURES = ["profiles"];
+var ROUTER_FEATURES = ["profiles", "claude-slot-aliases"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -11326,6 +11329,9 @@ async function routerFeature(port, feature, fetchImpl) {
 }
 function routerLacksProfiles(port) {
   return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
+function routerLacksClaudeSlotAliases(port, alias) {
+  return `the router running on 127.0.0.1:${port} is an older copy that refuses an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}), so it would keep its old config and ignore this change`;
 }
 function isConnectionRefused(error) {
   if (typeof error !== "object" || error === null || !("code" in error))
@@ -20614,6 +20620,21 @@ function slotChangeLines(plan) {
   return lines;
 }
 var ROUTER_TAKES_IT = "The router uses it from its next request.";
+var SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+async function routerReadsAliases(ctx, out, config) {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined)
+    return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line("warn", `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`);
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(`${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`);
+  }
+  return { unproved: false };
+}
 function printSlotChange(out, lines) {
   const [first, ...rest] = lines;
   if (first !== undefined)
@@ -20645,6 +20666,7 @@ async function commandSlot(ctx, args) {
   if ("error" in first)
     throw new Error(first.error);
   const out = gatewayOut(ctx);
+  const router = await routerReadsAliases(ctx, out, first.config);
   const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
@@ -20701,7 +20723,7 @@ async function commandSlot(ctx, args) {
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {

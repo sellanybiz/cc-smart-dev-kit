@@ -558,6 +558,20 @@ function aliasError(
 
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
 
+/**
+ * The aliases that point at a slot in Claude mode (the slot is not in `slots`), as
+ * `[alias, slot]`, sorted by alias. 1.2.0's `aliasError` accepts them; a 1.1.x router refuses
+ * the whole file for one, so a command that would save one asks the running router for the
+ * `claude-slot-aliases` feature first (`routerFeature`).
+ */
+export function aliasesAtClaudeSlots(
+  config: Pick<GatewayConfig, "aliases" | "slots">,
+): [string, string][] {
+  return Object.entries(config.aliases)
+    .filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
 /** A chain saved, not in use, and the slot's fallback switch with it (`kept`). */
 export type KeptChain = z.output<typeof keptChainSchema>;
 
