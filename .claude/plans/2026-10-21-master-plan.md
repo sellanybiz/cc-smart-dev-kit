@@ -366,6 +366,29 @@ Close: RF2, GW1 and GP0R merged; then **the owner's choice (2026-10-25): a split
 
 Close (before 2026-10-25): integration review, 1.2.0, the release skill, the owner's yes.
 
+## Release 1.2.1 — the crew's cleanup, and the lead↔crew fixes (opus xhigh)
+
+Branch `release-1.2.1`, cut from `main` after 1.2.0's merge. Merged in first, in this order:
+`release-1.1.3` (CL1, CL1F), `crew/CL2-cleanup-rest-10` (`6cad48b`), `crew/CL2B-hook-boundary`
+(`2953b08`; the old lead's full check on its branch: 6,246 pass, 0 fail, though its report said
+red), EF2 (`784d67b`), WF1. Then the six phases below start at once from it, each on opus `xhigh`
+(the owner's word for every crew phase). The owner picked all twelve follow-ups (2026-10-25).
+
+| Phase | Kind | What |
+|---|---|---|
+| RG1 a red "done" is refused; a new question replaces the old | build | `crew report --status done` refused with a failed suite, a failed check or no review (CL2B reported done red); a crew session's new question supersedes its own unanswered one (seen: two open at once). Brief `briefs/rg1.md`. |
+| AN1 `crew answer` reaches a running crew session itself | build | Research and prove a way (a Claude Code command, or the kit's own hook in the crew session), ask the lead, build it; "recorded" vs "delivered" on the record; a corrected second answer. Brief `briefs/an1.md`. |
+| NM1 a continuation keeps its base; a name means the live record | build | `crew rm` deleted the branch a queued `--continue` started from (PW1a 2); a name shared with removed records picked a removed one, and the continuation's number counted them (CL1 6). Brief `briefs/nm1.md`. |
+| WN1 the lead hears each thing once | build | "quiet" once per stretch; each clash pair once, a warning on a very broad `--files` glob; the after-merge note never names the merging lead. Brief `briefs/wn1.md`. |
+| LH1 load | build | `crew.loadPerCore`: a start waits while the 1-minute load is past it; the crew frame says "install your own dependencies"; three tests that fail only under load. Brief `briefs/lh1.md`. |
+| SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
+
+Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
+findings to opus `xhigh` crew phases, the full check, both validates, `check:portal`, the release
+skill, the owner's yes. After the merge: WF1's live copy-resume case (its contract row says it is
+owed). Not briefed (note only): the poll guard blocks a command that has both `sleep` and
+`claude agents`.
+
 ## The last stage — heavy cleanup (D30), after 1.0.0–1.2.0 are verified live on this machine
 
 Only once each release has run on this machine and the owner has checked it: decide `release-0.6.0` and `release-1.0.0` on origin (the owner's yes before deleting a pushed branch); remove the leftover builder and worker worktrees; drop B0's one-release `portal.json` read; archive this plan (Done) into `.claude/plans/archive/`; check that no doc still names a removed command, field or hook.
@@ -553,6 +576,12 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 - 2026-10-23: **1.1.1 shipped**: #22 squash-merged into `main` (`63a6931`, the owner's yes) after CI went green on both jobs; installed here (1.1.0 → 1.1.1), `setup` turned the watchdog on (three keys), `doctor` all passed, the portal restarted onto 1.1.1. Crew sessions are safe to start again. **The web app's PR #1587** (`chore/drop-own-merge-hooks` → `dev`, worktree `.claude/worktrees/drop-own-merge-hooks` of the web app): the repo's own `after-merge` and `worktree-leftovers` give way to the plugin's (`ownHooks` emptied, `requires >=1.1.0`, `worktrees.bases` for hotfix/release); reviewed (Opus `xhigh`, 4 Medium + 6 Low fixed in `af11fddda`); 36,854 tests green. **Next:** its CI green, then the merge (it touches `.claude/`: `--admin`, the owner's earlier yes), then the main folder fast-forwards and the next session start shows the plugin's notes. Then: the owner restarts this lead session and starts the web-app sessions (the web app's main folder was 29 behind `origin/dev`: the person runs `git pull --ff-only` there first). Open after that: D57/PW1 in 1.2.0, the 1.1.0 follow-ups, 1.2.0 (GP2–GP5, release-1.2.0 needs `main` merged in: `main` was squash-merged twice since it was cut).
 
 - 2026-10-25: **Lead↔crew diagnosis (the owner's ask).** (1) `crew watch` processes outlive their session: 13 orphans (parent pid 1, up to 30 h old) in the web app, up to 5 acting for one lead — each started, resumed and stopped crew sessions. (2) A resume opens a new session id and the record keeps the old one, so the watch marks it `stopped` about 10 s later (F6a: `c7186986` → `d7a54fc8`). (3) A crew session on the worker slot's Codex model paused "until Oct 29": Codex answered one empty 502, the chain fell to Claude Sonnet (at its weekly limit), and Sonnet's 429 came back. (4) Every `sonnet` crew session and reviewer runs on Codex through the worker slot; RF1 and RF1R failed on it, and CL2B's "done" report admits a failed full suite and an empty review. **Done:** the six web-app leads and the one web-app crew session on Opus stopped at the owner's word (`claude attach <id>` brings each back), their 13 watches ended; RF2 and GW1 (1.2.0) and WF1 (1.2.1) started on opus xhigh at the owner's word; D65.
+
+- 2026-10-25: **A new lead took over** (`7da50caa`; the old one, `b8efb3b3`, handed over to save
+  Opus: its context was very large). It hears the old lead's four crew sessions (RF2, GW1, GP0R,
+  WF1) through one `crew watch --lead b8efb3b3`. **The owner picked all twelve open follow-ups for
+  1.2.1**; they are six phases with briefs (§ Release 1.2.1: RG1, AN1, NM1, WN1, LH1, SC1), started
+  once `release-1.2.1` is cut.
 
 ### For the owner in the morning
 
