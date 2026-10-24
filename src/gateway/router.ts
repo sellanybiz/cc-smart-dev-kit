@@ -1335,8 +1335,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   /**
    * The plan limit a chain's Claude target is known to be at now (D65): `limits` holds it,
-   * with its reset still ahead. A limit with no reset time is not one: only the cooldown
-   * rules apply to it. Null for a backend, and for a model with no such limit.
+   * with its reset still ahead. A limit with no reset time is not one, nor one whose reset no
+   * date can hold (a header or a hand edit could say so): only the cooldown rules apply to it.
+   * Null for a backend, and for a model with no such limit.
    */
   function knownLimit(
     target: Target,
@@ -1347,6 +1348,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
     if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
       return null;
+    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime())) return null;
     return { claim: limit.claim, resetsAt: limit.resetsAt };
   }
 
@@ -1986,8 +1988,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * known plan limit (`knownLimit`) is not the chain's last word. While it rests it is
    * skipped, the last one included, so the target before it is the last one asked, by that
    * target's rules (the breaker's hold, or its own answer). Once its rest is over it is asked
-   * again, like any resting target (an early reset ends the limit); a capacity failure then
-   * counts for the breaker like a backend's.
+   * again, like any resting target (an early reset ends the limit); with a backend before it,
+   * a capacity failure then counts for the breaker like a backend's.
    */
   async function chain(
     req: Request,
@@ -2102,8 +2104,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       const last = index === lastIndex;
       const label = formatTarget(target);
-      /** A Claude target behind the first, at its known plan limit, asked again (D65). */
-      const askedAtLimit = index > 0 && knownLimit(target, deps.now()) !== null;
+      /**
+       * A Claude target at its known plan limit, asked again, with a backend before it (D65):
+       * the breaker holds that backend's hiccup. A chain of Claude targets alone never holds.
+       */
+      const askedAtLimit =
+        targets.slice(0, index).some((before) => before.kind === "backend") &&
+        knownLimit(target, deps.now()) !== null;
       const restsUntil = cooling.get(label);
       const resting = restsUntil !== undefined && restsUntil > deps.now();
       // While a breaker is open, a resting backend is not asked even as the last target: the

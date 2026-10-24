@@ -33,7 +33,9 @@ The rules for changing it: `.claude/rules/gateway.md`.
   last answer, or a 502. One exception, with the slot's breaker on (the default): when every
   target failed for want of capacity and the last one is a backend, the request is held for a
   while and then answered with a 429 Claude Code retries (§ The breaker). Anthropic's own
-  answers always pass unchanged.
+  answers always pass unchanged, but for one exception (the owner's D65): a Claude target
+  behind the first, resting at a plan limit the router already knows, is not asked as the last
+  target, so a hiccup of the target before it is held, not ended on Claude's limit.
 - **A request that carries one of Anthropic's server tools** (web search) goes to Anthropic
   as Claude Code sent it, whatever its slot, because no affordable backend can run the tool
   (§ Anthropic's server tools).
@@ -565,14 +567,18 @@ switches `--fallback-model` (a 529 does after three).
   chain became that model's plan-limit 429, and Claude Code ended the turn on it, for days,
   while the backend answered again within seconds. Now, while that Claude target rests, it is
   skipped as the last target too (§ Fallback rules, the cooldown), so the backend before it is
-  the last one asked and its capacity failure is held like any other; the breaker's answer
-  names the skipped target (`claude-sonnet-5-5: at its plan usage limit (seven_day), until
-  21:10`, the end of its rest). Once its rest is over it is asked again, and a capacity failure
-  of that ask is held too, as a backend's is. With the breaker off, the last target asked
-  answers as before: the backend's own answer, or Claude's when it was asked. A chain whose
-  first target is that Claude model, a slot with no chain, a limit with no reset time, the
-  judge and a server-tool request are unchanged: Claude's 429 passes as it came. The first
-  time the router learns the limit, Claude was asked, so that 429 passes unchanged too.
+  the last one asked, by a last target's own rules (the heartbeat wait above; with the breaker
+  off, no first-byte deadline and no stream hold, as for any last backend), and its capacity
+  failure is held like any other; the breaker's answer names the skipped target
+  (`claude-sonnet-5-5: at its plan usage limit (seven_day), until 21:10`, the end of its rest).
+  Once its rest is over it is asked again, and with a backend before it in the chain a
+  capacity failure of that ask is held too, as a backend's is; a chain of Claude targets alone
+  is never held. With the breaker off, the last target asked answers as before: the backend's
+  own answer, or Claude's when it was asked. A judge chain skips the same way and never holds:
+  the backend's own answer (or its 504) judges. A chain whose first target is that Claude
+  model, a slot with no chain, a limit with no reset time and a server-tool request are
+  unchanged: Claude's 429 passes as it came. The first time the router learns the limit,
+  Claude was asked, so that 429 passes unchanged too.
 
 **What it does** (the first request that sees it opens the breaker):
 

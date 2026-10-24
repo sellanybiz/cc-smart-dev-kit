@@ -9929,6 +9929,8 @@ function createRouter(deps) {
     const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
     if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
       return null;
+    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime()))
+      return null;
     return { claim: limit.claim, resetsAt: limit.resetsAt };
   }
   function noteFallback(slot, model, limit, outcome, profile) {
@@ -10406,7 +10408,7 @@ function createRouter(deps) {
       }
       const last = index === lastIndex;
       const label = formatTarget(target);
-      const askedAtLimit = index > 0 && knownLimit(target, deps.now()) !== null;
+      const askedAtLimit = targets.slice(0, index).some((before) => before.kind === "backend") && knownLimit(target, deps.now()) !== null;
       const restsUntil = cooling.get(label);
       const resting = restsUntil !== undefined && restsUntil > deps.now();
       if (resting && (!last || hold?.holding === true && target.kind === "backend")) {
