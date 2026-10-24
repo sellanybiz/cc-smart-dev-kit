@@ -8585,6 +8585,7 @@ function createHistoryWriter(options) {
     retentionDays: () => options.retentionDays()
   };
 }
+var HISTORY_COLUMNS = "id, at, session, model, slot, profile, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
 
 // src/gateway/targets.ts
 var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -27952,13 +27953,22 @@ function groupExpression(by) {
       return by;
   }
 }
-function filterClause(filters) {
+function hasProfileColumn(db) {
+  const columns = db.query("PRAGMA table_info(requests)").all();
+  return columns.some((column) => column.name === "profile");
+}
+var SCHEMA_ONE_COLUMNS = HISTORY_COLUMNS.split(",").map((column) => column.trim() === "profile" ? "NULL AS profile" : column.trim()).join(", ");
+function filterClause(filters, hasProfile) {
   const parts = [];
   const values = [];
   for (const column of ["slot", "profile", "target", "model", "session"]) {
     const value = filters[column];
     if (value === undefined)
       continue;
+    if (column === "profile" && !hasProfile) {
+      parts.push("0 = 1");
+      continue;
+    }
     parts.push(`${column} = ?`);
     values.push(value);
   }
@@ -27966,8 +27976,8 @@ function filterClause(filters) {
     parts.push("status >= 400");
   return { sql: parts, values };
 }
-function whereClause(from, filters) {
-  const filter = filterClause(filters);
+function whereClause(from, filters, hasProfile) {
+  const filter = filterClause(filters, hasProfile);
   return { sql: ["at >= ?", ...filter.sql].join(" AND "), values: [from, ...filter.values] };
 }
 function openReadonly(file) {
@@ -28016,7 +28026,7 @@ function historySeries(file, options) {
     return { bucketMs, range: options.range, series: [] };
   }
   try {
-    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {});
+    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {}, hasProfileColumn(db));
     const sql = `SELECT ${groupExpression(options.by)} AS key, CAST(at / ? AS INTEGER) * ? AS t,
       status, ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
       FROM requests WHERE ${where.sql}`;

@@ -18,6 +18,9 @@
  * Filters: `slot`, `profile`, `target`, `model`, `session` (exact), and `status: "error"` (an
  * HTTP status of 400 or more). A row with no slot or no session is grouped under
  * `(no slot)` / `(no session)`. A row with no profile is the machine's default.
+ *
+ * A file a 1.1.x router still writes is at schema 1, with no `profile` column (`hasProfileColumn`):
+ * it reads the same way, every row the machine's default.
  */
 
 import { Database } from "bun:sqlite";
@@ -206,13 +209,37 @@ function groupExpression(by: HistoryBy): string {
   }
 }
 
+/**
+ * Whether the table has the `profile` column (schema 2). A 1.1.x router keeps its file at
+ * schema 1 until `gateway setup` restarts it on the new copy, and this reader opens the file
+ * read-only, so it can never add the column itself: a schema-1 row reads as the machine's
+ * default (`profile` null), and a profile filter matches no row. Asked once per open.
+ */
+function hasProfileColumn(db: Database): boolean {
+  const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+  return columns.some((column) => column.name === "profile");
+}
+
+/** `HISTORY_COLUMNS` for a schema-1 table: the same names, `profile` read as null. */
+const SCHEMA_ONE_COLUMNS = HISTORY_COLUMNS.split(",")
+  .map((column) => (column.trim() === "profile" ? "NULL AS profile" : column.trim()))
+  .join(", ");
+
 /** The filter part of the WHERE clause and its bound values. */
-function filterClause(filters: HistoryFilters): { sql: string[]; values: (number | string)[] } {
+function filterClause(
+  filters: HistoryFilters,
+  hasProfile: boolean,
+): { sql: string[]; values: (number | string)[] } {
   const parts: string[] = [];
   const values: (number | string)[] = [];
   for (const column of ["slot", "profile", "target", "model", "session"] as const) {
     const value = filters[column];
     if (value === undefined) continue;
+    if (column === "profile" && !hasProfile) {
+      // Every schema-1 row is the machine's default: no row came through a profile.
+      parts.push("0 = 1");
+      continue;
+    }
     parts.push(`${column} = ?`);
     values.push(value);
   }
@@ -224,8 +251,9 @@ function filterClause(filters: HistoryFilters): { sql: string[]; values: (number
 function whereClause(
   from: number,
   filters: HistoryFilters,
+  hasProfile: boolean,
 ): { sql: string; values: (number | string)[] } {
-  const filter = filterClause(filters);
+  const filter = filterClause(filters, hasProfile);
   return { sql: ["at >= ?", ...filter.sql].join(" AND "), values: [from, ...filter.values] };
 }
 
@@ -324,7 +352,11 @@ export function historySeries(
     return { bucketMs, range: options.range, series: [] };
   }
   try {
-    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {});
+    const where = whereClause(
+      now - RANGE_MS[options.range],
+      options.filters ?? {},
+      hasProfileColumn(db),
+    );
     const sql = `SELECT ${groupExpression(options.by)} AS key, CAST(at / ? AS INTEGER) * ? AS t,
       status, ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
       FROM requests WHERE ${where.sql}`;
@@ -470,7 +502,8 @@ export function recentRequests(
   const db = openReadonly(file);
   if (db === null) return { nextCursor: null, rows: [] };
   try {
-    const filter = filterClause(options.filters ?? {});
+    const hasProfile = hasProfileColumn(db);
+    const filter = filterClause(options.filters ?? {}, hasProfile);
     const conditions = [
       ...(options.cursor === undefined ? [] : ["id < ?"]),
       ...(options.from === undefined ? [] : ["at >= ?"]),
@@ -481,7 +514,7 @@ export function recentRequests(
       ...(options.from === undefined ? [] : [options.from]),
       ...filter.values,
     ];
-    const sql = `SELECT ${HISTORY_COLUMNS} FROM requests WHERE ${
+    const sql = `SELECT ${hasProfile ? HISTORY_COLUMNS : SCHEMA_ONE_COLUMNS} FROM requests WHERE ${
       conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")
     } ORDER BY id DESC LIMIT ?`;
     const rows = db.query(sql).all(...values, limit) as StoredRow[];

@@ -18574,13 +18574,22 @@ function groupExpression(by) {
       return by;
   }
 }
-function filterClause(filters) {
+function hasProfileColumn(db) {
+  const columns = db.query("PRAGMA table_info(requests)").all();
+  return columns.some((column) => column.name === "profile");
+}
+var SCHEMA_ONE_COLUMNS = HISTORY_COLUMNS.split(",").map((column) => column.trim() === "profile" ? "NULL AS profile" : column.trim()).join(", ");
+function filterClause(filters, hasProfile) {
   const parts = [];
   const values = [];
   for (const column of ["slot", "profile", "target", "model", "session"]) {
     const value = filters[column];
     if (value === undefined)
       continue;
+    if (column === "profile" && !hasProfile) {
+      parts.push("0 = 1");
+      continue;
+    }
     parts.push(`${column} = ?`);
     values.push(value);
   }
@@ -18588,8 +18597,8 @@ function filterClause(filters) {
     parts.push("status >= 400");
   return { sql: parts, values };
 }
-function whereClause(from, filters) {
-  const filter = filterClause(filters);
+function whereClause(from, filters, hasProfile) {
+  const filter = filterClause(filters, hasProfile);
   return { sql: ["at >= ?", ...filter.sql].join(" AND "), values: [from, ...filter.values] };
 }
 function openReadonly(file) {
@@ -18638,7 +18647,7 @@ function historySeries(file, options) {
     return { bucketMs, range: options.range, series: [] };
   }
   try {
-    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {});
+    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {}, hasProfileColumn(db));
     const sql = `SELECT ${groupExpression(options.by)} AS key, CAST(at / ? AS INTEGER) * ? AS t,
       status, ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
       FROM requests WHERE ${where.sql}`;
@@ -18737,7 +18746,8 @@ function recentRequests(file, options = {}) {
   if (db === null)
     return { nextCursor: null, rows: [] };
   try {
-    const filter = filterClause(options.filters ?? {});
+    const hasProfile = hasProfileColumn(db);
+    const filter = filterClause(options.filters ?? {}, hasProfile);
     const conditions = [
       ...options.cursor === undefined ? [] : ["id < ?"],
       ...options.from === undefined ? [] : ["at >= ?"],
@@ -18748,7 +18758,7 @@ function recentRequests(file, options = {}) {
       ...options.from === undefined ? [] : [options.from],
       ...filter.values
     ];
-    const sql = `SELECT ${HISTORY_COLUMNS} FROM requests WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")} ORDER BY id DESC LIMIT ?`;
+    const sql = `SELECT ${hasProfile ? HISTORY_COLUMNS : SCHEMA_ONE_COLUMNS} FROM requests WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")} ORDER BY id DESC LIMIT ?`;
     const rows = db.query(sql).all(...values, limit);
     return {
       nextCursor: rows.length === limit ? rows[rows.length - 1]?.id ?? null : null,
