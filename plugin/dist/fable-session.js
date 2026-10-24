@@ -11431,6 +11431,12 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
 var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -11440,7 +11446,7 @@ var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
 ];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 function isJsonObject(value) {
@@ -12956,7 +12962,7 @@ function sessionModelOf(input, env) {
 }
 function gatewayOnOf(paths) {
   try {
-    return settingsReport(paths.settingsFile).baseUrl !== null;
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     return false;
   }

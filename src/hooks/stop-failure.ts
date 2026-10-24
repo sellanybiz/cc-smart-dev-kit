@@ -71,7 +71,7 @@ import {
   parseLimitState,
   stateKeyFor,
 } from "../gateway/limit-state";
-import { settingsReport } from "../gateway/settings";
+import { baseUrlPointsAtGateway, settingsReport } from "../gateway/settings";
 import {
   type ClaudeFamily,
   claudeFamily,
@@ -588,7 +588,8 @@ export function readAlertContext(
   }
   let gatewayOn = false;
   try {
-    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
+    // `gateway off` leaves Anthropic's own address in the file (GP5), which is not "on".
+    gatewayOn = baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     gatewayOn = false;
   }

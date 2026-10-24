@@ -2,7 +2,12 @@
  * The address of a backend as output may show it, or a page may link to it: never a credential.
  */
 import { describe, expect, test } from "bun:test";
-import { backendAddress, shownBackendUrl } from "./settings";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { realTarget } from "../setup/write";
+import { tempDir } from "../testing/temp";
+import { DEFAULT_ANTHROPIC_BASE_URL } from "./config";
+import { BASE_URL_PATH, backendAddress, offAddressOf, shownBackendUrl } from "./settings";
 
 describe("a backend's address, shown", () => {
   test("PB-7: no user name, no password, no key in the query, no fragment", () => {
@@ -24,5 +29,101 @@ describe("a backend's address, shown", () => {
   test("text that is not a URL is never shown at all", () => {
     expect(backendAddress("not a url PLANTED")).toBeNull();
     expect(shownBackendUrl("not a url PLANTED", "omni_PLANTED_SECRET_a1b2")).toBe("(key ••••a1b2)");
+  });
+});
+
+describe("the address `gateway off` leaves in one settings file", () => {
+  /** A settings file and its state dir; `null` leaves no file at all. */
+  function setup(content: unknown) {
+    const dir = tempDir("off-address");
+    const file = join(dir, "settings.json");
+    const stateDir = join(dir, "state");
+    mkdirSync(stateDir, { recursive: true });
+    if (content !== null) writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`);
+    return { file, stateDir, key: realTarget(file) };
+  }
+
+  /** owned.json as `applyManagedJson` leaves it: the key, and the value cc-smart-dev-kit wrote. */
+  function own(stateDir: string, key: string, value: unknown) {
+    writeFileSync(
+      join(stateDir, "owned.json"),
+      JSON.stringify({ [key]: [{ path: BASE_URL_PATH, value }] }),
+    );
+  }
+
+  test("a file whose JSON cannot be parsed answers same: the managed write reports its error", () => {
+    const dir = tempDir("off-address");
+    const file = join(dir, "settings.json");
+    writeFileSync(file, "{ not json");
+    expect(offAddressOf(file, join(dir, "state"))).toEqual({ kind: "same" });
+  });
+
+  test("an env that is not an object answers same: the managed write reports its error", () => {
+    const { file, stateDir } = setup({ env: "nope" });
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "same" });
+  });
+
+  test("an absent key is the person's: never put back, whatever the record says", () => {
+    const { file, stateDir, key } = setup({ env: { ENABLE_TOOL_SEARCH: "true" } });
+    own(stateDir, key, "http://127.0.0.1:20100");
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "theirs", present: false });
+  });
+
+  test("an owned router address is written to Anthropic's own address", () => {
+    const { file, stateDir, key } = setup({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20100" },
+    });
+    own(stateDir, key, "http://127.0.0.1:20100");
+    expect(offAddressOf(file, stateDir)).toEqual({
+      kind: "write",
+      value: DEFAULT_ANTHROPIC_BASE_URL,
+    });
+  });
+
+  test("an owned address already Anthropic's own is left as it is", () => {
+    const { file, stateDir, key } = setup({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    own(stateDir, key, DEFAULT_ANTHROPIC_BASE_URL);
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "same" });
+  });
+
+  test("Anthropic's own address with a trailing slash is still Anthropic's own", () => {
+    const { file, stateDir, key } = setup({
+      env: { ANTHROPIC_BASE_URL: `${DEFAULT_ANTHROPIC_BASE_URL}/` },
+    });
+    own(stateDir, key, `${DEFAULT_ANTHROPIC_BASE_URL}/`);
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "same" });
+  });
+
+  test("a key cc-smart-dev-kit never wrote is the person's", () => {
+    const { file, stateDir } = setup({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20100" } });
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "theirs", present: true });
+  });
+
+  test("a key the person changed since cc-smart-dev-kit wrote it is theirs", () => {
+    const { file, stateDir, key } = setup({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20101" },
+    });
+    own(stateDir, key, "http://127.0.0.1:20100");
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "theirs", present: true });
+  });
+
+  test("Anthropic's own address that cc-smart-dev-kit never wrote is the person's", () => {
+    const { file, stateDir } = setup({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    expect(offAddressOf(file, stateDir)).toEqual({ kind: "theirs", present: true });
+  });
+
+  test("an older owned.json (path only) still counts as ours", () => {
+    const { file, stateDir, key } = setup({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20100" },
+    });
+    writeFileSync(join(stateDir, "owned.json"), JSON.stringify({ [key]: [BASE_URL_PATH] }));
+    expect(offAddressOf(file, stateDir)).toEqual({
+      kind: "write",
+      value: DEFAULT_ANTHROPIC_BASE_URL,
+    });
   });
 });

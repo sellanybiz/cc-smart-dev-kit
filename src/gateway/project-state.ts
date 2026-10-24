@@ -38,7 +38,14 @@ import {
   messageOf,
   profileNames,
 } from "./config";
-import { type ModelKeyFact, readGatewaySettings, routerBaseUrl, shownValue } from "./settings";
+import {
+  baseUrlPointsAtGateway,
+  type ModelKeyFact,
+  normalizedBaseUrl,
+  readGatewaySettings,
+  routerBaseUrl,
+  shownValue,
+} from "./settings";
 import { isProfileName, PROFILE_PATH_PREFIX } from "./targets";
 
 /** What a base URL means for a project. */
@@ -179,8 +186,9 @@ export function urlMeaning(
   routerUrl: string,
 ): { profile: null | string; state: Exclude<GatewayStateName, "unknown"> } {
   if (url === null) return { profile: null, state: "default" };
-  const clean = url.replace(/\/+$/, "");
-  if (clean === DEFAULT_ANTHROPIC_BASE_URL) return { profile: null, state: "off" };
+  // Anthropic's own address, however it is written — and the value `gateway off` writes (GP5).
+  if (!baseUrlPointsAtGateway(url)) return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
   if (clean === routerUrl) return { profile: null, state: "on" };
   const prefix = profileUrlOf(routerUrl, "");
   if (clean.startsWith(prefix)) {

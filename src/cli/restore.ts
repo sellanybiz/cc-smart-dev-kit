@@ -7,8 +7,9 @@ import {
 } from "../browser/setup";
 import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
-import { DEFAULT_ANTHROPIC_BASE_URL, messageOf } from "../gateway/config";
+import { messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
+import { PERSONAL_EXCLUDE_LINE } from "../gateway/project-state";
 import {
   type RouterServiceKind,
   type Runner,
@@ -17,7 +18,15 @@ import {
   UNIT_NAME,
 } from "../gateway/service";
 import { TASK_LABEL } from "../gateway/service-windows";
-import { ownedGatewayEnvKeys, readGatewaySettings } from "../gateway/settings";
+import {
+  BASE_URL_PATH,
+  baseUrlPointsAtGateway,
+  offAddressOf,
+  ownedGatewayEnvKeys,
+  RETIRED_GATEWAY_ENV_KEYS,
+  readGatewaySettings,
+  shownValue,
+} from "../gateway/settings";
 import { forgetClaudeMemChoices } from "../machine/claude-mem";
 import { restoreTakenOver } from "../machine/claude-mem-choices";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
@@ -26,6 +35,7 @@ import { bunConfigPath } from "../setup/bun-config";
 import { forgetInstructionsState } from "../setup/instructions";
 import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
 import { withLock } from "../setup/lock";
+import { samePath } from "../setup/managed-json";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
@@ -37,8 +47,15 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
       return `~ ${file}: back as it was before cc-smart-dev-kit`;
     case "removed":
       return `- ${file}: removed (cc-smart-dev-kit had created it)`;
-    case "cleaned":
-      return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
+    case "cleaned": {
+      // A key written again, not taken out (the gateway's address, GP5): it is named first, so
+      // the line says what the file holds now, not only what it lost.
+      const parts = [
+        ...(result.written ?? []).map((one) => `set ${one.path} to ${shownValue(one.value)}`),
+        ...(result.details.length === 0 ? [] : [`removed ${result.details.join(", ")}`]),
+      ];
+      return `~ ${file}: ${parts.join(", ")}; everything else kept`;
+    }
     case "unchanged":
       return `  ${file}: nothing of cc-smart-dev-kit left in it`;
     case "no-backup":
@@ -57,9 +74,17 @@ export const STOP_WARNING =
 export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 
 /**
- * Said at the end of stage 1. When this run removed the launcher (setup had created it), the
- * second restore cannot be typed as `cc-smart-dev-kit restore` any more: the line then names
- * the command that really works — the README's own `bun --no-env-file --config=… …/dist/cli.js
+ * Said at the end of stage 1: what running sessions do on their own now, and the second run.
+ *
+ * Stage 1 **wrote** Anthropic's own address into every settings file that still pointed at the
+ * router (GP5) instead of removing the key, so a running session switches to Anthropic by
+ * itself within about a second (proved 2026-10-23) — nothing to restart, which is what the two
+ * stages used to ask for. What the two stages are still for: the router keeps running until the
+ * second run, because a request a session made just before it switched would be cut off by a
+ * stop in the same run (nothing of the proof says a request in flight at a stop is safe, so it
+ * is not claimed). When this run removed the launcher (setup had created it), the second
+ * restore cannot be typed as `cc-smart-dev-kit restore` any more: the line then names the
+ * command that really works — the README's own `bun --no-env-file --config=… …/dist/cli.js
  * restore` form, with this CLI's bundle (`RestoreOptions.cliBundle`, the installed version's
  * own `dist/cli.js`) and the bun running this command (`bunPath`, `process.execPath`), so the
  * line works on a machine whose PATH has no bun.
@@ -67,18 +92,24 @@ export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Cl
 export function stageOneDone(
   paths: CliPaths,
   cliBundle: string,
+  wrote = false,
   bunPath: string = process.execPath,
 ): string {
+  // The switch sentence only when an address was really written: a file whose address is the
+  // person's keeps its value, so its running sessions still use the router until they restart.
+  const switched = wrote
+    ? "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run."
+    : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (existsSync(launcher)) {
-    return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+    return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
   // The same two flags every run of the plugin's own bundles gets, and the plugin's own empty
   // config: the bundle sits in the installed version's folder (`…/<version>/dist/cli.js`), and
   // the config is beside it (`…/<version>/bunfig.toml`).
   const bunfig = bunConfigPath(dirname(dirname(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
-  return `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
+  return `${switched} Then run restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
 
 /**
@@ -250,37 +281,66 @@ async function takeOverBack(paths: CliPaths): Promise<void> {
 /**
  * Does this settings file mean some session reading it still sends its requests to the router
  * (GP4a)? A gateway key of ours that still holds our value says so — **unless the file's own
- * address is Anthropic's**: `gateway project off` writes exactly that (`P1`), the session goes
- * to Anthropic on the person's own login, and no key beside it brings the router back. A file
- * that cannot be read answers yes: a key that is there but unreadable must keep every session
- * working (`ownedGatewayEnvKeys`' own rule).
+ * address is Anthropic's or absent**: `gateway project off` writes exactly that address (P1),
+ * the session goes to Anthropic on the person's own login, and no key beside it brings the
+ * router back. A file with no address sends its sessions to the next file of the chain, which
+ * this same stage takes back. A file that cannot be read answers yes: a key that is there but
+ * unreadable must keep every session working (`ownedGatewayEnvKeys`' own rule).
  */
 function fileUsesRouter(file: string, stateDir: string): boolean {
   if (ownedGatewayEnvKeys(file, stateDir).length === 0) return false;
   try {
     // The one reader of a settings file's own gateway facts (`project-state.ts` reads it too).
-    return readGatewaySettings(file).baseUrl !== DEFAULT_ANTHROPIC_BASE_URL;
+    const url = readGatewaySettings(file).baseUrl;
+    // An absent address key with another owned key still routes running sessions to the router
+    // (a removed key never reaches them, P7): keep the old answer. A set address is "on" only
+    // when it points at a gateway, not at Anthropic's own.
+    if (url === null) return true;
+    return baseUrlPointsAtGateway(url);
   } catch {
     return true;
   }
 }
 
 /**
+ * The settings files whose address must be **written again** rather than removed, keyed by
+ * their real path, and the address each one gets (`offAddressOf`, GP5). An empty map when
+ * no file of ours still points at the router: nothing to switch, and the plain removal is what
+ * `restore` does with every key.
+ */
+function offWrites(files: readonly string[], stateDir: string): Map<string, string> {
+  const writes = new Map<string, string>();
+  for (const file of files) {
+    const address = offAddressOf(file, stateDir);
+    if (address.kind === "write") writes.set(realTarget(file), address.value);
+  }
+  return writes;
+}
+
+/**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
- * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
- * any of the settings files it wrote — the user's `settings.json`, a project's own
- * `settings.local.json` or team `.claude/settings.json` (GP4a) — they still send every request
- * to the router; stopping it would make each of them fail. (A key cc-smart-dev-kit set and the
- * person changed since is theirs, and does not count here: `ownedGatewayEnvKeys` keeps only the
- * keys that still hold cc-smart-dev-kit's value.) So, with the router installed:
- *   - stage 1, while such a key is in any of those files: everything is restored but the
- *     router's copy and units, and the router keeps running. It says to restart the
- *     sessions and run `restore` again.
- *   - stage 2, with no such key left: it disables and stops the unit and its socket (asking first when it
- *     runs, because that cuts answers in flight) and waits up to 15 s for its port to
- *     close (`stopRouter`; the drain goes on in the background), restores the rest (the
- *     copy and the units are removed), reloads systemd, and clears the restart-pending
- *     marker.
+ * sessions follow a **changed** `ANTHROPIC_BASE_URL` within about a second, but a **removed**
+ * key never reaches one (proved 2026-10-23; `docs/claude-code-contract.md` § The gateway): a
+ * session keeps the address it last had. So while cc-smart-dev-kit's gateway env keys are in any
+ * of the settings files it wrote — the user's `settings.json`, a project's own
+ * `settings.local.json` or team `.claude/settings.json` (GP4a) — those sessions still send
+ * requests to the router, and stopping it in the same run would make each of them fail. (A key
+ * cc-smart-dev-kit set and the person changed since is theirs, and does not count here:
+ * `ownedGatewayEnvKeys` keeps only the keys that still hold cc-smart-dev-kit's value.) So, with
+ * the router installed:
+ *   - stage 1, while such a key is in any of those files (**and the file's address is not
+ *     already Anthropic's**): everything is restored **except the router's copy and units** and
+ *     except each file's address key, which is **written to Anthropic's own address** instead
+ *     of being removed (GP5, `writeInstead`). The seconds a running session needs to follow
+ *     that change are what the stages are for: the router keeps running until the second run,
+ *     because nothing proves a request in flight is safe when it stops — so the stop is left to
+ *     a run the person starts after the change has had its second. The sessions themselves need
+ *     no restart any more.
+ *   - stage 2, with no such key left (the files' addresses are Anthropic's now, so nothing
+ *     routes to the router): it disables and stops the unit and its socket (asking first when it
+ *     runs, because that cuts answers in flight), waits up to 15 s for its port to close
+ *     (`stopRouter`; the drain goes on in the background), restores the rest — the address keys
+ *     among them, now plain removals — reloads systemd, and clears the restart-pending marker.
  *   - `--now`: both at once, after the warning that every running session fails until it
  *     restarts (asked, or `--yes`).
  */
@@ -315,20 +375,59 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   // `ANTHROPIC_BASE_URL` (its `settings.local.json` or team `.claude/settings.json`, GP2) keeps
   // that project's sessions on the router just as the machine's key does, so stage 1 must wait
   // for them too — stopping the router in the same pass would cut their answers off.
+  const settingsFiles = Object.entries(changed)
+    .filter(([, entry]) => entry.kinds.includes("json-keys"))
+    .map(([file]) => file);
   const sessionsUseRouter =
-    routerTracked &&
-    Object.entries(changed).some(
-      ([file, entry]) => entry.kinds.includes("json-keys") && fileUsesRouter(file, paths.stateDir),
-    );
+    routerTracked && settingsFiles.some((file) => fileUsesRouter(file, paths.stateDir));
 
   if (sessionsUseRouter && !options.now) {
-    // Stage 1: nothing stops, so nothing is asked.
+    // Stage 1: nothing stops, so nothing is asked. Every file still pointing at the router gets
+    // the explicit address written into it (GP5), so its running sessions switch by themselves.
     return withLock(
       paths.stateDir,
       async () => {
         await takeOverBack(paths);
-        const results = restore(paths.stateDir, { except: routerFiles });
+        // Inside the lock: the settings can change while the lock waits (a `gateway on`, a hand
+        // edit), so the address each file gets is read now, not before the wait.
+        const addresses = offWrites(settingsFiles, paths.stateDir);
+        // A personal file kept for stage 2 must keep its `.git/info/exclude` line too: the line
+        // is a separate `file-line` entry, and removing it here would let git see the file
+        // (holding Anthropic's address) and commit it to the team. So the exclusion lines stay
+        // tracked while any address is written; stage 2 removes them with the personal files.
+        const excludeFiles =
+          addresses.size === 0
+            ? []
+            : Object.entries(changed)
+                .filter(
+                  ([, entry]) =>
+                    entry.kinds.includes("file-line") &&
+                    entry.lines?.includes(PERSONAL_EXCLUDE_LINE),
+                )
+                .map(([file]) => file);
+        const results = restore(paths.stateDir, {
+          except: [...routerFiles, ...excludeFiles],
+          writeInstead: (file, path) => {
+            const address = addresses.get(file);
+            return samePath(path, BASE_URL_PATH) && address !== undefined
+              ? { value: address }
+              : undefined;
+          },
+        });
         print(results, short);
+        // A retired model key is removed in this same write: a running session keeps the slot
+        // name and now sends it to Anthropic, which does not know it, so it fails until it
+        // restarts. Say so; the address key's change needs no restart.
+        const removedRetired = results.some((result) =>
+          result.details.some((detail) =>
+            RETIRED_GATEWAY_ENV_KEYS.some((key) => detail.includes(key)),
+          ),
+        );
+        if (removedRetired) {
+          console.log(
+            "  The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails.",
+          );
+        }
         const mcp = removeMcp(paths, options, short);
         for (const line of mcp.lines) console.log(line);
         for (const line of removeBrowser(paths, browserRecord, options.runner).lines) {
@@ -336,7 +435,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         }
         forgetInstructionChoice(paths.stateDir, short);
         forgetClaudeMemChoice(paths.stateDir, short);
-        console.log(stageOneDone(paths, options.cliBundle));
+        console.log(stageOneDone(paths, options.cliBundle, addresses.size > 0));
         return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
       { waitMs: 10_000 },

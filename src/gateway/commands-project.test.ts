@@ -670,7 +670,7 @@ describe("gateway off: the projects still on (GP4a)", () => {
     const m = machine();
     expect(await m.run(["off"])).toBe(0);
     expect(m.lines).toEqual([
-      "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
+      "✓ Nothing to change: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
     ]);
   });
 });

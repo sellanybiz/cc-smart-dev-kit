@@ -117,7 +117,7 @@
 import type { CliPaths } from "../cli/paths";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
-import { settingsReport } from "../gateway/settings";
+import { baseUrlPointsAtGateway, settingsReport } from "../gateway/settings";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
@@ -1363,12 +1363,13 @@ export function sessionModelOf(input: HookInput, env: Env): null | string {
 }
 
 /**
- * True when Claude Code's settings send its requests to the router (`ANTHROPIC_BASE_URL` set);
- * false when they do not, or cannot be read.
+ * True when Claude Code's settings send its requests to the router (`ANTHROPIC_BASE_URL` set
+ * to something other than Anthropic's own address — `gateway off` leaves that address in the
+ * file, GP5); false when they do not, or cannot be read.
  */
 export function gatewayOnOf(paths: CliPaths): boolean {
   try {
-    return settingsReport(paths.settingsFile).baseUrl !== null;
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     // Settings that cannot be read send nothing anywhere the guard can prove: off.
     return false;

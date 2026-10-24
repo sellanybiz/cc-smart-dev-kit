@@ -214,8 +214,8 @@ up).
   which: its socket is open but no router answers (requests wait), or the router failed
   to start again and again, so systemd closed its socket (requests are refused at once).
   `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then `cc-smart-dev-kit gateway
-  setup` (it opens both again). Still down: `cc-smart-dev-kit gateway off`, then restart the
-  sessions.
+  setup` (it opens both again). Still down: `cc-smart-dev-kit gateway off` — running sessions
+  switch to Anthropic by themselves.
 - `doctor` says "a gateway setup did not finish": the router did not answer after a
   setup's restart. `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then
   `cc-smart-dev-kit gateway setup` again (it asks before the restart).
@@ -288,17 +288,24 @@ A profile is a named set of chains and switches over the machine's, reached by t
 
 ## Turn it off
 
-`cc-smart-dev-kit gateway off` removes exactly the keys `on` set. Running sessions need a
-restart. Stop the router only after every session restarted, or they fail.
+`cc-smart-dev-kit gateway off` sets the owned `ANTHROPIC_BASE_URL` to Anthropic's own address
+instead of removing it, so every running session switches to Anthropic by itself within about a
+second: nothing needs a restart. `ENABLE_TOOL_SEARCH` is removed, which routes nothing. The key
+stays owned (its value is the one `off` wrote), so `restore` takes it back later. A key the person
+set or changed since is theirs and stays. A project that set its own `on` keeps pointing at the
+router, so `off` names each one with the command that turns it off too. Stop the router only
+after no file points at it any more (`restore`'s second stage does that), or its sessions fail.
 
 **Remote Control is off while the gateway is on.** `claude remote-control` needs
 `api.anthropic.com` (it answers "Remote Control is only available when using Claude via
-api.anthropic.com"), and `gateway on` points every session at the router. `gateway off`, or a
+api.anthropic.com"), and `gateway on` points every session at the router. `restore`, or a
 session started without the base URL, is the way back.
 
 `cc-smart-dev-kit restore` takes the gateway out in two stages for the same reason: the first run
-removes the env keys (and everything else but the router) and says to restart every
-session; the second run stops and removes the router (it asks first). `restore --now`
+writes Anthropic's own address into each settings file's address key instead of removing it —
+every running session switches to Anthropic by itself within about a second — and restores
+everything else but the router; the second run, once no file points at the router, stops and
+removes the router and takes the address keys back (it asks first). `restore --now`
 does both at once, and every running session fails until it restarts: only with the
 person's yes.
 
