@@ -9796,7 +9796,7 @@ import {
 } from "fs";
 import { basename as basename4, dirname as dirname6, join as join19, relative as relative2 } from "path";
 import { pipeline } from "stream/promises";
-import { createGzip } from "zlib";
+import { createGzip, gunzipSync } from "zlib";
 
 // src/sessions/saved-sessions.ts
 function projectFolderName(path) {
@@ -9892,12 +9892,14 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   }
   return kept;
 }
-function removeEmptyFolder(folder) {
+function holdsNothing(folder) {
+  const stat = lstatSync4(folder, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory())
+    return false;
   try {
-    rmdirSync(folder);
-    return true;
+    return readdirSync9(folder).every((name) => holdsNothing(join19(folder, name)));
   } catch {
-    return !existsSync11(folder);
+    return false;
   }
 }
 function removeEmptyTree(folder) {
@@ -9912,7 +9914,14 @@ function removeEmptyTree(folder) {
     if (lstatSync4(path, { throwIfNoEntry: false })?.isDirectory())
       removeEmptyTree(path);
   }
-  removeEmptyFolder(folder);
+  try {
+    rmdirSync(folder);
+  } catch {}
+}
+function removeEmptyFolder(folder) {
+  if (holdsNothing(folder))
+    removeEmptyTree(folder);
+  return !existsSync11(folder);
 }
 async function gzipInto(from, to) {
   const temporary = `${to}.${String(process.pid)}.tmp`;
@@ -9928,6 +9937,17 @@ async function gzipInto(from, to) {
   } catch (error) {
     rmSync3(temporary, { force: true });
     throw error;
+  }
+}
+function changedSince(from, before) {
+  const after = lstatSync4(from, { throwIfNoEntry: false });
+  return after === undefined || after.size !== before.size || after.mtimeMs !== before.mtimeMs;
+}
+function sameAsArchived(from, to) {
+  try {
+    return readFileSync18(from).equals(gunzipSync(readFileSync18(to)));
+  } catch {
+    return false;
   }
 }
 function reasonOf2(error) {
@@ -9975,10 +9995,21 @@ async function archiveConversation(input) {
       const to = `${join19(into, file)}.gz`;
       mkdirSync7(dirname6(to), { mode: 448, recursive: true });
       const before = lstatSync4(from);
+      if (existsSync11(to)) {
+        if (!sameAsArchived(from, to) || changedSince(from, before)) {
+          return {
+            kind: "failed",
+            moved,
+            why: `${file} differs from its archived copy, so neither is overwritten`
+          };
+        }
+        unlinkSync4(from);
+        moved += 1;
+        continue;
+      }
       await gzipInto(from, to);
       utimesSync2(to, before.atime, before.mtime);
-      const after = lstatSync4(from);
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      if (changedSince(from, before)) {
         rmSync3(to, { force: true });
         return {
           kind: "failed",

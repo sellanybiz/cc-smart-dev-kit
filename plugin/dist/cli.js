@@ -34868,7 +34868,7 @@ import {
 } from "fs";
 import { basename as basename11, dirname as dirname22, join as join67, relative as relative5 } from "path";
 import { pipeline } from "stream/promises";
-import { createGzip } from "zlib";
+import { createGzip, gunzipSync as gunzipSync2 } from "zlib";
 
 // src/sessions/saved-sessions.ts
 import { join as join64 } from "path";
@@ -35301,12 +35301,14 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   }
   return kept;
 }
-function removeEmptyFolder(folder) {
+function holdsNothing(folder) {
+  const stat = lstatSync6(folder, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory())
+    return false;
   try {
-    rmdirSync3(folder);
-    return true;
+    return readdirSync25(folder).every((name) => holdsNothing(join67(folder, name)));
   } catch {
-    return !existsSync54(folder);
+    return false;
   }
 }
 function removeEmptyTree(folder) {
@@ -35321,7 +35323,14 @@ function removeEmptyTree(folder) {
     if (lstatSync6(path, { throwIfNoEntry: false })?.isDirectory())
       removeEmptyTree(path);
   }
-  removeEmptyFolder(folder);
+  try {
+    rmdirSync3(folder);
+  } catch {}
+}
+function removeEmptyFolder(folder) {
+  if (holdsNothing(folder))
+    removeEmptyTree(folder);
+  return !existsSync54(folder);
 }
 async function gzipInto(from, to) {
   const temporary = `${to}.${String(process.pid)}.tmp`;
@@ -35337,6 +35346,17 @@ async function gzipInto(from, to) {
   } catch (error) {
     rmSync17(temporary, { force: true });
     throw error;
+  }
+}
+function changedSince(from, before) {
+  const after = lstatSync6(from, { throwIfNoEntry: false });
+  return after === undefined || after.size !== before.size || after.mtimeMs !== before.mtimeMs;
+}
+function sameAsArchived(from, to) {
+  try {
+    return readFileSync69(from).equals(gunzipSync2(readFileSync69(to)));
+  } catch {
+    return false;
   }
 }
 function reasonOf5(error) {
@@ -35384,10 +35404,21 @@ async function archiveConversation(input) {
       const to = `${join67(into, file)}.gz`;
       mkdirSync24(dirname22(to), { mode: 448, recursive: true });
       const before = lstatSync6(from);
+      if (existsSync54(to)) {
+        if (!sameAsArchived(from, to) || changedSince(from, before)) {
+          return {
+            kind: "failed",
+            moved,
+            why: `${file} differs from its archived copy, so neither is overwritten`
+          };
+        }
+        unlinkSync6(from);
+        moved += 1;
+        continue;
+      }
       await gzipInto(from, to);
       utimesSync2(to, before.atime, before.mtime);
-      const after = lstatSync6(from);
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      if (changedSince(from, before)) {
         rmSync17(to, { force: true });
         return {
           kind: "failed",
@@ -47151,7 +47182,7 @@ import {
   existsSync as existsSync67,
   mkdirSync as mkdirSync30,
   openSync as openSync12,
-  readdirSync as readdirSync29,
+  readdirSync as readdirSync28,
   readFileSync as readFileSync82,
   readSync as readSync7,
   rmSync as rmSync19,
@@ -47162,7 +47193,7 @@ import { platform as platform2 } from "os";
 import { dirname as dirname28, join as join79, resolve as resolve13 } from "path";
 
 // src/sessions/finished.ts
-import { readdirSync as readdirSync28, readFileSync as readFileSync81, statSync as statSync24 } from "fs";
+import { readFileSync as readFileSync81, statSync as statSync24 } from "fs";
 import { join as join78 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -47265,13 +47296,6 @@ function readFinishedSessions(paths, deps) {
     };
   }
 }
-function emptyFolder(folder) {
-  try {
-    return statSync24(folder).isDirectory() && readdirSync28(folder).length === 0;
-  } catch {
-    return false;
-  }
-}
 function readCrewLeftovers(paths, deps) {
   const none = (error) => ({
     conversations: [],
@@ -47295,7 +47319,7 @@ function readCrewLeftovers(paths, deps) {
         continue;
       const found = conversationOf(paths.projectsDir, record.worktree, record.sessionId);
       if (found.files.length === 0) {
-        if (emptyFolder(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
+        if (holdsNothing(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
           out.emptyFolders.push(found.projectDir);
         continue;
       }
@@ -47357,7 +47381,7 @@ function readTail(path, size) {
 function sessionFiles(projectsDir, folder) {
   let names;
   try {
-    names = readdirSync29(join79(projectsDir, folder));
+    names = readdirSync28(join79(projectsDir, folder));
   } catch {
     return [];
   }
@@ -47388,7 +47412,7 @@ function sessionWorkFolderTimes(projectsDir) {
   if (!existsSync67(projectsDir))
     return [];
   const folders = new Map;
-  for (const folder of readdirSync29(projectsDir)) {
+  for (const folder of readdirSync28(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined)
       continue;
@@ -47406,7 +47430,7 @@ function savedSessions(projectsDir, mainCheckout, since) {
   if (!existsSync67(projectsDir))
     return [];
   const sessions = [];
-  for (const folder of readdirSync29(projectsDir)) {
+  for (const folder of readdirSync28(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout))
       continue;
     for (const file of sessionFiles(projectsDir, folder)) {
@@ -47428,7 +47452,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
   const prefix = tabPrefix(key);
   const restoreAll = `${prefix}restore_all`;
   const keep = new Set([restoreAll, ...sessions.map((session) => tabConfigName(key, session))]);
-  for (const name of readdirSync29(dir)) {
+  for (const name of readdirSync28(dir)) {
     if (!name.startsWith("claude_") || !name.endsWith(".toml"))
       continue;
     if (keep.has(name.slice(0, -".toml".length)))
@@ -47484,7 +47508,7 @@ function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
   const dir = dirname28(openedMarkerFile(stateDir, id));
-  for (const name of readdirSync29(dir)) {
+  for (const name of readdirSync28(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
     rmSync19(join79(dir, name), { force: true });
@@ -48372,7 +48396,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync69, readdirSync as readdirSync30, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync26 } from "fs";
+import { existsSync as existsSync69, readdirSync as readdirSync29, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync26 } from "fs";
 import { basename as basename16, dirname as dirname29, join as join81 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -48532,7 +48556,7 @@ var BOOKKEEPING_NAMES = [
 function foreignStateEntries(old) {
   if (!existsSync69(old.stateDir))
     return [];
-  return readdirSync30(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
+  return readdirSync29(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
 function oldPiecesPresent(paths, old, renamer) {
   if ([
@@ -48600,7 +48624,7 @@ function recordsNameOldPaths(stateDir, renamer) {
   }
   const backups = join81(stateDir, "backups");
   if (existsSync69(backups)) {
-    for (const folder of readdirSync30(backups)) {
+    for (const folder of readdirSync29(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
     }
@@ -48633,7 +48657,7 @@ function absorbStateFolder(from, to, dryRun) {
   if (!existsSync69(from))
     return 0;
   let moved = 0;
-  for (const name of readdirSync30(from)) {
+  for (const name of readdirSync29(from)) {
     const source = join81(from, name);
     const target = join81(to, name);
     if (!existsSync69(target)) {
@@ -48651,7 +48675,7 @@ function absorbStateFolder(from, to, dryRun) {
     if (!dryRun)
       rmSync20(source, { recursive: true, force: true });
   }
-  if (!dryRun && readdirSync30(from).length === 0)
+  if (!dryRun && readdirSync29(from).length === 0)
     rmSync20(from, { recursive: true, force: true });
   return moved;
 }
@@ -48693,10 +48717,10 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   const backupsDir = join81(stateDir, "backups");
   if (!existsSync69(backupsDir))
     return { files, backups };
-  const folders = readdirSync30(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const folders = readdirSync29(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
     const folderPath = join81(backupsDir, folder);
-    for (const name of readdirSync30(folderPath)) {
+    for (const name of readdirSync29(folderPath)) {
       const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
@@ -48712,7 +48736,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
       continue;
     const target = join81(backupsDir, renamedFolder);
     if (existsSync69(target)) {
-      for (const name of readdirSync30(folderPath))
+      for (const name of readdirSync29(folderPath))
         renameSync7(join81(folderPath, name), join81(target, name));
       rmSync20(folderPath, { recursive: true, force: true });
     } else {

@@ -479,7 +479,16 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
       sessionId: OTHER_CREW,
       slug: "empty",
     });
-    mkdirSync(empty.project, { recursive: true });
+    // As Claude Code leaves it: an empty `memory` folder is all there is.
+    mkdirSync(join(empty.project, "memory"), { recursive: true });
+    // A note Claude Code kept there is something: that folder is not empty, so it is not listed.
+    const noted = await removedCrew(w, {
+      id: "crew-U-noted",
+      sessionId: THIRD_CREW,
+      slug: "noted",
+    });
+    mkdirSync(join(noted.project, "memory"), { recursive: true });
+    writeFileSync(join(noted.project, "memory", "MEMORY.md"), "a note\n");
     const expired = archive(w, "crew-V-old", 8 * DAY);
 
     expect(await w.run()).toBe(0);
@@ -508,7 +517,7 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
       sessionId: OTHER_CREW,
       slug: "empty",
     });
-    mkdirSync(empty.project, { recursive: true });
+    mkdirSync(join(empty.project, "memory"), { recursive: true });
     const expired = archive(w, "crew-V-old", 8 * DAY);
     const questions: string[] = [];
     w.deps.confirm = (question) => {

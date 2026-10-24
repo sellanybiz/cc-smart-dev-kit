@@ -155,6 +155,31 @@ describe("archiveConversation", () => {
     expect(readFileSync(other, "utf8")).toBe('{"type":"user"}\n');
   });
 
+  test("the empty memory folder Claude Code leaves in a project folder goes with it; a file in it keeps the folder", async () => {
+    const w = world();
+    w.conversation();
+    mkdirSync(join(w.project, "memory"));
+    expect(await archiveConversation(w.input())).toMatchObject({
+      folderGone: true,
+      kind: "archived",
+    });
+    expect(existsSync(w.project)).toBe(false);
+
+    // The same with nothing to move at all: the folder holds only that empty folder.
+    mkdirSync(join(w.project, "memory"), { recursive: true });
+    expect(await archiveConversation(w.input())).toEqual({ folderGone: true, kind: "nothing" });
+    expect(existsSync(w.project)).toBe(false);
+
+    // A note Claude Code wrote there is not ours to delete: the folder stays with it.
+    const note = w.write("memory/MEMORY.md", "a note\n");
+    w.conversation();
+    expect(await archiveConversation(w.input())).toMatchObject({
+      folderGone: false,
+      kind: "archived",
+    });
+    expect(readFileSync(note, "utf8")).toBe("a note\n");
+  });
+
   test("a lead's session, or one a running Claude holds, is never touched", async () => {
     const w = world();
     w.conversation();
@@ -195,23 +220,49 @@ describe("archiveConversation", () => {
     });
   });
 
-  test("a second run moves what is still there, over the first copy", async () => {
+  test("a move that stopped before the delete is finished: the same bytes, archived and still there", async () => {
     const w = world();
     w.conversation();
     const first = await archiveConversation(w.input());
     expect(first.kind).toBe("archived");
-    w.write(`${SESSION}.jsonl`, '{"type":"user"}\n{"type":"assistant"}\n{"type":"assistant"}\n');
+    // The delete of the original never happened: the same file is back beside its archived copy.
+    w.write(`${SESSION}.jsonl`, '{"type":"user"}\n{"type":"assistant"}\n');
 
     const second = await archiveConversation(w.input({ nowMs: NOW + 60_000 }));
 
     expect(second).toMatchObject({ files: 1, folderGone: true, kind: "archived" });
+    expect(existsSync(w.project)).toBe(false);
     const dir = crewArchiveDir(w.paths.stateDir, w.repo, "B1-help-1a2b3c");
     const into = join(dir, "projects", w.project.split("/").at(-1) ?? "");
     expect(gunzipped(join(into, `${SESSION}.jsonl.gz`))).toBe(
-      '{"type":"user"}\n{"type":"assistant"}\n{"type":"assistant"}\n',
+      '{"type":"user"}\n{"type":"assistant"}\n',
     );
-    expect(gunzipped(join(into, SESSION, "subagents", "agent-1.jsonl.gz"))).toBe(
-      '{"type":"assistant","isSidechain":true}\n',
+  });
+
+  test("a file that appeared again with other content never replaces the archived copy", async () => {
+    const w = world();
+    w.conversation();
+    await archiveConversation(w.input());
+    // Something wrote the conversation again after the move (a job that kept running): a new file.
+    const again = w.write(
+      `${SESSION}.jsonl`,
+      '{"type":"user"}\n{"type":"assistant"}\n{"type":"late"}\n',
+    );
+
+    const second = await archiveConversation(w.input({ nowMs: NOW + 60_000 }));
+
+    expect(second).toEqual({
+      kind: "failed",
+      moved: 0,
+      why: `${SESSION}.jsonl differs from its archived copy, so neither is overwritten`,
+    });
+    expect(readFileSync(again, "utf8")).toBe(
+      '{"type":"user"}\n{"type":"assistant"}\n{"type":"late"}\n',
+    );
+    const dir = crewArchiveDir(w.paths.stateDir, w.repo, "B1-help-1a2b3c");
+    const into = join(dir, "projects", w.project.split("/").at(-1) ?? "");
+    expect(gunzipped(join(into, `${SESSION}.jsonl.gz`))).toBe(
+      '{"type":"user"}\n{"type":"assistant"}\n',
     );
   });
 

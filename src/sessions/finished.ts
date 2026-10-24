@@ -2,7 +2,7 @@
  * Finished background sessions: one reader for the command and the portal, never an automatic
  * removal. Beside them, what removed crew sessions left in `/resume` (`readCrewLeftovers`, AR1).
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
@@ -10,6 +10,7 @@ import {
   ARCHIVED_STATES,
   archiveDaysOf,
   conversationOf,
+  holdsNothing,
   type PrunedArchive,
   pruneCrewArchives,
   sessionsNeverTaken,
@@ -200,15 +201,6 @@ export interface CrewLeftovers {
   error: string | null;
 }
 
-/** Whether `folder` is a folder with nothing in it. */
-function emptyFolder(folder: string): boolean {
-  try {
-    return statSync(folder).isDirectory() && readdirSync(folder).length === 0;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Reads what removed crew sessions left: only records the store marks removed or discarded,
  * never a lead's session, one a record still on the board names, or one a running Claude holds;
@@ -237,7 +229,7 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
       if (!isSessionId(record.sessionId) || neverTaken.has(record.sessionId)) continue;
       const found = conversationOf(paths.projectsDir, record.worktree, record.sessionId);
       if (found.files.length === 0) {
-        if (emptyFolder(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
+        if (holdsNothing(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
           out.emptyFolders.push(found.projectDir);
         continue;
       }

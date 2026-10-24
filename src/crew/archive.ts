@@ -50,12 +50,13 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  type Stats,
   unlinkSync,
   utimesSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { createGzip } from "node:zlib";
+import { createGzip, gunzipSync } from "node:zlib";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -200,14 +201,20 @@ export interface ArchiveInput {
   nowMs: number;
 }
 
-/** Removes `folder` when it is empty; whether it is gone. Never removes anything in it. */
-export function removeEmptyFolder(folder: string): boolean {
+/**
+ * Whether `folder` is a folder that holds nothing but folders that hold nothing. Claude Code
+ * leaves an empty `memory/` folder in a project folder (seen live, 2.1.310), so "empty" has to
+ * mean that too. A file, a link or anything else is something, and a folder that cannot be read
+ * holds something as far as anyone can tell.
+ */
+export function holdsNothing(folder: string): boolean {
+  const stat = lstatSync(folder, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory()) return false;
   try {
-    rmdirSync(folder);
-    return true;
+    return readdirSync(folder).every((name) => holdsNothing(join(folder, name)));
   } catch {
-    // Not empty (another session's files, a link), or not there: it stays as it is.
-    return !existsSync(folder);
+    // Not readable: it may hold something.
+    return false;
   }
 }
 
@@ -224,7 +231,20 @@ function removeEmptyTree(folder: string): void {
     const path = join(folder, name);
     if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) removeEmptyTree(path);
   }
-  removeEmptyFolder(folder);
+  try {
+    rmdirSync(folder);
+  } catch {
+    // Something is left in it (a file, a link, a folder that would not go): it stays as it is.
+  }
+}
+
+/**
+ * Removes `folder` when it holds nothing (`holdsNothing`: empty, or only empty folders); whether
+ * it is gone. Never removes a file, a link or a folder that holds one.
+ */
+export function removeEmptyFolder(folder: string): boolean {
+  if (holdsNothing(folder)) removeEmptyTree(folder);
+  return !existsSync(folder);
 }
 
 /** Gzips `from` into `to`: a temporary name first, synced, then renamed, mode 0600. */
@@ -246,6 +266,22 @@ async function gzipInto(from: string, to: string): Promise<void> {
   } catch (error) {
     rmSync(temporary, { force: true });
     throw error;
+  }
+}
+
+/** Whether the file `from` was written, replaced or removed since `before` was read. */
+function changedSince(from: string, before: Stats): boolean {
+  const after = lstatSync(from, { throwIfNoEntry: false });
+  return after === undefined || after.size !== before.size || after.mtimeMs !== before.mtimeMs;
+}
+
+/** Whether the archived copy `to` unzips to exactly the bytes of `from`; false when it cannot be read. */
+function sameAsArchived(from: string, to: string): boolean {
+  try {
+    return readFileSync(from).equals(gunzipSync(readFileSync(to)));
+  } catch {
+    // Not whole (a copy cut short) or not readable: it is not the same file.
+    return false;
   }
 }
 
@@ -299,10 +335,24 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
       const to = `${join(into, file)}.gz`;
       mkdirSync(dirname(to), { mode: 0o700, recursive: true });
       const before = lstatSync(from);
+      if (existsSync(to)) {
+        // An archived copy is there already: either a move that stopped before it deleted the
+        // original (the same bytes: finish it), or a file written again since (other bytes:
+        // both are kept, and neither is overwritten).
+        if (!sameAsArchived(from, to) || changedSince(from, before)) {
+          return {
+            kind: "failed",
+            moved,
+            why: `${file} differs from its archived copy, so neither is overwritten`,
+          };
+        }
+        unlinkSync(from);
+        moved += 1;
+        continue;
+      }
       await gzipInto(from, to);
       utimesSync(to, before.atime, before.mtime);
-      const after = lstatSync(from);
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      if (changedSince(from, before)) {
         rmSync(to, { force: true });
         return {
           kind: "failed",

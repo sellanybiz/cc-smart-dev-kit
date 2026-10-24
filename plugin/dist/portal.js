@@ -33122,7 +33122,7 @@ import {
   existsSync as existsSync50,
   mkdirSync as mkdirSync21,
   openSync as openSync7,
-  readdirSync as readdirSync20,
+  readdirSync as readdirSync19,
   readFileSync as readFileSync62,
   readSync as readSync4,
   rmSync as rmSync12,
@@ -33132,7 +33132,7 @@ import {
 import { dirname as dirname21, join as join61, resolve as resolve10 } from "path";
 
 // src/sessions/finished.ts
-import { readdirSync as readdirSync19, readFileSync as readFileSync61, statSync as statSync18 } from "fs";
+import { readFileSync as readFileSync61, statSync as statSync18 } from "fs";
 import { join as join60 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -33252,7 +33252,7 @@ function readTail(path, size) {
 function sessionFiles(projectsDir, folder) {
   let names;
   try {
-    names = readdirSync20(join61(projectsDir, folder));
+    names = readdirSync19(join61(projectsDir, folder));
   } catch {
     return [];
   }
@@ -33283,7 +33283,7 @@ function sessionWorkFolderTimes(projectsDir) {
   if (!existsSync50(projectsDir))
     return [];
   const folders = new Map;
-  for (const folder of readdirSync20(projectsDir)) {
+  for (const folder of readdirSync19(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined)
       continue;
@@ -33301,7 +33301,7 @@ function savedSessions(projectsDir, mainCheckout, since) {
   if (!existsSync50(projectsDir))
     return [];
   const sessions = [];
-  for (const folder of readdirSync20(projectsDir)) {
+  for (const folder of readdirSync19(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout))
       continue;
     for (const file of sessionFiles(projectsDir, folder)) {
