@@ -346,9 +346,9 @@ function proposalOf(step: Step, moved: boolean): Proposal {
   if (step.computed) return { unread: "the program is worked out when the line runs" };
   const words = kitWordsOf(step) ?? [];
   const at = kitWordAt(words, step, "workflow");
-  if (words[at + 1] !== "propose") {
-    return { unread: "the subcommand is worked out when the line runs" };
-  }
+  const sub = words[at + 1];
+  if (sub === undefined) return { unread: "the line names no subcommand" };
+  if (sub !== "propose") return { unread: "the subcommand is worked out when the line runs" };
   const flag = words.indexOf("--folder", at + 2);
   const folder = flag === -1 ? null : (words[flag + 1] ?? "");
   if (folder !== null && (folder === "" || isComputedWord(folder))) {
@@ -645,6 +645,11 @@ function proposeActs(base: null | string): string {
 /** Said after every question about a proposal: the person decides. */
 const APPROVE_IF_MEANT = "Approve it if you meant it.";
 
+/** The question when the judge cannot name the project a proposal goes into, with why. */
+function cannotTellProject(why: string): string {
+  return `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+}
+
 /**
  * Why a proposal into the project at `folder` is the person's to approve, or null when the gate
  * the git and merge guards read allows both its push and its pull request: `autoPush` on and
@@ -654,8 +659,6 @@ const APPROVE_IF_MEANT = "Approve it if you meant it.";
  * checkout's working copy. Anything it cannot read is a question with its reason, never a guess.
  */
 function proposeQuestion(folder: string, context: JudgeContext): string | null {
-  const cannotTellProject = (why: string) =>
-    `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
   let checkout: ReturnType<typeof locateCheckout>;
   let base: null | string;
   try {
@@ -699,9 +702,9 @@ function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): 
   let question: null | string = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
-      question = `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${proposal.unread}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+      question = cannotTellProject(proposal.unread);
     } else if (cwd === null) {
-      question = `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (the call names no folder), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+      question = cannotTellProject("the call names no folder");
     } else {
       // A relative `--folder` is relative to the folder the line runs in, as the command reads it.
       question = proposeQuestion(

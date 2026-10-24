@@ -15692,9 +15692,11 @@ function proposalOf(step, moved) {
     return { unread: "the program is worked out when the line runs" };
   const words = kitWordsOf(step) ?? [];
   const at = kitWordAt(words, step, "workflow");
-  if (words[at + 1] !== "propose") {
+  const sub = words[at + 1];
+  if (sub === undefined)
+    return { unread: "the line names no subcommand" };
+  if (sub !== "propose")
     return { unread: "the subcommand is worked out when the line runs" };
-  }
   const flag = words.indexOf("--folder", at + 2);
   const folder = flag === -1 ? null : words[flag + 1] ?? "";
   if (folder !== null && (folder === "" || isComputedWord(folder))) {
@@ -15898,9 +15900,11 @@ function proposeActs(base) {
   return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
 }
 var APPROVE_IF_MEANT = "Approve it if you meant it.";
-function proposeQuestion(folder, context) {
-  const cannotTellProject = (why) => `${proposeActs(null)}
+function cannotTellProject(why) {
+  return `${proposeActs(null)}
 ${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+}
+function proposeQuestion(folder, context) {
   let checkout;
   let base;
   try {
@@ -15943,11 +15947,9 @@ function judgeProposals(proposals, context) {
   let question = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
-      question = `${proposeActs(null)}
-${COMMAND} cannot tell which project's workflow this line proposes into (${proposal.unread}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+      question = cannotTellProject(proposal.unread);
     } else if (cwd === null) {
-      question = `${proposeActs(null)}
-${COMMAND} cannot tell which project's workflow this line proposes into (the call names no folder), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+      question = cannotTellProject("the call names no folder");
     } else {
       question = proposeQuestion(proposal.folder === null ? cwd : resolve6(cwd, proposal.folder), context);
     }
