@@ -25817,6 +25817,17 @@ function titleToSet(env, sessionId, wanted, current) {
   rememberAppliedName(env, sessionId, wanted);
   return wanted === current ? null : wanted;
 }
+function titleToSetOrProblem(env, sessionId, wanted, current) {
+  try {
+    return { problem: null, title: titleToSet(env, sessionId, wanted, current) };
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      problem: `the session name could not be recorded, so it is not set this turn (${why})`,
+      title: null
+    };
+  }
+}
 function recordedLead(context, sessionId) {
   try {
     const repo = context.project.mainCheckout ?? context.project.root;
@@ -31610,8 +31621,16 @@ function roleCard(record, briefFile) {
   ].join(`
 `);
 }
+function problemLine(why) {
+  return `cc-smart-dev-kit crew-role: ${why}`;
+}
 function storeProblem(why) {
-  return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
+  return { stderr: problemLine(why) };
+}
+function withProblem(result, why) {
+  const line = problemLine(why);
+  return { ...result, stderr: result.stderr === undefined ? line : `${result.stderr}
+${line}` };
 }
 function reasonOf4(error) {
   return error instanceof Error ? error.message : String(error);
@@ -31710,8 +31729,8 @@ async function stopAnswer(input, id, repo, paths) {
 function titleAnswer(input, record, env) {
   const sessionId = stringField(input.session_id);
   if (!isSessionId2(sessionId))
-    return null;
-  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+    return { problem: null, title: null };
+  return titleToSetOrProblem(env, sessionId, record.name, stringField(input.session_title));
 }
 function titleOnly(title) {
   return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
@@ -31721,17 +31740,18 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   if (!found.ok)
     return found.result;
   const record = found.record;
-  const title = titleAnswer(input, record, env);
+  const { problem: nameProblem, title } = titleAnswer(input, record, env);
+  const said = (result) => nameProblem === null ? result : withProblem(result, nameProblem);
   const prompt2 = stringField(input.prompt);
   if (prompt2 === null)
-    return titleOnly(title);
+    return said(titleOnly(title));
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
   if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
-    return titleOnly(title);
+    return said(titleOnly(title));
   const line = personLine(prompt2);
   if (line === "")
-    return titleOnly(title);
+    return said(titleOnly(title));
   try {
     await appendCrewEvent(paths.stateDir, repo, {
       crew: record.id,
@@ -31744,9 +31764,9 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   } catch (error) {
     const problem = storeProblem(reasonOf4(error));
     const only = titleOnly(title);
-    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
+    return said(only.stdout === undefined ? problem : { ...problem, stdout: only.stdout });
   }
-  return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
+  return said(title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title));
 }
 function taskListGate(input, id, repo, paths, env) {
   const listId = taskListId(env, stringField(input.session_id));
@@ -33269,7 +33289,7 @@ function notesLine(lines) {
   return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
 }
 function leadTitle(input, event, env, sessionId, name) {
-  return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
+  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
 }
 function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
@@ -33288,12 +33308,12 @@ function reminderFor(paths, env, sessionId, event) {
     return null;
   return read.state === "read" && read.files > 0 ? null : taskListReminder();
 }
-function answered(event, lines, title) {
+function answered(event, lines, name) {
   const text = lines.length === 0 ? null : lines.join(`
 `);
-  if (title === null)
-    return text === null ? SILENT : addContext(event, text);
-  return addContextAndTitle(event, text, title);
+  const { problem, title } = name;
+  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
+  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;

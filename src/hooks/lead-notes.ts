@@ -58,7 +58,7 @@ import {
   stringField,
 } from "./io";
 import type { Env } from "./run";
-import { isSessionId, titleToSet } from "./session-name";
+import { isSessionId, titleToSetOrProblem } from "./session-name";
 
 /** The one note: the newest line, and how many older ones this turn did not print. */
 export function notesLine(lines: readonly string[]): string | null {
@@ -71,6 +71,8 @@ export function notesLine(lines: readonly string[]): string | null {
 /**
  * The lead's name to set at this turn, or null: a prompt only, and only through `titleToSet`
  * (`session-name.ts`), so a person's own `/rename` stays and the same name is never set twice.
+ * A name whose record cannot be written is not set, and the turn goes on with its news:
+ * `problem` is the line for stderr (`titleToSetOrProblem`).
  */
 function leadTitle(
   input: HookInput,
@@ -78,10 +80,10 @@ function leadTitle(
   env: Env,
   sessionId: string,
   name: string,
-): null | string {
+): { problem: null | string; title: null | string } {
   return event === "UserPromptSubmit"
-    ? titleToSet(env, sessionId, name, stringField(input.session_title))
-    : null;
+    ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title))
+    : { problem: null, title: null };
 }
 
 /**
@@ -118,11 +120,26 @@ function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string
   return read.state === "read" && read.files > 0 ? null : taskListReminder();
 }
 
-/** The answer for this turn: its lines for Claude, the lead's name, both, or silence. */
-function answered(event: string, lines: readonly string[], title: null | string): HookResult {
+/**
+ * The answer for this turn: its lines for Claude, the lead's name, both, or silence — and one
+ * line on stderr when the name's record could not be written (the lines still go out).
+ */
+function answered(
+  event: string,
+  lines: readonly string[],
+  name: { problem: null | string; title: null | string },
+): HookResult {
   const text = lines.length === 0 ? null : lines.join("\n");
-  if (title === null) return text === null ? SILENT : addContext(event, text);
-  return addContextAndTitle(event, text, title);
+  const { problem, title } = name;
+  const result =
+    title === null
+      ? text === null
+        ? SILENT
+        : addContext(event, text)
+      : addContextAndTitle(event, text, title);
+  return problem === null
+    ? result
+    : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 
 /**

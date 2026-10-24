@@ -283,6 +283,28 @@ describe("the lead's name (LD1)", () => {
     );
   });
 
+  test("the name's record cannot be written (TMPDIR is a file): the news still reaches the lead, once, and one line says why", async () => {
+    // `titleToSet` writes the name it sets into `<TMPDIR>/cc-smart-dev-kit-session-names`. The
+    // cursor had already moved past the news when that write threw, so the throw lost the news
+    // for good: the next turn heard nothing of it.
+    const world = await leadWorld({ named: false });
+    await step(world.stateDir, world.repo, "tests-green");
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(leadNotesHook, leadInput(world.repo), {
+      ...world.env,
+      TMPDIR: notAFolder,
+    });
+    expect(result.stdout).toBe(addContext("UserPromptSubmit", stepLine("tests-green")).stdout);
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit lead-notes: the session name could not be recorded, so it is not set this turn (",
+    );
+    // The news is said once, and the name is set on the first turn that can record it.
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      named(null, NAME),
+    );
+  });
+
   test("a second prompt with the same title sets nothing", async () => {
     const world = await leadWorld({ named: false });
     expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
