@@ -161,7 +161,7 @@ describe("what reaches a running session (P7)", () => {
     expect(runningWords("on")).toBe(changed);
     expect(runningWords("off")).toBe(changed);
     expect(runningWords("default")).toBe(
-      "Default removes the address. A session already running in this project follows by itself, within about a second, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts.",
+      "Default removes the address. A session already running in this project follows by itself, within a few seconds, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts.",
     );
   });
 });

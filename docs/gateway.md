@@ -229,7 +229,7 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   is not a state to claim. `gateway project status` exits 1 when it cannot tell (an unreadable
   file or config) and 0 otherwise.
 - **Running sessions (P7, 2.1.310).** A changed value reaches a session already running in the
-  project within about a second. A removed key moves it, as fast, to the next file that still
+  project within about a second. A removed key moves it, within a few seconds, to the next file that still
   sets the key (the machine's settings, say); only when no file sets it does the session keep its
   last value until it restarts. `default` says which of the two it is, from the state that
   applies after the write.
@@ -237,8 +237,13 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   git-ignored personal file into a new worktree. While the root's key is there it wins, but once
   `gateway project default` or `restore` removes it, a session started in that worktree reads its
   copy and goes to the router's address. The kit did not write the copy, so it never changes it:
-  `gateway project status`, `default` and `restore` (both stages, before it stops the router)
-  name each copy that holds a gateway address, with the fix — remove the key there.
+  `gateway project status`, `default` (a personal-file write only), `restore` (both stages,
+  before it stops the router) and `doctor` name each copy that holds a gateway address, with the
+  fix — remove the key there. The state carries every other linked worktree's own file
+  (`worktreeFiles`, read by `linkedWorktreeFilesOf` and its awaited twin), so the login-key
+  refusal also stops `on` and `off` at the main root while one of them sets `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` (proved for the address; very likely the same for the
+  other `env` keys, not run).
 - **`restore` counts a project's key, and waits for its sessions (GP4a).** A project's own
   `ANTHROPIC_BASE_URL` keeps that project's sessions on the router exactly as the machine's key
   does, so stage 1 asks **every settings file cc-smart-dev-kit wrote** (each entry in the state
@@ -1672,8 +1677,10 @@ and `gateway setup` opens both again. One crash is still retried after 2 s.
 ### `cc-smart-dev-kit restore`
 
 It undoes the service in **two stages** while the gateway is on. A running session follows a
-**changed** `ANTHROPIC_BASE_URL` within about a second, but a **removed** key never reaches it:
-a session keeps the address it last had, so it still points at the router after the key is gone.
+**changed** `ANTHROPIC_BASE_URL` within about a second, but a **removed** key reaches it only when
+another settings file still sets the key (P7, 2.1.310): with none, a session keeps the address it
+last had, so it still points at the router after the key is gone. A worktree's own copy of the
+personal file is such a file; restore names each one and never changes it.
 So stage 1 **writes Anthropic's own address into each file instead of removing the key**, and
 every running session switches by itself (`claude-code-contract.md` § The gateway, the row "A
 running session applies a changed `env` value within about a second …"). The key stays owned and

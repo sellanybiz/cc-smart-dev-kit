@@ -211,15 +211,25 @@ describe("gateway project status", () => {
     expect(m.output()).toContain("Fix: fix the file by hand");
   });
 
-  test("outside a git project the status still answers, and says there is no personal file", async () => {
+  test("outside a git project the status still answers, and says which files are read there", async () => {
     const m = machine();
     const plain = join(tempDir("gp2-status-plain"), "notes");
     mkdirSync(plain, { recursive: true });
     expect(await m.run(["project", "status", "--folder", plain])).toBe(0);
     expect(m.output()).toContain(
-      "  · this folder is not in a git project: it has no personal file",
+      "  · this folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, and a project state is not written",
     );
     expect(m.output()).toContain("  · default: no file of this project sets a gateway address");
+    // The folder's own local file is read there (P6, 2.1.310) and decides, in the words of the file.
+    writeSettings(join(plain, ".claude", "settings.local.json"), {
+      env: { ANTHROPIC_BASE_URL: ROUTER },
+    });
+    m.reset();
+    expect(await m.run(["project", "status", "--folder", plain])).toBe(0);
+    expect(m.output()).toContain(`  ✓ on → ${ROUTER}`);
+    expect(m.output()).toContain(
+      `  · from: the personal file ${join(plain, ".claude", "settings.local.json").replace(m.home, "~")}`,
+    );
   });
 
   test("a folder that does not exist is refused", async () => {
@@ -724,7 +734,7 @@ describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)",
     expect(await m.run(["project", "status", "--folder", worktree])).toBe(0);
     expect(m.output()).toContain(`  ✓ on → ${ROUTER}`);
     expect(m.output()).toContain(
-      `  · from: the personal file ${own.replace(m.home, "~")} (never committed)`,
+      `  · from: the personal file ${own.replace(m.home, "~")} (the folder's own, not the project root's)`,
     );
   });
 
@@ -758,6 +768,53 @@ describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)",
     expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
   });
 
+  test("the same key in a worktree's file stops `on` and `off` at the main root too", async () => {
+    const m = machine();
+    const { root } = withWorktree("gf1-login-root", {
+      env: { ANTHROPIC_API_KEY: "sk-test-not-a-real-key" },
+    });
+    await expect(m.run(["project", "on", "--folder", root])).rejects.toThrow(
+      "ANTHROPIC_API_KEY is set in",
+    );
+    await expect(m.run(["project", "off", "--folder", root])).rejects.toThrow(
+      "ANTHROPIC_API_KEY is set in",
+    );
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
+    // `default` writes no address, and a team write is the team file's own business.
+    m.reset();
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+  });
+
+  test("default --team does not name worktree copies: a team key never lets one decide", async () => {
+    const m = machine();
+    const { root } = withWorktree("gf1-team-copy", { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    await m.run(["project", "off", "--team", "--folder", root]);
+    m.reset();
+    expect(await m.run(["project", "default", "--team", "--folder", root])).toBe(0);
+    expect(m.output()).not.toContain("holds");
+  });
+
+  test("status in the worktree whose own file decides does not warn about that same file", async () => {
+    const m = machine();
+    const { worktree } = withWorktree("gf1-own-no-warn", { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    expect(await m.run(["project", "status", "--folder", worktree])).toBe(0);
+    expect(m.output()).not.toContain("once the root's key is gone");
+  });
+
+  test("default with an unreadable file in the chain makes no claim about running sessions", async () => {
+    const m = machine();
+    const root = repo("gf1-default-unknown");
+    await m.run(["project", "on", "--folder", root]);
+    writeFileSync(join(root, ".claude", "settings.json"), "{not json\n");
+    m.reset();
+    // The team file cannot be read, and the chain stops there: `default` has nothing to follow.
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      "  A settings file in the way cannot be read, so what a session already running here follows is not known.",
+    );
+    expect(m.output()).not.toContain("Nothing to restart");
+  });
+
   test("default says what a removal does: the next file that sets the key takes over (P7)", async () => {
     const m = machine();
     const root = repo("gf1-default-falls");
@@ -766,7 +823,7 @@ describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)",
     m.reset();
     expect(await m.run(["project", "default", "--folder", root])).toBe(0);
     expect(m.output()).toContain(
-      `  A session already running here follows by itself, within about a second, to the next file that sets the address: on → ${ROUTER}. Nothing to restart.`,
+      `  A session already running here follows by itself, within a few seconds, to the next file that sets the address: on → ${ROUTER}. Nothing to restart.`,
     );
     expect(m.output()).not.toContain("never reaches a running session");
   });

@@ -29,10 +29,10 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   slot name to Anthropic and fails; `restore` says so when it removes them.
 - **The gateway's project state follows what Claude Code really reads.** Claude Code also reads
   the folder a session starts in for its own `.claude/settings.local.json` (a subfolder, a
-  worktree), after the project root's, so `gateway project status`, the login-key refusal and
-  `doctor` now see it. A removed key no longer means "restart": a running session follows it to
-  the next file that sets the key. `gateway project default`, `status` and `restore` name a
-  worktree's copy of the personal file that still holds the router's address, and leave it alone.
+  worktree), after the project root's, so `gateway project status` and the login-key refusal now
+  see it. A removed key no longer means "restart": a running session follows it to the next file
+  that sets the key. `gateway project default`, `status`, `restore` and `doctor` name a worktree's
+  copy of the personal file that still holds the router's address, and leave it alone.
 - **`doctor` shows each project's gateway state and its source,** and warns about a project file
   that names a slot or a backend model as Claude Code's model. `restore` also covers the keys the
   kit wrote into project files. `gateway off` lists the projects still switched on.

@@ -1477,7 +1477,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(existsSync(m.paths.copy)).toBe(true);
     expect(existsSync(m.paths.unit)).toBe(true);
     // The address was set, not removed (GP5): a running session follows a changed value
-    // within about a second, where a removed key would wait for its restart. The key stays
+    // within about a second, where a removed key reaches it only if another file sets the key. The key stays
     // owned, so the second run takes it back.
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
       env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },

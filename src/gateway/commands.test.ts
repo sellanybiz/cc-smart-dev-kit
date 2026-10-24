@@ -327,7 +327,7 @@ describe("Claude Code settings: on / off", () => {
     expect(switched).toBe(true);
     expect(foreign).toEqual([]);
     // The address key stays, holding Anthropic's own value: a running session follows a
-    // changed value within about a second, where a removed key would wait for its restart.
+    // changed value within about a second, where a removed key reaches it only if another file sets the key.
     // Changed by the move: the old `off` also removed CLAUDE_CODE_SUBAGENT_MODEL. It is not
     // the gateway's key, so it stays.
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({

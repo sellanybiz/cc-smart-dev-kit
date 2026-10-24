@@ -275,7 +275,7 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     mkdirSync(dirname(copy), { recursive: true });
     const copyText = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20999" } }, null, 2)}\n`;
     writeFileSync(copy, copyText);
-    const warning = `! ${copy.replace(paths.home, "~")} holds http://127.0.0.1:20999: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to a stopped router once the root's key is gone`;
+    const warning = `! ${copy.replace(paths.home, "~")} holds http://127.0.0.1:20999: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to that address once the root's key is gone. Fix: remove the key from that file by hand`;
 
     // Stage 1 writes Anthropic's address into the root's file, which wins: the copy is named.
     expect(await runRestore(paths, options(true))).toBe(0);

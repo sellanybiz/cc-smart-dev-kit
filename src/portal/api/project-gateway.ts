@@ -163,7 +163,7 @@ function notesOf(
     });
   } else if (view.checkout === null) {
     notes.push({
-      text: "This folder is not in a git project: it has no personal file, so its state cannot be set here.",
+      text: "This folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, so its state cannot be set.",
       tone: "info",
     });
   }

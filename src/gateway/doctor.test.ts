@@ -136,27 +136,32 @@ describe("doctor: a project on a profile, and the router that runs", () => {
 });
 
 describe("doctor: a linked worktree's own local file (P6, re-proved on 2.1.310)", () => {
-  test("! its subagent key is warned about, and the root's address still decides", async () => {
-    const m = machine();
-    const root = project(m.home, "app", DEFAULT_ANTHROPIC_BASE_URL);
+  /** The project list holds main roots only (a worktree folds into its main checkout). */
+  function withWorktreeFile(m: ReturnType<typeof machine>, body: Record<string, unknown>) {
+    const root = project(m.home, "app", `http://127.0.0.1:${PORT}`);
     const worktree = join(m.home, "Code", "app-wt");
     git(root, "worktree", "add", "-q", worktree, "-b", "crew/one");
-    // The root's file wins for the address; the key the root does not set is the worktree's own.
     mkdirSync(join(worktree, ".claude"), { recursive: true });
     writeFileSync(
       join(worktree, ".claude", "settings.local.json"),
-      `${JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: "claude-haiku-5-5" } }, null, 2)}\n`,
+      `${JSON.stringify(body, null, 2)}\n`,
     );
-    const lines = await linesFor(m, [worktree], "current");
-    expect(
-      lines.some((line) =>
-        line.startsWith(
-          "! ~/Code/app-wt/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL:",
-        ),
-      ),
-    ).toBe(true);
+    return root;
+  }
+
+  test("! a worktree's copy that holds the router is named, with its fix", async () => {
+    const m = machine();
+    const root = withWorktreeFile(m, { env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}` } });
+    const lines = await linesFor(m, [root], "current");
     expect(lines).toContain(
-      `· ~/Code/app-wt (here): off → ${DEFAULT_ANTHROPIC_BASE_URL}  · from the personal file ~/Code/app/.claude/settings.local.json (never committed)`,
+      `! ~/Code/app-wt/.claude/settings.local.json holds http://127.0.0.1:${PORT}: a session started in that worktree reads it once the root's key is gone (cc-smart-dev-kit never writes or removes this copy) Fix: remove env.ANTHROPIC_BASE_URL from ~/Code/app-wt/.claude/settings.local.json by hand`,
     );
+  });
+
+  test("a worktree's file with Anthropic's address, or none, is not named", async () => {
+    const m = machine();
+    const root = withWorktreeFile(m, { env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL } });
+    const lines = await linesFor(m, [root], "current");
+    expect(lines.filter((line) => line.includes("app-wt"))).toEqual([]);
   });
 });

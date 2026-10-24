@@ -14,12 +14,13 @@
  * sees no global config and no real repository.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { git, tempDir } from "../testing/temp";
 import { DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_PORT, type GatewayConfig, saveConfig } from "./config";
 import {
   decisionWords,
+  gatewayCopiesAmong,
   type ProjectStateOptions,
   projectGatewayState,
   projectGatewayStateAsync,
@@ -456,4 +457,76 @@ for (const twin of TWINS) {
       expect(state.routerUrl).toBe(`http://127.0.0.1:${DEFAULT_PORT}`);
     });
   });
+
+  describe(`${twin.name}: the other worktrees' own local files (P6, 2.1.310)`, () => {
+    test("each linked worktree's own file is listed, the asked folder's and a missing file left out", async () => {
+      const files = machine();
+      const root = repo("gf1-wtfiles");
+      const one = join(tempDir("gf1-wtfiles-one"), "one");
+      const two = join(tempDir("gf1-wtfiles-two"), "two");
+      git(root, "worktree", "add", "-q", one, "-b", "crew/one");
+      git(root, "worktree", "add", "-q", two, "-b", "crew/two");
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(join(one, ".claude", "settings.local.json"), withUrl(ROUTER));
+      // `two` has no file of its own: it is not listed.
+
+      const fromRoot = await stateOf(root, files);
+      expect(fromRoot.worktreeFiles.map((one) => [one.path, one.url])).toEqual([
+        [join(one, ".claude", "settings.local.json"), ROUTER],
+      ]);
+      // Asked from `one`, its own file is in `files`, so it is not listed twice.
+      const fromOne = await stateOf(one, files);
+      expect(fromOne.worktreeFiles).toEqual([]);
+      expect(fromOne.files.map((file) => file.path)).toContain(
+        join(one, ".claude", "settings.local.json"),
+      );
+    });
+
+    test("a worktree whose folder is gone, and a folder outside git, add none", async () => {
+      const files = machine();
+      const root = repo("gf1-wtgone");
+      const gone = join(tempDir("gf1-wtgone-wt"), "gone");
+      git(root, "worktree", "add", "-q", gone, "-b", "crew/gone");
+      writeSettings(join(gone, ".claude", "settings.local.json"), withUrl(ROUTER));
+      rmSync(gone, { force: true, recursive: true });
+      expect((await stateOf(root, files)).worktreeFiles).toEqual([]);
+      const plain = join(tempDir("gf1-wtplain"), "notes");
+      mkdirSync(plain, { recursive: true });
+      expect((await stateOf(plain, files)).worktreeFiles).toEqual([]);
+    });
+
+    test("a folder reached through a symlink to the main root does not list the root's file twice", async () => {
+      const files = machine();
+      const root = repo("gf1-symlink");
+      const link = join(tempDir("gf1-symlink-link"), "app-link");
+      symlinkSync(root, link);
+      writeSettings(join(root, ".claude", "settings.local.json"), withUrl(ROUTER));
+      const state = await stateOf(link, files);
+      expect(state.files.filter((file) => file.kind === "personal")).toHaveLength(1);
+    });
+  });
 }
+
+describe("which worktree files are copies that hold a gateway address", () => {
+  const file = (url: null | string, problem: null | string = null) => ({
+    kind: "personal" as const,
+    loginOverrides: [],
+    modelKeys: [],
+    path: "/home/user/wt/.claude/settings.local.json",
+    problem,
+    subagentOverrides: [],
+    url,
+  });
+
+  test("the router's address, a profile's and another gateway's are copies", () => {
+    for (const url of [ROUTER, `${ROUTER}/p/team`, "http://127.0.0.1:1234"]) {
+      expect(gatewayCopiesAmong([file(url)])).toHaveLength(1);
+    }
+  });
+
+  test("Anthropic's own address, no key, and a file that cannot be read are not", () => {
+    expect(gatewayCopiesAmong([file(DEFAULT_ANTHROPIC_BASE_URL)])).toEqual([]);
+    expect(gatewayCopiesAmong([file(null)])).toEqual([]);
+    expect(gatewayCopiesAmong([file(ROUTER, "is not valid JSON")])).toEqual([]);
+  });
+});

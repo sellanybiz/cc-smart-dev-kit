@@ -9,7 +9,12 @@ import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
-import { PERSONAL_EXCLUDE_LINE, PERSONAL_FILE, worktreeCopiesOf } from "../gateway/project-state";
+import {
+  gatewayCopiesAmong,
+  linkedWorktreeFilesOf,
+  PERSONAL_EXCLUDE_LINE,
+  PERSONAL_FILE,
+} from "../gateway/project-state";
 import {
   type RouterServiceKind,
   type Runner,
@@ -318,9 +323,9 @@ function copyWarnings(settingsFiles: readonly string[], short: (path: string) =>
   for (const file of settingsFiles) {
     const claudeDir = dirname(file);
     if (basename(file) !== PERSONAL_FILE || basename(claudeDir) !== ".claude") continue;
-    for (const copy of worktreeCopiesOf(dirname(claudeDir))) {
+    for (const copy of gatewayCopiesAmong(linkedWorktreeFilesOf(dirname(claudeDir)))) {
       lines.push(
-        `! ${short(copy.path)} holds ${shownValue(copy.url ?? "")}: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to a stopped router once the root's key is gone`,
+        `! ${short(copy.path)} holds ${shownValue(copy.url ?? "")}: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to that address once the root's key is gone. Fix: remove the key from that file by hand`,
       );
     }
   }

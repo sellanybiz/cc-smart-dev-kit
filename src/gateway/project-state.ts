@@ -64,7 +64,7 @@ export type SettingsLevel = "machine" | "personal" | "team";
 /** One settings file the reader looked at, in the order Claude Code applies them. */
 export interface SettingsFileState {
   kind: SettingsLevel;
-  /** The file as Claude Code reads it (`settings.local.json` at the main checkout's root). */
+  /** The file as Claude Code reads it (a project's personal file: the main root's or the folder's own). */
   path: string;
   /** The `env.ANTHROPIC_BASE_URL` it holds, exactly as written; null when it holds none. */
   url: null | string;
@@ -181,6 +181,12 @@ export interface ProjectGatewayState {
   profiles: string[];
   /** This machine's router, `http://127.0.0.1:<port>`. */
   routerUrl: string;
+  /**
+   * The own `settings.local.json` of the project's other linked worktrees, the folder asked
+   * excluded (it is in `files`): not part of this folder's chain, but a session started in one
+   * reads it (P6), so the login-key refusal and the copy warnings ask them. Empty outside git.
+   */
+  worktreeFiles: SettingsFileState[];
 }
 
 export interface ProjectStateOptions {
@@ -211,18 +217,37 @@ export function ownPersonalFileOf(folder: string): string {
 }
 
 /**
- * The linked worktrees of a repo whose own `settings.local.json` holds a gateway address — the
- * copies a project's `.worktreeinclude` makes of the personal file (P6, 2.1.310). The main
- * root's key wins key by key while it is there; once it is removed (`gateway project default`,
- * `restore`), a session started in such a worktree reads its copy and goes to that address. The
- * kit did not write the copy, so it is reported, never changed
- * (`.claude/rules/setup-and-managed-files.md` § Never take what is not ours).
- *
- * Reads only. A repo git cannot list, or a file that cannot be read, gives no copy: this is a
- * warning, never a state.
+ * The linked worktrees' paths in `listing` (`git worktree list --porcelain`): the main checkout
+ * and a bare entry left out.
  */
-export function worktreeCopiesOf(mainCheckout: string): SettingsFileState[] {
-  let listing: string;
+function linkedWorktreePaths(listing: string, mainCheckout: string): string[] {
+  const main = realFolder(mainCheckout);
+  const paths: string[] = [];
+  for (const block of listing.split("\n\n")) {
+    const lines = block.split("\n");
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main) continue;
+    paths.push(path);
+  }
+  return paths;
+}
+
+/** The own personal files that exist, of these worktrees. */
+function ownFilesOf(paths: readonly string[]): SettingsFileState[] {
+  return paths
+    .map((path) => ownPersonalFileOf(path))
+    .filter((file) => existsSync(file))
+    .map((file) => settingsFileState(file, "personal"));
+}
+
+/**
+ * Every linked worktree's own `settings.local.json` of a repo, read (P6, 2.1.310): a project's
+ * `.worktreeinclude` makes them as copies of the main root's personal file. The main root's key
+ * wins key by key while it is there; once it is removed (`gateway project default`, `restore`), a
+ * session started in such a worktree reads its own file. Reads only. A repo git cannot list gives
+ * none: a warning's input, never a state.
+ */
+export function linkedWorktreeFilesOf(mainCheckout: string): SettingsFileState[] {
   try {
     const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
       cwd: mainCheckout,
@@ -231,23 +256,48 @@ export function worktreeCopiesOf(mainCheckout: string): SettingsFileState[] {
       stdout: "pipe",
       timeout: RESOLVE_GIT_TIMEOUT_MS,
     });
-    if (result.exitCode !== 0) return [];
-    listing = result.stdout.toString();
+    return result.exitCode === 0
+      ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout))
+      : [];
   } catch {
     return [];
   }
-  const main = realFolder(mainCheckout);
-  const copies: SettingsFileState[] = [];
-  for (const block of listing.split("\n\n")) {
-    const lines = block.split("\n");
-    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === undefined || lines.includes("bare") || realFolder(path) === main) continue;
-    const copy = settingsFileState(ownPersonalFileOf(path), "personal");
-    if (copy.problem === null && copy.url !== null && baseUrlPointsAtGateway(copy.url)) {
-      copies.push(copy);
-    }
+}
+
+/** `linkedWorktreeFilesOf`, without blocking (`Bun.spawn`): the portal's and doctor's twin. */
+export async function linkedWorktreeFilesOfAsync(
+  mainCheckout: string,
+): Promise<SettingsFileState[]> {
+  try {
+    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    // A timeout's kill ends with a signal: no answer, as the blocking twin reads it.
+    return code === 0 && child.signalCode === null
+      ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout))
+      : [];
+  } catch {
+    return [];
   }
-  return copies;
+}
+
+/**
+ * The worktree files among `files` that hold a gateway address (anything but Anthropic's own):
+ * the copies that send a session to a router, or another gateway, once the root's key is gone.
+ * The kit did not write them, so a command reports them and never changes them
+ * (`.claude/rules/setup-and-managed-files.md` § Never take what is not ours). A file that cannot
+ * be read is not a copy: it shows as a problem where it is read.
+ */
+export function gatewayCopiesAmong(files: readonly SettingsFileState[]): SettingsFileState[] {
+  return files.filter(
+    (file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url),
+  );
 }
 
 /** The team file of a folder: the one a session started there reads (P6). */
@@ -386,7 +436,12 @@ export function projectGatewayState(
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(
+    asked,
+    options,
+    found,
+    found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout),
+  );
 }
 
 /**
@@ -410,7 +465,12 @@ export async function projectGatewayStateAsync(
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(
+    asked,
+    options,
+    found,
+    found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout),
+  );
 }
 
 /** The checkout the reader found, or why there is none: what the git reads gave. */
@@ -441,6 +501,7 @@ function stateFrom(
   asked: string,
   options: ProjectStateOptions,
   { checkout, checkoutProblem }: FoundCheckout,
+  linkedFiles: readonly SettingsFileState[],
 ): ProjectGatewayState {
   const { config, problem: configProblem } = readGatewayConfig(options.configPath);
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
@@ -465,6 +526,7 @@ function stateFrom(
     folder: realFolder(asked),
     profiles: config === null ? [] : profileNames(config),
     routerUrl,
+    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path)),
   };
 }
 

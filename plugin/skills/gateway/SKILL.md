@@ -252,7 +252,7 @@ The personal file is `.claude/settings.local.json` at the main checkout's root, 
 reads for the checkout, its subfolders and its worktrees, before the starting folder's own
 `settings.local.json` (a worktree's copy decides only what the root's file does not set); a managed
 `.git/info/exclude` line keeps it out of git, and `restore` takes back both. A changed value
-reaches a running session within about a second; a removed key moves it, as fast, to the next file
+reaches a running session within about a second; a removed key moves it, within a few seconds, to the next file
 that still sets it, and only when none does the session keep its old value until it restarts. A
 worktree's copy that still holds the router is named by `status`, `default` and `restore`, never
 changed.

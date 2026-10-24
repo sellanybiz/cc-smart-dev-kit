@@ -12,7 +12,7 @@
  *   Code reads it at the main checkout's root for the checkout, every subfolder and every
  *   linked worktree, and it beats the team file. The starting folder's own
  *   `settings.local.json` is read too, after it: it decides only what the root's file does not
- *   set (a worktree's copy, made by a `.worktreeinclude`, is the case `worktreeCopiesOf`
+ *   set (a worktree's copy, made by a `.worktreeinclude`, is the case `gatewayCopiesAmong`
  *   reports). A managed `/.claude/settings.local.json` line in `.git/info/exclude` keeps the
  *   root's file out of git, and `restore` takes both back.
  * - the **team** file, `<folder>/.claude/settings.json`, with `--team`, for `off` and `default`
@@ -48,10 +48,12 @@ import {
   decisionWords,
   excludeFileOf,
   type GatewayDecision,
+  gatewayCopiesAmong,
   isFolder,
   PERSONAL_EXCLUDE_LINE,
   PERSONAL_FILE,
   type ProjectGatewayState,
+  personalFileOf,
   profileUrlOf,
   projectGatewayState,
   projectGatewayStateAsync,
@@ -61,7 +63,6 @@ import {
   settingsFileState,
   teamFileOf,
   urlMeaning,
-  worktreeCopiesOf,
 } from "./project-state";
 import { BASE_URL_PATH, clearGatewayBaseUrl, setGatewayBaseUrl, shownValue } from "./settings";
 import { isProfileName } from "./targets";
@@ -235,10 +236,14 @@ export function planProjectChange(
     // helper anywhere in this project's chain replaces it, so neither state is written for a
     // project without a word: where the requests go would no longer be the login's business.
     // A personal file reaches the checkout root's sessions too, so that folder's team file is
-    // a level of this project's chain even when the command runs in a subfolder (P6). A
-    // worktree's own committed team file is not part of this check yet (`docs/gateway.md`).
+    // a level of this project's chain even when the command runs in a subfolder (P6). So is
+    // every linked worktree's own local file: the root's key does not set a login key there,
+    // and that worktree's sessions would send the key through the router (2.1.310; proved for
+    // the address, very likely the same for the other env keys). A worktree's own committed
+    // team file is not part of this check yet (`docs/gateway.md`).
     const levels = [...view.files];
     if (kind === "personal") {
+      levels.push(...view.worktreeFiles);
       const rootTeam = teamFileOf(view.checkout.root);
       if (!levels.some((one) => one.path === rootTeam)) {
         levels.push(settingsFileState(rootTeam, "team"));
@@ -385,7 +390,7 @@ function printWorktreeCopies(
   home: string,
 ): void {
   if (view.checkout === null) return;
-  for (const copy of worktreeCopiesOf(view.checkout.mainCheckout)) {
+  for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
     out.line(
       "warn",
       `${tildify(copy.path, home)} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone`,
@@ -422,8 +427,14 @@ export function projectSourceWords(
   );
   if (file === undefined) return "nothing in this project";
   if (file.kind === "personal") {
-    const shared =
-      view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
+    // Git's tracking answer (`personalTracked`) and the excluded line are about the main root's
+    // file; the starting folder's own file is only said to be the folder's own.
+    const isRoot = view.checkout !== null && file.path === personalFileOf(view.checkout);
+    const shared = !isRoot
+      ? "the folder's own, not the project root's"
+      : view.checkout?.personalTracked === true
+        ? "committed with the project"
+        : "never committed";
     return `the personal file ${tildify(file.path, home)} (${shared})`;
   }
   if (file.kind === "team") {
@@ -456,7 +467,7 @@ function projectStatus(ctx: GatewayContext, folder: string): number {
   if (view.checkout === null && view.checkoutProblem === null) {
     out.line(
       "info",
-      "this folder is not in a git project: it has no personal file, and a project state is not written here",
+      "this folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, and a project state is not written",
       { indent: 2 },
     );
   }
@@ -544,11 +555,17 @@ function savedStateLines(view: ProjectGatewayState, plan: ProjectChangePlan): st
   if (plan.value === null) {
     // P7 (2.1.310): a removed key falls through to the next file that sets it; only when none
     // does, a running session keeps its last value.
-    lines.push(
-      view.effective.source === "none"
-        ? "No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none)."
-        : `A session already running here follows by itself, within about a second, to the next file that sets the address: ${decisionWords(view.effective)}. Nothing to restart.`,
-    );
+    if (view.effective.state === "unknown") {
+      lines.push(
+        "A settings file in the way cannot be read, so what a session already running here follows is not known.",
+      );
+    } else {
+      lines.push(
+        view.effective.source === "none"
+          ? "No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none)."
+          : `A session already running here follows by itself, within a few seconds, to the next file that sets the address: ${decisionWords(view.effective)}. Nothing to restart.`,
+      );
+    }
   } else {
     lines.push(
       "A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.",
@@ -635,7 +652,9 @@ export async function commandProject(
   }
   for (const line of savedStateLines(written.saved, written.plan)) out.say(line, 2);
   // A removed key lets a worktree's copy of the personal file decide there (P6): name each one.
-  if (written.plan.value === null) printWorktreeCopies(out, written.saved, paths.home);
+  if (written.plan.kind === "personal" && written.plan.value === null) {
+    printWorktreeCopies(out, written.saved, paths.home);
+  }
   // The file written is not the one that decides: say which one is, and what it gives.
   if (effective.source !== "none" && effective.source !== written.plan.kind) {
     out.line(

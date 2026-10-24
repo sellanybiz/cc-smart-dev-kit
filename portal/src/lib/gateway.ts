@@ -96,7 +96,7 @@ export function gatewayRequest(answer: ProjectGatewayData, draft: GatewayDraft):
  */
 export function runningWords(state: GatewayChoice): string {
   return state === "default"
-    ? "Default removes the address. A session already running in this project follows by itself, within about a second, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts."
+    ? "Default removes the address. A session already running in this project follows by itself, within a few seconds, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts."
     : "A session already running in this project switches within about a second; restart it if the file did not exist when it started.";
 }
 

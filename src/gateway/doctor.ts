@@ -31,7 +31,12 @@ import {
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
-import { decisionWords, readGatewayConfig, type SettingsFileState } from "./project-state";
+import {
+  decisionWords,
+  gatewayCopiesAmong,
+  readGatewayConfig,
+  type SettingsFileState,
+} from "./project-state";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -477,6 +482,18 @@ async function projectChecks(
     for (const file of view.files) {
       if (file.kind === "machine") continue;
       checks.push(...modelKeyWarnings(file, paths.home, backends));
+    }
+    // A linked worktree's own local file that holds a gateway address (a `.worktreeinclude`
+    // copy of the personal file): the root's key wins while it is there, but a session in that
+    // worktree reads the copy once the key is removed (P6, 2.1.310). The kit did not write it.
+    for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+      const where = tildify(copy.path, paths.home);
+      checks.push({
+        ok: true,
+        warn: true,
+        text: `${where} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone (${COMMAND} never writes or removes this copy)`,
+        fix: `remove env.ANTHROPIC_BASE_URL from ${where} by hand`,
+      });
     }
   }
   return checks;
