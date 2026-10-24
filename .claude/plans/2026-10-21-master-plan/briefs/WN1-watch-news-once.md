@@ -77,3 +77,14 @@ or run git in another worktree. Read `.claude/rules/hooks.md` before you touch t
 of this lead runs: nothing to do, start no other `--once`". WF1 made one acting watch per lead (a
 lease, the newest wins), so a second `--once` takes the lease from the first, and the first's exit
 would otherwise start another one. Add the skill to your files.
+
+## Also (the owner, 2026-10-25) — a "needs you" that ends is never said
+
+`crewAlert` (`src/crew/watch.ts` ~255-296) says `<name>: needs you — <what it waits on>` once while
+a permission prompt lasts, and nothing when the person answers it. So the lead keeps the stale
+"needs you" and repeats it to the person, who already answered (seen with RV6: answered, still
+named as waiting). When a crew session's wait ends (agent view no longer says `blocked` or
+`waiting`, and the record is still at work), say it once: `<name>: going again — the wait is
+answered`. The same for the lead skill's table of lines (`plugin/skills/lead/SKILL.md` § 4: the
+person answered it; nothing to do). Test, seen failing first: a wait, then its end (said once), then
+nothing more while it works.
