@@ -561,7 +561,20 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   (`src/cli/usage-window.ts`, null for a window that is over). The 7-day windows are written
   nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
-  read must never block the server.
+  read must never block the server. **The request rate comes from the history database**, not
+  the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
+  Code's health pings, so a rate read off it could never pass 40.0 a minute and is not a
+  model-call rate at all. Its own read refreshes with each routed request (`/api/history/rate`,
+  `HISTORY_REFRESH`), which the whole Overview answer cannot: that one asks every backend for
+  its model list. The router's own counter is still shown, labelled for what it holds (pings
+  included).
+- **Usage and the cost**: the charts and the tables read `historySeries` and
+  `recentRequests`, and a bucket's `unpriced` count is what lets a page say a sum is short:
+  **a cost that holds rows with no price says so**, and one made only of such rows reads "no
+  price", never "$0" (`costWords`, `portal/src/lib/format.ts`; `.claude/rules/portal.md`).
+  Auto mode's safety checks are counted apart from the history, by local day:
+  the page reads them through the CLI's own reader (`safety-checks-read.ts`, so `usage` and
+  the page can never disagree) and says so, because the cost above leaves them out.
 - **Work**: **the crew sessions and leads are the machine's** (`listAllCrew`, `listAllLeads`),
   grouped by repository and lead, because the portal usually runs from the home folder, which is
   no git project; every summary and lead carries its own `repo`, and a crew page is read from

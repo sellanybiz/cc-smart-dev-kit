@@ -134,6 +134,7 @@ export const MIRRORED = {
   RecentEntry: same<Server.RecentEntry, Wire.RecentEntry>(true),
   RequestsAnswer: same<Server.RequestsAnswer, Wire.RequestsAnswer>(true),
   RouterFacts: same<Server.RouterFacts, Wire.RouterFacts>(true),
+  SafetyChecks: same<Server.SafetyChecks, Wire.SafetyChecks>(true),
   SessionSummary: same<Server.SessionSummary, Wire.SessionSummary>(true),
   SettingsAnswer: same<Server.SettingsAnswer, Wire.SettingsAnswer>(true),
   SettingsData: same<Server.SettingsData, Wire.SettingsData>(true),

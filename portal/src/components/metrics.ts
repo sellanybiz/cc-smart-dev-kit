@@ -6,7 +6,15 @@ import { tokensOf } from "@/lib/history";
 export const METRICS = {
   requests: { of: (p) => p.requests, format: (v) => count(v), mode: "sum", whole: true },
   errors: { of: (p) => p.errors, format: (v) => count(v), mode: "sum", whole: true },
-  cost: { of: (p) => p.costUsd, format: (v) => usd(v), mode: "sum" },
+  cost: {
+    of: (p) => p.costUsd,
+    format: (v) => usd(v),
+    mode: "sum",
+    // The one measure that can be zero while the window is full: a row with no price adds
+    // nothing to the sum (F1). "Nothing matches" there would be a lie about the requests.
+    whenZero: ({ requests, unpriced }) =>
+      unpriced === 0 ? null : `No price for ${count(unpriced)} of ${count(requests)} requests.`,
+  },
   tokens: { of: tokensOf, format: (v) => compact(v), mode: "sum" },
   p50: { of: (p) => p.p50Ms, format: (v) => duration(v), mode: "each" },
   p95: { of: (p) => p.p95Ms, format: (v) => duration(v), mode: "each" },

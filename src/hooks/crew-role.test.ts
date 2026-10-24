@@ -21,8 +21,10 @@ import {
   readCrew,
   readCrewEvents,
   readStopState,
+  writeLead,
   writeStopState,
 } from "../crew/store";
+import { readTaskGate, taskGateFile, writeTaskGate } from "../crew/tasks";
 import { resumeText } from "../crew/wait";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
@@ -36,10 +38,12 @@ import {
   wrongFolderReason,
 } from "./crew-role";
 import type { HookResult } from "./io";
-import { addContext, toolDecision } from "./io";
+import { addContext, addContextAndTitle, toolDecision } from "./io";
 import { crewRoleHook } from "./specs";
 
 const CREW_ID = "W2-x-1a2b3c";
+/** The session id of a `UserPromptSubmit` input: Claude Code's own shape, a UUID. */
+const SESSION_UUID = "9f1c2d3e-1111-2222-3333-444444444444";
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 
@@ -208,6 +212,7 @@ describe("SessionStart: the role card", () => {
       "You are the crew session `C app W2 hooks`, phase `W2` of `plan`, for the lead `LEAD app plan`.",
       `Your brief, which is your task: ${brief}`,
       "The files this phase owns: `src/hooks/a.ts`, `src/hooks/b.ts`. Say in your report why you changed any other file.",
+      "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done` waits until no task is open.",
       "Hand the phase back with `cc-smart-dev-kit crew report --status done` (or `--status failed` and why), then end the turn.",
       'Ask your lead, never the person: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`',
       'Tell another crew session only a contract change or a contract question: `cc-smart-dev-kit crew tell <name…> --kind contract|question "<text>"`',
@@ -447,6 +452,280 @@ describe("PreToolUse: a crew session never asks the person", () => {
         'cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>',
       ),
     );
+  });
+});
+
+/**
+ * D23: a crew session's first edit waits for its task list. The list is Claude Code's own
+ * folder, `<config dir>/tasks/<session id>/`, so each case builds it by hand in the shape a live
+ * run wrote (`docs/claude-code-contract.md` § The to-do list): `N.json` files, a `.lock`, and a
+ * `.highwatermark` once a task has been removed.
+ */
+describe("D23: a crew session's first edit waits for its task list", () => {
+  const SESSION_ID = "9b4632f1-d3bd-43ce-bc1a-00349c5f30ac";
+  /** The deny, written out: the why, the step, and the way out when there are no task tools. */
+  const REFUSAL =
+    'A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. If ToolSearch finds no task tools in this session, tell your lead: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`';
+
+  /** A project, the crew session's environment, and where its task list would be. */
+  function gateWorld(extraEnv: Record<string, string> = {}) {
+    const { repo } = makeClone();
+    const env = { ...hookEnv(), [CREW_ENV]: CREW_ID, ...extraEnv };
+    const paths = cliPaths(env);
+    return {
+      env,
+      listDir: (listId: string = SESSION_ID) => join(paths.claudeConfigDir, "tasks", listId),
+      paths,
+      repo,
+    };
+  }
+
+  /** A task file as Claude Code writes one. */
+  function writeTask(folder: string, n: number, status = "pending"): void {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, `${String(n)}.json`),
+      `${JSON.stringify(
+        {
+          id: String(n),
+          subject: `Part ${String(n)}`,
+          description: "x",
+          status,
+          blocks: [],
+          blockedBy: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+
+  /** A PreToolUse input for an edit tool; `change` goes over it. */
+  function editInput(repo: string, tool = "Write", change: Record<string, unknown> = {}) {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION_ID,
+      cwd: repo,
+      tool_name: tool,
+      tool_input: { file_path: join(repo, "src", "a.ts"), content: "x\n" },
+      ...change,
+    };
+  }
+
+  test.each(["Edit", "Write", "NotebookEdit"])(
+    "%s is denied with the step while the session has no task file",
+    async (tool) => {
+      const world = gateWorld();
+      const result = await runHook(crewRoleHook, editInput(world.repo, tool), world.env);
+      expect(result).toEqual(toolDecision("deny", REFUSAL));
+    },
+  );
+
+  test("the deny is a deny, never an ask: nobody is at the machine to answer", async () => {
+    const world = gateWorld();
+    const result = await runHook(crewRoleHook, editInput(world.repo), world.env);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.hookEventName).toBe("PreToolUse");
+    expect(output.permissionDecision).toBe("deny");
+    expect(result.exitCode ?? 0).toBe(0);
+  });
+
+  test("a folder with only the lock and the high-water mark is no list: every task was removed", async () => {
+    const world = gateWorld();
+    // What a live run left after its last task was removed: no `N.json` at all.
+    mkdirSync(world.listDir(), { recursive: true });
+    writeFileSync(join(world.listDir(), ".lock"), "");
+    writeFileSync(join(world.listDir(), ".highwatermark"), "2");
+    const result = await runHook(crewRoleHook, editInput(world.repo), world.env);
+    expect(result).toEqual(toolDecision("deny", REFUSAL));
+  });
+
+  test("another session's list is not this session's", async () => {
+    const world = gateWorld();
+    writeTask(world.listDir("0a1b2c3d-0000-4000-8000-000000000000"), 1);
+    const result = await runHook(crewRoleHook, editInput(world.repo), world.env);
+    expect(result).toEqual(toolDecision("deny", REFUSAL));
+  });
+
+  test("one task file, in any status, ends the denial: the edit goes through", async () => {
+    for (const status of ["pending", "in_progress", "completed"]) {
+      const world = gateWorld();
+      writeTask(world.listDir(), 1, status);
+      expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual({});
+    }
+  });
+
+  test("once allowed, the folder is never read again: the list can vanish and the edit goes through", async () => {
+    const world = gateWorld();
+    writeTask(world.listDir(), 1);
+    expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual({});
+    // The cache is the crew session's own file in its store folder, naming the list it saw.
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toEqual({ listId: SESSION_ID });
+    // The list is gone — a folder the hook would read as no list — and the next edit still passes.
+    rmSync(world.listDir(), { recursive: true });
+    expect(await runHook(crewRoleHook, editInput(world.repo, "Edit"), world.env)).toEqual({});
+    expect(await runHook(crewRoleHook, editInput(world.repo, "NotebookEdit"), world.env)).toEqual(
+      {},
+    );
+  });
+
+  test("a gate recorded for another list is not this list's: the folder is read again", async () => {
+    const world = gateWorld();
+    writeTaskGate(world.paths.stateDir, world.repo, CREW_ID, { listId: "an-older-list" });
+    expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual(
+      toolDecision("deny", REFUSAL),
+    );
+    writeTask(world.listDir(), 1);
+    expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual({});
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toEqual({ listId: SESSION_ID });
+  });
+
+  test("while the session is denied, nothing is remembered", async () => {
+    const world = gateWorld();
+    await runHook(crewRoleHook, editInput(world.repo), world.env);
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toBeNull();
+  });
+
+  test("CLAUDE_CODE_TASK_LIST_ID names the list: a shared list ends the denial, the session id's folder does not", async () => {
+    const world = gateWorld({ CLAUDE_CODE_TASK_LIST_ID: "shared-list" });
+    writeTask(world.listDir(), 1);
+    expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual(
+      toolDecision("deny", REFUSAL),
+    );
+    writeTask(world.listDir("shared-list"), 1);
+    expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual({});
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toEqual({
+      listId: "shared-list",
+    });
+  });
+
+  test("a subagent's edit is judged against the same list: its TaskCreate writes into the session's folder", async () => {
+    // Proved live: the hook input of a subagent's edit carries the PARENT session's id, with the
+    // agent's id beside it, and the subagent's TaskCreate wrote `2.json` into the parent's folder.
+    const world = gateWorld();
+    const sub = { agent_id: "aa9de47afbd459249", agent_type: "general-purpose" };
+    expect(await runHook(crewRoleHook, editInput(world.repo, "Write", sub), world.env)).toEqual(
+      toolDecision("deny", REFUSAL),
+    );
+    writeTask(world.listDir(), 1);
+    expect(await runHook(crewRoleHook, editInput(world.repo, "Write", sub), world.env)).toEqual({});
+  });
+
+  test("a session that is not a crew session is never denied, and reads nothing", async () => {
+    const { repo } = makeClone();
+    const env = plainEnv();
+    for (const tool of ["Edit", "Write", "NotebookEdit"]) {
+      expect(await runHook(crewRoleHook, editInput(repo, tool), env)).toEqual({});
+    }
+    expect(readTaskGate(cliPaths(env).stateDir, repo, CREW_ID)).toBeNull();
+  });
+
+  test("a lead is never denied: a recorded lead's session is a plain session", async () => {
+    const { repo } = makeClone();
+    const env = plainEnv();
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: repo,
+        name: "LEAD app plan",
+        plan: "plan",
+        repo,
+        sessionId: SESSION_ID,
+        tag: "app",
+      },
+      T0,
+    );
+    expect(await runHook(crewRoleHook, editInput(repo), env)).toEqual({});
+  });
+
+  test("another tool is not judged: only the three edit tools wait for the list", async () => {
+    const world = gateWorld();
+    for (const tool of ["Bash", "Read", "TaskCreate", "Agent"]) {
+      const result = await runHook(
+        crewRoleHook,
+        { ...editInput(world.repo, tool), tool_input: { command: "ls" } },
+        world.env,
+      );
+      expect(result).toEqual({});
+    }
+  });
+
+  test("a folder it cannot read lets the edit through, with one stderr line and nothing remembered", async () => {
+    const world = gateWorld();
+    // A file where the session's folder belongs: the hook cannot say whether there is a list.
+    mkdirSync(join(world.paths.claudeConfigDir, "tasks"), { recursive: true });
+    writeFileSync(world.listDir(), "{}");
+    const result = await runHook(crewRoleHook, editInput(world.repo), world.env);
+    expect(result.stdout).toBeUndefined();
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toBe(
+      `cc-smart-dev-kit crew-role: the task folder ${world.listDir()} cannot be read, so the edit is not held for the task list`,
+    );
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toBeNull();
+  });
+
+  test("a gate that cannot be written: one stderr line, and the edit still goes through", async () => {
+    const world = gateWorld();
+    writeTask(world.listDir(), 1);
+    // The crew session's files folder is a file: the gate cannot be made under it.
+    const filesFolder = dirname(dirname(taskGateFile(world.paths.stateDir, world.repo, CREW_ID)));
+    mkdirSync(dirname(filesFolder), { recursive: true });
+    writeFileSync(filesFolder, "not a folder");
+    const result = await runHook(crewRoleHook, editInput(world.repo), world.env);
+    expect(result.stdout).toBeUndefined();
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit crew-role: the task list gate could not be recorded: ",
+    );
+  });
+
+  test("a call that names no session cannot be judged: it goes through", async () => {
+    const world = gateWorld();
+    const { session_id: _gone, ...without } = editInput(world.repo);
+    expect(await runHook(crewRoleHook, without, world.env)).toEqual({});
+  });
+
+  test("the gate holds with no project file, a broken one, and outside git: it reads no config", async () => {
+    // No cc-smart-dev-kit.json: `makeClone` writes none.
+    const none = gateWorld();
+    expect(await runHook(crewRoleHook, editInput(none.repo), none.env)).toEqual(
+      toolDecision("deny", REFUSAL),
+    );
+    // A broken one, and one from a newer plugin: `onConfigProblem` judges the edit all the same.
+    for (const file of [{ worktree: {} }, { requires: ">=99", fieldFromTheFuture: true }]) {
+      const world = gateWorld();
+      writeClaudeFile(world.repo, "cc-smart-dev-kit.json", file);
+      expect(await runHook(crewRoleHook, editInput(world.repo), world.env)).toEqual(
+        toolDecision("deny", REFUSAL),
+      );
+    }
+    // Outside git: denied, then allowed with a list — and there is no store folder to remember in.
+    const world = gateWorld();
+    const outside = tempDir("outside");
+    expect(await runHook(crewRoleHook, editInput(outside), world.env)).toEqual(
+      toolDecision("deny", REFUSAL),
+    );
+    writeTask(world.listDir(), 1);
+    expect(await runHook(crewRoleHook, editInput(outside), world.env)).toEqual({});
+    expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toBeNull();
+  });
+
+  test("a crash on an edit asks, as every guard's crash does; a plain session is never asked", async () => {
+    const world = gateWorld();
+    const context = { env: world.env, nowMs: T0, paths: world.paths };
+    const asked = crewRoleHook.onCrash?.("boom", editInput(world.repo), "PreToolUse", context);
+    expect(asked).toEqual(
+      toolDecision(
+        "ask",
+        "cc-smart-dev-kit cannot check whether this crew session keeps its task list: boom",
+      ),
+    );
+    const plain = { env: plainEnv(), nowMs: T0, paths: world.paths };
+    expect(crewRoleHook.onCrash?.("boom", editInput(world.repo), "PreToolUse", plain)).toEqual({});
+    // A call outside both domains is still no business of the hook's.
+    expect(
+      crewRoleHook.onCrash?.("boom", editInput(world.repo, "Bash"), "PreToolUse", context),
+    ).toEqual({});
   });
 });
 
@@ -818,8 +1097,8 @@ describe("D42: a model limit pauses the crew session", () => {
 
 describe("D55: the person's own prompt is recorded, and a delivery that is not theirs is not", () => {
   /** A UserPromptSubmit input for the crew session. */
-  function promptInput(repo: string, prompt: string) {
-    return { hook_event_name: "UserPromptSubmit", session_id: "s", cwd: repo, prompt };
+  function promptInput(repo: string, prompt: string, sessionId = "s") {
+    return { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: repo, prompt };
   }
 
   /** The `person` events the hook's run left for this crew session. */
@@ -883,6 +1162,64 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
       type: "person",
       version: 1,
     });
+  });
+
+  test("a title that is not the record's name: the record's name comes back", async () => {
+    // 1.1.1 let a crew session name itself after its task, and 1.1.2 refused new renames
+    // without setting the title back: the name its lead, `crew answer` and the message guard
+    // address it by stayed lost. The crew record is the one owner of the title.
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(world.repo, "a word", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
+      world.env,
+    );
+    expect(result).toEqual(
+      addContextAndTitle(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+        "C app W2 hooks",
+      ),
+    );
+    expect(personEvents(world.stateDir, world.repo).length).toBe(1);
+  });
+
+  test("a title that is the record's name already: nothing about it", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      { ...promptInput(world.repo, "a word", SESSION_UUID), session_title: "C app W2 hooks" },
+      world.env,
+    );
+    expect(result).toEqual(
+      addContext(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+      ),
+    );
+  });
+
+  test("the lead's own delivery, with a title that is not the record's: the name alone", async () => {
+    // A crew session its lead drives gets no person prompt at all, so the name comes back on
+    // the turns that are the lead's too — one answer, the title and nothing else.
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(
+          world.repo,
+          '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+          SESSION_UUID,
+        ),
+        session_title: "Fix the login page",
+      },
+      world.env,
+    );
+    expect(result).toEqual(addContextAndTitle("UserPromptSubmit", null, "C app W2 hooks"));
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 
   test("a message another session sent (SendMessage): silent, nothing recorded", async () => {
@@ -975,6 +1312,30 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     expect(result.exitCode ?? 0).toBe(0);
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: ");
+  });
+
+  test("a store that cannot be written still gets the name back", async () => {
+    // `titleToSet` records the name as the kit's the moment it answers with it, so a turn that
+    // answered the error alone would never set it again: the address would stay lost, which is
+    // the bug the title is set for. The line and the title go out in the one answer.
+    const world = await crewWorld();
+    const log = crewEventsFile(world.stateDir, world.repo);
+    rmSync(log);
+    mkdirSync(log);
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(world.repo, "a word", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
+      world.env,
+    );
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: ");
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput).toEqual({
+      hookEventName: "UserPromptSubmit",
+      sessionTitle: "C app W2 hooks",
+    });
   });
 
   test("crew answer's resume of a stopped session: silent, before and after the answer is recorded", async () => {

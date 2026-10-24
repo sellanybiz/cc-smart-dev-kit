@@ -991,10 +991,17 @@ transcript holds it and no report showed it. So the router counts it
 
 - **What is counted, per local day** (the machine's own day, not UTC's): every safety check
   the router handled; which side answered it — Anthropic, or a target of the judge slot;
-  and the input, output and cache tokens that answer's `usage` reported. On a stream the
-  counts are `message_start`'s input and cache ones (its `output_tokens` is a partial 1) and
-  the **last** `message_delta`'s final `output_tokens`; on an answer that did not stream,
-  the body's `usage`. A field an answer does not report counts as 0, never as a guess.
+  and the input, output and cache tokens that answer's `usage` reported. On a stream **each
+  field is taken from the last event that reported it**: a count in the last
+  `message_delta` wins over the one `message_start` gave, and a field that event does not
+  name keeps the start's value. The two are never added together. Anthropic sends the input
+  and cache counts in `message_start` (its `output_tokens` there is a partial 1) and the
+  final output count in each `message_delta` — and it may send the cumulative input and
+  cache counts there too. A backend that translates an OpenAI stream knows the prompt's
+  usage only at the end, so its `message_start` is a placeholder of zeros and the real
+  counts all arrive in the last `message_delta`; reading only the start recorded about
+  **one nine-hundredth** of such an answer's tokens (2026-10-24). On an answer that did not
+  stream, the body's `usage`. A field no event reports counts as 0, never as a guess.
 - **The answer itself is never touched.** The router hands each chunk to Claude Code first
   and reads the answer's `usage` as the bytes go by (`AnswerUsageReader`: each server-sent
   event as it ends, or a JSON body up to 256 KB), so a long answer is read without keeping
@@ -1041,9 +1048,14 @@ routes come with the portal's pages).
 - **The cost is an estimate.** Claude is priced at its list price (`src/gateway/prices.ts`,
   keyed by family and version, cache writes at the 5-minute rate; USD per million tokens)
   and the row is marked estimated. An affordable backend is priced at what its own
-  `/v1/models` lists for that model, when it lists one (the OpenRouter `pricing` shape): the
-  router asks for that list once per backend and at most every six hours, in the background,
-  and a list without a price means a row with no cost. A model with no row is never guessed.
+  `/v1/models` lists for that model, when it lists one. Two shapes are read, **each in its own
+  unit**: OpenRouter's (`prompt`, `completion`, `input_cache_read`, `input_cache_write`, USD
+  per token) and OmniRoute's (`input`, `output`, `cached`, `cache_creation`, USD per
+  million). The router asks for the list once per backend and at most every six hours, in the
+  background, and a list without a price means a row with no cost. A model with no row is
+  never guessed. **A row with no price is never added as $0**: a sum counts it in its
+  requests and its tokens and says how many such rows it holds, and a sum made only of them
+  shows "no price".
 - **Written in the background and batched.** The answer's `usage` is read from the bytes on
   their way to Claude Code (`AnswerUsageReader`, the reader the safety-check counts use);
   `record` only puts the row in a buffer, and one transaction writes the batch after a short
@@ -1058,12 +1070,18 @@ routes come with the portal's pages).
   request was ever logged):
   - `historySeries(file, { range, by, filters, now })` →
     `{ range, bucketMs, series: [{ key, points: [{ t, requests, errors, p50Ms, p95Ms,
-    inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd }] }] }`. Ranges
-    and buckets: `1h` 1 min, `4h` 5 min, `1d` 15 min, `7d` 1 h, `14d` 2 h, `30d` 6 h, `90d`
-    1 day. `by` is `target`, `slot`, `model` or `session`. Every bucket of the window is
-    there, empty ones as zeros; p50 and p95 are nearest-rank.
-  - `recentRequests(file, { filters, cursor, limit })` → `{ rows, nextCursor }`, newest
-    logged first, paged by the last row's id (1–200 rows, 50 by default).
+    inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unpriced }] }] }`,
+    where `unpriced` counts the bucket's rows that reported tokens and no price (they are in
+    its `requests` and its token sums, never in its `costUsd`). Ranges and buckets: `1h`
+    1 min, `4h` 5 min, `1d` 15 min, `7d` 1 h, `14d` 2 h, `30d` 6 h, `90d` 1 day. `by` is
+    `target`, `slot`, `model` or `session`. Every bucket of the window is there, empty ones
+    as zeros; p50 and p95 are nearest-rank.
+  - `recentRequests(file, { filters, cursor, from, limit })` → `{ rows, nextCursor }`, newest
+    logged first, paged by the last row's id (1–200 rows, 50 by default). `from` bounds the
+    rows to a window, as the range does for the charts.
+  - `requestsSince(file, { from })` → how many rows the window holds. A rate over the last
+    minutes, and a count since the router started, are the same reader — and both are
+    **model** requests, which is what the history holds (no safety check, no ping).
   - Filters: `slot`, `target`, `model` and `session` (exact), and `status: "error"` (an HTTP
     status of 400 or more). A row with no slot or session is grouped under `(no slot)` /
     `(no session)`.

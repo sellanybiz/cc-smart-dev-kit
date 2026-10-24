@@ -10,8 +10,24 @@ differs, the add-on wins (`core.md`, top).
 
 You lead; crew sessions build. A **crew session** is a background Claude Code session in its own worktree,
 on its own branch: it builds one phase end to end, runs its own review, commits, and hands back
-a report (`/cc-smart-dev-kit:crew`). You plan, start, answer and merge. Where a piece of work
-belongs — inline, a subagent or a crew session — is in the core instructions (§ Lead the work).
+a report (`/cc-smart-dev-kit:crew`). You plan, start, answer and merge.
+
+## Your crew builds
+
+**The code, the tests, research across many files and long debugging go to your crew** — a crew
+session (`crew start`), or a scout subagent (`haiku`) for the reading a brief needs. A fix far
+under 30 minutes may go to a subagent while a place is free, but a building phase never goes
+around the crew queue.
+
+You keep what only you can do: the plan and its briefs, the starts, the questions, the merges
+with one full check after each, the plan file, and the person.
+
+Why: this session's context is re-read on the premium model at every turn, so every file it
+reads or writes costs on every later turn. A crew session does the same work on the worker slot
+and ends.
+
+The core instructions' "inline, yourself: what a handful of tool calls finish" (`core.md` § Lead
+the work) is an ordinary session's rule. A lead follows this section instead.
 
 ## 1. The crew on, and this session registered
 
@@ -20,6 +36,10 @@ belongs — inline, a subagent or a crew session — is in the core instructions
   from your own workflow file).
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
+- **Keep your own task list** (`TaskCreate`, after a `ToolSearch` for the task tools):
+  the person's asks and your open work — each phase to start, each question to answer, each
+  branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
+  so it never goes stale unseen; you are never held back by it.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
   names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
   itself (no setting; it replaces the name the session had, and a name the person gives it
@@ -34,7 +54,8 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 30 to 90 minutes each, contracts first and alone, then disjoint file sets. For crew sessions, also:
 
 - **A phase far under 30 minutes** joins a neighbour, or goes to a subagent: a crew session's start
-  and review cost more than it saves.
+  and review cost more than it saves. A whole phase is a crew session's job: § 7 says what the
+  guard does when the queue is full.
 - **The contracts phase is merged** before the wave that uses it starts.
 - **Each brief says the crew session never touches the shared files** that stay yours.
 - **Each phase gets a kind**, and the kind picks the model and the effort:
@@ -197,6 +218,11 @@ Routine phases on the worker slot run wide; the opus phases — the kinds that r
 so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
 Your own Opus subagents share the same usage window: at most 3 at once.
 
+**The guard holds a builder subagent while a `crew start` from you would queue.** Its line names which
+cap above is full and the `crew start` step, and it is a refusal rather than a question, because
+the step needs no person. Read-only subagents — a search, a review, an audit, a UI check — are
+never held, so nothing stops you asking one a question while the queue is full.
+
 ## 8. Hand-offs
 
 A crew session near its context line or its time cap commits its work in progress and reports
@@ -223,7 +249,8 @@ heavy cleanup, starts only once everything is verified live (`/cc-smart-dev-kit:
 
 - Wait, `sleep` or poll; ask a crew session whether it is done.
 - End a turn with a ready phase not started, or start the plan one wave at a time.
-- Build a phase yourself, or read a crew session's whole diff to check it.
+- Build a phase yourself, read a crew session's whole diff to check it, or hand a phase to a
+  builder subagent while the queue holds it (§ 7).
 - Start a crew session from a crew session, or a raw `claude --bg` in place of `crew start`.
 - Answer the person's decision for them, or a crew session's permission prompt.
 - Leave a merged crew session running.

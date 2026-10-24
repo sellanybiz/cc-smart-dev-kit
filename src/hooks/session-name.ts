@@ -114,14 +114,24 @@ function recordedLead(context: HookContext, sessionId: string): boolean {
 }
 
 /**
+ * A name the state refuses, whatever the arguments are: a failed command (exit 1, one line),
+ * never a usage mistake (exit 2 with the help pointer). The rule lives with the refusal, so the
+ * command does not have to read the words to know which of the two it has.
+ */
+export class SessionNameRefused extends Error {
+  override name = "SessionNameRefused";
+}
+
+/**
  * `cc-smart-dev-kit session-name <id> <name…>`: records the name a session chose. Returns the
  * name kept, or throws with what is wrong. A crew session is refused: `crew start --name` gave
  * it the name its lead, `crew answer` and the message guard address it by, and a task name must
- * never take that address away.
+ * never take that address away. That refusal is `SessionNameRefused` — the arguments are well
+ * formed and the state is what says no.
  */
 export function recordSessionName(sessionId: string, raw: string, env: Env): string {
   if (crewIdOf(env) !== null) {
-    throw new Error("a crew session keeps the name its lead gave it");
+    throw new SessionNameRefused("a crew session keeps the name its lead gave it");
   }
   if (!isSessionId(sessionId)) throw new Error(`"${sessionId}" is not a session id`);
   const name = cleanSessionName(raw);

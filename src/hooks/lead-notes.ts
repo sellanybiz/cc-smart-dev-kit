@@ -3,8 +3,9 @@
  * (`src/crew/store.ts` › `readNotesState`). A lead hears its crew through `crew watch`, but a
  * monitor line can land while the lead is busy, and a compaction takes the lead's context with it.
  * So each turn the lead starts (UserPromptSubmit, which also fires on a hand-back turn, and
- * SessionStart: a start, a resume after a restart, a compaction) this hook reads the crew store's
- * events log from a per-lead cursor and adds the newest line it has not said yet — the same line
+ * SessionStart: a start, a resume after a restart, a clear, a compaction) this hook reads the
+ * crew store's events log from a per-lead cursor and adds the newest line it has not said yet —
+ * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
  *
  * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
@@ -22,6 +23,10 @@
  * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
+ * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume, a clear or
+ *   a compaction, each of which builds the lead's context again — the answer also holds the one
+ *   line saying the crew builds the work. Nothing at a prompt and nothing on an edit: the owner
+ *   chose words, not a guard. An ordinary session and a crew session hear neither line.
  *
  * The review mark on a report line is judged with the built-in review agents
  * (`workflowDefaults.reviewAgents`): this hook reads no project file, so its answer is the same
@@ -37,6 +42,7 @@ import {
   readNotesState,
   writeNotesState,
 } from "../crew/store";
+import { readSessionTasks, taskListId } from "../crew/tasks";
 import { eventLine, phasesWaitingFor } from "../crew/watch";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
@@ -75,10 +81,45 @@ function leadTitle(
     : null;
 }
 
-/** The answer for this turn: the note, the lead's name, both, or silence. */
-function answered(event: string, note: null | string, title: null | string): HookResult {
-  if (title === null) return note === null ? SILENT : addContext(event, note);
-  return addContextAndTitle(event, note, title);
+/**
+ * The line a lead gets at a start, a resume, a clear and a compaction (D61): the lead skill's
+ * "Your crew builds" in one line. A lead plans, briefs, starts, answers and merges; the building
+ * goes to its crew sessions, because the lead's context is re-read on every turn and every file
+ * it reads or writes costs on every later one. Words only: never at a prompt, never on an edit,
+ * and never a refusal.
+ */
+export function leadStartNote(): string {
+  return "You lead: your crew sessions build the work — your context is re-read every turn, so every file you read or write costs on every later turn.";
+}
+
+/**
+ * The one line a lead gets at a prompt while it has no task list (D23): a reminder, never a
+ * block. The person's asks and the lead's open work — the merges, the questions, the phases to
+ * start — belong on the list, not in a context a compaction takes away.
+ */
+export function taskListReminder(): string {
+  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+}
+
+/**
+ * The reminder this prompt adds, or null: only a prompt, only a recorded lead, and only while
+ * its own list holds no task file. A folder the hook cannot read says nothing either way, so it
+ * says nothing: a wrong list is worse than no nudge.
+ */
+function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string): null | string {
+  if (event !== "UserPromptSubmit") return null;
+  const listId = taskListId(env, sessionId);
+  if (listId === "") return null;
+  const read = readSessionTasks(paths.claudeConfigDir, listId);
+  if (read.state === "unreadable") return null;
+  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+}
+
+/** The answer for this turn: its lines for Claude, the lead's name, both, or silence. */
+function answered(event: string, lines: readonly string[], title: null | string): HookResult {
+  const text = lines.length === 0 ? null : lines.join("\n");
+  if (title === null) return text === null ? SILENT : addContext(event, text);
+  return addContextAndTitle(event, text, title);
 }
 
 /**
@@ -96,13 +137,20 @@ export function leadNotesAnswer(
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null) return SILENT;
+  // The rule comes first at a start; a prompt hears the reminder and the news instead.
+  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
+  const reminder = reminderFor(paths, env, sessionId, event);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {
     // First turn in this lead: the log's history is what the lead already saw. From here on, new.
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo),
     });
-    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
+    return answered(
+      event,
+      [...startNote, ...(reminder === null ? [] : [reminder])],
+      leadTitle(input, event, env, sessionId, lead.name),
+    );
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter(
@@ -127,7 +175,14 @@ export function leadNotesAnswer(
   }
   // Past every event read, spoken or not: the next turn says only what is newer.
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  // The title last: its record is written as it is set, and a store that throws above leaves
-  // that record alone, so the next prompt tries the name again.
-  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
+  // The start note first (a start only), then the reminder — it is about the prompt just typed —
+  // then the news. The title last: its
+  // record is written as it is set, and a store that throws above leaves that record alone, so
+  // the next prompt tries the name again.
+  const note = notesLine(lines);
+  return answered(
+    event,
+    [...startNote, ...(reminder === null ? [] : [reminder]), ...(note === null ? [] : [note])],
+    leadTitle(input, event, env, sessionId, lead.name),
+  );
 }

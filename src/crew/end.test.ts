@@ -583,6 +583,35 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
+  test("agent view unreadable: `claude rm`'s failure is real, never called gone", async () => {
+    // `sessionUnknown` is the only thing that turns a failed `claude rm` into "gone already" —
+    // the state this step wants. A view that cannot be read says nothing about the session, so
+    // the failure stands and the record stays: dropping it on a guess would lose a session
+    // Claude Code still holds.
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    expect(
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: "not json", FAKE_RM: "fail", FAKE_WORKTREE: worktree }),
+      ),
+    ).toBe(1);
+    expect(world.out).toEqual([
+      "stopped session a1b2c3d4",
+      `removed ${worktree}`,
+      `deleted branch ${branch}`,
+    ]);
+    expect(world.err).toEqual([
+      "crew rm: claude rm a1b2c3d4 failed (exit 1): could not delete",
+      "  the worktree is gone already, and so is the branch; run claude rm a1b2c3d4 by hand, then crew rm again",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "stopped",
+    });
+  });
+
   test("a branch that stays (another worktree holds it) is said, not claimed gone", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();

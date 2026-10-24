@@ -29,20 +29,28 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   clockTime,
+  costWords,
   count,
   duration,
   percent,
   slotName,
   targetModel,
   until,
-  usd,
 } from "@/lib/format";
 import { rangeOf } from "@/lib/history";
 
-/** Requests a minute over the last five minutes of the router's list. */
-function perMinute(recent: readonly RecentRequest[], now: number): number {
-  const since = now - 5 * 60_000;
-  return recent.filter((request) => request.at >= since).length / 5;
+/**
+ * The Overview's model-request headline: the count, or the reason there is none. Both numbers
+ * of `OverviewRequests` are null for different reasons, and each is said in its own words
+ * rather than a number the machine cannot give.
+ */
+function modelRequestsWords(requests: OverviewData["requests"]): string {
+  if (requests.sinceRouterStart !== null) {
+    return `${count(requests.sinceRouterStart)} model requests since the router started`;
+  }
+  return requests.perMinute === null
+    ? "The history has logged no request, or cannot be read"
+    : "The router does not answer, so nothing is counted from its start";
 }
 
 const fallbackColumn = columnsFor<FallbackRow>();
@@ -87,16 +95,19 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
     let requests = 0;
     let errors = 0;
     let cost = 0;
+    // Requests the history could not price: the cost above is the priced rows' own (F1).
+    let unpriced = 0;
     if (history.status === "ready") {
       for (const series of history.data.series) {
         for (const point of series.points) {
           requests += point.requests;
           errors += point.errors;
           cost += point.costUsd;
+          unpriced += point.unpriced;
         }
       }
     }
-    return { requests, errors, cost };
+    return { requests, errors, cost, unpriced };
   }, [history]);
   return (
     <div className="grid gap-4 px-4 lg:px-6 @5xl/main:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
@@ -119,7 +130,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
         title="Estimated cost"
         description={
           history.status === "ready"
-            ? `${usd(totals.cost)} in ${words}, from list prices: never a bill`
+            ? `${costWords(totals.cost, totals.unpriced, totals.requests)} in ${words}, from list prices: never a bill`
             : "From list prices: never a bill"
         }
         history={history}
@@ -336,7 +347,11 @@ function OverviewPage({ data }: { data: OverviewData }) {
   const now = Date.now();
   const state = useHistoryState("target");
   const { health } = data;
-  const rpm = perMinute(health.recent, now);
+  // The two request numbers read on their own, so the card moves with each routed request.
+  // The whole Overview answer cannot refresh at that cadence (it asks every backend for its
+  // model list); until the first read lands, the answer's own numbers stand.
+  const rate = useResource((client) => client.historyRate(), "", HISTORY_REFRESH);
+  const requests = rate.status === "ready" ? rate.data : data.requests;
   const breakers = Object.entries(health.breakers);
   const restingCount = Object.keys(health.cooling).length;
   const limit = data.limits[0];
@@ -346,11 +361,11 @@ function OverviewPage({ data }: { data: OverviewData }) {
     <>
       <SectionCards columns={5}>
         <StatCard
-          label="Requests a minute"
-          value={rpm.toFixed(1)}
+          label="Model requests a minute"
+          value={requests.perMinute === null ? "—" : requests.perMinute.toFixed(1)}
           badge={<TonePill tone="info">last 5 min</TonePill>}
-          headline={`${count(health.requests)} since the router started`}
-          detail={`Up for ${duration(health.uptimeSec * 1000)}`}
+          headline={modelRequestsWords(requests)}
+          detail={`The router counted ${count(health.requests)} requests in all, pings included; up for ${duration(health.uptimeSec * 1000)}`}
         />
         <StatCard
           label="Fallbacks"
