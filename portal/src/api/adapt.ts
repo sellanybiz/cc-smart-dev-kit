@@ -269,16 +269,16 @@ export function projectOf(answer: ProjectAnswer): ProjectData {
  * project's value and source, drawn with its row's words and control from `/api/settings`
  * (`specs`, the server's one table of them) in that table's order. A row is the project's
  * now (`where: "project"`: a change is a pull request), and read-only without a `gh` login —
- * the card says why once, so the row carries no reason of its own. A setting with no row (or
- * every setting, when `specs` could not be read) is kept in `others` with its value.
+ * the card says why once, so the row carries no reason of its own. A setting with no row in that
+ * table is kept in `others` with its value.
  */
 export function projectWorkflowOf(
   answer: ProjectWorkflowAnswer,
-  specs: SettingsRow[] | null,
+  specs: SettingsRow[],
 ): ProjectWorkflowData {
   const byKey = new Map(answer.settings.map((setting) => [setting.key, setting]));
   const rows: SettingsRow[] = [];
-  for (const spec of specs ?? []) {
+  for (const spec of specs) {
     const setting = byKey.get(spec.key);
     if (setting === undefined) continue;
     rows.push({

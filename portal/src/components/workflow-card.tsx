@@ -1,7 +1,7 @@
 "use client";
 
 import { InfoIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useId, useState } from "react";
 import { proposeValueText, workflowValueText } from "@/api/adapt";
 import { useResource } from "@/api/hooks";
 import { PROJECT_REFRESH } from "@/api/refresh";
@@ -29,16 +29,37 @@ type Asking = null | { unset: false; value: unknown } | { unset: true };
  * of the project's file. The row keeps showing the base's value — it counts once merged — and
  * the result stays in place: the pull request's link, or the refusal in words.
  */
-function ProposeRow({ row, project, base }: { row: SettingsRow; project: string; base: string }) {
+function ProposeRow({
+  row,
+  project,
+  base,
+  blocked,
+  onSending,
+}: {
+  row: SettingsRow;
+  project: string;
+  base: string;
+  /** Another row's proposal is running: one at a time, so each row's progress lines are its own. */
+  blocked: boolean;
+  onSending: Dispatch<SetStateAction<null | string>>;
+}) {
   const [draft, setDraft] = useState<Draft>(null);
   const [opened, setOpened] = useState<null | string>(null);
   const [asking, setAsking] = useState<Asking>(null);
   const { run, state, clear } = useAction("project.workflow.propose", (result) => {
-    // Nothing changes on the base until the pull request is merged: show what it holds.
-    setDraft(null);
     if (result.ok && result.url !== undefined) setOpened(result.url);
   });
   const sending = state.phase === "sending";
+  // Any result — a link, a refusal, no answer at all — leaves the base's value showing: nothing
+  // changes there until the pull request is merged.
+  useEffect(() => {
+    if (state.phase === "done") setDraft(null);
+  }, [state.phase]);
+  useEffect(() => {
+    if (!sending) return;
+    onSending(row.key);
+    return () => onSending((current) => (current === row.key ? null : current));
+  }, [sending, row.key, onSending]);
   const propose = (next: Asking) => {
     setOpened(null);
     setAsking(next);
@@ -55,7 +76,7 @@ function ProposeRow({ row, project, base }: { row: SettingsRow; project: string;
       draft={draft}
       setDraft={setDraft}
       onSave={(value) => propose({ unset: false, value })}
-      busy={sending}
+      busy={sending || blocked}
       confirm={
         <ConfirmDialog
           open={asking !== null}
@@ -103,6 +124,7 @@ function ProposeRow({ row, project, base }: { row: SettingsRow; project: string;
             className="wrap-any font-medium underline underline-offset-4"
           >
             {opened}
+            <span className="sr-only"> (opens in a new tab)</span>
           </a>
           . It counts once it is merged into <code className="font-mono">{base}</code>.
         </p>
@@ -116,7 +138,7 @@ function ProposeRow({ row, project, base }: { row: SettingsRow; project: string;
             variant="link"
             size="sm"
             className="h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
-            disabled={sending}
+            disabled={sending || blocked}
             aria-describedby={unsetHelpId}
             onClick={() => propose({ unset: true })}
           >
@@ -150,7 +172,9 @@ function GhNote({ gh }: { gh: Exclude<GhLoginState, "in"> }) {
           command={gh === "missing" ? "gh auth login" : "gh auth status"}
           label="Copy the command"
         />
-        <p className="text-xs text-pretty">The card asks gh again within a minute.</p>
+        <p className="text-xs text-pretty">
+          Once gh can read it, reload this page: the portal asks gh again at most once a minute.
+        </p>
       </AlertDescription>
     </Alert>
   );
@@ -201,6 +225,8 @@ export function WorkflowCard({ project }: { project: ProjectListRow }) {
     PROJECT_REFRESH,
   );
   const base = workflow.status === "ready" ? workflow.data.base : null;
+  // The row whose proposal runs now: one at a time across the card.
+  const [sendingKey, setSendingKey] = useState<null | string>(null);
   return (
     <Card>
       <CardHeader>
@@ -257,6 +283,8 @@ export function WorkflowCard({ project }: { project: ProjectListRow }) {
                 rows={group.rows}
                 project={project.id}
                 base={workflow.data.base ?? ""}
+                sendingKey={sendingKey}
+                onSending={setSendingKey}
               />
             ))}
             {workflow.data.others.length > 0 && <OtherValues values={workflow.data.others} />}
@@ -274,12 +302,16 @@ function WorkflowGroup({
   rows,
   project,
   base,
+  sendingKey,
+  onSending,
 }: {
   title: string;
   about: string;
   rows: SettingsRow[];
   project: string;
   base: string;
+  sendingKey: null | string;
+  onSending: Dispatch<SetStateAction<null | string>>;
 }) {
   const titleId = useId();
   return (
@@ -290,7 +322,14 @@ function WorkflowGroup({
       <p className="text-sm text-pretty text-muted-foreground">{about}</p>
       <ul>
         {rows.map((row) => (
-          <ProposeRow key={row.id} row={row} project={project} base={base} />
+          <ProposeRow
+            key={row.id}
+            row={row}
+            project={project}
+            base={base}
+            blocked={sendingKey !== null && sendingKey !== row.key}
+            onSending={onSending}
+          />
         ))}
       </ul>
     </section>

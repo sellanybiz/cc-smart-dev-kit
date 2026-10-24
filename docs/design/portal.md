@@ -525,15 +525,19 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   project's page shows every setting of `projects/<id>/workflow` with the value its base
   commits and a badge for where it comes from, grouped as This machine groups them. The rows'
   words and controls are the Settings table's, read from `/api/settings` and merged by
-  `projectWorkflowOf` (`portal/src/api/adapt.ts`); the row and its control are
+  `projectWorkflowOf` (`portal/src/api/adapt.ts`) — both answers or neither, so a card is never
+  shown without its controls and no reason; the row and its control are
   `settings-rows.tsx`'s own `SettingLine`, so the two pages never draw a setting two ways. A
   key with no row in that table is listed under "Other settings" with its value and the
   command that changes it. A change asks first — it opens a pull request into the base that
   changes one line of the project's file, and counts once merged — then runs
   `project.workflow.propose`; the row goes back to the base's value, and the pull request's
-  link (or the refusal, in the command's words) stays under it. A value the project sets can
-  also be taken out (`--unset`). Without a `gh` that can open a pull request (`missing` or
-  `out`) the values show, the controls are off, and one line names the command to run. A crew
+  link (or the refusal, in the command's words) stays under it. One proposal runs at a time
+  across the card, because an action's progress lines name only the action. A value the project
+  sets can also be taken out (`--unset`), and the alert events keep at least one chosen (the
+  parser's own rule). Without a `gh` that can open a pull request (`missing` or
+  `out`) the values show, the controls are off, and one line names the command to run; the
+  server asks `gh` again at most once a minute, and the card reads it again on a reload. A crew
   session never reaches the card: the session-escape guard denies its call into the portal.
   The current project's page no longer shows the portal folder's own settings rows: the
   person's defaults are Settings → This machine's.

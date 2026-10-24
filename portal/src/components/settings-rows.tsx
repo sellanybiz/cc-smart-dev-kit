@@ -1,7 +1,7 @@
 "use client";
 
 import { LockIcon } from "lucide-react";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import type { SettingsRow, WorkflowSource } from "@/api/types";
 import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -132,10 +132,13 @@ function Control({
         >
           {(row.choices ?? []).map((choice) => {
             const id = `${row.id}-${choice.value}`;
+            // The list holds at least one event (`parseWorkflowValue`): the last one stays.
+            const last = chosen.length === 1 && chosen[0] === choice.value;
             return (
               <span key={choice.value} className="flex items-center gap-2">
                 <Checkbox
                   id={id}
+                  title={last ? "At least one event stays chosen" : undefined}
                   checked={chosen.includes(choice.value)}
                   onCheckedChange={(on) =>
                     change(
@@ -144,7 +147,7 @@ function Control({
                         : chosen.filter((v) => v !== choice.value),
                     )
                   }
-                  disabled={disabled}
+                  disabled={disabled || last}
                 />
                 <label htmlFor={id} className="text-sm">
                   {choice.label}
@@ -253,10 +256,11 @@ export function SettingLine({
  */
 function Row({ row }: { row: SettingsRow }) {
   const [draft, setDraft] = useState<Draft>(null);
-  // A change that did not happen (a refusal) puts back what the server holds.
-  const { run, state, clear } = useAction("workflow.set", (result) => {
-    if (!result.ok) setDraft(null);
-  });
+  const { run, state, clear } = useAction("workflow.set");
+  // A change that did not happen — a refusal, or no answer at all — puts back what the server holds.
+  useEffect(() => {
+    if (state.phase === "done" && !state.result.ok) setDraft(null);
+  }, [state]);
   // A project-owned setting rewrites the project's committed file: the page asks first.
   const [asking, setAsking] = useState<null | { value: unknown }>(null);
   const save = (value: unknown) => {

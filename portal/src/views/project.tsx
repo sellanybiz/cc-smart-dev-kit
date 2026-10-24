@@ -522,7 +522,7 @@ function ProjectPage({
             </CardContent>
           </Card>
         )}
-        {project.setUp && setup.error === null && <WorkflowCard project={project} />}
+        {project.setUp && <WorkflowCard project={project} />}
         <Branches data={data} />
       </PagePad>
     </>

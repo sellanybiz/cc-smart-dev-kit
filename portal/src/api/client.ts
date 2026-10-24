@@ -263,13 +263,13 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     project: async (id) =>
       adapt.projectOf(await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`)),
     projectWorkflow: async (id) => {
-      // The rows' words and controls are the Settings table's (`/api/settings`): the values are
-      // the project's own answer. Without that table the card still shows every value.
+      // The rows' words and controls are the Settings table's (`/api/settings`), the values the
+      // project's own answer. Both or neither: a card without its controls would not say why.
       const [answer, specs] = await Promise.all([
         get<Wire.ProjectWorkflowAnswer>(`/api/projects/${encodeURIComponent(id)}/workflow`),
-        settings().catch(() => null),
+        settings(),
       ]);
-      return adapt.projectWorkflowOf(answer, specs?.rows ?? null);
+      return adapt.projectWorkflowOf(answer, specs.rows);
     },
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");

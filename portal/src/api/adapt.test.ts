@@ -23,7 +23,7 @@ import {
   workOf,
   worktreesOf,
 } from "./adapt";
-import { GUARD_PAGE_SIZE, guardQuery } from "./client";
+import { GUARD_PAGE_SIZE, guardQuery, liveClient } from "./client";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
 import type { SettingsRow } from "./types";
 import type {
@@ -1123,14 +1123,29 @@ describe("a project's Workflow card (D57)", () => {
     }
   });
 
-  test("no specs (Settings could not be read): every setting is shown with its value", () => {
-    const data = projectWorkflowOf(ANSWER, null);
-    expect(data.rows).toEqual([]);
-    expect(data.others.map((one) => one.key)).toEqual([
-      "switches.sessionNames",
-      "autoCommit",
-      "crew.tag",
-    ]);
+  test("the live client reads both answers, and fails when the rows' words cannot be read", async () => {
+    const stream = { connection: () => () => {}, on: () => () => {}, stop: () => {} };
+    const settings = { autoMerge: null, clashes: [], error: null, projectNote: null, rows: SPECS };
+    const asked: string[] = [];
+    const world = (settingsStatus: number) => ({
+      fetch: async (path: string) => {
+        asked.push(path);
+        if (path === "/api/settings") {
+          return new Response(
+            JSON.stringify(settingsStatus === 200 ? settings : { error: "boom" }),
+            {
+              status: settingsStatus,
+            },
+          );
+        }
+        return new Response(JSON.stringify(ANSWER), { status: 200 });
+      },
+      stream,
+    });
+    const data = await liveClient(world(200)).projectWorkflow("a1/f0");
+    expect(asked.sort()).toEqual(["/api/projects/a1%2Ff0/workflow", "/api/settings"]);
+    expect(data.rows.map((row) => row.key)).toEqual(["autoCommit", "switches.sessionNames"]);
+    await expect(liveClient(world(500)).projectWorkflow("a1f0")).rejects.toThrow("boom");
   });
 
   test("a note and no settings stays a note", () => {

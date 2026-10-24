@@ -280,6 +280,12 @@ export function projectMocks(now: number, empty: boolean): ProjectMocks {
         if (page === undefined) return { lines: ["Mock data: no such project."], ok: false };
         if (page.note !== null) return { lines: [page.note], ok: false };
         const setting = typeof body.setting === "string" ? body.setting : "";
+        if (!page.settings.some((one) => one.key === setting)) {
+          return {
+            lines: [`"${setting}" is not a setting the project's file can hold.`],
+            ok: false,
+          };
+        }
         if (setting === "deleteBranch") {
           // One refusal, so the card's refused state is seen in mock data too.
           return {
