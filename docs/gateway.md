@@ -207,8 +207,10 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
 - **One reader, two answers.** `projectGatewayState(folder)` (`src/gateway/project-state.ts`)
   answers the project's own **choice** (its personal file, then its team file) and what a
   session **effectively** gets (that choice, then the machine's settings file).
-  `gateway project status` and `gateway projects` call it, and GP4 adds the doctor lines and the
-  portal's project card on the same function, so no two of them can disagree. A settings file
+  `gateway project status` and `gateway projects` call it; the doctor lines and the portal's
+  Gateway card call its awaited twin, `projectGatewayStateAsync`, which shares every step but
+  the two git reads (they are `Bun.spawn`, so the portal never blocks), so no two of them can
+  disagree. A settings file
   that cannot be read, or whose `ANTHROPIC_BASE_URL` is not an address, stops the chain as
   **unknown**: Claude Code's own answer past such a file is not known, and a state nobody read
   is not a state to claim. `gateway project status` exits 1 when it cannot tell (an unreadable

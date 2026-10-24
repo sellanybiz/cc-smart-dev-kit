@@ -19,6 +19,7 @@ import {
   slotsAnswer,
   updateAnswer,
 } from "./data";
+import { projectGatewayAnswerFor } from "./project-gateway";
 import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
@@ -202,6 +203,14 @@ export const API_READS: Readonly<
   },
 };
 
+/** The parts of one project a card reads on its own: `/api/projects/<id>/<part>`. */
+const PROJECT_PARTS: Readonly<
+  Record<string, (deps: PageDataDeps, id: string) => Promise<object | { error: string }>>
+> = {
+  gateway: projectGatewayAnswerFor,
+  workflow: projectWorkflowAnswerFor,
+};
+
 /**
  * The answer for one GET under `/api/`, or null when no read route lives there (the server
  * then answers the path as it always did: an action is a POST).
@@ -218,14 +227,18 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       return { body: { error: "name a project" }, status: 400 };
     }
     if (id === "" || id.includes("/")) {
-      // `/api/projects/<id>/workflow` (D57): the project's workflow settings, its base and
-      // whether gh can open a pull request. One read only, like every route here.
-      const suffix = "/workflow";
-      const named = id.endsWith(suffix) ? id.slice(0, -suffix.length) : "";
-      if (named === "" || named.includes("/"))
+      // `/api/projects/<id>/<part>`: one card's own read. `workflow` (D57): the project's
+      // workflow settings, its base and whether gh can open a pull request; `gateway` (GP4b):
+      // its gateway state, the file that decides it, and its profile's chains.
+      const slash = id.indexOf("/");
+      const named = slash < 0 ? "" : id.slice(0, slash);
+      const part = slash < 0 ? "" : id.slice(slash + 1);
+      const read = Object.hasOwn(PROJECT_PARTS, part) ? PROJECT_PARTS[part] : undefined;
+      if (named === "" || read === undefined) {
         return { body: { error: "name a project" }, status: 400 };
-      const workflow = await projectWorkflowAnswerFor(deps, named);
-      return "error" in workflow ? { body: workflow, status: 404 } : ok(workflow);
+      }
+      const answer = await read(deps, named);
+      return "error" in answer ? { body: answer, status: 404 } : ok(answer);
     }
     const answer = await projectAnswerFor(deps, id);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);

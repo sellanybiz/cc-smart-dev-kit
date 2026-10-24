@@ -26,7 +26,11 @@ import type {
   ModelRow,
   OpenBreaker,
   PortHolder,
+  ProjectGatewayAnswer,
+  ProjectGatewayNote,
+  ProjectGatewayStateName,
   ProjectInitPlan,
+  ProjectProfileSlot,
   RequestsAnswer,
   RouterFacts,
   SessionSummary,
@@ -49,7 +53,10 @@ export type {
   ModelRow,
   OpenBreaker,
   PortHolder,
+  ProjectGatewayNote,
+  ProjectGatewayStateName,
   ProjectInitPlan,
+  ProjectProfileSlot,
   RouterFacts,
   SlotRow,
   SlotTarget,
@@ -556,6 +563,13 @@ export interface ProjectWorkflowData {
   /** The settings with no row of their own, in the answer's order: their value only. */
   others: ProjectWorkflowValue[];
 }
+
+/**
+ * A project's Gateway card (GP4b): `/api/projects/<id>/gateway` as the server sends it — the
+ * project's own choice and what its sessions get, in the command line's words, the files read,
+ * the notes, and the profile its address names with its chains over the machine's.
+ */
+export type ProjectGatewayData = ProjectGatewayAnswer;
 
 /** `src/portal/facts.ts` › `SettingsData`. */
 export interface SettingsData {

@@ -549,6 +549,87 @@ export interface ProjectWorkflowAnswer {
   settings: ProjectWorkflowSetting[];
 }
 
+/** What a project's gateway address means (`src/gateway/project-state.ts`). */
+export type ProjectGatewayStateName = "default" | "off" | "on" | "other" | "unknown";
+
+/** Which settings file a project's gateway state comes from; `none` when no file sets it. */
+export type ProjectGatewaySource = "machine" | "none" | "personal" | "team";
+
+/** One stretch of the settings chain, decided, in `gateway project status`' own words. */
+export interface ProjectGatewayDecision {
+  /** The file that decides, in words: "nothing in this project" for none. */
+  from: string;
+  profile: null | string;
+  source: ProjectGatewaySource;
+  state: ProjectGatewayStateName;
+  /** The decision in words; another gateway's address is masked. */
+  words: string;
+}
+
+/** One settings file the reader looked at, in the order Claude Code applies them. */
+export interface ProjectGatewayFile {
+  holds: string;
+  kind: "machine" | "personal" | "team";
+  /** With the home folder as `~`. */
+  path: string;
+  problem: boolean;
+}
+
+/** One slot of a project's profile, over the machine's chain. */
+export interface ProjectProfileSlot {
+  fallback: boolean;
+  key: string;
+  /** The machine's chain in use; null while Claude answers the slot on the machine. */
+  machine: null | string[];
+  name: string;
+  /** The profile's own chain, `"claude"`, or null (the machine's chain applies). */
+  own: "claude" | null | string[];
+}
+
+/** The profile a project's address names, slot by slot. */
+export interface ProjectProfile {
+  /** False when the config holds no such profile: its requests answer as plain Claude. */
+  exists: boolean;
+  name: string;
+  slots: ProjectProfileSlot[];
+}
+
+/** One file's three states: null where the command would write, else its refusal. */
+export interface ProjectGatewayWrites {
+  default: null | string;
+  off: null | string;
+  on: null | string;
+}
+
+/** What `gateway project` would refuse before it writes, per file (its own planner). */
+export interface ProjectGatewayRefusals {
+  personal: ProjectGatewayWrites;
+  team: ProjectGatewayWrites;
+}
+
+/** A line the Gateway card shows beside the state. */
+export interface ProjectGatewayNote {
+  text: string;
+  tone: "bad" | "info" | "warn";
+}
+
+/** `GET /api/projects/<id>/gateway` (GP4b): the project's own state, what its sessions get, its profile. */
+export interface ProjectGatewayAnswer {
+  choice: ProjectGatewayDecision;
+  configured: boolean;
+  effective: ProjectGatewayDecision;
+  files: ProjectGatewayFile[];
+  notes: ProjectGatewayNote[];
+  /** True when git tracks the personal file; null when git could not tell. */
+  personalTracked: boolean | null;
+  /** What the command would refuse, per file and state; null where it writes. */
+  refusals: ProjectGatewayRefusals;
+  profile: null | ProjectProfile;
+  profiles: string[];
+  /** Whether the project is in a git checkout. */
+  writable: boolean;
+}
+
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────
 
 export interface CrewSummary {
@@ -1020,6 +1101,8 @@ export const ACTION_NAMES = [
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
+  "project.gateway.profile",
+  "project.gateway.set",
   "project.preview",
   "project.workflow.propose",
   "project.write",

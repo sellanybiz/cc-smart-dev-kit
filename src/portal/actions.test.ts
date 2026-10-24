@@ -376,6 +376,192 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
   });
 });
 
+describe("the Gateway card's actions run the CLI's own command in a child (GP4b)", () => {
+  /** The project's id, as the list gives it: 12 hex of sha256 of its root. */
+  function idOf(root: string): string {
+    return createHash("sha256").update(root).digest("hex").slice(0, 12);
+  }
+
+  test("project.gateway.set: the state, the file and the profile, in the project's folder", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const on = await runAction(
+      "project.gateway.set",
+      { confirm: true, profile: "cheap", project: idOf(w.repoA), state: "on", team: false },
+      w.action,
+    );
+    expect(on).toEqual({
+      lines: [`crew gateway project on --profile cheap --folder ${w.repoA}: done`],
+      ok: true,
+    });
+    const off = await runAction(
+      "project.gateway.set",
+      { confirm: true, project: idOf(w.repoA), state: "off", team: true },
+      w.action,
+    );
+    expect(off.ok).toBe(true);
+    const plain = await runAction(
+      "project.gateway.set",
+      { confirm: true, profile: null, project: idOf(w.repoA), state: "default", team: false },
+      w.action,
+    );
+    expect(plain.ok).toBe(true);
+    // The person's own click, in the project's folder: no crew variable, no `CLAUDECODE`.
+    expect(runsOf(w.log)).toEqual([
+      {
+        args: ["gateway", "project", "on", "--profile", "cheap", "--folder", w.repoA],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoA,
+      },
+      {
+        args: ["gateway", "project", "off", "--team", "--folder", w.repoA],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoA,
+      },
+      {
+        args: ["gateway", "project", "default", "--folder", w.repoA],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoA,
+      },
+    ]);
+  });
+
+  test("project.gateway.set refuses before the child: no yes, no project, on in the team file, a bad word", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const id = idOf(w.repoA);
+    const refused = async (body: Record<string, unknown>) =>
+      (await runAction("project.gateway.set", body, w.action)).lines;
+    expect(await refused({ project: id, state: "off", team: false })).toEqual([
+      "Nothing was changed: the page's confirmation did not come with the request.",
+    ]);
+    expect(await refused({ confirm: true, state: "off", team: false })).toEqual([
+      "Name the project by its id: a gateway state is never written to the portal's own folder.",
+    ]);
+    expect(await refused({ confirm: true, project: "nope", state: "off", team: false })).toEqual([
+      'No project of the list has the id "nope", so nothing was read or written.',
+    ]);
+    expect(await refused({ confirm: true, project: id, state: "status", team: false })).toEqual([
+      '"status" is not a state: say on, off or default.',
+    ]);
+    expect(await refused({ confirm: true, project: id, state: "on", team: true })).toEqual([
+      "The team file takes off or default only: it never points teammates at your own router.",
+    ]);
+    expect(await refused({ confirm: true, project: id, state: "off", team: "yes" })).toEqual([
+      "team is true or false.",
+    ]);
+    expect(
+      await refused({ confirm: true, profile: "--team", project: id, state: "on", team: false }),
+    ).toEqual([
+      '"--team": a profile name is lower-case letters, digits and - (the /p/<name> of a project\'s URL), at most 64.',
+    ]);
+    expect(
+      await refused({ confirm: true, profile: "cheap", project: id, state: "off", team: false }),
+    ).toEqual(["A profile goes with on only."]);
+    expect(runsOf(w.log)).toEqual([]);
+  });
+
+  test("project.gateway.profile: a slot's chain, Claude, the machine's chain, the fallback", async () => {
+    const w = world();
+    const run = (body: Record<string, unknown>) =>
+      runAction("project.gateway.profile", { confirm: true, profile: "cheap", ...body }, w.action);
+    expect(
+      (
+        await run({
+          kind: "slot",
+          slot: "scout",
+          targets: ["omniroute:glm-5", "omniroute:kimi-k3"],
+        })
+      ).ok,
+    ).toBe(true);
+    expect((await run({ kind: "slot", slot: "opus", value: "claude" })).ok).toBe(true);
+    expect((await run({ kind: "slot", slot: "worker", value: "machine" })).ok).toBe(true);
+    expect((await run({ kind: "fallback", on: false, slot: "scout" })).ok).toBe(true);
+    // A machine's own slot, and a Claude target and a model id with "/" and ":" in it: the
+    // command takes all of them, so the action does too.
+    expect(
+      (
+        await run({
+          kind: "slot",
+          slot: "cc-smart-dev-kit-review",
+          targets: ["claude-sonnet-5-5", "omniroute:openrouter/deepseek/deepseek-v4.1-flash:floor"],
+        })
+      ).ok,
+    ).toBe(true);
+    expect(runsOf(w.log).map((one) => one.args)).toEqual([
+      ["gateway", "profile", "cheap", "slot", "scout", "omniroute:glm-5,omniroute:kimi-k3"],
+      ["gateway", "profile", "cheap", "slot", "opus", "off"],
+      ["gateway", "profile", "cheap", "slot", "worker", "clear"],
+      ["gateway", "profile", "cheap", "fallback", "scout", "off"],
+      [
+        "gateway",
+        "profile",
+        "cheap",
+        "slot",
+        "cc-smart-dev-kit-review",
+        "claude-sonnet-5-5,omniroute:openrouter/deepseek/deepseek-v4.1-flash:floor",
+      ],
+    ]);
+  });
+
+  test("project.gateway.profile refuses before the child, and a refusal of the CLI is in place", async () => {
+    const w = world();
+    const refused = async (body: Record<string, unknown>) =>
+      (await runAction("project.gateway.profile", body, w.action)).lines;
+    expect(
+      await refused({ kind: "slot", profile: "cheap", slot: "scout", value: "claude" }),
+    ).toEqual(["Nothing was changed: the page's confirmation did not come with the request."]);
+    const base = { confirm: true, kind: "slot", profile: "cheap", slot: "scout" };
+    expect(await refused({ ...base, profile: "Cheap" })).toEqual([
+      '"Cheap": a profile name is lower-case letters, digits and - (the /p/<name> of a project\'s URL), at most 64.',
+    ]);
+    expect(await refused({ ...base, slot: "--team" })).toEqual([
+      '"--team" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>).',
+    ]);
+    // A word the command reads as a change of its own is never a chain's one target.
+    for (const word of ["off", "claude", "clear", "custom"]) {
+      expect(await refused({ ...base, targets: [word] })).toEqual([
+        `"${word}" is not a target: a target is <backend>:<model>, from the model list.`,
+      ]);
+    }
+    expect(await refused({ ...base, targets: [] })).toEqual([
+      "Give the chain at least one target, or choose Claude or the machine's chain.",
+    ]);
+    expect(await refused({ ...base, targets: ["-x"] })).toEqual([
+      '"-x" is not a target: a target is <backend>:<model>, from the model list.',
+    ]);
+    expect(await refused({ ...base, targets: ["a:b,c:d"] })).toEqual([
+      '"a:b,c:d" is not a target: a target is <backend>:<model>, from the model list.',
+    ]);
+    expect(await refused({ ...base, kind: "breaker" })).toEqual([
+      '"breaker" is not a change the card makes: slot or fallback.',
+    ]);
+    expect(await refused({ ...base, kind: "fallback", on: "yes" })).toEqual([
+      "on is true or false.",
+    ]);
+    expect(runsOf(w.log)).toEqual([]);
+
+    const failing = world({ exit: 1 });
+    const answer = await runAction(
+      "project.gateway.profile",
+      { ...base, value: "claude" },
+      failing.action,
+    );
+    expect(answer).toEqual({
+      lines: ["crew gateway profile cheap slot scout off: done"],
+      ok: false,
+    });
+  });
+});
+
 describe("the actions that end something ask first", () => {
   test("crew.rm and crew.stop refuse without the page's confirmation, and nothing runs", async () => {
     const w = world();

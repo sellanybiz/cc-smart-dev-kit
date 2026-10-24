@@ -10,7 +10,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
-import { type KnownProjects, projectSourceWords, projectStateOf } from "./commands-project";
+import { type KnownProjects, projectSourceWords, projectStateOfAsync } from "./commands-project";
 import {
   emptyConfig,
   fallbackOn,
@@ -418,7 +418,7 @@ async function projectChecks(
   }
   const checks: DoctorCheck[] = [];
   for (const project of list.projects) {
-    const view = projectStateOf({ paths }, project.root);
+    const view = await projectStateOfAsync({ paths }, project.root);
     const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
     // The file that decides is named — except for `unknown`, whose own words name no file:
     // the parenthetical below carries it, with the reader's error.

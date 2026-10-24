@@ -281,7 +281,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   cc-smart-dev-kit wrote; the personal file's `.git/info/exclude` line through
   `applyManagedLine`). A gateway key someone else set stops `on` with ForeignKeyError, its value
   masked; it is never overwritten. A project's state has one reader, `projectGatewayState`
-  (`src/gateway/project-state.ts`), never a second copy.
+  (`src/gateway/project-state.ts`), and its awaited twin `projectGatewayStateAsync` for the
+  portal's path, which shares every step but the git reads; never a second copy.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
   (`FORBIDDEN_ENV_KEYS`, and its test).

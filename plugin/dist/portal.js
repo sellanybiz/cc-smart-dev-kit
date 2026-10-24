@@ -17816,15 +17816,38 @@ function clearGatewayBaseUrl(options) {
 }
 
 // src/gateway/project-state.ts
+function trackedArgv() {
+  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+}
+function trackedFromExit(code) {
+  return code === 0 ? true : code === 1 ? false : null;
+}
 function personalTracked(mainCheckout) {
   try {
-    const result = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`], {
+    const result = Bun.spawnSync(trackedArgv(), {
       cwd: mainCheckout,
       env: gitEnv(process.env),
       stderr: "ignore",
-      stdout: "ignore"
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
     });
-    return result.exitCode === 0 ? true : result.exitCode === 1 ? false : null;
+    return trackedFromExit(result.exitCode);
+  } catch {
+    return null;
+  }
+}
+async function personalTrackedAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const code = await child.exited;
+    return child.signalCode === null ? trackedFromExit(code) : null;
   } catch {
     return null;
   }
@@ -17915,24 +17938,44 @@ function decide(files, routerUrl) {
 }
 function projectGatewayState(folder, options) {
   const asked = resolve6(folder);
-  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
-  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
-  let checkout = null;
-  let checkoutProblem = null;
+  let found;
   try {
     const located = locateCheckout(asked);
-    if (located !== null && located.mainCheckout !== null) {
-      checkout = {
-        commonDir: located.commonDir,
-        isWorktree: located.isWorktree,
-        mainCheckout: located.mainCheckout,
-        personalTracked: personalTracked(located.mainCheckout),
-        root: located.root
-      };
-    }
+    found = checkoutFound(located, located?.mainCheckout ? personalTracked(located.mainCheckout) : null);
   } catch (error) {
-    checkoutProblem = messageOf(error);
+    found = { checkout: null, checkoutProblem: messageOf(error) };
   }
+  return stateFrom(asked, options, found);
+}
+async function projectGatewayStateAsync(folder, options) {
+  const asked = resolve6(folder);
+  let found;
+  try {
+    const located = await locateCheckoutAsync(asked);
+    found = checkoutFound(located, located?.mainCheckout ? await personalTrackedAsync(located.mainCheckout) : null);
+  } catch (error) {
+    found = { checkout: null, checkoutProblem: messageOf(error) };
+  }
+  return stateFrom(asked, options, found);
+}
+function checkoutFound(located, tracked) {
+  if (located === null || located.mainCheckout === null) {
+    return { checkout: null, checkoutProblem: null };
+  }
+  return {
+    checkout: {
+      commonDir: located.commonDir,
+      isWorktree: located.isWorktree,
+      mainCheckout: located.mainCheckout,
+      personalTracked: tracked,
+      root: located.root
+    },
+    checkoutProblem: null
+  };
+}
+function stateFrom(asked, options, { checkout, checkoutProblem }) {
+  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
+  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project = [];
   if (checkout !== null)
     project.push(settingsFileState(personalFileOf(checkout), "personal"));
@@ -18021,6 +18064,12 @@ function projectOptions(args) {
 }
 function projectStateOf(ctx, folder) {
   return projectGatewayState(folder, {
+    configPath: ctx.paths.gatewayConfigFile,
+    settingsFile: ctx.paths.settingsFile
+  });
+}
+function projectStateOfAsync(ctx, folder) {
+  return projectGatewayStateAsync(folder, {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile
   });
@@ -21414,7 +21463,7 @@ async function projectChecks(options, config) {
   }
   const checks = [];
   for (const project of list.projects) {
-    const view = projectStateOf({ paths }, project.root);
+    const view = await projectStateOfAsync({ paths }, project.root);
     const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
     const state = view.choice.source === "none" || view.choice.state === "unknown" ? decisionWords(view.choice) : `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`;
     const broken = view.files.find((one) => one.problem !== null);
@@ -36503,6 +36552,116 @@ async function projectWorkflowPropose(action, body) {
     url: opened.url
   };
 }
+var PROJECT_GATEWAY_STATES = ["on", "off", "default"];
+async function gatewayCliAction(action, name, args, cwd) {
+  const run = await runCliChild(action.portal, ["gateway", ...args], {
+    cwd,
+    onLine: (line) => action.publish?.("action", { action: name, line })
+  });
+  const lines = [...run.lines];
+  if (run.error !== null)
+    lines.push(run.error);
+  if (run.timedOut)
+    lines.push(`gateway ${args[0] ?? ""} did not answer in time: nothing more is known.`);
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+async function projectGatewaySet(action, body) {
+  if (body.confirm !== true)
+    return notConfirmed("changed");
+  if (typeof body.project !== "string" || body.project.trim() === "") {
+    return {
+      lines: [
+        "Name the project by its id: a gateway state is never written to the portal's own folder."
+      ],
+      ok: false
+    };
+  }
+  const target = await projectTarget(action, body);
+  if ("why" in target)
+    return { lines: [target.why], ok: false };
+  const state = PROJECT_GATEWAY_STATES.find((one) => one === body.state);
+  if (state === undefined) {
+    return {
+      lines: [`"${String(body.state)}" is not a state: say on, off or default.`],
+      ok: false
+    };
+  }
+  if (typeof body.team !== "boolean")
+    return { lines: ["team is true or false."], ok: false };
+  if (state === "on" && body.team) {
+    return {
+      lines: [
+        "The team file takes off or default only: it never points teammates at your own router."
+      ],
+      ok: false
+    };
+  }
+  const profile = body.profile ?? null;
+  if (profile !== null) {
+    if (typeof profile !== "string" || !isProfileName(profile)) {
+      return { lines: [`"${String(profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+    }
+    if (state !== "on")
+      return { lines: ["A profile goes with on only."], ok: false };
+  }
+  return gatewayCliAction(action, "project.gateway.set", [
+    "project",
+    state,
+    ...body.team ? ["--team"] : [],
+    ...profile === null ? [] : ["--profile", profile],
+    "--folder",
+    target.cwd
+  ], target.cwd);
+}
+async function projectGatewayProfile(action, body) {
+  if (body.confirm !== true)
+    return notConfirmed("changed");
+  const profile = typeof body.profile === "string" ? body.profile : "";
+  if (!isProfileName(profile)) {
+    return { lines: [`"${String(body.profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+  }
+  const slot = typeof body.slot === "string" ? body.slot : "";
+  if (slotKeyFromArg(slot) === null) {
+    return { lines: [`${notSlotName(String(body.slot))}.`], ok: false };
+  }
+  if (body.kind === "fallback") {
+    if (typeof body.on !== "boolean")
+      return { lines: ["on is true or false."], ok: false };
+    return gatewayCliAction(action, "project.gateway.profile", ["profile", profile, "fallback", slot, body.on ? "on" : "off"], null);
+  }
+  if (body.kind !== "slot") {
+    return {
+      lines: [`"${String(body.kind)}" is not a change the card makes: slot or fallback.`],
+      ok: false
+    };
+  }
+  let chain;
+  if (body.value === "claude")
+    chain = "off";
+  else if (body.value === "machine")
+    chain = "clear";
+  else {
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (targets.length === 0) {
+      return {
+        lines: ["Give the chain at least one target, or choose Claude or the machine's chain."],
+        ok: false
+      };
+    }
+    for (const one of targets) {
+      if (typeof one !== "string" || one.includes(",") || one.trim().startsWith("-") || "error" in parseTarget(one)) {
+        return {
+          lines: [
+            `"${String(one)}" is not a target: a target is <backend>:<model>, from the model list.`
+          ],
+          ok: false
+        };
+      }
+    }
+    chain = targets.join(",");
+  }
+  return gatewayCliAction(action, "project.gateway.profile", ["profile", profile, "slot", slot, chain], null);
+}
 function proposedLine(lines) {
   for (const line of [...lines].reverse()) {
     let parsed;
@@ -36996,6 +37155,10 @@ async function runAction(name, body, action) {
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.gateway.set":
+      return projectGatewaySet(action, body);
+    case "project.gateway.profile":
+      return projectGatewayProfile(action, body);
     case "project.workflow.propose":
       return projectWorkflowPropose(action, body);
     case "project.add":
@@ -38699,6 +38862,169 @@ async function jobsAnswerFor(deps) {
   }
 }
 
+// src/portal/api/project-gateway.ts
+function wordsOf2(decision) {
+  if (decision.state !== "other" || decision.url === null)
+    return decisionWords(decision);
+  const address = backendAddress(decision.url);
+  return `another address: ${address === null ? "(not a URL)" : shownValue(address)}`;
+}
+function withoutRawAddresses(text, view) {
+  let out = text;
+  for (const file of view.files) {
+    if (file.url === null)
+      continue;
+    const address = backendAddress(file.url);
+    out = out.replaceAll(shownValue(file.url), address === null ? "(not a URL)" : shownValue(address));
+  }
+  return out;
+}
+function decisionOf(decision, view, home) {
+  return {
+    from: projectSourceWords(decision, home, view),
+    profile: decision.profile,
+    source: decision.source,
+    state: decision.state,
+    words: wordsOf2(decision)
+  };
+}
+function fileOf(file, view, home) {
+  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : wordsOf2({
+    ...urlMeaning(file.url, view.routerUrl),
+    source: file.kind,
+    url: file.url
+  });
+  return { holds, kind: file.kind, path: tildify(file.path, home), problem: file.problem !== null };
+}
+function profileOf(config, name) {
+  const profile = config?.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (config === null || profile === undefined)
+    return { exists: false, name, slots: [] };
+  const view = profileView(config, name) ?? config;
+  const keys = [
+    ...SLOT_ORDER.map((one) => `cc-smart-dev-kit-${slotName2(one)}`),
+    ...Object.keys(config.slots),
+    ...Object.keys(profile.slots ?? {})
+  ];
+  return {
+    exists: true,
+    name,
+    slots: [...new Set(keys)].map((key) => {
+      const own = profile.slots !== undefined && Object.hasOwn(profile.slots, key) ? profile.slots[key] ?? null : null;
+      return {
+        fallback: fallbackOn(view, key),
+        key,
+        machine: Object.hasOwn(config.slots, key) ? config.slots[key] ?? null : null,
+        name: slotName2(key),
+        own
+      };
+    })
+  };
+}
+function notesOf(view, config, home) {
+  const notes = [];
+  if (view.checkoutProblem !== null) {
+    notes.push({
+      text: `The project's checkout cannot be read: ${view.checkoutProblem}`,
+      tone: "bad"
+    });
+  } else if (view.checkout === null) {
+    notes.push({
+      text: "This folder is not in a git project: it has no personal file, so its state cannot be set here.",
+      tone: "info"
+    });
+  }
+  if (view.effective.state === "unknown") {
+    notes.push({
+      text: "A settings file this project's sessions read cannot be read, so its gateway state is unknown: fix the file by hand, or move it aside.",
+      tone: "bad"
+    });
+  }
+  if (view.configProblem !== null) {
+    notes.push({
+      text: `The gateway config cannot be read (${view.configProblem}): until it is fixed, the router runs on its default config.`,
+      tone: "bad"
+    });
+  } else if ("error" in config) {
+    notes.push({
+      text: `This machine's gateway is not set up (${config.error}), so a project can be off or default here, never on.`,
+      tone: "info"
+    });
+  }
+  if (view.checkout?.personalTracked === true) {
+    notes.push({
+      text: `Git tracks this project's personal file (.claude/${PERSONAL_FILE}), so a router address written there would be committed with it: on is refused until it is untracked (git rm --cached -- .claude/${PERSONAL_FILE}).`,
+      tone: "warn"
+    });
+  }
+  for (const file of view.files) {
+    if (file.loginOverrides.length === 0)
+      continue;
+    notes.push({
+      text: `${file.loginOverrides.join(", ")} ${file.loginOverrides.length === 1 ? "is" : "are"} set in ${tildify(file.path, home)}: it replaces your own Claude login, so this project cannot be turned on or off until it is removed by hand.`,
+      tone: "warn"
+    });
+  }
+  const named = view.effective.profile;
+  if (named !== null && !view.profiles.includes(named) && view.configProblem === null) {
+    notes.push({
+      text: `The router has no profile "${named}": this project's requests answer as plain Claude. Pick another profile, or make it on the command line.`,
+      tone: "warn"
+    });
+  }
+  if (view.effective.state === "other") {
+    notes.push({
+      text: `This project's sessions send their requests to another address, which ${COMMAND} did not set and never replaces: remove it by hand, or set the state in a file that decides before it.`,
+      tone: "warn"
+    });
+  }
+  return notes;
+}
+function writesOf(view, config, configured, paths, team) {
+  const refusal = (state) => {
+    const plan = planProjectChange(view, {
+      config,
+      configPath: paths.gatewayConfigFile,
+      home: paths.home,
+      request: { folder: view.folder, profile: null, state, team },
+      stateDir: paths.stateDir
+    });
+    if ("error" in plan)
+      return withoutRawAddresses(plan.error, view);
+    if (state === "on" && !configured) {
+      return "On needs this machine's gateway, and it is not set up: set it up on Machine first.";
+    }
+    return null;
+  };
+  return { default: refusal("default"), off: refusal("off"), on: refusal("on") };
+}
+async function projectGatewayAnswerFor(deps, id) {
+  const list = await projectsList(projectsWorldOf(deps));
+  const project = list.projects.find((one) => one.id === id);
+  if (project === undefined) {
+    return { error: `no project has the id "${id}"; the list on /api/projects names them` };
+  }
+  const { paths } = deps.action.portal;
+  const view = await projectStateOfAsync({ paths }, project.root);
+  const config = "config" in deps.found ? deps.found.config : null;
+  const configured = config !== null && view.configProblem === null;
+  return {
+    choice: decisionOf(view.choice, view, paths.home),
+    configured,
+    effective: decisionOf(view.effective, view, paths.home),
+    files: view.files.map((file) => fileOf(file, view, paths.home)),
+    notes: notesOf(view, deps.found, paths.home),
+    personalTracked: view.checkout?.personalTracked ?? null,
+    refusals: {
+      personal: writesOf(view, config, configured, paths, false),
+      team: writesOf(view, config, configured, paths, true)
+    },
+    profile: view.effective.state === "on" && view.effective.profile !== null ? profileOf(config, view.effective.profile) : null,
+    profiles: view.profiles,
+    writable: view.checkout !== null
+  };
+}
+
 // src/portal/api/routes.ts
 var HISTORY_BY2 = new Set(["target", "slot", "model", "session"]);
 function rangeOf(value) {
@@ -38831,6 +39157,10 @@ var API_READS = {
     }));
   }
 };
+var PROJECT_PARTS = {
+  gateway: projectGatewayAnswerFor,
+  workflow: projectWorkflowAnswerFor
+};
 async function answerApi(deps, url) {
   const path = url.pathname;
   const read = Object.hasOwn(API_READS, path) ? API_READS[path] : undefined;
@@ -38844,12 +39174,15 @@ async function answerApi(deps, url) {
       return { body: { error: "name a project" }, status: 400 };
     }
     if (id === "" || id.includes("/")) {
-      const suffix = "/workflow";
-      const named = id.endsWith(suffix) ? id.slice(0, -suffix.length) : "";
-      if (named === "" || named.includes("/"))
+      const slash = id.indexOf("/");
+      const named = slash < 0 ? "" : id.slice(0, slash);
+      const part = slash < 0 ? "" : id.slice(slash + 1);
+      const read = Object.hasOwn(PROJECT_PARTS, part) ? PROJECT_PARTS[part] : undefined;
+      if (named === "" || read === undefined) {
         return { body: { error: "name a project" }, status: 400 };
-      const workflow = await projectWorkflowAnswerFor(deps, named);
-      return "error" in workflow ? { body: workflow, status: 404 } : ok(workflow);
+      }
+      const answer = await read(deps, named);
+      return "error" in answer ? { body: answer, status: 404 } : ok(answer);
     }
     const answer = await projectAnswerFor(deps, id);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);

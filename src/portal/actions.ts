@@ -43,15 +43,23 @@ import {
   runGateway,
   setOmnirouteKey,
 } from "../gateway/commands";
+import { notSlotName } from "../gateway/commands-chains";
 import {
   type GatewayConfig,
   keptChain,
   loadConfigFile,
   messageOf,
+  PROFILE_NAME_RULE,
   slotMode,
 } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
-import { JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import {
+  isProfileName,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  slotKeyFromArg,
+} from "../gateway/targets";
 import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
@@ -949,6 +957,177 @@ async function projectWorkflowPropose(
   };
 }
 
+// ── A project's gateway (GP4b) ─────────────────────────────────────────────────
+
+/** The three states `gateway project` writes. */
+const PROJECT_GATEWAY_STATES = ["on", "off", "default"] as const;
+
+/**
+ * The CLI's own `gateway …` command for one click of the Gateway card, in a child: the
+ * command's checks, its lock, its words and its refusals, never a copy of them. `cwd` is the
+ * project's own folder (a state) or the portal's (a profile: it is the machine's config).
+ */
+async function gatewayCliAction(
+  action: ActionContext,
+  name: string,
+  args: string[],
+  cwd: null | string,
+): Promise<ActionResult> {
+  const run = await runCliChild(action.portal, ["gateway", ...args], {
+    cwd,
+    onLine: (line) => action.publish?.("action", { action: name, line }),
+  });
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut)
+    lines.push(`gateway ${args[0] ?? ""} did not answer in time: nothing more is known.`);
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * `project.gateway.set` (GP4b): a project's own gateway state — on (this machine's router, or a
+ * profile's `…/p/<name>`), off (Anthropic's own address: the person's own login) or default (no
+ * key: the machine decides) — in its personal file, or with `team` its team file (off and
+ * default only: a team file never points teammates at one person's router). The page asks
+ * first (`confirm`); the CLI's own `gateway project <state> --folder <root>` runs in a child in
+ * the project's folder (it runs git, and `on` asks the router first), so its refusals — a file
+ * git tracks, a login key, another gateway's address — are the command's own, in place.
+ *
+ * The project is named by its id and looked up in the server's own list: never a path from the
+ * request, and never the portal's own folder by accident.
+ */
+async function projectGatewaySet(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  if (typeof body.project !== "string" || body.project.trim() === "") {
+    return {
+      lines: [
+        "Name the project by its id: a gateway state is never written to the portal's own folder.",
+      ],
+      ok: false,
+    };
+  }
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const state = PROJECT_GATEWAY_STATES.find((one) => one === body.state);
+  if (state === undefined) {
+    return {
+      lines: [`"${String(body.state)}" is not a state: say on, off or default.`],
+      ok: false,
+    };
+  }
+  if (typeof body.team !== "boolean") return { lines: ["team is true or false."], ok: false };
+  if (state === "on" && body.team) {
+    return {
+      lines: [
+        "The team file takes off or default only: it never points teammates at your own router.",
+      ],
+      ok: false,
+    };
+  }
+  const profile = body.profile ?? null;
+  if (profile !== null) {
+    if (typeof profile !== "string" || !isProfileName(profile)) {
+      return { lines: [`"${String(profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+    }
+    if (state !== "on") return { lines: ["A profile goes with on only."], ok: false };
+  }
+  return gatewayCliAction(
+    action,
+    "project.gateway.set",
+    [
+      "project",
+      state,
+      ...(body.team ? ["--team"] : []),
+      ...(profile === null ? [] : ["--profile", profile]),
+      "--folder",
+      target.cwd,
+    ],
+    target.cwd,
+  );
+}
+
+/**
+ * `project.gateway.profile` (GP4b): one change to a profile the Gateway card shows — a slot's own
+ * chain (`targets`), plain Claude there (`value: "claude"`), the machine's chain again
+ * (`value: "machine"`), or the slot's fallback switch (`kind: "fallback"`). A profile is the
+ * machine's (`gateway.json`): every project whose address names it gets the change, and the
+ * page's question says so. The CLI's own `gateway profile <name> slot|fallback …` runs in a
+ * child: it checks each target against its backend's live model list, and the whole config,
+ * under its lock.
+ */
+async function projectGatewayProfile(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  const profile = typeof body.profile === "string" ? body.profile : "";
+  if (!isProfileName(profile)) {
+    return { lines: [`"${String(body.profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+  }
+  // The command's own slot rule: the five, and a machine's own `cc-smart-dev-kit-<name>`. A
+  // name that passes it is a key's own characters, never an option.
+  const slot = typeof body.slot === "string" ? body.slot : "";
+  if (slotKeyFromArg(slot) === null) {
+    return { lines: [`${notSlotName(String(body.slot))}.`], ok: false };
+  }
+  if (body.kind === "fallback") {
+    if (typeof body.on !== "boolean") return { lines: ["on is true or false."], ok: false };
+    return gatewayCliAction(
+      action,
+      "project.gateway.profile",
+      ["profile", profile, "fallback", slot, body.on ? "on" : "off"],
+      null,
+    );
+  }
+  if (body.kind !== "slot") {
+    return {
+      lines: [`"${String(body.kind)}" is not a change the card makes: slot or fallback.`],
+      ok: false,
+    };
+  }
+  let chain: string;
+  if (body.value === "claude") chain = "off";
+  else if (body.value === "machine") chain = "clear";
+  else {
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (targets.length === 0) {
+      return {
+        lines: ["Give the chain at least one target, or choose Claude or the machine's chain."],
+        ok: false,
+      };
+    }
+    for (const one of targets) {
+      // Each one a target by the command's own parser (`parseTarget`: never a word such as
+      // `off` or `clear`, which the command would read as a change of its own), with no comma —
+      // the comma joins the chain — and no leading "-", which would read as an option. The
+      // command checks the rest against the live model list.
+      if (
+        typeof one !== "string" ||
+        one.includes(",") ||
+        one.trim().startsWith("-") ||
+        "error" in parseTarget(one)
+      ) {
+        return {
+          lines: [
+            `"${String(one)}" is not a target: a target is <backend>:<model>, from the model list.`,
+          ],
+          ok: false,
+        };
+      }
+    }
+    chain = targets.join(",");
+  }
+  return gatewayCliAction(
+    action,
+    "project.gateway.profile",
+    ["profile", profile, "slot", slot, chain],
+    null,
+  );
+}
+
 /**
  * The pull request a successful `workflow propose --json` printed: its one JSON line, read as
  * the command's contract (`url`, `branch`, `worktree`). Null for any other output — "already
@@ -1656,6 +1835,8 @@ export const ACTION_NAMES = [
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
+  "project.gateway.profile",
+  "project.gateway.set",
   "project.preview",
   "project.workflow.propose",
   "project.write",
@@ -1757,6 +1938,10 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.gateway.set":
+      return projectGatewaySet(action, body);
+    case "project.gateway.profile":
+      return projectGatewayProfile(action, body);
     case "project.workflow.propose":
       return projectWorkflowPropose(action, body);
     case "project.add":

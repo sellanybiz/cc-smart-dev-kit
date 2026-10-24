@@ -903,6 +903,7 @@ describe("every answer", () => {
         ...Object.keys(API_READS),
         "/api/crew/crew-K-contracts",
         `/api/projects/${projectId(world.cwd)}`,
+        `/api/projects/${projectId(world.cwd)}/gateway`,
       ];
       for (const path of reads) {
         const answer = await world.call(path);

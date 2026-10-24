@@ -25,6 +25,7 @@ import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { columnsFor, PortalTable } from "@/components/data-table";
+import { GatewayCard } from "@/components/gateway-card";
 import { NarrowLabel, ProjectStatePills, STACK_ROWS_WHEN_NARROW } from "@/components/project-state";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -523,6 +524,7 @@ function ProjectPage({
           </Card>
         )}
         {project.setUp && <WorkflowCard project={project} />}
+        <GatewayCard project={project} />
         <Branches data={data} />
       </PagePad>
     </>

@@ -24,6 +24,7 @@ export function SavedSwitch({
   body,
   question,
   disabled = false,
+  effect = EVERY_SESSION,
 }: {
   label: string;
   help: ReactNode;
@@ -34,6 +35,8 @@ export function SavedSwitch({
   /** The question the page asks before it moves. */
   question: string;
   disabled?: boolean;
+  /** What the change reaches, said in the question: every session by default. */
+  effect?: ReactNode;
 }) {
   const id = useId();
   const { run, state } = useAction(action);
@@ -68,7 +71,7 @@ export function SavedSwitch({
           run(body(!checked));
         }}
       >
-        {EVERY_SESSION}
+        {effect}
       </ConfirmDialog>
     </div>
   );

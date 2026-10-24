@@ -29,7 +29,12 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { gitEnv } from "../project/git-env";
-import { locateCheckout } from "../project/resolve";
+import {
+  type Checkout,
+  locateCheckout,
+  locateCheckoutAsync,
+  RESOLVE_GIT_TIMEOUT_MS,
+} from "../project/resolve";
 import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_PORT,
@@ -98,24 +103,52 @@ export interface ProjectCheckout {
   root: string;
 }
 
+/** The git line that asks whether the personal file is tracked: one home for both twins. */
+function trackedArgv(): string[] {
+  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+}
+
+/** What `ls-files --error-unmatch` exiting with `code` says: tracked, not tracked, or unknown. */
+function trackedFromExit(code: null | number): boolean | null {
+  return code === 0 ? true : code === 1 ? false : null;
+}
+
 /**
  * Whether git tracks the personal file of `mainCheckout`: `git ls-files --error-unmatch` answers
- * 0 for a tracked path, 1 for one it does not know, anything else (no git, not a repo) is null —
- * the caller then says it could not tell, never that the file is safe. `GIT_*` goes, as in
- * `locateCheckout`, so a hook's or a session's own `GIT_DIR` cannot redirect it.
+ * 0 for a tracked path, 1 for one it does not know, anything else (no git, not a repo, a git
+ * that ran out of time) is null — the caller then says it could not tell, never that the file
+ * is safe. `GIT_*` goes, as in `locateCheckout`, so a hook's or a session's own `GIT_DIR` cannot
+ * redirect it.
  */
 function personalTracked(mainCheckout: string): boolean | null {
   try {
-    const result = Bun.spawnSync(
-      ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`],
-      {
-        cwd: mainCheckout,
-        env: gitEnv(process.env),
-        stderr: "ignore",
-        stdout: "ignore",
-      },
-    );
-    return result.exitCode === 0 ? true : result.exitCode === 1 ? false : null;
+    const result = Bun.spawnSync(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    return trackedFromExit(result.exitCode);
+  } catch {
+    return null;
+  }
+}
+
+/** `personalTracked` without blocking (`Bun.spawn`): the portal's twin. */
+async function personalTrackedAsync(mainCheckout: string): Promise<boolean | null> {
+  try {
+    const child = Bun.spawn(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    const code = await child.exited;
+    // A timeout's kill ends with a signal: no answer, as the blocking twin reads it.
+    return child.signalCode === null ? trackedFromExit(code) : null;
   } catch {
     return null;
   }
@@ -281,26 +314,74 @@ export function projectGatewayState(
   options: ProjectStateOptions,
 ): ProjectGatewayState {
   const asked = resolve(folder);
-  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
-  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
-
-  let checkout: null | ProjectCheckout = null;
-  let checkoutProblem: null | string = null;
+  let found: FoundCheckout;
   try {
     const located = locateCheckout(asked);
-    if (located !== null && located.mainCheckout !== null) {
-      checkout = {
-        commonDir: located.commonDir,
-        isWorktree: located.isWorktree,
-        mainCheckout: located.mainCheckout,
-        personalTracked: personalTracked(located.mainCheckout),
-        root: located.root,
-      };
-    }
+    found = checkoutFound(
+      located,
+      located?.mainCheckout ? personalTracked(located.mainCheckout) : null,
+    );
   } catch (error) {
-    checkoutProblem = messageOf(error);
+    found = { checkout: null, checkoutProblem: messageOf(error) };
   }
+  return stateFrom(asked, options, found);
+}
 
+/**
+ * `projectGatewayState`, without blocking: the same answer, its two git reads awaited
+ * (`locateCheckoutAsync`, and `ls-files` through `Bun.spawn`). The portal's Project card and the
+ * doctor pass's per-project lines run inside the portal's server, where a blocking spawn freezes
+ * every page and the live stream (`.claude/rules/portal.md`). Every other step is the same code.
+ */
+export async function projectGatewayStateAsync(
+  folder: string,
+  options: ProjectStateOptions,
+): Promise<ProjectGatewayState> {
+  const asked = resolve(folder);
+  let found: FoundCheckout;
+  try {
+    const located = await locateCheckoutAsync(asked);
+    found = checkoutFound(
+      located,
+      located?.mainCheckout ? await personalTrackedAsync(located.mainCheckout) : null,
+    );
+  } catch (error) {
+    found = { checkout: null, checkoutProblem: messageOf(error) };
+  }
+  return stateFrom(asked, options, found);
+}
+
+/** The checkout the reader found, or why there is none: what the git reads gave. */
+interface FoundCheckout {
+  checkout: null | ProjectCheckout;
+  checkoutProblem: null | string;
+}
+
+/** A located checkout as the reader keeps it; none without a main checkout (P6 needs it). */
+function checkoutFound(located: Checkout | null, tracked: boolean | null): FoundCheckout {
+  if (located === null || located.mainCheckout === null) {
+    return { checkout: null, checkoutProblem: null };
+  }
+  return {
+    checkout: {
+      commonDir: located.commonDir,
+      isWorktree: located.isWorktree,
+      mainCheckout: located.mainCheckout,
+      personalTracked: tracked,
+      root: located.root,
+    },
+    checkoutProblem: null,
+  };
+}
+
+/** Everything after the git reads, shared by both twins: the files, the two decisions, the config. */
+function stateFrom(
+  asked: string,
+  options: ProjectStateOptions,
+  { checkout, checkoutProblem }: FoundCheckout,
+): ProjectGatewayState {
+  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
+  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project: SettingsFileState[] = [];
   if (checkout !== null) project.push(settingsFileState(personalFileOf(checkout), "personal"));
   project.push(settingsFileState(teamFileOf(asked), "team"));
