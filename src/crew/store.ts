@@ -884,6 +884,9 @@ export async function addCrewQuestion(
  * written in the same hold, so the record never says `blocked` for a crew session that has its answer
  * (the watch stops a blocked crew session that idles). A crew session in any other state keeps its own. The
  * state change is one `state` event; the answer alone is none.
+ *
+ * `session` is the session a resume with the answer brought back (WF1: a resume can start a copy
+ * with a new id): the record takes it in the same write, so it never names a session that is gone.
  */
 export async function answerCrewQuestion(
   stateDir: string,
@@ -893,6 +896,7 @@ export async function answerCrewQuestion(
   answer: string,
   atMs: number,
   resumes: null | CrewState = null,
+  session: null | { sessionId: string; shortId: string } = null,
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
@@ -906,7 +910,11 @@ export async function answerCrewQuestion(
     const waiting = before.state === "blocked" || before.state === "stopped";
     const state = resumes !== null && waiting ? resumes : null;
     return {
-      change: { questions, ...(state === null ? {} : { state }) },
+      change: {
+        questions,
+        ...(state === null ? {} : { state }),
+        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+      },
       event: (after) =>
         state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
     };

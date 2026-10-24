@@ -79,7 +79,6 @@ import { claudeDeps } from "./agents";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
 import { type Caller, readCaller, reasonOf, requireSession } from "./caller";
 import {
-  agentRow,
   CREW_PERMISSION_MODE,
   callClaude,
   dependencyIds,
@@ -88,10 +87,10 @@ import {
   launchArgs,
   leanLaunch,
   mcpConfigText,
-  parseAgents,
   parseBackgrounded,
   parsePluginList,
   refusedUntrusted,
+  startedRow,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
 import { filePattern, matchesFilePattern } from "./diff";
@@ -820,26 +819,18 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
     );
   }
   const { shortId } = backgrounded;
-  const listed = callClaude(deps, spec.claude, ["agents", "--json", "--all"], spec.repo);
-  const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
-  if (rows === null) {
+  const listed = startedRow(deps, spec.claude, shortId, spec.repo);
+  if (!listed.ok) {
     return await failed(
       record,
-      `session ${shortId} started, but claude agents --json could not be read`,
+      listed.why === "unreadable"
+        ? `session ${shortId} started, but claude agents --json could not be read`
+        : `session ${shortId} started, but claude agents does not list it`,
       ctx,
       { shortId },
     );
   }
-  const row = agentRow(rows, shortId);
-  if (row === null) {
-    return await failed(
-      record,
-      `session ${shortId} started, but claude agents does not list it`,
-      ctx,
-      { shortId },
-    );
-  }
-  const sessionId = row.sessionId;
+  const sessionId = listed.row.sessionId;
   // Where the session works is **not** judged from this read: `claude agents --json` reports the
   // folder a `--bg -w` session was launched in until it has entered its worktree (2.1.308,
   // `docs/claude-code-contract.md`), so one immediate read races the move — five crew sessions

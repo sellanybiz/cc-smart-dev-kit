@@ -24533,7 +24533,7 @@ async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   }));
   return record2;
 }
-async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null) {
+async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null, session = null) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined)
@@ -24545,7 +24545,11 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
     const waiting = before.state === "blocked" || before.state === "stopped";
     const state = resumes !== null && waiting ? resumes : null;
     return {
-      change: { questions, ...state === null ? {} : { state } },
+      change: {
+        questions,
+        ...state === null ? {} : { state },
+        ...session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }
+      },
       event: (after) => state === null ? null : eventOf(after, at, "state", "an answer brought it back")
     };
   });
@@ -32950,12 +32954,24 @@ function mcpConfigText(servers) {
   return `${JSON.stringify({ mcpServers: servers }, null, 2)}
 `;
 }
-var BACKGROUNDED = /^\s*backgrounded\s+\u00B7\s+([0-9a-f]{8})\s+\u00B7\s+(\S.*?)\s*$/m;
+var BACKGROUNDED = /^\s*backgrounded\s+\u00B7\s+([0-9a-f]{8})(?:\s+\u00B7\s+(\S.*?))?\s*$/m;
 function parseBackgrounded(output) {
   const found = BACKGROUNDED.exec(output);
-  if (found?.[1] === undefined || found[2] === undefined)
+  if (found?.[1] === undefined)
     return null;
-  return { name: found[2], shortId: found[1] };
+  return { name: found[2] ?? null, shortId: found[1] };
+}
+var COPY_NOTE = /\bstarted a (?:restricted )?copy (?:of that conversation )?as ([0-9a-f]{8})\b/;
+function parseCopyNote(output) {
+  return COPY_NOTE.exec(output)?.[1] ?? null;
+}
+function startedRow(deps, claude, shortId, cwd) {
+  const listed = callClaude(deps, claude, ["agents", "--json", "--all"], cwd);
+  const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
+  if (rows === null)
+    return { ok: false, why: "unreadable" };
+  const row = agentRow(rows, shortId);
+  return row === null ? { ok: false, why: "unlisted" } : { ok: true, row };
 }
 var NOT_TRUSTED = /workspace not trusted/i;
 function refusedUntrusted(output) {
@@ -33716,27 +33732,35 @@ async function runCrewAnswer(args, ctx) {
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
     return 1;
   }
+  let session = null;
   if (way === "resume") {
     const resumed = await resumeSession(ctx, record, args.text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
     }
+    session = resumed.session;
   }
   try {
-    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working");
+    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session);
   } catch (error) {
     ctx.error(`crew answer: the store could not record the answer: ${reasonOf3(error)}`);
     return 1;
   }
-  if (way === "resume") {
-    ctx.print(`answered ${record.name}: resumed with your answer \xB7 ${question}`);
+  if (session !== null) {
+    ctx.print(`answered ${record.name}: resumed with your answer${resumedAs(record, session.shortId)} \xB7 ${question}`);
   } else {
     ctx.print(`answered ${record.name}: ${question}`);
     ctx.print(sendMessageLine(record.name, args.text));
   }
   return 0;
 }
+function resumedAs(record, shortId) {
+  if (shortId === record.shortId)
+    return "";
+  return ` as session ${shortId}${record.shortId === null ? "" : ` (a copy of ${record.shortId})`}`;
+}
+var UNNAMED_FIX = "see claude agents before you resume it again";
 function resumePlace(record) {
   const pending = pendingDiscardWhy(record);
   if (pending !== null)
@@ -33771,15 +33795,16 @@ function resumeArgs(launch, files, text) {
 }
 async function resumeSession(ctx, record, text) {
   if (record.sessionId === null) {
-    return { ok: false, why: `${record.name} has no session to resume` };
+    return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
   }
   const place = resumePlace(record);
   if (!place.ok)
-    return { ok: false, why: place.why };
+    return { ok: false, unnamed: false, why: place.why };
   const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
   if (!existsSync51(settingsFile)) {
     return {
       ok: false,
+      unnamed: false,
       why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`
     };
   }
@@ -33788,6 +33813,7 @@ async function resumeSession(ctx, record, text) {
   if (claude === null) {
     return {
       ok: false,
+      unnamed: false,
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
     };
   }
@@ -33799,16 +33825,54 @@ async function resumeSession(ctx, record, text) {
     sessionId: record.sessionId
   }, { mcpFile: existsSync51(mcpFile) ? mcpFile : null, settingsFile }, text), place.folder);
   if (!called.ok)
-    return { ok: false, why: called.why };
-  if (called.run.exitCode !== 0) {
-    const last = `${called.run.stdout}
-${called.run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
+    return { ok: false, unnamed: false, why: called.why };
+  const { run } = called;
+  const command = `claude --bg --resume ${record.sessionId}`;
+  if (run.timedOut) {
+    return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
+  }
+  if (run.exitCode !== 0) {
+    const last = `${run.stdout}
+${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
     return {
       ok: false,
-      why: `claude --bg --resume ${record.sessionId} failed (exit ${called.run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`
+      unnamed: false,
+      why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`
     };
   }
-  return { ok: true };
+  return resumedSession(record, run, deps, claude, place.folder, command);
+}
+function resumedSession(record, run, deps, claude, folder, command) {
+  const line = parseBackgrounded(run.stdout);
+  if (line === null) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} printed no line backgrounded \xB7 <id>, so the session it started is not known; ${UNNAMED_FIX}`
+    };
+  }
+  const { shortId } = line;
+  const copy = parseCopyNote(run.stderr);
+  if (copy !== null && copy !== shortId) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} said it started a copy as ${copy}, but printed backgrounded \xB7 ${shortId}; ${UNNAMED_FIX}`
+    };
+  }
+  if (copy === null && shortId === record.shortId && record.sessionId !== null) {
+    return { ok: true, session: { sessionId: record.sessionId, shortId } };
+  }
+  const listed = startedRow(deps, claude, shortId, folder);
+  const sessionId = listed.ok ? listed.row.sessionId : null;
+  if (sessionId !== null)
+    return { ok: true, session: { sessionId, shortId } };
+  const what = !listed.ok ? listed.why === "unreadable" ? "claude agents --json could not be read" : "claude agents does not list it" : "claude agents lists it with no session id";
+  return {
+    ok: false,
+    unnamed: true,
+    why: `session ${shortId} started, but ${what}; see claude agents, and stop it (claude stop ${shortId}) before you resume it again`
+  };
 }
 
 // src/crew/end.ts
@@ -33871,9 +33935,9 @@ function sessionUnknown(ctx, record) {
   const rows = parseAgentPresence(listed.run.stdout);
   return rows !== null && agentRow(rows, record.shortId) === null;
 }
-async function markState(record, state, text, ctx) {
+async function markState(record, state, text, ctx, change = {}) {
   try {
-    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), text);
+    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { ...change, state }, ctx.now(), text);
     return true;
   } catch (error) {
     ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf4(error)}`);
@@ -33988,6 +34052,10 @@ async function runCrewStop(ref, ctx) {
   ctx.print(`stopped ${record.name} (${id}); ${what}${stays}`);
   return stopped.stored ? 0 : 1;
 }
+function resumedLine(record, shortId) {
+  const as = resumedAs(record, shortId);
+  return as === "" ? `resumed ${record.name} (${shortId})` : `resumed ${record.name}${as}`;
+}
 async function runCrewResume(ref, ctx) {
   const found = actOn(ref, "resume", ctx);
   if (isRefusal(found))
@@ -34019,8 +34087,12 @@ async function runCrewResume(ref, ctx) {
   if (!resumed.ok) {
     return refuse2(failure2(`crew resume: ${resumed.why}`, `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`), ctx);
   }
-  const stored = record.state === "working" ? true : await markState(record, "working", "resumed by the lead", ctx);
-  ctx.print(`resumed ${record.name} (${id})`);
+  const { session } = resumed;
+  const stored = await markState(record, "working", "resumed by the lead", ctx, {
+    sessionId: session.sessionId,
+    shortId: session.shortId
+  });
+  ctx.print(resumedLine(record, session.shortId));
   return stored ? 0 : 1;
 }
 async function runCrewResumePaused(named, ctx) {
@@ -34065,7 +34137,7 @@ async function runCrewResumePaused(named, ctx) {
       code = 1;
       continue;
     }
-    ctx.print(one.way === "message" ? `${record.name} is running (${record.shortId}): send the message above` : `resumed ${record.name} (${record.shortId})`);
+    ctx.print(one.way === "message" ? `${record.name} is running (${record.shortId}): send the message above` : resumedLine(record, one.shortId ?? record.shortId));
   }
   return code;
 }
@@ -36069,16 +36141,11 @@ ${run.stderr}`;
     return await failed(record, "claude --bg printed no line backgrounded \xB7 <id> \xB7 <name>: a session may have started; see claude agents", ctx);
   }
   const { shortId } = backgrounded;
-  const listed = callClaude(deps, spec.claude, ["agents", "--json", "--all"], spec.repo);
-  const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
-  if (rows === null) {
-    return await failed(record, `session ${shortId} started, but claude agents --json could not be read`, ctx, { shortId });
+  const listed = startedRow(deps, spec.claude, shortId, spec.repo);
+  if (!listed.ok) {
+    return await failed(record, listed.why === "unreadable" ? `session ${shortId} started, but claude agents --json could not be read` : `session ${shortId} started, but claude agents does not list it`, ctx, { shortId });
   }
-  const row = agentRow(rows, shortId);
-  if (row === null) {
-    return await failed(record, `session ${shortId} started, but claude agents does not list it`, ctx, { shortId });
-  }
-  const sessionId = row.sessionId;
+  const sessionId = listed.row.sessionId;
   let recorded = true;
   try {
     await updateCrew(ctx.paths.stateDir, spec.repo, record.id, { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() }, ctx.now());
@@ -36919,10 +36986,13 @@ function sayEvents(from, scope, ctx, say) {
   return read.offset;
 }
 var RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
-async function resumePaused(paused, state, ctx, gateway, agents, say) {
+function resumeHoldKey(id) {
+  return `resume-hold:${id}`;
+}
+async function resumePaused(paused, state, said, ctx, gateway, agents, say) {
   const now = ctx.now();
   const facts = await gateway(now);
-  const ready = paused.filter((one) => waitOver(one, facts, now)).sort((a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt));
+  const ready = paused.filter((one) => said[resumeHoldKey(one.id)] === undefined && waitOver(one, facts, now)).sort((a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt));
   const [next] = ready;
   if (next === undefined)
     return null;
@@ -36933,34 +37003,45 @@ async function resumePaused(paused, state, ctx, gateway, agents, say) {
     if (!routerAnsweredSince(facts, state.routerRequests ?? null))
       return null;
   }
-  if (!(await resumeOne(next, ctx, now, agents, say)).ok)
+  const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
+  const one = await resumeOne(next, ctx, now, agents, say, held);
+  if (one.unnamed)
+    said[resumeHoldKey(next.id)] = held;
+  if (!one.ok)
     return null;
   return { resumedAt: now, routerRequests: facts.requests };
 }
-async function resumeOne(record, ctx, now, agents, say) {
+async function resumeOne(record, ctx, now, agents, say, unnamedNote = null) {
   const text = resumeText(record, record.waitingFor, now);
+  const failed = { ok: false, shortId: record.shortId, stored: false, way: "resume" };
   if (agents === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     const why = claude === null ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed" : UNREADABLE_VIEW_WHY;
     say(`${record.name}: not resumed \u2014 ${why}`);
-    return { ok: false, stored: false, way: "resume" };
+    return { ...failed, unnamed: false };
   }
   if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
-    const stored = await sayResumed(record, "the wait is over; the message to it wakes it", ctx, now, say);
-    return { ok: true, stored, way: "message" };
+    const stored = await sayResumed(record, "the wait is over; the message to it wakes it", null, ctx, now, say);
+    return { ok: true, shortId: record.shortId, stored, unnamed: false, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
-    say(`${record.name}: not resumed \u2014 ${resumed.why}`);
-    return { ok: false, stored: false, way: "resume" };
+    const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
+    say(`${record.name}: not resumed \u2014 ${resumed.why}${note}`);
+    return { ...failed, unnamed: resumed.unnamed };
   }
-  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return { ok: true, stored, way: "resume" };
+  const { session } = resumed;
+  const stored = await sayResumed(record, `the wait is over; it was resumed${resumedAs(record, session.shortId)}`, session, ctx, now, say);
+  return { ok: true, shortId: session.shortId, stored, unnamed: false, way: "resume" };
 }
-async function sayResumed(record, text, ctx, now, say) {
+async function sayResumed(record, text, session, ctx, now, say) {
   try {
-    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "working", waitingFor: undefined }, now, text);
+    await updateCrew(ctx.paths.stateDir, record.repo, record.id, {
+      state: "working",
+      waitingFor: undefined,
+      ...session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }
+    }, now, text);
     return true;
   } catch (error) {
     say(`${record.name}: resumed, but the store could not record it: ${reasonOf3(error)}`);
@@ -37164,7 +37245,12 @@ async function watchPass(state, ctx, scope) {
     }
   }
   const paused = listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "paused");
-  const marked = paused.length === 0 ? null : await resumePaused(paused, state, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), agents, say);
+  for (const key of Object.keys(said)) {
+    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+      delete said[key];
+    }
+  }
+  const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), agents, say);
   offset = sayEvents(offset, scope, ctx, say);
   const resumedAt = marked?.resumedAt ?? state.resumedAt;
   const routerRequests = marked === null ? state.routerRequests : marked.routerRequests;

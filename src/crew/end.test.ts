@@ -1440,6 +1440,83 @@ describe("crew resume", () => {
     });
   });
 
+  test("WF1: a resume that starts a copy: the record takes its new id in the same write as working", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", state: "stopped" });
+    const view = JSON.stringify([
+      { id: "b2c3d4e5", sessionId: "b2c3d4e5-0000-1111-2222-333333333333", state: "stopped" },
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    const states = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.crew === record.id && one.type === "state",
+    );
+    expect(states.map((one) => [one.state, one.text])).toEqual([
+      ["working", "resumed by the lead"],
+    ]);
+  });
+
+  test("WF1: a working record whose session is gone takes the copy's id too", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5" });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    // Its state did not change: no state event.
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+        (one) => one.crew === record.id && one.type === "state",
+      ),
+    ).toEqual([]);
+  });
+
+  test("WF1: a resume that prints no session id is refused with why, and changes nothing", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: "noline" }))).toBe(1);
+    expect(world.err).toEqual([
+      "crew resume: claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again",
+      `Fix: ${COMMAND} crew status "C my-app B1 help" shows its files; if it cannot come back, merge its branch and start the phase again`,
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "stopped",
+    });
+  });
+
   test("a crew session with no worktree is refused with one line: there is nowhere to bring it back", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped", worktree: false });
@@ -1643,6 +1720,33 @@ describe("D42: crew resume --paused", () => {
       ),
     ]);
     expect(world.out).toEqual(["resumed C my-app B4 y (d4e5f6a7)"]);
+  });
+
+  test("WF1: a paused one resumed as a copy takes the copy's id, and the line names it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", ...pausedChange(5) });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
   });
 
   test("nothing paused: one line, nothing run", async () => {

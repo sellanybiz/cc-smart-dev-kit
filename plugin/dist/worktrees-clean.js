@@ -10681,9 +10681,9 @@ function sessionUnknown(ctx, record) {
   const rows = parseAgentPresence(listed.run.stdout);
   return rows !== null && agentRow(rows, record.shortId) === null;
 }
-async function markState(record, state, text, ctx) {
+async function markState(record, state, text, ctx, change = {}) {
   try {
-    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), text);
+    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { ...change, state }, ctx.now(), text);
     return true;
   } catch (error) {
     ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf2(error)}`);

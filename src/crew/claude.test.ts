@@ -15,6 +15,7 @@ import {
   mcpConfigText,
   parseAgents,
   parseBackgrounded,
+  parseCopyNote,
   parsePluginList,
   readInstalledDependencies,
   realRunProgram,
@@ -137,6 +138,32 @@ describe("what claude prints", () => {
     expect(
       parseBackgrounded("Warning: --session-id is ignored\nbackgrounded · 0471876d · C kit K x"),
     ).toEqual({ name: "C kit K x", shortId: "0471876d" });
+  });
+
+  test("a line with no name: the short id alone (2.1.310 drops ` · <name>` when it has none)", () => {
+    expect(parseBackgrounded("backgrounded · d7a54fc8\n")).toEqual({
+      name: null,
+      shortId: "d7a54fc8",
+    });
+  });
+
+  test("the copy note `--bg --resume` prints on stderr names the copy's short id", () => {
+    // Every note the 2.1.310 binary prints when it started a copy instead of continuing the
+    // session itself, as the binary spells them, with `c7186986` the old id and `d7a54fc8` the copy.
+    const notes = [
+      "note: session c7186986 is already running in the background, so this started a copy as d7a54fc8. `claude attach c7186986` opens the original.",
+      "note: session c7186986 is open in another Claude Code process, so this started a copy as d7a54fc8. The original conversation is unchanged.",
+      "note: another background session already uses the id c7186986, so this started a copy as d7a54fc8.",
+      "note: started a copy of that conversation as d7a54fc8. To continue a session under its own id, pass its full session id (lowercase, as `claude agents --json` prints it) to --resume.",
+      "note: background session c7186986 keeps its own saved options, so the flags you passed started a copy as d7a54fc8. Without flags, the same command continues c7186986 itself.",
+      "note: could not check whether session c7186986 is running, so this started a copy as d7a54fc8.",
+      "note: could not read the saved state of background session c7186986, so this started a copy as d7a54fc8.",
+      "note: a restricted shell does not wake background session c7186986 in place, so this started a restricted copy as d7a54fc8.",
+    ];
+    for (const note of notes) expect(parseCopyNote(`${note}\n`)).toBe("d7a54fc8");
+    for (const output of ["", "backgrounded · d7a54fc8", "started a copy as D7A54FC8."]) {
+      expect(parseCopyNote(output)).toBeNull();
+    }
   });
 
   test("no line, or one of another shape, is null", () => {

@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
@@ -2509,6 +2510,89 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.state.resumedAt).toBeUndefined();
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("WF1: a resume that starts a copy: the record follows it, and the next pass does not mark it stopped", async () => {
+    // The live case (2026-10-25): the record held c7186986, Claude Code opened d7a54fc8, the
+    // record kept the old id, and ten seconds later the watch read the old row as stopped.
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world, {
+      sessionId: "c7186986-0000-1111-2222-333333333333",
+      shortId: "c7186986",
+    });
+    const copy = {
+      id: "a1b2c3d4",
+      pid: 4242,
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      state: "working",
+    };
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    // Its old session has no process; the resume starts a copy, which agent view lists.
+    const old = { id: "c7186986", sessionId: "c7186986-0000-1111-2222-333333333333" };
+    const first = await watchPass(
+      fresh(world),
+      world.ctx(
+        { now: () => T0 },
+        {
+          FAKE_AGENTS_JSON: JSON.stringify([{ ...old, state: "done" }, copy]),
+          FAKE_RESUME: "copy",
+        },
+      ),
+      scope,
+    );
+    expect(world.out).toEqual([
+      `${NAME}: working — the wait is over; it was resumed as session a1b2c3d4 (a copy of c7186986)`,
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    // Ten seconds later agent view says the old session is stopped: it is not this record's any more.
+    const second = await watchPass(
+      first.state,
+      world.ctx(
+        { now: () => T0 + 10_000 },
+        { FAKE_AGENTS_JSON: JSON.stringify([{ ...old, state: "stopped" }, copy]) },
+      ),
+      scope,
+    );
+    expect(second.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+  });
+
+  test("WF1: a resume that prints no session id is one line; it stays paused, and the watch does not try again", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]", FAKE_BG: "noline" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — claude --bg --resume ${record.sessionId} printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again; the watch leaves it paused: ${COMMAND} crew resume "${NAME}" brings it back`,
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+    // A second try could start a second unnamed session: the next pass leaves it alone.
+    const again = await watchPass(
+      done.state,
+      world.ctx({ now: () => T0 + 60_000 }, { FAKE_AGENTS_JSON: "[]", FAKE_BG: "noline" }),
+      scope,
+    );
+    expect(again.lines).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
   });
 
   test("a resume that claude refuses is one line, and the record stays paused", async () => {

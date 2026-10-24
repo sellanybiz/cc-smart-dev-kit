@@ -449,14 +449,54 @@ export function mcpConfigText(servers: Record<string, unknown>): string {
   return `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
 }
 
-/** `backgrounded · <short id> · <name>`: the line `claude --bg` prints. */
-const BACKGROUNDED = /^\s*backgrounded\s+·\s+([0-9a-f]{8})\s+·\s+(\S.*?)\s*$/m;
+/**
+ * `backgrounded · <short id> · <name>`: the line `claude --bg` prints on stdout. A session with no
+ * name gets the line without ` · <name>` (2.1.310 builds it as `backgrounded · ${short}${name ?
+ * ` · ${name}` : ""}`), which is how a `--bg --resume` may print it.
+ */
+const BACKGROUNDED = /^\s*backgrounded\s+·\s+([0-9a-f]{8})(?:\s+·\s+(\S.*?))?\s*$/m;
 
 /** The short id and the name a `claude --bg` printed; null when no such line is there. */
-export function parseBackgrounded(output: string): null | { name: string; shortId: string } {
+export function parseBackgrounded(output: string): null | { name: null | string; shortId: string } {
   const found = BACKGROUNDED.exec(output);
-  if (found?.[1] === undefined || found[2] === undefined) return null;
-  return { name: found[2], shortId: found[1] };
+  if (found?.[1] === undefined) return null;
+  return { name: found[2] ?? null, shortId: found[1] };
+}
+
+/**
+ * `… started a copy as <short id>`: the note `claude --bg --resume` prints on stderr when it did
+ * not continue the session itself — it runs already, it is open elsewhere, its id is taken, it
+ * cannot be read, or (what every crew resume meets, `resumeArgs`) the session keeps its own saved
+ * options and the flags passed start a copy (2.1.310, `docs/claude-code-contract.md`).
+ */
+const COPY_NOTE = /\bstarted a (?:restricted )?copy (?:of that conversation )?as ([0-9a-f]{8})\b/;
+
+/** The short id of the copy a `claude --bg --resume` note names; null when it names none. */
+export function parseCopyNote(output: string): null | string {
+  return COPY_NOTE.exec(output)?.[1] ?? null;
+}
+
+/** The row of a session `claude --bg` started, from agent view; or why it cannot be found. */
+export type StartedRow =
+  | { ok: true; row: AgentRow }
+  | { ok: false; why: "unlisted" | "unreadable" };
+
+/**
+ * Reads agent view for the session `claude --bg` printed `shortId` for: the one way a start and a
+ * resume learn its full session id (`crew start`, `resumeSession`). `--all`, so a session that
+ * ended at once is listed too.
+ */
+export function startedRow(
+  deps: ClaudeDeps,
+  claude: string,
+  shortId: string,
+  cwd: string,
+): StartedRow {
+  const listed = callClaude(deps, claude, ["agents", "--json", "--all"], cwd);
+  const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
+  if (rows === null) return { ok: false, why: "unreadable" };
+  const row = agentRow(rows, shortId);
+  return row === null ? { ok: false, why: "unlisted" } : { ok: true, row };
 }
 
 /** The words `claude --bg` refuses a repository with that the person never opened (L1a.1). */

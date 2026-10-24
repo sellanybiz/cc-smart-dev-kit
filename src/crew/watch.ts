@@ -48,7 +48,13 @@ import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
+import {
+  type ResumedSession,
+  resumedAs,
+  resumeSession,
+  sendMessageLine,
+  UNREADABLE_VIEW_WHY,
+} from "./answer";
 import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
@@ -469,14 +475,26 @@ const RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
 type ResumeMark = Pick<WatchState, "resumedAt" | "routerRequests">;
 
 /**
+ * The `said` key that holds a paused crew session back from the watch's resumes: its last resume
+ * may have started a session the kit could not name (`ResumeResult.unnamed`), and a second try
+ * could start a second one. The lead's own `crew resume` brings it back; the key goes when the
+ * record is no longer `paused`.
+ */
+function resumeHoldKey(id: string): string {
+  return `resume-hold:${id}`;
+}
+
+/**
  * Resumes the ready paused crew sessions of one pass (D42): **one at a time**. The first of a
  * wave is the canary. Each further one waits `RESUME_SPACING_MS` after the resume before it,
  * and only goes once the router answered a request since (`routerAnsweredSince`); a pass that
- * may not resume yet says nothing, because nothing changed.
+ * may not resume yet says nothing, because nothing changed. A crew session held back
+ * (`resumeHoldKey`) is skipped.
  */
 async function resumePaused(
   paused: readonly CrewRecord[],
   state: WatchState,
+  said: Record<string, string>,
   ctx: CrewContext,
   gateway: (nowMs: number) => Promise<GatewayNow>,
   agents: null | AgentRow[],
@@ -485,7 +503,7 @@ async function resumePaused(
   const now = ctx.now();
   const facts = await gateway(now);
   const ready = paused
-    .filter((one) => waitOver(one, facts, now))
+    .filter((one) => said[resumeHoldKey(one.id)] === undefined && waitOver(one, facts, now))
     .sort(
       (a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt),
     );
@@ -496,8 +514,11 @@ async function resumePaused(
     if (now - last < RESUME_SPACING_MS) return null;
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
+  const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
+  const one = await resumeOne(next, ctx, now, agents, say, held);
+  if (one.unnamed) said[resumeHoldKey(next.id)] = held;
   // A resume that failed is no resume: the next pass tries again, and the others wait for it.
-  if (!(await resumeOne(next, ctx, now, agents, say)).ok) return null;
+  if (!one.ok) return null;
   return { resumedAt: now, routerRequests: facts.requests };
 }
 
@@ -508,6 +529,10 @@ export interface OneResume {
   stored: boolean;
   /** A message to a session that still has a process, or a resume of one that has none. */
   way: "message" | "resume";
+  /** The short id of the session that runs now: the record's own, or the copy a resume started. */
+  shortId: null | string;
+  /** True when the resume may have started a session it could not name (`ResumeResult`). */
+  unnamed: boolean;
 }
 
 /**
@@ -516,9 +541,12 @@ export interface OneResume {
  * only a session holds that tool), `claude --bg --resume <id> "<text>"` in its worktree, with its
  * own settings and MCP files, for one whose session has none. **One home for bringing a paused
  * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
- * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
- * that fails is one line, and the record stays `paused`; so is an agent view that cannot be read —
- * it could be either, and a copy is worse than a second try.
+ * `working` again in the same act, so nothing resumes it twice and it holds its place — with the
+ * session the resume brought back (WF1: every crew resume is a copy with a new id), so the record
+ * never names a session that is gone. A resume that fails is one line, and the record stays
+ * `paused`; so is an agent view that cannot be read — it could be either, and a copy is worse than
+ * a second try. `unnamedNote` ends the line of a resume that may have started a session it could
+ * not name (the watch says it holds the record back).
  */
 export async function resumeOne(
   record: CrewRecord,
@@ -526,8 +554,10 @@ export async function resumeOne(
   now: number,
   agents: null | AgentRow[],
   say: (line: string) => void,
+  unnamedNote: null | string = null,
 ): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
+  const failed = { ok: false, shortId: record.shortId, stored: false, way: "resume" } as const;
   if (agents === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     const why =
@@ -535,32 +565,46 @@ export async function resumeOne(
         ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
         : UNREADABLE_VIEW_WHY;
     say(`${record.name}: not resumed — ${why}`);
-    return { ok: false, stored: false, way: "resume" };
+    return { ...failed, unnamed: false };
   }
   if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
     const stored = await sayResumed(
       record,
       "the wait is over; the message to it wakes it",
+      null,
       ctx,
       now,
       say,
     );
-    return { ok: true, stored, way: "message" };
+    return { ok: true, shortId: record.shortId, stored, unnamed: false, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
-    say(`${record.name}: not resumed — ${resumed.why}`);
-    return { ok: false, stored: false, way: "resume" };
+    const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
+    say(`${record.name}: not resumed — ${resumed.why}${note}`);
+    return { ...failed, unnamed: resumed.unnamed };
   }
-  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return { ok: true, stored, way: "resume" };
+  const { session } = resumed;
+  const stored = await sayResumed(
+    record,
+    `the wait is over; it was resumed${resumedAs(record, session.shortId)}`,
+    session,
+    ctx,
+    now,
+    say,
+  );
+  return { ok: true, shortId: session.shortId, stored, unnamed: false, way: "resume" };
 }
 
-/** Records a resumed crew session `working` with its wait cleared; false (and one line) when the store cannot. */
+/**
+ * Records a resumed crew session `working` with its wait cleared, and with the session a resume
+ * brought back (null: a message woke its own); false (and one line) when the store cannot.
+ */
 async function sayResumed(
   record: CrewRecord,
   text: string,
+  session: null | ResumedSession,
   ctx: CrewContext,
   now: number,
   say: (line: string) => void,
@@ -570,7 +614,11 @@ async function sayResumed(
       ctx.paths.stateDir,
       record.repo,
       record.id,
-      { state: "working", waitingFor: undefined },
+      {
+        state: "working",
+        waitingFor: undefined,
+        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+      },
       now,
       text,
     );
@@ -905,12 +953,19 @@ export async function watchPass(
   const paused = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId && one.state === "paused",
   );
+  // A hold lasts while its record stays paused: once the lead brought it back, it goes.
+  for (const key of Object.keys(said)) {
+    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+      delete said[key];
+    }
+  }
   const marked =
     paused.length === 0
       ? null
       : await resumePaused(
           paused,
           state,
+          said,
           ctx,
           scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)),
           agents,
