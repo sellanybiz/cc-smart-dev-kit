@@ -55,7 +55,30 @@ export function validMergeProof(record: CrewRecord, ctx: CrewContext): boolean {
     ctx.env,
     GIT_TIMEOUT_MS,
   );
-  return head.ok && head.out === record.mergeProof.head;
+  if (!head.ok || head.out !== record.mergeProof.head) return false;
+  const commit = runGit(
+    record.repo,
+    ["cat-file", "-t", record.mergeProof.leadCommit],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (!commit.ok || commit.out !== "commit") return false;
+  // Upgrade proofs captured before refs were retained, while their commit still exists.
+  const proofRef = `refs/crew-merge-proofs/${record.mergeProof.leadCommit}`;
+  const saved = runGit(
+    record.repo,
+    ["update-ref", proofRef, record.mergeProof.leadCommit, ""],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (saved.ok) return true;
+  const existing = runGit(
+    record.repo,
+    ["rev-parse", "--verify", proofRef],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  return existing.ok && existing.out === record.mergeProof.leadCommit;
 }
 
 /** Capture a merge against immutable commits, not two refs that may move between calls. */
@@ -71,9 +94,26 @@ export function mergeProof(record: CrewRecord, ctx: CrewContext): CrewRecord["me
   if (!head.ok || record.base === null || head.out === record.base.sha) return undefined;
   // `workOnRef` takes commits, so a concurrent change of either branch cannot forge this proof.
   const result = workOnRef(record.repo, lead.sha, head.out, ctx.env);
-  return result === "ancestor" || result === "replay"
-    ? { head: head.out, leadRef: lead.label, leadCommit: lead.sha }
-    : undefined;
+  if (result !== "ancestor" && result !== "replay") return undefined;
+  // A rewritten lead can lose its merge commit to GC. Create-only and content-addressed:
+  // no proof overwrites another and the lead commit (plus its ancestors) stays reachable.
+  const proofRef = `refs/crew-merge-proofs/${lead.sha}`;
+  const saved = runGit(
+    record.repo,
+    ["update-ref", proofRef, lead.sha, ""],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (!saved.ok) {
+    const existing = runGit(
+      record.repo,
+      ["rev-parse", "--verify", proofRef],
+      ctx.env,
+      GIT_TIMEOUT_MS,
+    );
+    if (!existing.ok || existing.out !== lead.sha) return undefined;
+  }
+  return { head: head.out, leadRef: lead.label, leadCommit: lead.sha };
 }
 
 /** Observe all leads in one agent-view read; callers share the same persisted absence clock. */

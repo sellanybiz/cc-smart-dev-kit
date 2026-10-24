@@ -32,19 +32,26 @@
  */
 import { existsSync } from "node:fs";
 import { tildify } from "../cli/paths";
-import { hasChanges, listWorktrees, runGit, samePath } from "../hooks/git";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
+import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
 import { holdCleanLock } from "../worktrees/clean";
+import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
 import {
   deleteBranchOnRef,
   isParkedWorktree,
+  machineFactsOf,
   parkedOriginal,
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
+  workOnRef,
 } from "../worktrees/scan";
 import { finishParked, finishStrays } from "../worktrees/scan-parked";
+import { containersWhy, programsWhy } from "../worktrees/verdict";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
+import { archiveCrewDiscard, buildCrewDiscardFacts, type CrewDiscardFacts } from "./discard";
 import { lastLine } from "./display";
 import {
   actOn,
@@ -73,18 +80,62 @@ function commits(count: number): string {
   return `${String(count)} commit${count === 1 ? "" : "s"}`;
 }
 
+/** Discard preflight is repeated after confirmation; unknown machine facts always keep the work. */
+function discardBlocker(record: import("./store").CrewRecord, ctx: CrewContext): string | null {
+  try {
+    const all = listWorktrees(record.repo, ctx.env);
+    const listed = all.find((one) => samePath(one.path, record.worktree));
+    if (listed === undefined || samePath(record.worktree, record.repo))
+      return "discard needs its registered non-main worktree";
+    if (
+      all.some((one) => !samePath(one.path, record.worktree) && isInside(one.path, record.worktree))
+    )
+      return "another worktree lives inside it";
+    if (listed.locked && !(listed.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX))
+      return "the worktree has a person's lock";
+    const machine = machineFactsOf({
+      base: "",
+      claudeConfigDir: ctx.paths.claudeConfigDir,
+      env: ctx.env,
+      ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+    });
+    const mount = mountKeptWhy(record.worktree, machine.mounts);
+    if (mount !== null) return mount;
+    const programs = programsWithoutOwn(findOwnLeftovers(record, ctx));
+    if (programs === "unknown")
+      return "running programs could not be listed; nothing archived or removed";
+    const names = programsInside(programs, record.worktree, undefined, ctx.pid);
+    if (names.length > 0) return programsWhy(names);
+    if (machine.containers === "unknown")
+      return "Docker did not answer; nothing archived or removed";
+    const containers = containersUsing(record.worktree, machine.containers);
+    return containers.length > 0 ? containersWhy(containers) : null;
+  } catch (error) {
+    return reasonOf(error);
+  }
+}
+
 /** `crew rm <name|id>`; the exit code. */
 export async function runCrewRm(
   ref: string,
   ctx: CrewContext,
-  options: { skipParked?: boolean } = {},
+  options: {
+    skipParked?: boolean;
+    against?: { label: string; ref: string };
+    discard?: boolean;
+    yes?: boolean;
+    expectedDiscardToken?: string;
+    confirm?: (question: string) => boolean;
+  } = {},
 ): Promise<number> {
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
-  const { record } = found;
+  let { record } = found;
   const { repo } = record;
   const home = ctx.paths.home;
-  if (record.state === "removed") {
+  const discard = options.discard === true;
+  let preview: CrewDiscardFacts | undefined;
+  if (["removed", "discarded"].includes(record.state)) {
     return refuse(failure(`crew rm: ${record.name} is removed already`), ctx);
   }
   if (record.state === "queued" && record.shortId === null) {
@@ -95,13 +146,20 @@ export async function runCrewRm(
 
   // 2. The lead's branch decides whether the work is kept (D24). A durable proof holds
   // the immutable lead commit that received exactly this head, even if that branch is gone.
-  const proof = validMergeProof(record, ctx) ? record.mergeProof : undefined;
+  const proof =
+    options.against === undefined && !discard && validMergeProof(record, ctx)
+      ? record.mergeProof
+      : undefined;
   const lead =
-    proof === undefined
-      ? leadRef(record, ctx)
-      : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
+    options.against !== undefined
+      ? { folder: null, label: options.against.label, sha: options.against.ref }
+      : discard
+        ? { folder: null, label: "discard archive", sha: record.archive?.head ?? "HEAD" }
+        : proof === undefined
+          ? leadRef(record, ctx)
+          : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
   if ("why" in lead) return refuse(failure(`crew rm: ${lead.why}`), ctx);
-  const removalBase = { label: lead.label, ref: lead.sha };
+  let removalBase = { label: lead.label, ref: lead.sha };
   const mergeStep =
     lead.folder === null
       ? `merge ${record.branch} into ${lead.label}`
@@ -112,12 +170,19 @@ export async function runCrewRm(
     ctx.env,
     GIT_TIMEOUT_MS,
   ).ok;
-  if (branchThere && proof === undefined) {
-    const merged = mergedIntoBase(record, ctx);
+  if (branchThere && proof === undefined && !discard) {
+    const merged =
+      options.against === undefined
+        ? mergedIntoBase(record, ctx)
+        : workOnRef(repo, removalBase.ref, `refs/heads/${record.branch}`, ctx.env);
+    const legacy =
+      record.state === "merged" && record.mergeProof === undefined
+        ? "merged earlier, but no exact-head proof was recorded; its lead's branch may have been rewritten since. Confirm the work with the lead and merge it again, or use explicit recoverable crew rm --discard"
+        : null;
     if (merged === "unknown") {
       return refuse(
         failure(
-          `crew rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`,
+          `crew rm: ${legacy ?? `git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`}`,
           `Fix: ${mergeStep} so that it is an ancestor, then run crew rm again`,
         ),
         ctx,
@@ -130,7 +195,7 @@ export async function runCrewRm(
         const missing = count === null ? "some commits" : commits(count);
         return refuse(
           failure(
-            `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
+            `crew rm: ${legacy ?? `${record.branch} has ${missing} that ${lead.label} does not have`}`,
             lead.folder === null
               ? `Fix: the lead must ${mergeStep}, then run crew rm again`
               : `Fix: the lead merges it first (${mergeStep}), then run crew rm again`,
@@ -142,7 +207,7 @@ export async function runCrewRm(
   }
 
   // 3. Work no one committed: refused before any side effect.
-  if (existsSync(record.worktree) && hasChanges(record.worktree, ctx.env)) {
+  if (!discard && existsSync(record.worktree) && hasChanges(record.worktree, ctx.env)) {
     return refuse(
       failure(
         `crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`,
@@ -173,6 +238,63 @@ export async function runCrewRm(
     );
   }
 
+  // Discard never bypasses a person's programs or containers. Check these BEFORE stopping,
+  // unlocking, changing the index or writing an archive. The ordinary verdict is still run below.
+  if (discard && existsSync(record.worktree)) {
+    if (listed === undefined)
+      return refuse(
+        failure("crew rm: discard needs its registered worktree; nothing archived or removed"),
+        ctx,
+      );
+    const blocker = discardBlocker(record, ctx);
+    if (blocker !== null) return refuse(failure(`crew rm: ${blocker}`), ctx);
+    try {
+      preview = buildCrewDiscardFacts(record, ctx);
+      if (
+        record.archive !== undefined &&
+        (preview.head !== record.archive.head ||
+          preview.changedFiles.length > 0 ||
+          preview.ignoredFiles.length > 0)
+      )
+        return refuse(
+          failure(
+            "crew rm: work changed after its archive was made; keep this worktree and recover the existing archive before discarding again",
+          ),
+          ctx,
+        );
+      for (const line of preview.lines) ctx.print(line);
+      if (
+        options.expectedDiscardToken !== undefined &&
+        options.expectedDiscardToken !== preview.token
+      )
+        return refuse(
+          failure(
+            "crew rm: the work changed since the discard preview; preview and confirm it again",
+          ),
+          ctx,
+        );
+      if (
+        !options.yes &&
+        !(
+          options.confirm ??
+          ((question) => terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false)
+        )(preview.question)
+      ) {
+        ctx.print(
+          "Nothing removed. Use crew rm <name|id> --discard --yes to confirm without a terminal.",
+        );
+        return 1;
+      }
+      if (buildCrewDiscardFacts(record, ctx).token !== preview.token)
+        return refuse(
+          failure("crew rm: the work changed since confirmation; preview and confirm it again"),
+          ctx,
+        );
+    } catch (error) {
+      return refuse(failure(`crew rm: ${reasonOf(error)}`), ctx);
+    }
+  }
+
   // 4. Its session goes first, so nothing writes into the worktree while it is judged.
   if (record.shortId !== null && record.state !== "stopped") {
     const stopped = await stopSession(record, ctx);
@@ -186,6 +308,48 @@ export async function runCrewRm(
       ctx.error(
         `note: ${stopped.why}; going on, the check below stops the removal if anything still works in its worktree`,
       );
+    }
+  }
+
+  if (discard) {
+    try {
+      if (preview !== undefined && record.archive === undefined) {
+        const blocker = discardBlocker(record, ctx);
+        if (blocker !== null) return refuse(failure(`crew rm: ${blocker}`), ctx);
+        if (buildCrewDiscardFacts(record, ctx).token !== preview.token)
+          return refuse(
+            failure("crew rm: the work changed since confirmation; preview and confirm it again"),
+            ctx,
+          );
+        const own = findOwnLeftovers(record, ctx);
+        const stopped = await stopOwnLeftovers(record, own, ctx);
+        if (stopped.line !== null) ctx.print(stopped.line);
+        record = await archiveCrewDiscard(record, preview, ctx);
+      }
+      if (record.archive === undefined)
+        return refuse(failure("crew rm: discard has no saved archive"), ctx);
+      const archive = runGit(
+        repo,
+        ["rev-parse", "--verify", record.archive.ref],
+        ctx.env,
+        GIT_TIMEOUT_MS,
+      );
+      if (!archive.ok || archive.out !== record.archive.head)
+        return refuse(
+          failure("crew rm: saved discard archive is missing or changed; nothing removed"),
+          ctx,
+        );
+      if (preview === undefined && branchThere)
+        return refuse(
+          failure(
+            "crew rm: worktree is gone but its branch remains; inspect the saved archive before retrying",
+          ),
+          ctx,
+        );
+      removalBase = { label: record.archive.ref, ref: record.archive.head };
+      ctx.print(`archived ${record.name} at ${record.archive.ref}`);
+    } catch (error) {
+      return refuse(failure(`crew rm: ${reasonOf(error)}`), ctx);
     }
   }
 
@@ -374,8 +538,14 @@ export async function runCrewRm(
         : `removed session ${record.shortId}`,
     );
   }
-  const stored = await markState(record, "removed", "removed", ctx);
-  ctx.print(`removed ${record.name}`);
+  const state = discard ? "discarded" : "removed";
+  const stored = await markState(
+    record,
+    state,
+    discard ? `discarded; recover from ${record.archive?.ref}` : "removed",
+    ctx,
+  );
+  ctx.print(`${state} ${record.name}`);
   return stored ? 0 : 1;
 }
 

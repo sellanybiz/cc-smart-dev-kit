@@ -88,6 +88,23 @@ export function sameAsMain(worktree: string, mainCheckout: string, path: string)
   return same(path.replace(/\/$/, ""));
 }
 
+/** The one disposable-entry policy, shared by removal and explicit archival. */
+export function safeIgnoredEntry(
+  worktree: string,
+  mainCheckout: string | null,
+  entry: string,
+): boolean {
+  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+    if (!entry.endsWith("/cli-latest")) return true;
+    try {
+      if (lstatSync(join(worktree, entry)).isFile()) return true;
+    } catch {
+      return false;
+    }
+  }
+  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+}
+
 /**
  * The ignored files and folders in `worktree` that removing it would lose, as git names
  * them (a folder ends in `/`). Null when git cannot list them: then nothing is proved safe.
@@ -114,17 +131,7 @@ export function localFiles(
     30_000,
   );
   if (!status.ok) return null;
-  const safe = (entry: string): boolean => {
-    if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
-      if (!entry.endsWith("/cli-latest")) return true;
-      try {
-        if (lstatSync(join(worktree, entry)).isFile()) return true;
-      } catch {
-        return false;
-      }
-    }
-    return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
-  };
+  const safe = (entry: string): boolean => safeIgnoredEntry(worktree, mainCheckout, entry);
   // Git reports an ignored directory as one entry. Inspect only this tool's directory,
   // so exempting one cache never exempts changed link state beside it. Bound the walk and
   // keep unreadable files and links, just as the main-copy comparison does.

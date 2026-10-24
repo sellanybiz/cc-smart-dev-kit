@@ -29,10 +29,8 @@ import {
   hostPath,
   parseCommandLines,
   parseContainerMounts,
-  parseElapsedSeconds,
   parsePrograms,
   programsInside,
-  startTimes,
 } from "./machine-facts";
 import {
   deleteMergedBranch,
@@ -881,6 +879,101 @@ describe("scanning and removing, against a real repo", () => {
     ).toThrow("origin/trunk is not known here");
   });
 
+  test.each(["claude session unreadable identity", "a person's lock"])(
+    "unprovable lock reason %s stays even if a PID probe would report gone",
+    (reason) => {
+      const { main, worktree } = repo();
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: [],
+          mounts: [],
+          programs: [],
+          sessions: [],
+          processIsGone: () => true,
+          platform: "linux" as const,
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      expect(found?.state).toMatchObject({
+        finished: false,
+        why: `locked: ${reason} (locker cannot be proved gone)`,
+      });
+      if (found === undefined) throw new Error("missing test worktree");
+      expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
+  test("a stale lock is restored when git cannot move the worktree", () => {
+    const { main, worktree } = repo();
+    const reason = "claude session ended (pid 424242 start 12345)";
+    git(main, "worktree", "lock", "--reason", reason, worktree);
+    const bin = tempDir("failing-move");
+    const realGit = Bun.which("git");
+    if (realGit === null) throw new Error("test requires git");
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nif [ "$1 $2" = "worktree move" ]; then printf 'move refused\\n' >&2; exit 1; fi\nexec '${realGit}' "$@"\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("claude"),
+      env: { ...cleanGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` },
+      idleLimit: 0,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processIsGone: () => true,
+        platform: "linux" as const,
+      },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing test worktree");
+    expect(removeWorktree(main, found.listed, options).status).toBe("held");
+    expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+  });
+
+  test.each(["dirty", "local", "container"])(
+    "a %s refusal leaves a stale lock in place",
+    (blocker) => {
+      const { main, worktree } = repo();
+      const reason = "claude session ended (pid 424242 start 12345)";
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: blocker === "container" ? [{ name: "service", sources: [worktree] }] : [],
+          mounts: [],
+          programs: [],
+          sessions: [],
+          processIsGone: () => true,
+          platform: "linux" as const,
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      if (found === undefined) throw new Error("missing test worktree");
+      if (blocker === "dirty") writeFileSync(join(worktree, "new.txt"), "keep\n");
+      if (blocker === "local") {
+        writeFileSync(join(main, ".git", "info", "exclude"), "private.txt\n");
+        writeFileSync(join(worktree, "private.txt"), "keep private data\n");
+      }
+      expect(removeWorktree(main, found.listed, options).status).not.toBe("removed");
+      expect(existsSync(worktree)).toBe(true);
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
   test("a stale Claude lock is unlocked only when process identity is proven gone", () => {
     const { main, worktree } = repo();
     git(
@@ -909,7 +1002,7 @@ describe("scanning and removing, against a real repo", () => {
     const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(listed?.state).toMatchObject({
       finished: false,
-      why: expect.stringContaining("locked"),
+      why: "locked by live or unprovable Claude session old-session; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session",
     });
     expect(existsSync(worktree)).toBe(true);
 
@@ -1324,28 +1417,6 @@ describe("the worktrees command", () => {
     expect(parkedOriginal("/work/app/.claude/worktrees/crew-B1-help")).toBeNull();
     expect(isParkedWorktree("/work/app/.claude/worktrees/removing-things")).toBe(false);
     expect(isParkedWorktree("/work/app-removing-1761300000000/.claude/worktrees/x")).toBe(false);
-  });
-
-  test("D62: the programs of a finished turn tell when they started", async () => {
-    expect(parseElapsedSeconds("42")).toBe(42);
-    expect(parseElapsedSeconds("   7 ")).toBe(7);
-    expect(parseElapsedSeconds("01:05")).toBe(65);
-    expect(parseElapsedSeconds("02:03:04")).toBe(2 * 3600 + 3 * 60 + 4);
-    expect(parseElapsedSeconds("3-04:05:06")).toBe(3 * 86400 + 4 * 3600 + 5 * 60 + 6);
-    expect(parseElapsedSeconds("soon")).toBeNull();
-    // A real process: its start is read from `ps`, within a few seconds of when it began.
-    const child = Bun.spawn(["sleep", "30"], { stderr: "ignore", stdout: "ignore" });
-    try {
-      const before = Date.now();
-      const starts = startTimes([child.pid, 999_999_999], before);
-      const started = starts.get(child.pid);
-      expect(started).toBeDefined();
-      expect(Math.abs((started ?? 0) - before)).toBeLessThan(5_000);
-      // A pid nobody has says nothing.
-      expect(starts.has(999_999_999)).toBe(false);
-    } finally {
-      child.kill("SIGKILL");
-    }
   });
 
   test("D62: a removal that stopped halfway keeps its work on its branch and is finished", () => {

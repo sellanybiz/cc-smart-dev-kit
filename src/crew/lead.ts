@@ -30,6 +30,7 @@ import { eventsEndOffset, readLead, readWatchState, writeLead, writeWatchState }
 export interface LeadArgs {
   plan: null | string;
   tag: null | string;
+  end?: boolean;
 }
 
 /** How long reading the branch may take. */
@@ -60,6 +61,24 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   } catch (error) {
     return refuse(reasonOf(error), "remove that record, then run this again", 1);
   }
+  if (args.end) {
+    if (before === null)
+      return refuse("this session is not a recorded lead", "run crew lead first", 1);
+    try {
+      await writeLead(
+        ctx.paths.stateDir,
+        { ...before, endedAt: new Date(ctx.now()).toISOString() },
+        ctx.now(),
+      );
+      ctx.print(
+        `ended lead ${before.name}; its crew work is kept unless the project base holds it`,
+      );
+      return 0;
+    } catch (error) {
+      ctx.error(`crew lead: ${reasonOf(error)}`);
+      return 1;
+    }
+  }
   const branch = runGit(
     checkout.root,
     ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -85,7 +104,15 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   try {
     await writeLead(
       ctx.paths.stateDir,
-      { cwd: checkout.root, name, plan, repo, sessionId: session.sessionId, tag },
+      {
+        cwd: checkout.root,
+        name,
+        plan,
+        repo,
+        sessionId: session.sessionId,
+        tag,
+        ...(before?.endedAt == null ? {} : { endedAt: null }),
+      },
       ctx.now(),
     );
   } catch (error) {

@@ -17,7 +17,7 @@ answer, the lead's watch, the hand-off, its own time line, and a note to another
 (§ The crew session's steps, its report, and the lead's watch, § The crew talks), and the crew
 session's and the lead's hooks (§ The crew session's and the lead's hooks).
 
-### Cleanup continuation (CL2 checkpoint)
+### Cleanup continuation (CL2)
 
 The watch reminds its lead once a day about stopped, done or failed unmerged work older than a
 day. The item's age starts at the latest transition into its current terminal state, not a later
@@ -27,15 +27,39 @@ terminal states while preserving the old outcome. No reminder discards or remove
 `src/crew/lifecycle.ts` is the shared rule for lead absence: an explicitly ended lead, or a
 successfully observed unknown session for more than 24 hours. An unreadable agent view proves
 nothing, and a returning lead clears its unknown clock. `crew list --all` marks that condition.
-The portal consumer and orphan removal through the clean are not integrated in this checkpoint.
+`crew lead --end` records an ended plan; recording it again clears that mark. Manual and background
+cleans use that shared rule and require ancestry or a no-change merge onto the project base before
+calling `runCrewRm` with that immutable base. An old lead-branch proof never stands in for current
+project-base proof. Unmerged work stays with removal and continuation steps. Active crew states
+stay too. The Work API marks lead absence without writing from a GET request.
 
 When the watch first proves a merge, it stores the crew head, lead ref and immutable lead commit.
 `crew rm` can use that proof only while the crew head is unchanged, and uses the recorded lead
-commit throughout the verdict and branch deletion. A later crew commit requires today's merge
-check. Older merged records have no proof and retain that check; no override flag is added.
+commit throughout the verdict and branch deletion. Content-addressed
+`refs/crew-merge-proofs/<lead-commit>` keep those commits reachable after reflog expiry and object
+pruning; these proof refs have no automatic expiry. A later crew commit requires today's merge check. Older merged records have no proof and retain that check; no override flag is added.
 
-Explicit recoverable discard, archive listing/pruning, portal actions and remaining CL1F
-verification are still owed by CL2; this checkpoint is not a finished cleanup release.
+**Explicit recoverable discard:** `crew rm --discard` shows one shared preview (missing commits,
+dirty/untracked files and ignored files), asks once or takes `--yes`, and saves work before removal.
+`src/crew/discard.ts` owns those facts and the exact CLI/portal confirmation words. Its token hashes
+the head, staged and disk changes, file modes and raw contents; the CLI rechecks it after confirmation
+and after archiving. A different staged version survives in the archive commit's parent. Ignored
+files must be regular UTF-8 text, at most 64 KiB each, 256 files and 1 MiB total; binary files,
+symlinks and unreadable files refuse, rather than disappear. The create-only ref
+`refs/crew-discarded/<branch>` holds the archive, and `crew list --discarded` prints its recovery
+command and age. Manual and background cleans prune completed archives after the one shared
+30-day limit. A person's programs and containers still refuse; the watch never discards.
+
+The Needs API reads old stopped work and discard previews through `crew cleanup --json` in a CLI
+child, keeping git off the server loop. Removal actions use the CLI child in the record's repo,
+require explicit confirmation and pass the displayed token for discard. Work also exposes finished
+unowned background sessions and targeted removal. The Needs and Work views need new components,
+so this phase stops at API contracts; a separate UI phase must render those controls.
+
+Older merged records recover stopped intent only from a positive stopped-to-merged transition in
+the events log. When history is missing, that intent cannot be recovered and the previous
+merged-record policy remains. No unproved merge override was added: a legacy record whose current
+merge check fails stays with a refusal explaining the missing proof and recoverable discard.
 
 **The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
@@ -424,11 +448,11 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   lose, so the removal goes on. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released, and **locked again with the same
-  reason if a later step refuses**, because the lock is what keeps `worktrees --clean` and the
-  background clean off the worktree); the session is stopped; **the programs its own finished turn
+  reason if a later step refuses**, because the lock protects the worktree); first the session is
+  stopped, then its Claude lock is released; **the programs its own finished turn
   left running are stopped too** — SIGTERM, a 3 s grace, then SIGKILL, one line said — when the
-  session is gone or stopped and every program there is the session's own (`stopLeftoverProcesses`,
-  the one function `crew rm` and the watch's removal share). A program is its own when it
+  session is gone or stopped and every program there is the session's own (`findOwnLeftovers`
+  discovers them, `stopOwnLeftovers` stops them after the verdict; both removal callers share them). A program is its own when it
   has a readable environment carrying the session's crew id — everything its Bash started
   inherits `CC_SMART_DEV_KIT_CREW`, and keeps it when init adopts it after the session ends
   (`/proc/<pid>/environ`, Linux). An unreadable environment is never proof, including on macOS.
@@ -465,7 +489,8 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
     in it is newer than its move (a directory's own time is not read: it moves when git deletes an
     entry). Anything else stays, with the reason.
 
-  `crew rm` finishes both kinds in the repository — its own record's first, and it refuses while
+  An unreadable scan retains every requested parked path with its error; a busy clean lock refuses
+  the pass before any removal. `crew rm` finishes both kinds in the repository — its own record's first, and it refuses while
   its own stays — `worktrees --clean` and the background clean finish any, and the watch looks
   every five minutes (`PARKED_PASS_MS`): a folder that stays costs a scan of the whole repository.
 

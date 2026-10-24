@@ -60,6 +60,18 @@ anything. The project's own defaults are remembered per file text for the run (`
 `detectFacts` reads git and, when `gh` is there, GitHub itself, so a form change is a plan,
 not a network read.
 
+**Cleanup API contracts (CL2).** Needs exposes old stopped crew work and exact discard previews
+through a read-only `crew cleanup --json` CLI child; synchronous git never runs on the server loop.
+Work and crew details expose the shared lead-gone verdict, and Work lists finished unowned
+background sessions from the sessions command's reader. GET requests never persist absence clocks.
+A partial or unreadable agent view cannot prove absence. `crew.rm` requires explicit confirmation;
+discard also needs the exact shared content token and a second discard confirmation, then runs
+`crew rm --discard --yes --discard-token` in the record's repository. `sessions.rm` confirms and
+revalidates one id, then runs targeted `sessions --finished --remove --yes --id` in its folder.
+Both paths use asynchronous CLI children and return their lines in place. The wire mirror carries
+these fields, but the current adapters and views do not render them: a separate UI phase must add
+the cards, shared-word dialogs, errors and results before claiming visible cleanup controls.
+
 ### What it is, and what it is not
 
 - **Everything it does is real**, and goes through the command line's own code. A slot, the

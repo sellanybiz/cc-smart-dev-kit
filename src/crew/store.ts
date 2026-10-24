@@ -98,6 +98,7 @@ export const CREW_STATES = [
   "handoff",
   "merged",
   "removed",
+  "discarded",
 ] as const;
 
 export type CrewState = (typeof CREW_STATES)[number];
@@ -281,7 +282,7 @@ export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recom
 export function crewOfWorktree(records: readonly CrewRecord[], path: string): CrewRecord | null {
   let found: CrewRecord | null = null;
   for (const one of records) {
-    if (one.state === "removed" || !samePath(one.worktree, path)) continue;
+    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path)) continue;
     // `records` are oldest first: the last match is the newest.
     found = one;
   }
@@ -294,7 +295,14 @@ export function crewOfWorktree(records: readonly CrewRecord[], path: string): Cr
  * one**: D35 stops a crew session that waits, and `crew answer` resumes it with the answer as its
  * next prompt — its question still waits (`answer.ts`).
  */
-export const QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"] as const;
+export const QUESTION_CLOSED_STATES = [
+  "done",
+  "failed",
+  "handoff",
+  "merged",
+  "removed",
+  "discarded",
+] as const;
 
 /** True when `state` ends the crew session's phase, closing every question it left open. */
 export function questionClosed(state: string): boolean {
@@ -452,6 +460,8 @@ const crewFields = z.object({
   mergedWhileStopped: z.boolean().optional(),
   /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
   mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  /** Recovery is persisted before any removal; unfinished archives never expire. */
+  archive: z.looseObject({ ref: text, head: sha, at: text, prunedAt: text.optional() }).optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,

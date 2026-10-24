@@ -507,6 +507,18 @@ export function parseAgents(output: string): AgentRow[] | null {
     }));
 }
 
+/** A complete identity view for absence proof: partial rows must never look like missing sessions. */
+export function parseAgentPresence(output: string): AgentRow[] | null {
+  const rows = parseAgents(output);
+  if (rows === null) return null;
+  const raw: unknown = JSON.parse(output);
+  return Array.isArray(raw) &&
+    rows.length === raw.length &&
+    rows.every((row) => row.id !== null || row.sessionId !== null)
+    ? rows
+    : null;
+}
+
 /** The row of the session with short id `shortId`: its `id`, or the start of its `sessionId`. */
 export function agentRow(rows: AgentRow[], shortId: string): AgentRow | null {
   return (

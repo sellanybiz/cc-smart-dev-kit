@@ -324,6 +324,19 @@ export function branchMerged(record: CrewRecord, ctx: CrewContext): boolean {
   return found === "ancestor" || found === "replay";
 }
 
+/**
+ * Recover the stopped intent of a legacy merged record from its last two distinct states.
+ * Events are newest first. A stop before a resume is not a stopped-to-merged transition.
+ * Missing history cannot prove intent and keeps the legacy policy unchanged.
+ */
+function historicallyMergedWhileStopped(record: CrewRecord, events: readonly CrewEvent[]): boolean {
+  const transitions = events.filter(
+    (event) => event.crew === record.id && ["created", "state", "report"].includes(event.type),
+  );
+  if (transitions[0]?.state !== "merged") return false;
+  return transitions.find((event) => event.state !== "merged")?.state === "stopped";
+}
+
 /** What one pass of the watch works over. */
 export interface WatchScope {
   /** The lead session whose crew sessions are watched. */
@@ -701,6 +714,20 @@ export async function watchPass(
       // merged all the same — what waits for its phase starts on the merge — and left for
       // `crew rm`. The store keeps the fact (`mergedWhileStopped`), so a later pass sees it too.
       if (wasStopped || record.mergedWhileStopped === true) continue;
+      if (
+        record.state === "merged" &&
+        record.mergedWhileStopped === undefined &&
+        historicallyMergedWhileStopped(record, events)
+      ) {
+        await updateCrew(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          { mergedWhileStopped: true },
+          ctx.now(),
+        );
+        continue;
+      }
       // Keep the chain's records until every later continuation's work is on its first base.
       // The records are also the proof of that base for later removals.
       const descendants = new Set([record.id]);

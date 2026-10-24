@@ -339,7 +339,7 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     ).toEqual([
       ["app-wt-busy", 'Claude session "build it" works in it'],
       ["app-wt-dirty", "uncommitted changes"],
-      ["app-wt-locked", "locked with `git worktree lock`"],
+      ["app-wt-locked", "locked: claude session 4242 (locker cannot be proved gone)"],
     ]);
   });
 

@@ -31,6 +31,7 @@ import {
   type ContainerMounts,
   containersUsing,
   dockerMounts,
+  mountKeptWhy,
   mountPoints,
   programsInside,
   type RunningProgram,
@@ -469,16 +470,8 @@ function judgeOne(
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   if (parked) {
-    if (look.mounts === "unknown") {
-      return {
-        finished: false,
-        held: false,
-        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it",
-      };
-    }
-    const mounted = look.mounts.find((path) => isInside(realPath(path), realPath(listed.path)));
-    if (mounted !== undefined)
-      return { finished: false, held: false, why: `a mount point lies inside it: ${mounted}` };
+    const mountWhy = mountKeptWhy(listed.path, look.mounts);
+    if (mountWhy !== null) return { finished: false, held: false, why: mountWhy };
   }
   const facts: WorktreeFacts = {
     aheadOfBase,
@@ -661,8 +654,31 @@ export function removeWorktree(
       status: fresh.held ? "held" : "kept",
     };
   }
+  let released = false;
+  const keptAfterUnlock = (removal: Removal, path = current.path): Removal => {
+    if (!released) return removal;
+    const relocked = runGit(
+      repo,
+      ["worktree", "lock", "--reason", current.lockReason ?? "", path],
+      options.env,
+    );
+    removal.said.push(
+      relocked.ok
+        ? `locked ${path} again, with the same reason`
+        : `note: ${path} could not be locked again (${relocked.err}); its removal is not finished`,
+    );
+    return removal;
+  };
   if (current.locked) {
-    const check = listWorktrees(repo, options.env).find((one) => samePath(one.path, current.path));
+    let check: ListedWorktree | undefined;
+    try {
+      check = listWorktrees(repo, options.env).find((one) => samePath(one.path, current.path));
+    } catch {
+      return {
+        said: [`kept ${listed.path}: git could not revalidate its stale lock`],
+        status: "kept",
+      };
+    }
     if (
       check === undefined ||
       check.head !== current.head ||
@@ -679,6 +695,7 @@ export function removeWorktree(
         status: "kept",
       };
     }
+    released = true;
   }
   // A folder an earlier removal already moved aside (D62) is not moved again: that would stack
   // a second mark on the first, and the record's folder could no longer be read from the name.
@@ -690,22 +707,22 @@ export function removeWorktree(
       // A worktree holding a submodule can never be moved, however long anyone waits: git
       // refuses those by its own rule, so the message says the way out, and no "try again".
       if (holdsSubmodule(listed.path, options.env)) {
-        return {
+        return keptAfterUnlock({
           said: [
             `kept ${listed.path}: it holds a git submodule, and git cannot move or remove such a ` +
               `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
               `\`${COMMAND} worktrees\` again: a worktree whose folder is gone is forgotten.`,
           ],
           status: "kept",
-        };
+        });
       }
-      return {
+      return keptAfterUnlock({
         said: [
           `kept ${listed.path}: a program may still work in it — a terminal, a background command, ` +
             `or an MCP server restarted while a session was in it (${moved.err})`,
         ],
         status: "held",
-      };
+      });
     }
   }
   // A folder moved aside whose removal stopped halfway has lost tracked files to that removal,
@@ -718,14 +735,17 @@ export function removeWorktree(
     options.env,
   );
   if (!removed.ok) {
-    return {
-      said: [
-        alreadyParked
-          ? `could not remove ${parked}: ${removed.err}`
-          : `moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`,
-      ],
-      status: "failed",
-    };
+    return keptAfterUnlock(
+      {
+        said: [
+          alreadyParked
+            ? `could not remove ${parked}: ${removed.err}`
+            : `moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`,
+        ],
+        status: "failed",
+      },
+      parked,
+    );
   }
   const deleteBranch =
     options.deleteBranch ??

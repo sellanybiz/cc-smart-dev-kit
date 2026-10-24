@@ -35,6 +35,7 @@ import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
+import { parseOptions } from "../crew/args";
 import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
@@ -712,9 +713,18 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     case "sessions": {
-      const unknown = rest.filter(
-        (arg) => !["--open", "--dry-run", "--finished", "--remove", "--yes"].includes(arg),
+      const parsed = parseOptions(
+        rest,
+        ["--id"],
+        ["--open", "--dry-run", "--finished", "--remove", "--yes"],
+        ["--id"],
       );
+      if ("error" in parsed) {
+        console.error(usageError(parsed.error, "sessions"));
+        return 2;
+      }
+      const unknown = parsed.positionals;
+      const ids = parsed.lists.get("--id") ?? [];
       if (rest.includes("--finished") && (rest.includes("--open") || rest.includes("--dry-run"))) {
         console.error(
           usageError("--finished cannot be combined with --open or --dry-run", "sessions"),
@@ -740,6 +750,7 @@ async function main(argv: string[]): Promise<number> {
           dryRun: rest.includes("--dry-run"),
           open: rest.includes("--open"),
           finished: rest.includes("--finished"),
+          ids,
           remove: rest.includes("--remove"),
           yes: rest.includes("--yes"),
         },

@@ -376,6 +376,8 @@ export interface SessionsOptions {
   /** `--dry-run`: with `--open`, says what it would open and opens nothing. */
   dryRun: boolean;
   finished?: boolean;
+  /** Limit --finished --remove to these exact short ids. */
+  ids?: string[];
   remove?: boolean;
   yes?: boolean;
 }
@@ -396,7 +398,18 @@ function runFinishedSessions(
     out.line("fail", initial.error);
     return 1;
   }
-  const sessions = initial.sessions;
+  const requested = new Set(options.ids ?? []);
+  if ([...requested].some((id) => !initial.sessions.some((row) => row.id === id))) {
+    out.line(
+      "fail",
+      "A named session is not an eligible finished session. Read sessions --finished again; nothing removed.",
+    );
+    return 1;
+  }
+  const sessions =
+    requested.size === 0
+      ? initial.sessions
+      : initial.sessions.filter((row) => requested.has(row.id));
   if (sessions.length === 0) {
     out.line("info", "No finished background sessions older than one day.");
     return 0;
@@ -471,6 +484,8 @@ export async function runSessions(
   cwd: string = process.cwd(),
 ): Promise<number> {
   if (
+    ((options.ids?.length ?? 0) > 0 && (!options.finished || !options.remove)) ||
+    (options.ids?.some((id) => !/^[0-9a-f]{8}$/.test(id)) ?? false) ||
     (options.remove && !options.finished) ||
     (options.yes && !options.remove) ||
     (options.finished && (options.open || options.dryRun))

@@ -167,7 +167,7 @@ export function findNamed<T extends Named>(
 /** How a crew record answers to a reference: its own id, its session's id and its short id. */
 const CREW_LOOK: NamedLook<CrewRecord> = {
   ids: (one) => [one.id, one.shortId, one.sessionId],
-  live: (one) => one.state !== "removed",
+  live: (one) => !["removed", "discarded"].includes(one.state),
 };
 
 /** The crew session `ref` names; or the refusal that names every candidate. */
@@ -354,7 +354,7 @@ export function boardLines(
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
-  if (options.leadGone === true && record.state !== "removed") {
+  if (options.leadGone === true && !["removed", "discarded"].includes(record.state)) {
     lines.push(
       `  its lead is gone: remove it with crew rm "${record.name}", or continue it with crew start ${record.phase} --continue "${record.name}"`,
     );
@@ -429,12 +429,34 @@ export function statusLines(
 
 /** `crew list [--all] [--json]`; the exit code. */
 export async function runCrewList(
-  args: { all: boolean; json: boolean },
+  args: { all: boolean; json: boolean; discarded?: boolean },
   ctx: CrewContext,
 ): Promise<number> {
   const read = readRecords(ctx, args.all, "list");
   if (isRefusal(read)) return refuse(read, ctx);
   for (const broken of read.broken) ctx.error(`crew list: ${broken.why}`);
+  if (args.discarded) {
+    const archived = read.records.filter(
+      (record) =>
+        record.state === "discarded" &&
+        record.archive !== undefined &&
+        record.archive.prunedAt === undefined,
+    );
+    if (args.json) ctx.print(JSON.stringify(archived, null, 2));
+    else {
+      if (archived.length === 0) ctx.print("No discarded crew archives.");
+      for (const record of archived) {
+        const archive = record.archive;
+        if (archive === undefined) continue;
+        const days = Math.max(0, Math.floor((ctx.now() - Date.parse(archive.at)) / 86_400_000));
+        ctx.print(
+          `${record.name} — discarded ${days} day${days === 1 ? "" : "s"} ago — ${archive.ref}`,
+        );
+        ctx.print(`  recover: git branch ${record.branch} ${archive.ref}`);
+      }
+    }
+    return read.broken.length === 0 ? 0 : 1;
+  }
   if (args.json) {
     // Exactly the records the store holds, newest first: a page or a script reads them.
     ctx.print(JSON.stringify(read.records, null, 2));
@@ -571,11 +593,10 @@ export function runCrewAttach(ref: string, ctx: CrewContext): number {
   const found = target(ref, "attach", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
-  if (record.shortId === null || record.state === "removed") {
-    const why =
-      record.state === "removed"
-        ? "is removed; its session is gone"
-        : `has no session yet (it is ${record.state})`;
+  if (record.shortId === null || ["removed", "discarded"].includes(record.state)) {
+    const why = ["removed", "discarded"].includes(record.state)
+      ? "is removed; its session is gone"
+      : `has no session yet (it is ${record.state})`;
     return refuse(
       {
         code: 1,

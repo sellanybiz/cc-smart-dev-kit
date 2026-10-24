@@ -131,9 +131,27 @@ describe("crew lifecycle", () => {
     writeFileSync(join(world.repo, "README.md"), "rewritten lead work\n");
     git(world.repo, "add", ".");
     git(world.repo, "commit", "-m", "rewritten lead work");
+    git(world.repo, "reflog", "expire", "--expire=now", "--all");
+    git(world.repo, "gc", "--prune=now");
+    expect(git(world.repo, "cat-file", "-t", leadCommit).trim()).toBe("commit");
     expect(validMergeProof(marked, world.ctx())).toBe(true);
     expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
     expect(world.claudeCalls()).toContainEqual(["rm", "a1b2c3d4"]);
+  });
+
+  test("a legacy merged record without proof gets a specific refusal, never an unsafe override", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "merged" });
+    writeFileSync(join(record.worktree, "README.md"), "crew change\n");
+    git(record.worktree, "add", ".");
+    git(record.worktree, "commit", "-m", "crew work");
+    writeFileSync(join(world.repo, "README.md"), "rewritten lead\n");
+    git(world.repo, "add", ".");
+    git(world.repo, "commit", "-m", "rewritten lead work");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err.join("\n")).toContain("merged earlier, but no exact-head proof was recorded");
+    expect(world.err.join("\n")).toContain("recoverable crew rm --discard");
+    expect(world.claudeCalls()).not.toContainEqual(["rm", "a1b2c3d4"]);
   });
 
   test("a commit after the merge proof is kept by crew rm", async () => {

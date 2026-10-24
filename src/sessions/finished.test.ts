@@ -217,6 +217,19 @@ describe("finished session selection", () => {
 });
 
 describe("finished session reader and command", () => {
+  test("targeted removal takes only the named eligible ids and refuses ineligible ids", async () => {
+    const w = world();
+    w.rows.push(agent({ id: "bbbbbbbb", sessionId: "second", name: "Second" }));
+    w.terminal(w.rows[1]);
+    expect(await w.run({ remove: true, yes: true, ids: ["bbbbbbbb"] })).toBe(0);
+    expect(w.removed).toEqual([["rm", "bbbbbbbb"]]);
+    const bad = world();
+    expect(await bad.run({ remove: true, yes: true, ids: ["cccccccc"] })).toBe(1);
+    expect(bad.removed).toEqual([]);
+    const invalid = world();
+    expect(await invalid.run({ remove: true, yes: true, ids: ["--all"] })).toBe(2);
+    expect(invalid.removed).toEqual([]);
+  });
   test("lists name, folder and age with no removal and no terminal opening", async () => {
     const w = world();
     expect(await w.run()).toBe(0);

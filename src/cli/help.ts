@@ -196,7 +196,7 @@ installs it in the background; --hold stops that on this machine, --resume start
 Nothing restarts: restart the sessions to load it.`;
 
 const SESSIONS_HELP = `Usage: ${COMMAND} sessions [--open] [--dry-run]
-       ${COMMAND} sessions --finished [--remove [--yes]]
+       ${COMMAND} sessions --finished [--remove [--yes] [--id <short-id>…]]
 
 This project's Claude Code sessions of the last two days, by name and worktree, with the
 command that resumes each. --open reopens every session that was open when the machine went
@@ -207,6 +207,7 @@ it would open and opens nothing.
 with their name, folder and age. Crew sessions and leads stay out, even when renamed.
 Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
 Claude rm can also remove each session's worktree; its own checks protect unmerged work.
+--id limits removal to that exact eligible session; repeat it to name several.
 Use --finished separately from --open and --dry-run.`;
 
 const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]

@@ -54,11 +54,9 @@ export interface RunningProgram {
    */
   parentPid?: number;
   /**
-   * When it was started (epoch ms), when known: where a program's environment cannot be read,
-   * the removal of a finished crew session tells a program it left behind (started while the
-   * session lived) from one started since (`stopLeftoverProcesses`, D62). The listing does not
-   * carry it; `startTimes` reads it for the few programs a removal is about to stop, and a test
-   * gives it. Absent when unknown.
+   * When it was started (epoch ms), when a test supplies it. This does not prove ownership:
+   * stopping a finished session's leftover program needs its crew marker and the exact process
+   * identity from `processStartTime` (`src/crew/end.ts`, D62). Absent when unknown.
    */
   startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
@@ -249,60 +247,6 @@ export function descendsFrom(programs: RunningProgram[], pid: number, ancestor: 
   return lineage(programs, pid).has(ancestor);
 }
 
-/**
- * The seconds a process has been running, from `ps`: `etimes` prints whole seconds, and the
- * older macOS `etime` prints `[[dd-]hh:]mm:ss`. Null when neither reads.
- */
-export function parseElapsedSeconds(text: string): null | number {
-  const value = text.trim();
-  if (/^\d+$/.test(value)) return Number(value);
-  const parts = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(value);
-  if (parts === null) return null;
-  const days = Number(parts[1] ?? 0);
-  const hours = Number(parts[2] ?? 0);
-  const minutes = Number(parts[3] ?? 0);
-  const seconds = Number(parts[4] ?? 0);
-  return days * 86400 + hours * 3600 + minutes * 60 + seconds;
-}
-
-/**
- * When the processes `pids` started (epoch ms), by pid, from `ps -o pid=,etimes= -p <pids>`.
- * macOS has no `etimes`; there `etime` gives the elapsed time in a form `parseElapsedSeconds`
- * reads. Asked only for the few programs a removal is about to stop, never for the whole
- * machine. A pid `ps` does not know, and a `ps` that cannot answer, leave that start unknown —
- * and an unknown start never proves a program belongs to a finished session (`crew rm` keeps the
- * worktree then). `ps -p` exits 1 when one pid is gone and still prints the others, so its
- * output counts whatever the exit code says. Windows has no such `ps`: nothing is known there.
- */
-export function startTimes(pids: readonly number[], now: number): Map<number, number> {
-  const starts = new Map<number, number>();
-  if (pids.length === 0) return starts;
-  const read = (format: string): void => {
-    let output: string;
-    try {
-      const run = Bun.spawnSync(["ps", "-o", `pid=,${format}=`, "-p", pids.join(",")], {
-        stderr: "pipe",
-        stdout: "pipe",
-        timeout: PROGRAMS_TIMEOUT_MS,
-      });
-      output = run.stdout.toString();
-    } catch {
-      // No `ps` here (Windows): the starts stay unknown.
-      return;
-    }
-    for (const line of output.split(/\r?\n/)) {
-      const fields = line.trim().split(/\s+/);
-      const pid = Number(fields[0]);
-      const seconds = parseElapsedSeconds(fields[1] ?? "");
-      if (!Number.isInteger(pid) || pid <= 0 || seconds === null) continue;
-      starts.set(pid, now - seconds * 1000);
-    }
-  };
-  read("etimes");
-  if (starts.size === 0) read("etime");
-  return starts;
-}
-
 /** The tools this scan runs itself: short-lived children that would otherwise keep a worktree. */
 const OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 
@@ -451,8 +395,8 @@ function procPids(): number[] {
  *
  * Linux reads both the command lines and each process's working folder; macOS reads the
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
- * folder a program's file is in cannot be renamed there. When a process started is asked
- * separately, for the few programs a removal is about to stop (`startTimes`).
+ * folder a program's file is in cannot be renamed there. A removal reads exact process identities
+ * separately, only for the few owned programs it is about to stop (`src/crew/end.ts`).
  */
 export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
   if (on === "win32") {
@@ -523,6 +467,17 @@ export function parseMountPoints(text: string): string[] | null {
     );
   }
   return mounts.includes("/") ? mounts : null;
+}
+
+/** One mount guard for registered parked worktrees and unregistered remnants. */
+export function mountKeptWhy(
+  worktree: string,
+  mounts: "unknown" | readonly string[],
+): null | string {
+  if (mounts === "unknown")
+    return "its mount points could not be read, so it cannot be shown that nothing is mounted in it";
+  const mounted = mounts.find((path) => isInside(realPath(path), realPath(worktree)));
+  return mounted === undefined ? null : `a mount point lies inside it: ${mounted}`;
 }
 
 /** Unknown on unsupported systems or an unreadable listing: never assume no mounts. */

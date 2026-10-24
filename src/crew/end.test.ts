@@ -12,6 +12,7 @@ import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../test
 import { OTHER_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
+import { holdCleanLock } from "../worktrees/clean";
 import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses } from "./end";
@@ -94,7 +95,7 @@ function leadMerges(repo: string, branch: string): void {
 async function startProgram(
   cwd: string,
   crew: null | string,
-  command = "sleep 60",
+  command = "exec sleep 60",
 ): Promise<Bun.Subprocess> {
   const child = Bun.spawn(["sh", "-c", command], {
     cwd,
@@ -392,6 +393,34 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(world.err).toEqual([]);
     expect(existsSync(worktree)).toBe(false);
     expect(git(world.repo, "branch", "--list", branch)).toBe("");
+  });
+
+  test("M4: the Fix line names the checked-out base, not the lead folder", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    commitWork(record.worktree);
+    git(world.repo, "checkout", "-b", "lead-other");
+    const baseFolder = join(world.repo, ".claude", "worktrees", "base");
+    git(world.repo, "worktree", "add", baseFolder, "main");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: crew/B1-help has 1 commit that main does not have",
+      `Fix: the lead merges it first (git merge crew/B1-help, in ${baseFolder}), then run crew rm again`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("M4: the Fix line names the merge target when no folder checks it out", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    commitWork(record.worktree);
+    git(world.repo, "checkout", "-b", "lead-other");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: crew/B1-help has 1 commit that main does not have",
+      "Fix: the lead must merge crew/B1-help into main, then run crew rm again",
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
   });
 
   test("a continuation is removed against the first base while the lead is on another branch", async () => {
@@ -955,6 +984,68 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     },
   );
 
+  test("M7: a container refusal leaves the session's owned program alive", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    const child = await startProgram(record.worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              containers: [{ name: "db", sources: [record.worktree] }],
+              programs: [{ parentPid: 1, path: join(record.worktree, "check.sh"), pid: child.pid }],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(world.err).toEqual([
+        'crew rm: .claude/worktrees/crew-B1-help is kept: Docker container "db" uses its files',
+        "Fix: clear that, then run crew rm again; it never forces",
+      ]);
+      expect(await ended(child)).toBe(false);
+      expect(child.exitCode).toBeNull();
+      expect(existsSync(record.worktree)).toBe(true);
+      expect(world.claudeVerbs()).not.toContain("rm");
+      expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
+
+  test("L15: a busy clean lock refuses crew rm and preserves its parked folder", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    const parked = `${record.worktree}-removing-${String(PARKED_AT)}`;
+    git(world.repo, "worktree", "move", record.worktree, parked);
+    const lock = await holdCleanLock();
+    expect(lock).not.toBeNull();
+    try {
+      expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+      expect(world.err).toEqual([
+        "crew rm:  is kept: another worktree clean is running",
+        "Fix: clear that, then run crew rm again; it never forces",
+      ]);
+      expect(existsSync(parked)).toBe(true);
+      expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("done");
+      expect(world.claudeVerbs()).not.toContain("rm");
+      expect(git(world.repo, "branch", "--list", record.branch)).not.toBe("");
+    } finally {
+      await new Promise<void>((resolve) => lock?.close(() => resolve()));
+    }
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(parked)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
+    expect(world.claudeVerbs()).toContain("rm");
+  });
+
   test("local files keep the session's owned program alive", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "done" });
@@ -974,6 +1065,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
           }),
         ),
       ).toBe(1);
+      expect(await ended(child)).toBe(false);
       expect(child.exitCode).toBeNull();
       expect(world.err[0]).toContain("local files git does not keep");
       expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);

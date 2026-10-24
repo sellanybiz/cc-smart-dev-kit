@@ -39,7 +39,7 @@ import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { CREW_NEVER_RUNS, REPORT_COMMAND } from "./brief";
-import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
+import { agentRow, callClaude, findClaude, parseAgentPresence } from "./claude";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
@@ -140,7 +140,7 @@ export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
     CLAUDE_END_TIMEOUT_MS,
   );
   if (!listed.ok || listed.run.exitCode !== 0) return false;
-  const rows = parseAgents(listed.run.stdout);
+  const rows = parseAgentPresence(listed.run.stdout);
   return rows !== null && agentRow(rows, record.shortId) === null;
 }
 
@@ -359,8 +359,11 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   const found = actOn(ref, "stop", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
-  if (record.state === "removed") {
-    return refuse(failure(`crew stop: ${record.name} is removed; it has no session left`), ctx);
+  if (["removed", "discarded"].includes(record.state)) {
+    return refuse(
+      failure(`crew stop: ${record.name} is ${record.state}; it has no session left`),
+      ctx,
+    );
   }
   if (record.shortId === null) {
     return refuse(
@@ -399,9 +402,9 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
   const found = actOn(ref, "resume", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
-  if (record.state === "removed") {
+  if (["removed", "discarded"].includes(record.state)) {
     return refuse(
-      failure(`crew resume: ${record.name} is removed; there is nothing to bring back`),
+      failure(`crew resume: ${record.name} is ${record.state}; there is nothing to bring back`),
       ctx,
     );
   }

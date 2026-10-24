@@ -375,6 +375,31 @@ describe("the hook", () => {
     mergedAt: new Date().toISOString(),
   };
 
+  test("a recorded lead's own merged worktree gets the ExitWorktree removal note", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: worktree,
+        repo,
+        sessionId: "11111111-2222-3333-4444-555555555555",
+        name: "LEAD app plan",
+        tag: "app",
+        plan: "plan",
+      },
+      Date.now(),
+    );
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr merge --squash"),
+      env,
+    );
+    expect(result.stdout).toContain(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action \\"remove\\").',
+    );
+  });
+
   test("after merging its own branch from a worktree: both notes, then announced once", async () => {
     const { worktree } = project();
     const env = fakeGh(merged);

@@ -34,11 +34,12 @@ asked for (`src/sessions/`, `src/worktrees/`):
 
 ### Finished background sessions
 
-`sessions --finished` uses `src/sessions/finished.ts` for both the command and a later portal
-consumer. It accepts only `background` jobs in `done` or `stopped`, older than a day by their
+`sessions --finished` uses `src/sessions/finished.ts` for both the command and the Work API. It accepts only `background` jobs in `done` or `stopped`, older than a day by their
 matched job-state end timestamps. Stored crew and lead identities (full and short ids), role
 names, unknown kinds, active states and damaged records keep a session out. `--remove` shows
-the list and asks once, or takes `--yes`; each candidate is read again before `claude rm`.
+the list and asks once, or takes `--yes`; repeated `--id <short-id>` limits the selection to those
+exact eligible sessions. Each candidate is read again before `claude rm`; any requested ineligible
+id refuses the whole selection before removal. The portal action uses that same targeted CLI.
 That command can also remove a session's worktree, with Claude Code's own unmerged-work guard.
 Nothing runs this removal by itself.
 
@@ -47,7 +48,8 @@ Nothing runs this removal by itself.
 The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,
 a dead PID or a reused PID with a different `/proc` start time proves the locker gone; only
 then, and after the normal contents/program/container checks, can the clean unlock and remove
-it. Other lock formats and platforms stay protected. A live lock whose work is on the base
+it. A failed move or removal restores the same lock on the retained path and says when restoration
+fails. Other lock formats and platforms stay protected. A live lock whose work is on the base
 names `ExitWorktree` (remove), or closing the session, as its next step.
 
 The Supabase CLI's `supabase/.temp/cli-latest` version-check cache is disposable. Its parent

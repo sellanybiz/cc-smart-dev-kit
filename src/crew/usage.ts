@@ -32,8 +32,8 @@ whose other matches are removed means the live one.`;
 
 export const BOARD_COMMANDS: readonly BoardCommand[] = [
   {
-    args: "[--all] [--json]",
-    help: `Usage: ${COMMAND} crew list [--all] [--json]
+    args: "[--all] [--json] [--discarded]",
+    help: `Usage: ${COMMAND} crew list [--all] [--json] [--discarded]
 
 The board: every crew session of this repository, newest first. For each: its name, phase and kind,
 the model it runs on (and the gateway slot that answers it), its effort, its state and since
@@ -43,7 +43,9 @@ crew sessions that list one file would collide.
 A queued crew session says what holds it: the phases it waits for, a cap, or the memory.
 
   --all    every repository on this machine, not only this one
-  --json   the crew records as one JSON list, for a script`,
+  --json   the crew records as one JSON list, for a script
+  --discarded   completed discard archives, their age and the git branch recovery command
+                (archives expire after 30 days)`,
     name: "list",
     summary: "The board: every crew session of this repository.",
   },
@@ -72,13 +74,13 @@ ${NAMED}`,
     summary: "Stop one crew session's Claude session; its conversation is kept.",
   },
   {
-    args: CREW,
-    help: `Usage: ${COMMAND} crew rm ${CREW}
+    args: `${CREW} [--discard [--yes] [--discard-token <token>]]`,
+    help: `Usage: ${COMMAND} crew rm ${CREW} [--discard [--yes] [--discard-token <token>]]
 
 Ends a crew session whose work the lead merged; one that waits in the queue is removed at once,
 because nothing else went. In this order, stopping at the first refusal:
-  1. its branch must be merged into the lead's branch, the one checked out in the lead's
-     folder; until then it says how many commits are missing and where to merge. A crew session never
+  1. its branch must be merged into its continuation chain's first base (or have an exact-head
+     recorded proof); until then it says how many commits are missing and where to merge. A crew session never
      pushes: the lead merges.
   2. nothing in its worktree may be uncommitted;
   3. its session is stopped, and the lock Claude Code leaves on the worktree is released (a lock
@@ -89,6 +91,17 @@ because nothing else went. In this order, stopping at the first refusal:
      whether the lead had merged it before the removal.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
 command again.
+
+--discard explicitly archives unmerged and uncommitted work, then uses these same safe removal
+steps. It lists the commits and files and asks first; --yes confirms without a terminal.
+The preview says the ignored-file rule: only bounded small regular UTF-8 text is archived;
+rebuildable caches and unchanged main-checkout copies follow the normal cleanup policy.
+Symlinks, binary or large protected ignored files refuse. A person's program or a container
+still refuses before anything stops or changes. A different staged version stays in the archive
+commit's parent. Recover with the printed git branch command, or crew list --discarded.
+The archive is immutable and expires after 30 days. --discard-token binds confirmation to a
+previous preview; changed commits, staged content or files require a new confirmation.
+The watch and automatic cleanup never pass --discard.
 
 ${NAMED}`,
     name: "rm",
@@ -102,7 +115,7 @@ ${NAMED}`,
 Brings that one crew session's Claude session back, in its own worktree, with its own settings and
 MCP files and the model, effort and permission mode it was launched with (claude --bg --resume); it
 keeps its conversation. Never all sessions. A session that still has a process is left alone: a
-resume would start a copy beside it. Refused for a crew session that is removed or merged, has no
+resume would start a copy beside it. Refused for a crew session that is removed, discarded or merged, has no
 session yet, or has no worktree or settings file any more.
 
 --paused brings every paused crew session of the lead back at once: the way on after /login on

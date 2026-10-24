@@ -37,6 +37,49 @@ const OPUS_CHAIN = {
 };
 
 describe("crew list", () => {
+  test("list --discarded names recovery and age and excludes pruned archives", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({
+      state: "discarded",
+      atMs: NOW - 3 * 86_400_000,
+      worktree: false,
+    });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      {
+        archive: {
+          ref: "refs/crew-discarded/crew/B1-help",
+          head: "a".repeat(40),
+          at: new Date(NOW - 2 * 86_400_000).toISOString(),
+        },
+      },
+      NOW,
+    );
+    expect(await runCrew(["list", "--discarded"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B1 help — discarded 2 days ago — refs/crew-discarded/crew/B1-help",
+      "  recover: git branch crew/B1-help refs/crew-discarded/crew/B1-help",
+    ]);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      {
+        archive: {
+          ref: "refs/crew-discarded/crew/B1-help",
+          head: "a".repeat(40),
+          at: new Date(NOW - 2 * 86_400_000).toISOString(),
+          prunedAt: new Date(NOW).toISOString(),
+        },
+      },
+      NOW,
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list", "--discarded", "--json"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["[]"]);
+  });
   test("list --all marks a crew session after its lead has been unknown for more than a day", async () => {
     const world = await boardWorld();
     await world.addCrew({ state: "stopped" });

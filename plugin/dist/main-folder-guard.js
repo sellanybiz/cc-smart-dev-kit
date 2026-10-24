@@ -8888,7 +8888,7 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
 function crewOfWorktree(records, path) {
   let found = null;
   for (const one of records) {
-    if (one.state === "removed" || !samePath(one.worktree, path))
+    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path))
       continue;
     found = one;
   }
@@ -8950,6 +8950,7 @@ var crewFields = object({
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
   mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  archive: looseObject({ ref: text, head: sha, at: text, prunedAt: text.optional() }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -9487,9 +9488,11 @@ function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
       return false;
   }
   const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
+  const env = gitEnv(context.env);
+  delete env[CREW_ENV];
   (context.start ?? startDetached)(process.platform, argv, {
     cwd: context.paths.home,
-    env: gitEnv(context.env),
+    env,
     onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
   });
   return true;
@@ -13357,14 +13360,14 @@ function readWorkflowScript(script) {
   const launches = [];
   for (const open of callsOf(script)) {
     const call = callText(script, open);
-    const prompt = firstArgument(call);
+    const prompt2 = firstArgument(call);
     const label = stringOption(call, "label");
     launches.push({
       agentType: stringOption(call, "agentType"),
       effort: stringOption(call, "effort"),
       model: stringOption(call, "model"),
-      prompt,
-      where: label ?? prompt?.split(`
+      prompt: prompt2,
+      where: label ?? prompt2?.split(`
 `)[0]?.slice(0, 60) ?? "(unreadable)"
     });
   }
@@ -13508,9 +13511,9 @@ function allow(real, why = "") {
 function deny(real, reason, why = "") {
   return { decision: "deny", real, reason, why };
 }
-function reasonLine(prompt, label) {
+function reasonLine(prompt2, label) {
   const pattern = new RegExp(`^\\s*${label}:\\s*(\\S.*)$`, "i");
-  for (const line of prompt.split(`
+  for (const line of prompt2.split(`
 `)) {
     const found = pattern.exec(line);
     if (found?.[1] !== undefined)
@@ -13527,9 +13530,9 @@ function firstWord(text) {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
-function uiDeclaration(prompt) {
+function uiDeclaration(prompt2) {
   for (const label of ["Opus reason", "Fable reason"]) {
-    const said = reasonLine(prompt, label);
+    const said = reasonLine(prompt2, label);
     const word = firstWord(said);
     if (word !== null && UI_REASON_WORDS.includes(word)) {
       return `${label}: ${said}`;
@@ -14629,42 +14632,42 @@ var RESUME_START = "The wait is over: ";
 var RESUME_PHASE = ". Go on with phase ";
 var RESUME_END = ", then hand it back as usual.";
 var ANSWER_RESUME_MS = 60000;
-function isPersonPrompt(record, prompt, briefFile, nowMs) {
-  if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix)))
+function isPersonPrompt(record, prompt2, briefFile, nowMs) {
+  if (NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix)))
     return false;
-  if (prompt.startsWith(reportStep()))
+  if (prompt2.startsWith(reportStep()))
     return false;
-  if (isLaunchPrompt(record, prompt, briefFile))
+  if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
   if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
     return false;
   }
-  if (isWaitOverResume(record, prompt))
+  if (isWaitOverResume(record, prompt2))
     return false;
-  return !isAnswerResume(record, prompt, nowMs);
+  return !isAnswerResume(record, prompt2, nowMs);
 }
 function withoutOneLineEnd(text) {
   return text.replace(/\r?\n$/, "");
 }
-function isLaunchPrompt(record, prompt, briefFile) {
+function isLaunchPrompt(record, prompt2, briefFile) {
   const launch = firstPrompt(record.name, record.leadName, briefFile);
-  return withoutOneLineEnd(prompt) === withoutOneLineEnd(launch);
+  return withoutOneLineEnd(prompt2) === withoutOneLineEnd(launch);
 }
-function isAnswerResume(record, prompt, nowMs) {
+function isAnswerResume(record, prompt2, nowMs) {
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt))
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt2))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
   });
 }
-function isWaitOverResume(record, prompt) {
-  return prompt.startsWith(RESUME_START) && prompt.endsWith(RESUME_END) && prompt.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`);
+function isWaitOverResume(record, prompt2) {
+  return prompt2.startsWith(RESUME_START) && prompt2.endsWith(RESUME_END) && prompt2.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`);
 }
-function personLine(prompt) {
-  const line = prompt.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
+function personLine(prompt2) {
+  const line = prompt2.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
   return maskedLine(line, [], LAST_LINE_MAX, { mark: "\u2026" });
 }
 function personWroteLine() {
@@ -14796,14 +14799,14 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
     return found.result;
   const record = found.record;
   const title = titleAnswer(input, record, env);
-  const prompt = stringField(input.prompt);
-  if (prompt === null)
+  const prompt2 = stringField(input.prompt);
+  if (prompt2 === null)
     return titleOnly(title);
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
-  if (!isPersonPrompt(record, prompt, briefFile, nowMs))
+  if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
     return titleOnly(title);
-  const line = personLine(prompt);
+  const line = personLine(prompt2);
   if (line === "")
     return titleOnly(title);
   try {
@@ -15804,9 +15807,6 @@ function routeFacts(input, context) {
   return facts;
 }
 
-// src/ports.ts
-var DEFAULT_PORTAL_PORT = 20150;
-
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync2, readdirSync as readdirSync8, readFileSync as readFileSync26, readlinkSync as readlinkSync3 } from "fs";
 import { join as join28 } from "path";
@@ -15847,6 +15847,19 @@ function sameAsMain(worktree, mainCheckout, path) {
   };
   return same(path.replace(/\/$/, ""));
 }
+function safeIgnoredEntry(worktree, mainCheckout, entry) {
+  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+    if (!entry.endsWith("/cli-latest"))
+      return true;
+    try {
+      if (lstatSync2(join28(worktree, entry)).isFile())
+        return true;
+    } catch {
+      return false;
+    }
+  }
+  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+}
 function localFiles(worktree, mainCheckout, env) {
   const status = runGit(worktree, [
     "--no-optional-locks",
@@ -15858,19 +15871,7 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  const safe = (entry) => {
-    if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
-      if (!entry.endsWith("/cli-latest"))
-        return true;
-      try {
-        if (lstatSync2(join28(worktree, entry)).isFile())
-          return true;
-      } catch {
-        return false;
-      }
-    }
-    return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
-  };
+  const safe = (entry) => safeIgnoredEntry(worktree, mainCheckout, entry);
   const supabaseCacheOnly = (entry) => {
     if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
       return false;
@@ -16326,6 +16327,22 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
+
+// src/crew/lifecycle.ts
+var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+
+// src/crew/board.ts
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
+// src/crew/discard.ts
+var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
+var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
+var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
+var DISCARD_IGNORED_MAX_FILES = 256;
+var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
+
+// src/ports.ts
+var DEFAULT_PORTAL_PORT = 20150;
 // src/worktrees/command.ts
 function crewRecordsOf(paths, repo) {
   try {
@@ -16334,12 +16351,6 @@ function crewRecordsOf(paths, repo) {
     return [];
   }
 }
-
-// src/crew/lifecycle.ts
-var STOPPED_REMINDER_MS = 24 * 60 * 60000;
-
-// src/crew/board.ts
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [

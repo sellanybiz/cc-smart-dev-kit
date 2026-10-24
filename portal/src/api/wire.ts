@@ -542,6 +542,7 @@ export interface CrewSummary {
   kind: string;
   lastEvent: null | { at: string; text: string; type: string };
   lastLine: null | string;
+  leadGone: boolean;
   leadName: string;
   leadSessionId: string;
   memory: CrewMemoryPoint[];
@@ -597,7 +598,40 @@ export interface SessionSummary {
   state: "ended" | "idle" | "waiting" | "working";
 }
 
+export interface FinishedSession {
+  id: string;
+  sessionId: string;
+  name: string;
+  folder: string;
+  state: "done" | "stopped";
+  finishedAt: number;
+  ageMs: number;
+}
+
+export interface CrewDiscardFacts {
+  head: string;
+  archiveRef: string;
+  token: string;
+  unmergedCommits: { count: number | null; subjects: string[] };
+  changedFiles: string[];
+  ignoredFiles: string[];
+  lines: string[];
+  question: string;
+}
+
+export interface StoppedCrewItem {
+  discard: { facts: CrewDiscardFacts | null; error: string | null };
+  crew: { id: string; name: string; shortId: null | string; state: string };
+  repo: string;
+  since: string;
+  days: number;
+  unmergedCommits: null | number;
+  line: string;
+}
+
 export interface WorkAnswer {
+  finishedSessions: FinishedSession[];
+  finishedSessionsError: string | null;
   crew: CrewSummary[];
   leads: LeadSummary[];
   folderNote: null | string;
@@ -759,6 +793,8 @@ export interface DoctorFailure {
 }
 
 export interface NeedsAnswer {
+  stopped: StoppedCrewItem[];
+  stoppedError: string | null;
   breakers: BreakerNeed[];
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
@@ -1010,6 +1046,7 @@ export const ACTION_NAMES = [
   "project.preview",
   "project.write",
   "router.restart",
+  "sessions.rm",
   "slot.breaker",
   "slot.check",
   "slot.fallback",

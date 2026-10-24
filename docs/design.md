@@ -53,7 +53,7 @@ parts, then the part you are changing.
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
 | [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, the board and the end of a crew session, the crew session's steps and its report, the lead's watch, the crew talks, and the crew's own hooks. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
-| [Sessions and worktrees](design/sessions.md) | Reading Claude Code's saved sessions, reopening the ones a crash or a closed window stopped, the explicit finished-background-session view, stale-lock and cache safety, and the flow report. |
+| [Sessions and worktrees](design/sessions.md) | Reading Claude Code's saved sessions, reopening the ones a crash or a closed window stopped, confirmed targeted finished-session removal, orphan crew cleanup, stale-lock and cache safety, and the flow report. |
 | [Moving a machine from the old names](design/migrate.md) | What 0.2.x left, what `migrate` moves, and the order it moves it in. |
 
 ## The rest

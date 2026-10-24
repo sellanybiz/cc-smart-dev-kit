@@ -20,7 +20,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, type Stats } 
 import { dirname, join, relative } from "node:path";
 import { isInside, type ListedWorktree, listWorktrees, realPath, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { containersUsing, programsInside } from "./machine-facts";
+import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
 import {
   forgottenLine,
   isParkedWorktree,
@@ -66,8 +66,10 @@ export function finishParked(
   let scanned: ScannedWorktree[];
   try {
     scanned = scanWorktrees(repo, options);
-  } catch {
-    // The ref is not known here: nothing may be judged against a guess.
+  } catch (error) {
+    // A failed scan is no proof of removal, including when the caller needs this folder gone.
+    const why = `it could not be judged: ${error instanceof Error ? error.message : String(error)}`;
+    pass.kept.push(...paths.map((path) => ({ path, why })));
     return pass;
   }
   for (const worktree of scanned) {
@@ -256,10 +258,8 @@ function gitEntryWhy(folder: string): null | string {
  * registration, and no file in it is newer than its move.
  */
 export function strayKeptWhy(stray: StrayFolder, machine: MachineFacts): null | string {
-  if (machine.mounts === "unknown")
-    return "its mount points could not be read, so it cannot be shown that nothing is mounted in it";
-  const mounted = machine.mounts.find((path) => isInside(realPath(path), realPath(stray.path)));
-  if (mounted !== undefined) return `a mount point lies inside it: ${mounted}`;
+  const mountWhy = mountKeptWhy(stray.path, machine.mounts);
+  if (mountWhy !== null) return mountWhy;
   const entry = gitEntryWhy(stray.path);
   if (entry !== null) return entry;
   const session = machine.sessions.find((one) => isInside(realPath(one.cwd), realPath(stray.path)));

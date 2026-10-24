@@ -13,6 +13,7 @@ import { groupTitle } from "../../cli/check";
 import type { CliPaths } from "../../cli/paths";
 import { findCrew, stateSince } from "../../crew/board";
 import { diffAgainstBase, outsideBrief } from "../../crew/diff";
+import { leadGone } from "../../crew/lifecycle";
 import { RUNNING_STATES } from "../../crew/places";
 import {
   type CrewEvent,
@@ -41,6 +42,7 @@ import { readSafetyChecks, safetyCheckWindow } from "../../gateway/safety-checks
 import { askLogFile } from "../../hooks/ask-log";
 import { locateCheckout, locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
+import { readFinishedSessions } from "../../sessions/finished";
 import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, type OpenWait } from "../../sessions/flow";
 import type { SavedSession } from "../../sessions/saved-sessions";
 import {
@@ -53,6 +55,8 @@ import { routerFacts, shownDetail } from "../facts";
 import { openWaitsOffLoop, readFlowOffLoop } from "../flow-read";
 import { type PageDataDeps, updateFacts } from "../page-data";
 import { readWorktreesOffLoop } from "../worktrees-read";
+import { readPortalAgents } from "./agents-read";
+import { readCleanupOffLoop } from "./cleanup-read";
 import {
   type BreakerNeed,
   type CrewAnswer,
@@ -133,7 +137,12 @@ export const SUMMARY_MEMORY_POINTS = 60;
  * One crew session as a summary: no transcript, no prompt, no key. `events` is the repository's
  * whole log, oldest first; the board's readers take one crew session's own, newest first.
  */
-function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: number): CrewSummary {
+function crewSummary(
+  record: CrewRecord,
+  events: readonly CrewEvent[],
+  nowMs: number,
+  gone = false,
+): CrewSummary {
   // The one open-question rule every reader shares (`openQuestionIndex`): a question the crew
   // session left behind at its end needs no answer, so this page and the Needs page agree.
   const openIndex = openQuestionIndex(record);
@@ -156,6 +165,7 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: nu
         ? null
         : { at: said.at, text: said.text, type: said.type },
     lastLine: record.lastLine,
+    leadGone: gone,
     leadName: record.leadName,
     leadSessionId: record.leadSessionId,
     memory: memoryOf(record, events, nowMs).slice(-SUMMARY_MEMORY_POINTS),
@@ -234,8 +244,23 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   } catch (error) {
     note = note ?? `the crew store could not be read: ${reasonOf(error)}`;
   }
+  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const finished = readFinishedSessions(paths, { agents: () => agents.sessions, now });
   const events = eventsByRepo(paths, records);
-  const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now));
+  const crew = records.map((record) =>
+    crewSummary(
+      record,
+      events.get(record.repo) ?? [],
+      now,
+      leadGone(
+        leadRecords.find(
+          (lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId,
+        ) ?? null,
+        agents.crew,
+        now,
+      ),
+    ),
+  );
   const leads = leadRecords.map(
     (lead): LeadSummary => ({
       crew: crew.filter((one) => one.leadSessionId === lead.sessionId),
@@ -296,6 +321,8 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   }
   return {
     crew,
+    finishedSessions: finished.sessions,
+    finishedSessionsError: finished.error,
     folderNote,
     leads,
     note,
@@ -409,6 +436,12 @@ export async function crewAnswerFor(
     .filter(([, entry]) => entry.branches?.includes(record.branch) === true)
     .map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha }))
     .sort((a, b) => b.at.localeCompare(a.at));
+  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const lead =
+    listAllLeads(paths.stateDir).records.find(
+      (one) => one.repo === record.repo && one.sessionId === record.leadSessionId,
+    ) ?? null;
+  const gone = leadGone(lead, agents.crew, deps.action.portal.now());
   const mergeCheck = await mergeCheckOf(
     deps,
     repo,
@@ -417,7 +450,7 @@ export async function crewAnswerFor(
   );
   return {
     brief,
-    crew: crewSummary(record, allEvents, deps.action.portal.now()),
+    crew: crewSummary(record, allEvents, deps.action.portal.now(), gone),
     diff,
     events,
     memory: memoryOf(record, allEvents, deps.action.portal.now()),
@@ -561,6 +594,7 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
   const permissions: PermissionWait[] =
     "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
+  const cleanup = await readCleanupOffLoop(deps.action.portal, deps.action.cwd);
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
@@ -582,6 +616,8 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
     },
     permissions,
     permissionsError: "error" in waits ? waits.error : null,
+    stopped: cleanup.stopped,
+    stoppedError: cleanup.error,
     update,
   };
 }

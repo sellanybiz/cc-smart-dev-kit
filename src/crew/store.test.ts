@@ -601,7 +601,7 @@ describe("a record a newer kit wrote", () => {
     expect(after).toEqual({ ...newer, lastLine: "x", updatedAt: "2026-10-21T10:05:00.000Z" });
   });
 
-  test("the twelve states this kit knows", () => {
+  test("the thirteen states this kit knows", () => {
     expect(CREW_STATES).toEqual([
       "queued",
       "starting",
@@ -615,6 +615,7 @@ describe("a record a newer kit wrote", () => {
       "handoff",
       "merged",
       "removed",
+      "discarded",
     ]);
     for (const state of CREW_STATES) expect(isKnownState(state)).toBe(true);
   });

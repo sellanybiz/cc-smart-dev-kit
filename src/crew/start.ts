@@ -522,7 +522,7 @@ async function planContinuation(
   // One next crew session per hand-off: a second `--continue` of the same crew session would put two
   // crew sessions on one phase. A next crew session that failed or was removed leaves the way free.
   const next = records.find(
-    (one) => one.continues === old.id && one.state !== "failed" && one.state !== "removed",
+    (one) => one.continues === old.id && !["failed", "removed", "discarded"].includes(one.state),
   );
   if (next !== undefined) {
     throw refusal(
@@ -630,7 +630,7 @@ function reportBlock(report: HandBackReport): string {
  * what it made was taken back) — the record stays as history, and a second try may start.
  */
 export function holdsName(record: CrewRecord): boolean {
-  if (record.state === "removed") return false;
+  if (["removed", "discarded"].includes(record.state)) return false;
   return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
 }
 

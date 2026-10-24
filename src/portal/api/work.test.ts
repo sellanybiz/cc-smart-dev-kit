@@ -7,7 +7,7 @@
  * schema would refuse cannot slip in. No portal is started.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import {
@@ -15,6 +15,8 @@ import {
   type CrewRecord,
   createCrew,
   crewRecordSchema,
+  crewStoreDir,
+  leadFile,
   type NewCrew,
   updateCrew,
   writeLead,
@@ -161,6 +163,7 @@ function world() {
       PATH: process.env.PATH ?? "",
     },
     () => NOW,
+    { which: () => null },
   );
   const workflow = fakeWorkflow();
   const action: ActionContext = {
@@ -228,6 +231,189 @@ describe("auto mode's safety checks beside the history (F6)", () => {
   test("no file counted anything yet: the count is unknown, never 0", () => {
     const w = world();
     expect(historyAnswer(w.deps, "1d", "target").safetyChecks).toEqual({ checks: null, days: 0 });
+  });
+});
+
+function finishedAgent(w: ReturnType<typeof world>, state = "done") {
+  const bin = tempDir("portal-agent");
+  const binary = join(bin, "claude");
+  const rows = [
+    {
+      id: "abcd1234",
+      sessionId: "finished-session",
+      name: "background task",
+      cwd: w.repoB,
+      kind: "background",
+      state,
+    },
+  ];
+  writeFileSync(
+    binary,
+    `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(rows))});\n`,
+  );
+  chmodSync(binary, 0o755);
+  w.deps.action.portal.which = (name) => (name === "claude" ? binary : null);
+  const job = join(w.paths.claudeConfigDir, "jobs", "abcd1234");
+  mkdirSync(job, { recursive: true });
+  writeFileSync(
+    join(job, "state.json"),
+    JSON.stringify({
+      sessionId: "finished-session",
+      state,
+      updatedAt: "2026-10-21T12:00:00.000Z",
+      lastTerminalAt: "2026-10-21T12:00:00.000Z",
+    }),
+  );
+  return binary;
+}
+
+function cleanupPlugin(w: ReturnType<typeof world>, answer: unknown) {
+  const folder = tempDir("cleanup-plugin");
+  mkdirSync(join(folder, "dist"));
+  writeFileSync(join(folder, "bunfig.toml"), "");
+  writeFileSync(
+    join(folder, "dist", "cli.js"),
+    `console.log(${JSON.stringify(JSON.stringify(answer))});`,
+  );
+  w.deps.action.portal.pluginFolder = () => ({ folder });
+}
+
+describe("cleanup data for the portal", () => {
+  test("Needs reads the shared stopped item from the CLI child, with no removal", async () => {
+    const w = world();
+    const stopped = {
+      crew: { id: "crew-stopped", name: "C my-app stopped", shortId: "aaaa1234", state: "stopped" },
+      repo: w.repoB,
+      since: "2026-10-21T12:00:00.000Z",
+      days: 2,
+      unmergedCommits: 3,
+      line: "shared stopped reminder",
+      discard: { facts: null, error: "no archive preview in this fixture" },
+    };
+    cleanupPlugin(w, { stopped: [stopped], error: null });
+    const answer = await needsAnswer(w.deps);
+    expect(answer.stopped).toEqual([stopped]);
+    expect(answer.stoppedError).toBeNull();
+  });
+
+  test("Needs preserves the shared discard words, file facts and confirmation token exactly", async () => {
+    const w = world();
+    const facts = {
+      head: "b".repeat(40),
+      archiveRef: "refs/crew-discarded/crew/stopped",
+      token: "a".repeat(64),
+      unmergedCommits: { count: 1, subjects: ["work"] },
+      changedFiles: ["untracked.txt"],
+      ignoredFiles: ["small.txt"],
+      lines: ["shared confirmation words", "shared recovery instructions"],
+      question: "shared archive question",
+    };
+    cleanupPlugin(w, {
+      stopped: [
+        {
+          crew: { id: "crew-stopped", name: "C my-app stopped", shortId: null, state: "stopped" },
+          repo: w.repoB,
+          since: "2026-10-21T12:00:00.000Z",
+          days: 2,
+          unmergedCommits: 1,
+          line: "shared reminder",
+          discard: { facts, error: null },
+        },
+      ],
+      error: null,
+    });
+    expect((await needsAnswer(w.deps)).stopped[0]?.discard).toEqual({ facts, error: null });
+  });
+
+  test("Needs reports an unreadable cleanup answer, never an apparently empty healthy list", async () => {
+    const w = world();
+    cleanupPlugin(w, { stopped: [{ crew: { id: "broken" } }], error: null });
+    const answer = await needsAnswer(w.deps);
+    expect(answer.stopped).toEqual([]);
+    expect(answer.stoppedError).toContain("answer");
+  });
+
+  test("Work uses the finished sessions builder across repositories, without a gateway", async () => {
+    const w = world();
+    finishedAgent(w);
+    const answer = await workAnswer(w.deps);
+    expect(answer.finishedSessions).toEqual([
+      {
+        id: "abcd1234",
+        sessionId: "finished-session",
+        name: "background task",
+        folder: w.repoB,
+        state: "done",
+        finishedAt: Date.UTC(2026, 9, 21, 12),
+        ageMs: 172800000,
+      },
+    ]);
+    expect(answer.finishedSessionsError).toBeNull();
+    // Stored ownership by full session id excludes a renamed crew session too.
+    await createCrew(
+      w.paths.stateDir,
+      { ...newCrew(w.repoA, "renamed-crew", "lead-a"), sessionId: "finished-session" },
+      NOW,
+    );
+    expect((await workAnswer(w.deps)).finishedSessions).toEqual([]);
+  });
+
+  test("a broken crew record or unknown agent view never offers a finished session", async () => {
+    const w = world();
+    const binary = finishedAgent(w);
+    const dir = join(crewStoreDir(w.paths.stateDir, w.repoA), "crew");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "broken.json"), "{");
+    const broken = await workAnswer(w.deps);
+    expect(broken.finishedSessions).toEqual([]);
+    expect(broken.finishedSessionsError).toContain("crew");
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log("not JSON");`);
+    const fresh = world();
+    fresh.deps.action.portal.which = () => binary;
+    const unknown = await workAnswer(fresh.deps);
+    expect(unknown.finishedSessions).toEqual([]);
+    expect(unknown.finishedSessionsError).toContain("agent");
+  });
+
+  test("leadGone uses both ended and persisted absence causes, and GET never observes or writes", async () => {
+    const w = world();
+    const binary = finishedAgent(w);
+    const lead = await writeLead(
+      w.paths.stateDir,
+      {
+        cwd: w.repoA,
+        name: "LEAD my-app plan",
+        plan: "plan",
+        repo: w.repoA,
+        sessionId: "lead-a",
+        tag: "a",
+      },
+      NOW,
+    );
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-old", "lead-a"), NOW);
+    const file = leadFile(w.paths.stateDir, w.repoA, lead.sessionId);
+    writeFileSync(file, JSON.stringify({ ...lead, endedAt: "2026-10-21T12:00:00.000Z" }));
+    expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(true);
+    writeFileSync(
+      file,
+      JSON.stringify({ ...lead, sessionUnknownSince: "2026-10-21T12:00:00.000Z" }),
+    );
+    const before = readFileSync(file, "utf8");
+    expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log("not JSON");`);
+    expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log('[{"state":"done"}]');`);
+    expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
+    writeFileSync(
+      binary,
+      `#!${process.execPath}\nconsole.log('[{"id":"lead-a","sessionId":"lead-a"}]');`,
+    );
+    expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log("[]");`);
+    const page = await crewAnswerFor(w.deps, "crew-old");
+    if ("error" in page) throw new Error(page.error);
+    expect(page.crew.leadGone).toBe(true);
   });
 });
 

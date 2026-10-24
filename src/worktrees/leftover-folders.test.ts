@@ -39,6 +39,68 @@ describe("leftover folder marks", () => {
 });
 
 describe("mount points", () => {
+  test("a registered parked worktree with unknown mounts stays", () => {
+    const repo = tempDir("unknown-registered-mount");
+    git(repo, "init", "-b", "main");
+    writeFileSync(join(repo, "file.txt"), "x\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "initial");
+    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const pass = finishParked(
+      repo,
+      [parked],
+      {
+        against: { label: "main", ref: "main" },
+        base: "main",
+        claudeConfigDir: tempDir("config"),
+        env: cleanGitEnv(),
+        facts: { ...QUIET, mounts: "unknown" },
+        idleLimit: 0,
+      },
+      () => {},
+    );
+    expect(pass.removed).toEqual([]);
+    expect(pass.kept).toEqual([
+      {
+        path: parked,
+        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it",
+      },
+    ]);
+    expect(readFileSync(join(parked, "file.txt"), "utf8")).toBe("x\n");
+  });
+
+  test("a registered parked scan failure is a refusal, not an empty success", () => {
+    const repo = tempDir("parked-scan-failure");
+    git(repo, "init", "-b", "main");
+    writeFileSync(join(repo, "file.txt"), "x\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "initial");
+    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const said: string[] = [];
+    const pass = finishParked(
+      repo,
+      [parked],
+      {
+        against: { label: "missing-base", ref: "refs/heads/missing-base" },
+        base: "missing-base",
+        claudeConfigDir: tempDir("config"),
+        env: cleanGitEnv(),
+        facts: QUIET,
+        idleLimit: 0,
+      },
+      (line) => said.push(line),
+    );
+    expect(pass).toEqual({
+      kept: [{ path: parked, why: "it could not be judged: missing-base is not known here" }],
+      removed: [],
+      said: [],
+    });
+    expect(said).toEqual([]);
+    expect(existsSync(parked)).toBe(true);
+  });
+
   test("a registered parked worktree with a bind mount stays", () => {
     const repo = tempDir("registered-mount");
     git(repo, "init", "-b", "main");
