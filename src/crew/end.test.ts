@@ -91,8 +91,12 @@ function leadMerges(repo: string, branch: string): void {
  * person's terminal or dev server does. The environment is built here, not inherited, so the
  * session that runs the suite cannot leak its own marker in.
  */
-async function startProgram(cwd: string, crew: null | string): Promise<Bun.Subprocess> {
-  const child = Bun.spawn(["sh", "-c", "sleep 60"], {
+async function startProgram(
+  cwd: string,
+  crew: null | string,
+  command = "sleep 60",
+): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", command], {
     cwd,
     env: {
       PATH: process.env.PATH ?? "",
@@ -759,127 +763,142 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     }
   });
 
-  describe("where a program's environment cannot be read (not Linux, or not this user's)", () => {
+  describe("D62: what proves a program is the session's own", () => {
     /** The record, its worktree and the context a direct call needs, with `programs` running. */
-    async function direct(programs: RunningProgram[]) {
+    async function direct(programs: RunningProgram[], env: Record<string, string> = {}) {
       const world = await boardWorld();
-      // Recorded an hour before NOW: the session's lifetime starts there.
+      // Recorded an hour before NOW.
       const record = await world.addCrew({ atMs: NOW - 60 * MINUTE, state: "done" });
-      const ctx = world.ctx({ scanFacts: { ...QUIET_MACHINE, programs } });
-      return { ctx, record, world, worktree: places(world.repo).worktree };
+      const ctx = world.ctx({ scanFacts: { ...QUIET_MACHINE, programs } }, env);
+      return { ctx, record, world };
     }
     const unreadable = () => null;
 
-    test("the session's lifetime decides: a program started while it ran is its own", async () => {
+    test("an unreadable environment is never proof, whenever the program started", async () => {
       const worktree = tempDir("leftover-lifetime");
       const own = await startProgram(worktree, null);
       try {
-        const { ctx, record, world } = await direct([]);
-        // Its turn ended at NOW; it was recorded an hour before.
-        await appendCrewEvent(
-          world.paths.stateDir,
-          world.repo,
-          {
-            crew: record.id,
-            lead: LEAD_SESSION,
-            name: record.name,
-            state: "done",
-            text: "done",
-            type: "report",
-          },
-          NOW,
-        );
-        const run = (startedAt: number) =>
-          stopLeftoverProcesses(
-            { ...record, worktree },
-            {
-              ...ctx,
-              scanFacts: {
-                ...QUIET_MACHINE,
-                programs: [
-                  { cwd: worktree, path: join(worktree, "check.sh"), pid: own.pid, startedAt },
-                ],
-              },
-            },
-            unreadable,
-          );
-        // Before the session began: a terminal that was already open, not its child.
-        expect((await run(NOW - 90 * MINUTE)).line).toBeNull();
-        // After its turn ended: started since, by somebody else.
-        expect((await run(NOW + 5 * MINUTE)).line).toBeNull();
-        expect(own.exitCode).toBeNull();
-        // While it ran.
-        expect((await run(NOW - 5 * MINUTE)).line).toBe(
-          "C my-app B1 help: stopped its own leftover programs (check.sh)",
-        );
-        expect(await ended(own)).toBe(true);
-      } finally {
-        if (own.exitCode === null) own.kill("SIGKILL");
-      }
-    });
-
-    test("a session an answer brought back ends again: what it started in between is its own", async () => {
-      const worktree = tempDir("leftover-resumed");
-      const own = await startProgram(worktree, null);
-      try {
-        const { ctx, record, world } = await direct([]);
-        const note = (state: string, atMs: number, type: "report" | "state") =>
-          appendCrewEvent(
-            world.paths.stateDir,
-            world.repo,
-            { crew: record.id, lead: LEAD_SESSION, name: record.name, state, text: state, type },
-            atMs,
-          );
-        // It reported done, was answered back to work, and reported done again.
-        await note("done", NOW - 30 * MINUTE, "report");
-        await note("working", NOW - 20 * MINUTE, "state");
-        await note("done", NOW - 10 * MINUTE, "report");
-        const resumed = {
-          ...ctx,
-          scanFacts: {
-            ...QUIET_MACHINE,
-            programs: [
-              {
-                cwd: worktree,
-                path: join(worktree, "check.sh"),
-                pid: own.pid,
-                // Started in its second run, before that one ended.
-                startedAt: NOW - 15 * MINUTE,
-              },
-            ],
-          },
-        };
-        const stopped = await stopLeftoverProcesses({ ...record, worktree }, resumed, unreadable);
-        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
-        expect(await ended(own)).toBe(true);
-      } finally {
-        if (own.exitCode === null) own.kill("SIGKILL");
-      }
-    });
-
-    test("a program whose start is unknown is never stopped", async () => {
-      const worktree = tempDir("leftover-unknown");
-      const own = await startProgram(worktree, null);
-      try {
-        const { ctx, record } = await direct([]);
-        const stopped = await stopLeftoverProcesses(
-          { ...record, worktree },
-          {
-            ...ctx,
-            scanFacts: {
-              ...QUIET_MACHINE,
-              // A pid no `ps` knows would have a start; this one is a real pid with none given
-              // and the reader below cannot find one either.
-              programs: [{ cwd: worktree, path: join(worktree, "check.sh"), pid: own.pid }],
-            },
-          },
-          unreadable,
-          () => new Map(),
-        );
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: own.pid },
+        ]);
+        // The environment cannot be read (not Linux, or not this user's process). Whatever the
+        // program's age or parent, it may be a person's editor or dev server: it stays.
+        const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx, unreadable);
         expect(stopped.line).toBeNull();
         expect(own.exitCode).toBeNull();
       } finally {
-        own.kill("SIGKILL");
+        if (own.exitCode === null) own.kill("SIGKILL");
+      }
+    });
+
+    test("a readable environment decides, even for a program that descends from the session", async () => {
+      const worktree = tempDir("leftover-reused-pid");
+      // A person's program that happens to sit under the session's pid (a reused pid): it carries
+      // no id of this crew session, so the session's descent cannot make it the session's own.
+      const stranger = await startProgram(worktree, null);
+      try {
+        const stopped = JSON.stringify([
+          {
+            id: "a1b2c3d4",
+            pid: 4242,
+            sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+            state: "stopped",
+          },
+        ]);
+        const { ctx, record } = await direct(
+          [
+            {
+              cwd: worktree,
+              parentPid: 4242,
+              path: join(worktree, "server.sh"),
+              pid: stranger.pid,
+            },
+          ],
+          { FAKE_AGENTS_JSON: stopped },
+        );
+        const result = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+        expect(result.line).toBeNull();
+        expect(stranger.exitCode).toBeNull();
+      } finally {
+        stranger.kill("SIGKILL");
+      }
+    });
+
+    test.skipIf(process.platform !== "linux")(
+      "SIGKILL goes to the process that got the SIGTERM",
+      async () => {
+        const worktree = tempDir("leftover-sigkill");
+        // It ignores SIGTERM, so only SIGKILL ends it.
+        const stubborn = await startProgram(
+          worktree,
+          "B1-help-1a2b3c",
+          "trap '' TERM; exec sleep 60",
+        );
+        try {
+          const { ctx, record } = await direct([
+            { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+          ]);
+          const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+          expect(stopped.line).toBe(
+            "C my-app B1 help: stopped its own leftover programs (check.sh)",
+          );
+          expect(await ended(stubborn)).toBe(true);
+        } finally {
+          if (stubborn.exitCode === null) stubborn.kill("SIGKILL");
+        }
+      },
+    );
+
+    test("a pid another process took while this one was given time to end is not killed", async () => {
+      const worktree = tempDir("leftover-pid-reused");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        // The first reading is the process that is signalled; the second, after the grace, is
+        // somebody else's start time on the same pid.
+        const reads = ["proc:100", "proc:200"];
+        const startOf = () => reads.shift() ?? null;
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          startOf,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(reads).toEqual([]);
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
+      }
+    });
+
+    test("a start time that was never read is no licence for SIGKILL", async () => {
+      const worktree = tempDir("leftover-start-unread");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          () => null,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
       }
     });
   });

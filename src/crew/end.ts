@@ -25,14 +25,14 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
-import { IGNORE_CASE, isInside, runGit } from "../hooks/git";
+import { IGNORE_CASE, isInside, listWorktrees, runGit } from "../hooks/git";
+import { processIsGone } from "../jobs/windows";
+import { processStartTime, type StartTimeReader } from "../setup/lock";
 import {
-  descendsFrom,
   programName,
   programsUsing,
   type RunningProgram,
   runningPrograms,
-  startTimes,
 } from "../worktrees/machine-facts";
 import { type WorkOnRef, workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
@@ -48,7 +48,7 @@ import {
   type CrewRecord,
   type LeadRecord,
   listLeads,
-  readCrewEvents,
+  readCrew,
   readLead,
   updateCrew,
 } from "./store";
@@ -194,14 +194,20 @@ export interface LeftoversStopped {
   programs: "unknown" | RunningProgram[];
 }
 
-/** True while `pid` still has a process. */
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * The programs a finished crew session's own turn left in its worktree, found without touching
+ * one (`findOwnLeftovers`). The removal asks the verdict before it stops any of them
+ * (`stopOwnLeftovers`), so a removal that refuses has stopped nothing.
+ */
+export interface OwnLeftovers {
+  /** The programs of the machine as read; "unknown" when they cannot be listed. */
+  programs: "unknown" | RunningProgram[];
+  /**
+   * The programs to stop: every program that uses the worktree, when each one is the session's own
+   * and the session is finished. Empty when there is none, or when one of them is not the
+   * session's: half a stop helps nobody.
+   */
+  own: RunningProgram[];
 }
 
 /** Sends `signal` to `pid`; false when there is no such process (or it is not ours). */
@@ -215,42 +221,13 @@ function signal(pid: number, sig: NodeJS.Signals): boolean {
 }
 
 /**
- * The states whose event says the crew session's own session ended: a report that closes its
- * phase, or a stop. **Not `merged` or `removed`:** those are the lead's acts, and a program the
- * person started after the session ended must not look like the session's own.
- */
-const SESSION_END_STATES: readonly string[] = ["done", "failed", "handoff", "stopped"];
-
-/**
- * When the crew session's own session last ended: the newest `state` or `report` event of its own
- * whose state is one of `SESSION_END_STATES` (a session an answer brought back ends again, and
- * what it started in between is its own). The record's `updatedAt` stands in when the log has no
- * such event (a store that cannot be read, or a record written before the log). Null when
- * neither reads.
- */
-export function sessionEndedAt(record: CrewRecord, ctx: CrewContext): null | number {
-  try {
-    let ended: null | number = null;
-    for (const event of readCrewEvents(ctx.paths.stateDir, record.repo, 0).events) {
-      if (event.crew !== record.id) continue;
-      if (event.type !== "state" && event.type !== "report") continue;
-      if (!SESSION_END_STATES.includes(event.state)) continue;
-      const at = Date.parse(event.at);
-      if (Number.isFinite(at) && (ended === null || at > ended)) ended = at;
-    }
-    if (ended !== null) return ended;
-  } catch {
-    // The log cannot be read: the record's own last change is the next best witness.
-  }
-  const at = Date.parse(record.updatedAt);
-  return Number.isFinite(at) ? at : null;
-}
-
-/**
  * A process's environment from `/proc/<pid>/environ`: null when it cannot be read — not Linux,
  * a process of another user, or one that is gone. Every program a crew session starts inherits
  * `CC_SMART_DEV_KIT_CREW` (its settings set it for its Bash, `session.ts`), and keeps it when
  * its parent is gone and init adopts it: that is how a leftover is told from a person's shell.
+ * macOS has no `/proc`, so nothing there is proved the session's own and its removal keeps
+ * refusing, as it did before D62; `ps -E` could read an environment there, but no reader has
+ * been proved on the real output yet.
  */
 export function procEnviron(pid: number): null | Record<string, string> {
   try {
@@ -267,97 +244,114 @@ export function procEnviron(pid: number): null | Record<string, string> {
 }
 
 /**
- * Whether `program`, which runs from the worktree of a finished crew session, is the session's own
- * (D62). In this order:
+ * Whether the program `pid`, which runs from the worktree of a finished crew session, is the
+ * session's own (D62): its environment carries the session's crew id, and nothing else proves it.
  *
- * 1. it descends from the session's process, as far as the listing says;
- * 2. its environment can be read: it is the session's own when it carries the session's crew id
- *    — and a person's shell or dev server, another crew session's program, or anything else
- *    that carries none, is not, however long it has run;
- * 3. its environment cannot be read (not Linux, or not this user's): it started while the
- *    session lived — after the record was made, and before the session last ended.
+ * - **A readable environment decides.** A person's shell, editor or dev server, and another crew
+ *   session's program, carry no id of this session, however long they have run and whatever they
+ *   descend from: a pid can be reused, so a program that merely looks like the session's child
+ *   proves nothing against an environment that says otherwise.
+ * - **An unreadable environment is no proof.** Not Linux, a process of another user, or one that
+ *   has just ended: when started while the session lived says nothing either, since an editor or
+ *   a dev server the person started from that folder in that time looks the same. It is not the
+ *   session's own, and the removal keeps refusing.
  */
 function isTheSessionsOwn(
   record: CrewRecord,
-  program: RunningProgram,
-  programs: RunningProgram[],
-  sessionPid: null | number,
-  lifetime: { from: null | number; to: null | number },
+  pid: number,
   environOf: (pid: number) => null | Record<string, string>,
-  startedAt: (program: RunningProgram) => number | undefined,
 ): boolean {
-  if (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) return true;
-  const environment = environOf(program.pid);
-  if (environment !== null) return crewIdOf(environment) === record.id;
-  const started = startedAt(program);
-  const { from, to } = lifetime;
-  return started !== undefined && from !== null && to !== null && started >= from && started <= to;
+  const environment = environOf(pid);
+  return environment !== null && crewIdOf(environment) === record.id;
 }
 
 /**
- * Stops the programs a finished crew session's own turn left running (D62): a `bun run check` or
- * its `sh` and `bash`, still working in the worktree after the turn ended. It stops only when
- * **every** program there belongs to the session:
+ * Finds the programs a finished crew session's own turn left running (D62): a `bun run check` or
+ * its `sh` and `bash`, still working in the worktree after the turn ended. They are the session's
+ * to stop only when **every** program there belongs to it:
  *
  * - the session's Claude process is gone or stopped (agent view, read the way `crew rm` reads
  *   it) — a live one starts its own children, and stopping them would break it;
- * - each program is the session's own (`isTheSessionsOwn`: it descends from the session, or its
- *   environment carries the session's crew id, or — where that cannot be read — it started
- *   while the session lived).
+ * - each program is the session's own (`isTheSessionsOwn`: its readable environment carries the
+ *   session's crew id).
  *
  * A program that does not belong — a dev server or a shell the person started there, a container,
- * another crew session's program — is left alone, and the caller keeps refusing as before. One
- * such program keeps them all: half a stop helps nobody. SIGTERM first, `LEFTOVER_GRACE_MS`, then
- * SIGKILL for what is still there: one line says what was stopped. A test hands in the programs
- * (`ctx.scanFacts.programs`), and the pids are its own child processes, so no test signals a
- * process it did not start. `environOf` and `startTimesOf` are the machine's readers, replaced
- * only by a test.
+ * another crew session's program — keeps `own` empty, and the caller keeps refusing as before.
+ * One such program keeps them all. This only reads: nothing is signalled here. A test hands in
+ * the programs (`ctx.scanFacts.programs`), and `environOf` is the machine's reader, replaced only
+ * by a test.
  */
-export async function stopLeftoverProcesses(
+export function findOwnLeftovers(
   record: CrewRecord,
   ctx: CrewContext,
   environOf: (pid: number) => null | Record<string, string> = procEnviron,
-  startTimesOf: typeof startTimes = startTimes,
-): Promise<LeftoversStopped> {
+): OwnLeftovers {
   const programs = ctx.scanFacts?.programs ?? runningPrograms();
-  if (programs === "unknown") return { line: null, programs };
+  if (programs === "unknown") return { own: [], programs };
   const inside = programsUsing(programs, record.worktree, IGNORE_CASE, ctx.pid);
-  if (inside.length === 0) return { line: null, programs };
+  if (inside.length === 0) return { own: [], programs };
   // A live session is not a finished one: its children are the work it is doing now.
   const rows = agentRows(ctx);
-  if (rows === null) return { line: null, programs };
-  const row = rowOf(rows, record);
-  if (isLiveRow(row)) return { line: null, programs };
-  const sessionPid = row?.pid ?? null;
-  // The session lived from when it started (else when it was recorded) to when it last ended.
-  const began = Date.parse(record.startedAt ?? record.createdAt);
-  const lifetime = {
-    from: Number.isFinite(began) ? began : null,
-    to: sessionEndedAt(record, ctx),
-  };
-  // When each started, asked only for the programs whose environment cannot be read and whose
-  // start nobody gave: a test gives it, and on the machine it is read for exactly these.
-  const unread = inside.filter((one) => one.startedAt === undefined && environOf(one.pid) === null);
-  const read = startTimesOf(
-    unread.map((one) => one.pid),
-    ctx.now(),
-  );
-  const startedAt = (program: RunningProgram): number | undefined =>
-    program.startedAt ?? read.get(program.pid);
-  const theirs = inside.every((program) =>
-    isTheSessionsOwn(record, program, programs, sessionPid, lifetime, environOf, startedAt),
-  );
-  if (!theirs) return { line: null, programs };
-  const pids = [...new Set(inside.map((one) => one.pid))].filter((pid) => pid !== process.pid);
-  const signalled = new Set(pids.filter((pid) => signal(pid, "SIGTERM")));
+  if (rows === null || isLiveRow(rowOf(rows, record))) return { own: [], programs };
+  const theirs = inside.every((program) => isTheSessionsOwn(record, program.pid, environOf));
+  return { own: theirs ? inside : [], programs };
+}
+
+/**
+ * The machine's programs without the ones `found` names as the session's own: what the verdict
+ * judges the worktree by, before any of them is stopped. Without programs of its own it is the
+ * list as it was read.
+ */
+export function programsWithoutOwn(found: OwnLeftovers): "unknown" | RunningProgram[] {
+  const { own, programs } = found;
+  if (programs === "unknown" || own.length === 0) return programs;
+  const going = new Set(own.map((one) => one.pid));
+  return programs.filter((one) => !going.has(one.pid));
+}
+
+/**
+ * Stops the programs `found` names (`findOwnLeftovers`): SIGTERM first, `LEFTOVER_GRACE_MS`, then
+ * SIGKILL for what is still there — and only for the very process that got the SIGTERM. A pid can
+ * be given to another process while this one is given time to end, so each is known by its start
+ * time (`startOf`, the lock's reader) before the first signal and again before SIGKILL; a pid
+ * whose start time was never read, or has changed, is not signalled again. One line says what
+ * was stopped. The pids are the test's own child processes, so no test signals a process it did
+ * not start.
+ */
+export async function stopOwnLeftovers(
+  record: CrewRecord,
+  found: OwnLeftovers,
+  ctx: CrewContext,
+  startOf: StartTimeReader = processStartTime,
+): Promise<LeftoversStopped> {
+  const { own, programs } = found;
+  if (programs === "unknown" || own.length === 0) return { line: null, programs };
+  const known = new Map<number, null | string>();
+  for (const pid of new Set(own.map((one) => one.pid))) {
+    if (pid !== process.pid) known.set(pid, startOf(pid));
+  }
+  const signalled = new Set([...known.keys()].filter((pid) => signal(pid, "SIGTERM")));
   if (signalled.size === 0) return { line: null, programs };
   await ctx.sleep(LEFTOVER_GRACE_MS);
-  for (const pid of signalled) if (alive(pid)) signal(pid, "SIGKILL");
-  const names = [...new Set(inside.map((one) => programName(one)))].sort();
+  for (const pid of signalled) {
+    const born = known.get(pid) ?? null;
+    if (born !== null && !processIsGone(pid) && startOf(pid, born) === born) signal(pid, "SIGKILL");
+  }
+  const names = [...new Set(own.map((one) => programName(one)))].sort();
   return {
     line: `${record.name}: ${LEFTOVER_STOP_MARK} (${names.join(", ")})`,
     programs: programs.filter((one) => !signalled.has(one.pid)),
   };
+}
+
+/** Reads ownership before stopping a finished session's leftover programs. */
+export async function stopLeftoverProcesses(
+  record: CrewRecord,
+  ctx: CrewContext,
+  environOf: (pid: number) => null | Record<string, string> = procEnviron,
+  startOf: StartTimeReader = processStartTime,
+): Promise<LeftoversStopped> {
+  return stopOwnLeftovers(record, findOwnLeftovers(record, ctx, environOf), ctx, startOf);
 }
 
 /** `crew stop <name|id>`; the exit code. */
@@ -549,31 +543,55 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
   return code;
 }
 
-/** Where the lead merges: its folder, the branch checked out there, and the commit it is at. */
+/** Where the lead merges: the checked-out folder when known, and the target commit. */
 export interface LeadRef {
-  folder: string;
+  folder: null | string;
   label: string;
   sha: string;
 }
 
 /**
- * The branch the crew session's work is merged into (D24): the ref it was cut from
- * (`record.baseRef`), else the branch checked out in the lead's own folder. A reason when neither
- * is there — nothing is judged against a guess.
+ * The first record's base is the lead's branch. A continuation is cut from the previous crew
+ * branch, but its work still goes to that first base. A broken or cyclic chain proves nothing.
  */
+export function chainBaseRef(record: CrewRecord, ctx: CrewContext): string | { why: string } {
+  const seen = new Set<string>();
+  let first = record;
+  while (first.continues != null) {
+    if (seen.has(first.id)) return { why: "the continuation chain has a cycle" };
+    seen.add(first.id);
+    const previous = readCrew(ctx.paths.stateDir, record.repo, first.continues);
+    if (previous === null)
+      return { why: `the continuation's previous record ${first.continues} is missing` };
+    first = previous;
+  }
+  return first.baseRef;
+}
+
+/** The branch the chain was cut from, never the previous continuation's branch. */
 export function leadRef(record: CrewRecord, ctx: CrewContext): LeadRef | { why: string } {
-  const base = runGit(
-    record.repo,
-    ["rev-parse", "--verify", "--quiet", `${record.baseRef}^{commit}`],
-    ctx.env,
-    GIT_TIMEOUT_MS,
-  );
-  if (base.ok) return { folder: record.repo, label: record.baseRef, sha: base.out };
+  let ref: string | { why: string };
   let lead: LeadRecord | null;
   try {
+    ref = chainBaseRef(record, ctx);
     lead = readLead(ctx.paths.stateDir, record.repo, record.leadSessionId);
   } catch (error) {
     return { why: reasonOf(error) };
+  }
+  if (typeof ref !== "string") return ref;
+  const base = runGit(
+    record.repo,
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (base.ok) {
+    try {
+      const checkedOut = listWorktrees(record.repo, ctx.env).find((one) => one.branch === ref);
+      return { folder: checkedOut?.path ?? null, label: ref, sha: base.out };
+    } catch (error) {
+      return { why: reasonOf(error) };
+    }
   }
   if (lead !== null && existsSync(lead.cwd)) {
     const sha = runGit(
@@ -589,12 +607,15 @@ export function leadRef(record: CrewRecord, ctx: CrewContext): LeadRef | { why: 
         ctx.env,
         GIT_TIMEOUT_MS,
       );
-      const label = branch.ok ? branch.out : `HEAD at ${sha.out.slice(0, 7)}`;
-      return { folder: lead.cwd, label, sha: sha.out };
+      return {
+        folder: lead.cwd,
+        label: branch.ok ? branch.out : `HEAD at ${sha.out.slice(0, 7)}`,
+        sha: sha.out,
+      };
     }
   }
   return {
-    why: `${record.leadName} has no folder here any more, and ${record.baseRef} is no commit: there is no branch to merge into`,
+    why: `${record.leadName} has no folder here any more, and ${ref} is no commit: there is no branch to merge into`,
   };
 }
 
