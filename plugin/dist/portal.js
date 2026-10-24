@@ -21595,6 +21595,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text, token: text }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -21830,6 +21831,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state !== before.state)
+      delete merged.resumeClaim;
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
@@ -21896,6 +21899,7 @@ function readCrewEvents(stateDir, repo, offset = 0) {
     closeSync4(fd);
   }
 }
+var RESUME_CLAIM_MS = 2 * 60000;
 function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }

@@ -55,22 +55,27 @@ export interface CrewContext {
   error: (line: string) => void;
 }
 
-/** What a writer to stdout needs: a stream with Node's `write` and its callback. */
+/** What a writer to stdout needs: a stream with Node's `write`, its callback and its error event. */
 interface Writable {
+  on: (event: "error", listener: (error: Error) => void) => unknown;
   write: (text: string, done: (error?: Error | null) => void) => unknown;
 }
 
 /**
- * A printer to `stream` that notices when nobody reads it any more. Bun's `console.log` drops a
- * write to a closed pipe without a word, and so does the error event of `process.stdout`; the
- * write's own callback is told (EPIPE, proved on Bun 1.4.3). The failure is kept, not thrown — a
- * callback has no caller to throw to — and `closed` says it.
+ * A printer to `stream` that notices when nobody reads it any more (proved on Bun 1.4.3, a real
+ * closed pipe). Bun's `console.log` drops such a write without a word. `process.stdout.write`
+ * tells its callback (EPIPE) and emits `error` — and an `error` nobody listens to ends the
+ * process at once, with a stack trace, wherever it next prints. So the printer listens: the
+ * failure is kept, never thrown, and `closed` says it.
  */
 export function stdoutPrinter(stream: Writable): {
   closed: () => boolean;
   print: (line: string) => void;
 } {
   let failed = false;
+  stream.on("error", () => {
+    failed = true;
+  });
   return {
     closed: () => failed,
     print: (line) => {

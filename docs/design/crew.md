@@ -167,7 +167,9 @@ repository, under the state folder:
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
   open, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
-  § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
+  § Waiting out a limit; and, while a resume of it runs, `resumeClaim`: the token and the time of
+  that resume, optional, dropped by the write that changes the record's state — § The watch),
+  when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
   of the old crew session, set by a hand-off and by nothing else), whether the lead had merged its
   work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
@@ -689,7 +691,7 @@ monitor had ended (parent pid 1), up to 30 hours old, up to 5 for one lead — e
 resuming and stopping crew sessions, each resume wave living in its own memory (five watches
 resumed five sessions at once), and each writing the same state file over the others. So:
 
-- **A lease per lead** in the crew store (`<store>/watch/<lead session id>.lease.json`) names
+- **A lease per lead** in the crew store (`<store>/watch-lease/<lead session id>.json`) names
   the watch that acts: its process, as the store's lock records a holder (`currentHolder`,
   `holderIsGone`, `src/setup/lock.ts`: pid, start time, host, pid namespace), and a token of its
   own. A watch takes it when it starts, whoever holds it — a monitor the lead restarts is its
@@ -703,10 +705,24 @@ resumed five sessions at once), and each writing the same state file over the ot
   only the lease holder writes `<store>/watch/<lead session id>.json`.
 - **A watch ends when nobody started or reads it**: when its parent pid changes (Claude Code ends
   a monitor by ending its shell, and the watch is re-parented), and when a line to stdout found
-  nobody reading (EPIPE). Bun's `console.log` drops such a write without a word, so the CLI's
-  crew printer writes through `process.stdout.write` and keeps the failure its callback reports
-  (`stdoutPrinter`, `context.ts`). One exit path: the checks throw `WatchEnd`, and
-  `runCrewWatch` catches it once, says why, and ends with 0.
+  nobody reading (EPIPE). Bun's `console.log` drops such a write without a word, and
+  `process.stdout.write` reports it to its callback and as an `error` event — one nobody listens
+  to ends the process at once, with a stack trace. So the CLI's crew printer writes through
+  `process.stdout.write`, listens for that event, and keeps the failure (`stdoutPrinter`,
+  `context.ts`; proved on Bun 1.4.3 with a real closed pipe). One exit path: the checks throw
+  `WatchEnd`, and `runCrewWatch` catches it once, says why, and ends with 0. **On Windows the
+  parent check never fires** — a process there is not re-parented, so its parent pid never
+  changes — and the lease and the closed output are what end a watch.
+- **A store too busy to answer** (its lock held past its wait) is no reason to end a watch: a
+  monitor that ended is not started again. The watch acts on nothing that time — no pass, no
+  start, no resume, no state write — and asks again at its next look.
+- **One resume of a record at a time**: before `claude` runs, every resume claims the record in
+  the store, in the state its caller judged it in (`claimResume`, a `resumeClaim` on the
+  record). A second resume — the person's `crew resume --paused` beside the watch, or a watch
+  that took the lease from one resuming now — is refused with one line, so two copies never
+  start. A resume that started nothing gives the claim back; the write that changes the record's
+  state ends it; and one older than `RESUME_CLAIM_MS` (two minutes: a resume's two Claude calls
+  are bounded by 30 s each) is over.
 
 #### Waiting out a limit
 

@@ -24312,6 +24312,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text, token: text }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -24591,6 +24592,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state !== before.state)
+      delete merged.resumeClaim;
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
@@ -24687,6 +24690,36 @@ function readCrewEvents(stateDir, repo, offset = 0) {
     closeSync5(fd);
   }
 }
+var RESUME_CLAIM_MS = 2 * 60000;
+async function claimResume(stateDir, repo, id, states, token, atMs) {
+  const file = crewFile(stateDir, repo, id);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before === null) {
+      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+    }
+    if (!states.includes(before.state))
+      return false;
+    const held = before.resumeClaim;
+    if (held !== undefined && held.token !== token) {
+      const since = Date.parse(held.at);
+      if (Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS)
+        return false;
+    }
+    writeRecord(file, checked(crewRecordSchema, { ...before, resumeClaim: { at: iso(atMs), token } }, file));
+    return true;
+  });
+}
+async function releaseResume(stateDir, repo, id, token) {
+  const file = crewFile(stateDir, repo, id);
+  await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before?.resumeClaim?.token !== token)
+      return;
+    const { resumeClaim: _ended, ...after } = before;
+    writeRecord(file, checked(crewRecordSchema, after, file));
+  });
+}
 async function setCrewMemory(stateDir, repo, id, memoryMb) {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -24778,7 +24811,7 @@ function writeWatchState(stateDir, repo, leadSessionId, state) {
 `);
 }
 function watchLeaseFile(stateDir, repo, leadSessionId) {
-  return join40(crewStoreDir(stateDir, repo), "watch", `${fileId(leadSessionId, "session id")}.lease.json`);
+  return join40(crewStoreDir(stateDir, repo), "watch-lease", `${fileId(leadSessionId, "session id")}.json`);
 }
 var watchLeaseFields = object({
   at: number2().int().min(0),
@@ -31743,7 +31776,7 @@ function routeFacts(input, context) {
 }
 
 // src/crew/watch.ts
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID5 } from "crypto";
 
 // src/worktrees/command.ts
 import { basename as basename12, resolve as resolve8 } from "path";
@@ -33096,6 +33129,7 @@ function isLiveRow(row) {
 }
 
 // src/crew/answer.ts
+import { randomUUID as randomUUID4 } from "crypto";
 import { existsSync as existsSync51 } from "fs";
 
 // src/crew/display.ts
@@ -33793,7 +33827,8 @@ async function runCrewAnswer(args, ctx) {
   try {
     await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session);
   } catch (error) {
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf3(error)}`);
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    ctx.error(`crew answer: the store could not record the answer: ${reasonOf3(error)}${as === "" ? "" : `; it was resumed${as}`}`);
     return 1;
   }
   if (session !== null) {
@@ -33866,17 +33901,56 @@ async function resumeSession(ctx, record, text) {
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
     };
   }
+  const { stateDir } = ctx.paths;
+  const token = randomUUID4();
+  let claimed;
+  try {
+    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the store could not claim its resume: ${reasonOf3(error)}`
+    };
+  }
+  if (!claimed) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`
+    };
+  }
+  const result = launchResume(ctx, record, text, {
+    claude,
+    folder: place.folder,
+    mcpFile: existsSync51(mcpFile) ? mcpFile : null,
+    sessionId: record.sessionId,
+    settingsFile
+  });
+  if (result.ok || result.unnamed)
+    return result;
+  try {
+    await releaseResume(stateDir, record.repo, record.id, token);
+  } catch (error) {
+    return {
+      ...result,
+      why: `${result.why}; its claim could not be given back (${reasonOf3(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60000} minutes`
+    };
+  }
+  return result;
+}
+function launchResume(ctx, record, text, launch) {
   const deps = claudeDeps(ctx);
-  const called = callClaude(deps, claude, resumeArgs({
+  const called = callClaude(deps, launch.claude, resumeArgs({
     effort: record.effort,
     model: record.model.named,
     permissionMode: record.permissionMode,
-    sessionId: record.sessionId
-  }, { mcpFile: existsSync51(mcpFile) ? mcpFile : null, settingsFile }, text), place.folder);
+    sessionId: launch.sessionId
+  }, { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile }, text), launch.folder);
   if (!called.ok)
     return { ok: false, unnamed: false, why: called.why };
   const { run } = called;
-  const command = `claude --bg --resume ${record.sessionId}`;
+  const command = `claude --bg --resume ${launch.sessionId}`;
   if (run.timedOut) {
     return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
   }
@@ -33889,7 +33963,7 @@ ${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
       why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`
     };
   }
-  return resumedSession(record, run, deps, claude, place.folder, command);
+  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
 }
 function resumedSession(record, run, deps, claude, folder, command) {
   const line = parseBackgrounded(run.stdout);
@@ -34731,6 +34805,9 @@ import { basename as basename11 } from "path";
 import { randomBytes } from "crypto";
 function stdoutPrinter(stream) {
   let failed = false;
+  stream.on("error", () => {
+    failed = true;
+  });
   return {
     closed: () => failed,
     print: (line) => {
@@ -37079,7 +37156,8 @@ async function resumePaused(paused, state, said, ctx, gateway, goesOn, agents, s
     if (!routerAnsweredSince(facts, state.routerRequests ?? null))
       return null;
   }
-  await goesOn();
+  if (!await goesOn())
+    return null;
   const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
   const one = await resumeOne(next, ctx, now, agents, say, held);
   if (one.unnamed)
@@ -37121,7 +37199,8 @@ async function sayResumed(record, text, session, ctx, now, say) {
     }, now, text);
     return true;
   } catch (error) {
-    say(`${record.name}: resumed, but the store could not record it: ${reasonOf3(error)}`);
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    say(`${record.name}: resumed${as}, but the store could not record it: ${reasonOf3(error)}`);
     return false;
   }
 }
@@ -37309,11 +37388,10 @@ async function watchPass(state, ctx, scope) {
   }
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  if (queued.length > 0 && scope.mayStart !== false)
-    await scope.goesOn?.();
   for (const record of queued) {
-    if (scope.mayStart !== false)
+    if (scope.mayStart !== false && await scope.goesOn?.() !== false) {
       await startQueued(record, ctx, resolved);
+    }
     const waitKey = `${record.id}:wait`;
     const stuck = stuckWaitLine(record, here);
     if (stuck !== null && said[waitKey] !== stuck) {
@@ -37329,7 +37407,7 @@ async function watchPass(state, ctx, scope) {
       delete said[key];
     }
   }
-  const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), scope.goesOn ?? (() => Promise.resolve()), agents, say);
+  const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), scope.goesOn ?? (() => Promise.resolve(true)), agents, say);
   offset = sayEvents(offset, scope, ctx, say);
   const resumedAt = marked?.resumedAt ?? state.resumedAt;
   const routerRequests = marked === null ? state.routerRequests : marked.routerRequests;
@@ -37378,7 +37456,7 @@ async function runCrewWatch(args, ctx) {
     return 2;
   }
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
-  const lease = { ...currentHolder(), at: ctx.now(), token: randomUUID4() };
+  const lease = { ...currentHolder(), at: ctx.now(), token: randomUUID5() };
   try {
     await takeWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
   } catch (error) {
@@ -37393,10 +37471,18 @@ async function runCrewWatch(args, ctx) {
     if (ctx.outputClosed?.() === true) {
       throw new WatchEnd("error", "crew watch: nobody reads its output any more; this watch ends");
     }
-    const kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    let kept;
+    try {
+      kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    } catch (error) {
+      if (error instanceof LockBusyError)
+        return false;
+      throw error;
+    }
     if (!kept.held) {
       throw new WatchEnd("print", `crew watch: a newer watch of this lead runs (pid ${kept.holder.pid}); this one ends`);
     }
+    return true;
   };
   try {
     return await watchLoop(args, ctx, {
@@ -37424,7 +37510,12 @@ async function watchLoop(args, ctx, start) {
   let capsSaid = false;
   const deadline = args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;; ) {
-    await goesOn();
+    if (!await goesOn()) {
+      if (deadline !== null && ctx.now() >= deadline)
+        return 0;
+      await ctx.sleep(WATCH_POLL_MS);
+      continue;
+    }
     const reread = readCaller("watch", ctx, { session: "optional" });
     let mayStart = true;
     if (reread.ok) {
@@ -37449,8 +37540,8 @@ async function watchLoop(args, ctx, start) {
       return 1;
     }
     state = pass.state;
-    await goesOn();
-    writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
+    if (await goesOn())
+      writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
     if (args.once && pass.lines > 0)
       return 0;
     if (deadline !== null && ctx.now() >= deadline)

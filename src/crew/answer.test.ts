@@ -323,6 +323,26 @@ describe("crew answer", () => {
     expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
   });
 
+  test("WF1: a resume that does not answer in time may have started one: said, the record as it was", async () => {
+    const world = await askedWorld("stopped");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) =>
+        argv.includes("--resume")
+          ? { error: null, exitCode: null, stderr: "", stdout: "", timedOut: true }
+          : real(argv, options),
+    });
+    expect(await runCrew(["answer", NAME, "the port is 3210"], ctx)).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 did not answer in time; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+    expect(record?.questions[0]?.answer).toBeNull();
+    // It may have started a session: its claim stays until it is over, so a second resume waits.
+    expect(record?.resumeClaim).toBeDefined();
+  });
+
   test("WF1: a copy agent view does not list is said, with the copy's id to stop", async () => {
     const world = await askedWorld("stopped");
     const view = JSON.stringify([

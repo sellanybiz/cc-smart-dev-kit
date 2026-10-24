@@ -31,6 +31,7 @@ import {
   createCrew,
   crewMcpFile,
   crewSettingsFile,
+  crewStoreDir,
   eventsEndOffset,
   keepWatchLease,
   listCrew,
@@ -2755,25 +2756,29 @@ describe("WF1: one acting watch per lead", () => {
     expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
   });
 
-  test("a lease it cannot read ends the watch as a failed pass does: one line, exit 1", async () => {
-    const world = await leadWorld();
-    await addCrew(world, "working");
-    const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
-    const ctx = waiting(world, async () => {
-      chmodSync(file, 0o000);
-      await step(world, "tests-green");
-    });
-    let code: number;
-    try {
-      code = await runCrew(["watch", "--once", "--timeout", "60"], ctx);
-    } finally {
-      chmodSync(file, 0o600);
-    }
-    expect(code).toBe(1);
-    expect(world.out).toEqual([]);
-    expect(world.err).toHaveLength(1);
-    expect(world.err[0]).toStartWith("crew watch: EACCES");
-  });
+  // A file mode does not stop root, so this test means nothing there.
+  test.skipIf(process.getuid?.() === 0)(
+    "a lease it cannot read ends the watch as a failed pass does: one line, exit 1",
+    async () => {
+      const world = await leadWorld();
+      await addCrew(world, "working");
+      const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
+      const ctx = waiting(world, async () => {
+        chmodSync(file, 0o000);
+        await step(world, "tests-green");
+      });
+      let code: number;
+      try {
+        code = await runCrew(["watch", "--once", "--timeout", "60"], ctx);
+      } finally {
+        chmodSync(file, 0o600);
+      }
+      expect(code).toBe(1);
+      expect(world.out).toEqual([]);
+      expect(world.err).toHaveLength(1);
+      expect(world.err[0]).toStartWith("crew watch: EACCES");
+    },
+  );
 
   test("two leads never share a lease", async () => {
     const world = await leadWorld();
@@ -2838,6 +2843,62 @@ describe("WF1: one acting watch per lead", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
+
+  test("a pass that may not act now starts no queued crew session; one that may, does", async () => {
+    const world = await leadWorld();
+    await queuedCrew(world);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope = (acts: boolean): WatchScope => ({
+      goesOn: () => Promise.resolve(acts),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    });
+    const state: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    };
+    const queued = () =>
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state;
+    await watchPass(state, world.ctx(), scope(false));
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(queued()).toBe("queued");
+    await watchPass(state, world.ctx(), scope(true));
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(queued()).toBe("starting");
+  });
+
+  test("a store too busy to answer skips a pass; the watch goes on, and says the news after", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const lock = join(crewStoreDir(world.paths.stateDir, world.repo), "lock");
+    let waits = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        waits += 1;
+        if (waits === 1) {
+          // News, then another writer holds the store's lock past the watch's wait.
+          await step(world, "tests-green");
+          writeFileSync(
+            lock,
+            JSON.stringify({ ...currentHolder(), time: Date.now(), token: "another-writer" }),
+          );
+        } else if (waits === 2) {
+          rmSync(lock);
+        } else {
+          throw new Error("the watch went on to a fourth pass");
+        }
+      },
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    // The busy pass said nothing and ended nothing; the next one said the news.
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(waits).toBe(2);
+  }, 15_000);
 });
 
 describe("WF1: the lease in the store", () => {

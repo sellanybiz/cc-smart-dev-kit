@@ -28,6 +28,7 @@
  * **A crew session the store does not know is never answered.** The store is what says a session is a
  * crew session (D35); a name alone is not enough.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
@@ -46,12 +47,15 @@ import { pendingDiscardWhy } from "./discard";
 import {
   answerCrewQuestion,
   type CrewRecord,
+  claimResume,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
   openQuestionIndex,
   questionClosed,
+  RESUME_CLAIM_MS,
   readReport,
+  releaseResume,
 } from "./store";
 
 /** What `crew answer` was asked, already checked to be well formed. */
@@ -199,7 +203,11 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       session,
     );
   } catch (error) {
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf(error)}`);
+    // A copy that runs while the record still names the old session: the line names the copy.
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    ctx.error(
+      `crew answer: the store could not record the answer: ${reasonOf(error)}${as === "" ? "" : `; it was resumed${as}`}`,
+    );
     return 1;
   }
   if (session !== null) {
@@ -326,6 +334,12 @@ export function resumeArgs(
  * no session id, whose settings file is gone, or a `claude` that refuses is reported with the
  * reason. `crew answer`, `crew resume`, `crew resume --paused` and the lead's watch (`watch.ts`)
  * all resume this way: one home for the transport (D42).
+ *
+ * **One resume of a record at a time** (WF1): before `claude` runs, the resume claims the record
+ * in the store, in the state its caller judged it in (`claimResume`). A second resume — the
+ * person's `crew resume --paused` beside the watch, or a watch that took over the lease from one
+ * resuming now — is refused, so two copies never start. A resume that started nothing gives the
+ * claim back at once; the rest end it when the record's state changes, or in `RESUME_CLAIM_MS`.
  */
 export async function resumeSession(
   ctx: CrewContext,
@@ -355,25 +369,77 @@ export async function resumeSession(
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed",
     };
   }
+  const { stateDir } = ctx.paths;
+  const token = randomUUID();
+  let claimed: boolean;
+  try {
+    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the store could not claim its resume: ${reasonOf(error)}`,
+    };
+  }
+  if (!claimed) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`,
+    };
+  }
+  const result = launchResume(ctx, record, text, {
+    claude,
+    folder: place.folder,
+    mcpFile: existsSync(mcpFile) ? mcpFile : null,
+    sessionId: record.sessionId,
+    settingsFile,
+  });
+  if (result.ok || result.unnamed) return result;
+  try {
+    await releaseResume(stateDir, record.repo, record.id, token);
+  } catch (error) {
+    // The claim then ends by itself: a later resume waits that long, and the line says so.
+    return {
+      ...result,
+      why: `${result.why}; its claim could not be given back (${reasonOf(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60_000} minutes`,
+    };
+  }
+  return result;
+}
+
+/** Runs `claude --bg --resume` for a claimed resume, and reads the session it brought back. */
+function launchResume(
+  ctx: CrewContext,
+  record: CrewRecord,
+  text: null | string,
+  launch: {
+    claude: string;
+    folder: string;
+    mcpFile: null | string;
+    sessionId: string;
+    settingsFile: string;
+  },
+): ResumeResult {
   const deps = claudeDeps(ctx);
   const called = callClaude(
     deps,
-    claude,
+    launch.claude,
     resumeArgs(
       {
         effort: record.effort,
         model: record.model.named,
         permissionMode: record.permissionMode,
-        sessionId: record.sessionId,
+        sessionId: launch.sessionId,
       },
-      { mcpFile: existsSync(mcpFile) ? mcpFile : null, settingsFile },
+      { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile },
       text,
     ),
-    place.folder,
+    launch.folder,
   );
   if (!called.ok) return { ok: false, unnamed: false, why: called.why };
   const { run } = called;
-  const command = `claude --bg --resume ${record.sessionId}`;
+  const command = `claude --bg --resume ${launch.sessionId}`;
   if (run.timedOut) {
     return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
   }
@@ -385,7 +451,7 @@ export async function resumeSession(
       why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`,
     };
   }
-  return resumedSession(record, run, deps, claude, place.folder, command);
+  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
 }
 
 /**
