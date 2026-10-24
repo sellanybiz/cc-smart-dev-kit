@@ -362,14 +362,13 @@ function flowReport(now: number, window: FlowWindow, empty: boolean): FlowReport
   };
 }
 
-function settingsRows(project: boolean): SettingsRow[] {
+/** The portal's own folder is the set-up `my-app` (the projects' current one): it sets a few rows. */
+function settingsRows(): SettingsRow[] {
   const row = (
     fields: Omit<SettingsRow, "readOnly" | "why" | "source"> &
       Partial<Pick<SettingsRow, "readOnly" | "why" | "source">>,
   ): SettingsRow => ({ readOnly: false, why: null, source: "default", ...fields });
-  const projectSets = project
-    ? { readOnly: true, source: "project" as const, why: "this project sets it" }
-    : {};
+  const projectSets = { readOnly: true, source: "project" as const, why: "this project sets it" };
   return [
     row({
       card: "flow",
@@ -521,9 +520,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       label: "Session names",
       where: "project",
       value: true,
-      ...(project
-        ? projectSets
-        : { readOnly: true, why: "this project has no .claude/cc-smart-dev-kit.json yet" }),
+      ...projectSets,
     }),
     row({
       card: "switches",
@@ -534,9 +531,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       label: "Heavy jobs through the queue",
       where: "project",
       value: true,
-      ...(project
-        ? projectSets
-        : { readOnly: true, why: "this project has no .claude/cc-smart-dev-kit.json yet" }),
+      ...projectSets,
     }),
     row({
       card: "switches",
@@ -789,12 +784,7 @@ export function mockData(empty: boolean): MockData {
     tested: {},
   };
 
-  const projects = projectMocks(now, empty, {
-    autoMerge: { allowed: false, base: "main" },
-    error: null,
-    projectNote: null,
-    rows: settingsRows(true),
-  });
+  const projects = projectMocks(now, empty);
 
   return {
     act: projects.act,
@@ -1039,7 +1029,7 @@ export function mockData(empty: boolean): MockData {
         },
       ],
     },
-    settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows(false) },
+    settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows() },
     projects: projects.projects,
     projectPages: projects.projectPages,
     workflowPages: projects.workflowPages,

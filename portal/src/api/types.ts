@@ -531,6 +531,32 @@ export interface SettingsRow {
   why: null | string;
 }
 
+/** What a `gh` on this machine can do now (`src/workflow/propose.ts` › `ghLoginState`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/** One setting of a project that has no row of its own: shown with its value, changed elsewhere. */
+export interface ProjectWorkflowValue {
+  key: string;
+  source: WorkflowSource;
+  value: unknown;
+}
+
+/**
+ * A project's Workflow card (D57): `/api/projects/<id>/workflow`, its settings drawn as
+ * Settings → This machine draws them (each row's words and control from `/api/settings`).
+ */
+export interface ProjectWorkflowData {
+  /** The branch a change's pull request goes into; null when the project names none. */
+  base: null | string;
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. */
+  note: null | string;
+  /** The settings with a row of their own, in the rows' order; read-only without a gh login. */
+  rows: SettingsRow[];
+  /** The settings with no row of their own, in the answer's order: their value only. */
+  others: ProjectWorkflowValue[];
+}
+
 /** `src/portal/facts.ts` › `SettingsData`. */
 export interface SettingsData {
   autoMerge: null | { allowed: boolean; base: null | string };
@@ -626,11 +652,6 @@ export interface ProjectData {
   branchesNote: null | string;
   /** ISO 8601: when the verdicts were read (the server keeps them about a minute). */
   checkedAt: string;
-  /**
-   * The resolved work-flow rows. Only the portal's own project has them (`/api/settings`
-   * reads the folder the portal runs in); null for every other project.
-   */
-  settings: null | SettingsData;
 }
 
 // ── The heavy-job queue (planned: `GET /api/jobs` and the `jobs` event) ───────────────

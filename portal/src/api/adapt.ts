@@ -32,9 +32,11 @@ import type {
   ProjectInitAnswers,
   ProjectList,
   ProjectListRow,
+  ProjectWorkflowData,
   RecentRequest,
   RouterHealth,
   SettingsData,
+  SettingsRow,
   UpdateData,
   WorkData,
   WorktreesData,
@@ -56,6 +58,7 @@ import type {
   ProjectAnswer,
   ProjectSummary,
   ProjectsAnswer,
+  ProjectWorkflowAnswer,
   RecentEntry,
   RouterFacts,
   UpdateAnswer,
@@ -239,11 +242,8 @@ export function branchVerdictOf(verdict: MergeVerdict): BranchVerdict {
   }
 }
 
-/**
- * One project's page. `settings` is the portal's own `/api/settings`: it describes the folder
- * the portal runs in, so it is kept for the current project only.
- */
-export function projectOf(answer: ProjectAnswer, settings: SettingsData | null): ProjectData {
+/** One project's page: its state, its set-up card and its branches' verdicts. */
+export function projectOf(answer: ProjectAnswer): ProjectData {
   const card = answer.card;
   const answers = initAnswersOf(card.answers);
   return {
@@ -260,9 +260,57 @@ export function projectOf(answer: ProjectAnswer, settings: SettingsData | null):
     branchesNote: answer.branchesNote,
     checkedAt: answer.checkedAt,
     project: projectRowOf(answer.project),
-    settings: answer.project.current ? settings : null,
     setup: { answers, error: card.error, planError: card.planError },
   };
+}
+
+/**
+ * A project's Workflow card (D57): each setting the project's file can hold, with the
+ * project's value and source, drawn with its row's words and control from `/api/settings`
+ * (`specs`, the server's one table of them) in that table's order. A row is the project's
+ * now (`where: "project"`: a change is a pull request), and read-only without a `gh` login —
+ * the card says why once, so the row carries no reason of its own. A setting with no row (or
+ * every setting, when `specs` could not be read) is kept in `others` with its value.
+ */
+export function projectWorkflowOf(
+  answer: ProjectWorkflowAnswer,
+  specs: SettingsRow[] | null,
+): ProjectWorkflowData {
+  const byKey = new Map(answer.settings.map((setting) => [setting.key, setting]));
+  const rows: SettingsRow[] = [];
+  for (const spec of specs ?? []) {
+    const setting = byKey.get(spec.key);
+    if (setting === undefined) continue;
+    rows.push({
+      ...spec,
+      readOnly: answer.gh !== "in",
+      source: setting.source,
+      value: setting.value,
+      where: "project",
+      why: null,
+    });
+  }
+  const shown = new Set(rows.map((row) => row.key));
+  return {
+    base: answer.base,
+    gh: answer.gh,
+    note: answer.note,
+    others: answer.settings.filter((setting) => !shown.has(setting.key)),
+    rows,
+  };
+}
+
+/** A value as `workflow propose` takes it on its command line: a list's words joined by commas. */
+export function proposeValueText(value: unknown): string {
+  return Array.isArray(value) ? value.map(String).join(",") : String(value);
+}
+
+/** A value as the card shows it in words: a switch as on or off, a list as words. */
+export function workflowValueText(value: unknown): string {
+  if (value === null || value === undefined) return "not set";
+  if (typeof value === "boolean") return value ? "on" : "off";
+  if (Array.isArray(value)) return value.length === 0 ? "nothing" : value.map(String).join(", ");
+  return String(value);
 }
 
 /** A crew session's record, from its summary: the fields the summary does not hold are empty. */

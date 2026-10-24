@@ -108,8 +108,16 @@ function ThisMachine() {
         <InfoIcon aria-hidden="true" />
         <AlertTitle>Your own defaults, for every project on this machine</AlertTitle>
         <AlertDescription>
-          A project's own file wins where it sets a value. A change here is saved at once into your
-          own workflow file, as <code className="font-mono">{KIT_NAME} workflow set</code> saves it.
+          A change here is saved at once into your own workflow file, as{" "}
+          <code className="font-mono">{KIT_NAME} workflow set</code> saves it. A project's own value
+          wins; change it on the project's page, from{" "}
+          <AppLink
+            href="/settings?tab=projects"
+            className="font-medium text-foreground underline underline-offset-4"
+          >
+            Projects
+          </AppLink>
+          .
         </AlertDescription>
       </Alert>
       {data.error !== null && (

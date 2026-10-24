@@ -17,12 +17,15 @@ import {
   overviewOf,
   projectOf,
   projectsOf,
+  projectWorkflowOf,
+  proposeValueText,
+  workflowValueText,
   workOf,
   worktreesOf,
 } from "./adapt";
 import { GUARD_PAGE_SIZE, guardQuery } from "./client";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
-import type { SettingsData } from "./types";
+import type { SettingsRow } from "./types";
 import type {
   CrewAnswer,
   CrewSummary,
@@ -35,6 +38,7 @@ import type {
   ProjectAnswer,
   ProjectCardData,
   ProjectSummary,
+  ProjectWorkflowAnswer,
   RouterFacts,
   WorkAnswer,
   WorktreesAnswer,
@@ -784,13 +788,7 @@ describe("the adapters", () => {
       checkedAt: "2026-10-20T10:05:00.000Z",
       project: SUMMARY,
     };
-    const settings: SettingsData = {
-      autoMerge: null,
-      error: null,
-      projectNote: null,
-      rows: [],
-    };
-    const data = projectOf(answer, settings);
+    const data = projectOf(answer);
     expect(data.project.id).toBe("a1f0");
     // The card's answers lose the opaque workflow object: the page draws four fields.
     expect(data.answers).toEqual({
@@ -806,23 +804,16 @@ describe("the adapters", () => {
     ]);
     expect(data.branchesNote).toBe(null);
     expect(data.checkedAt).toBe("2026-10-20T10:05:00.000Z");
-    expect(data.settings).toBe(settings);
-    // Another project: the portal's own settings rows are not its rows.
-    const other = projectOf({ ...answer, project: { ...SUMMARY, current: false } }, settings);
-    expect(other.settings).toBe(null);
   });
 
   test("a project that is not set up has no answers of its own, but its card keeps the defaults", () => {
-    const data = projectOf(
-      {
-        branches: [],
-        branchesNote: "gh is not installed: the pull requests could not be read.",
-        card: { ...CARD, set: false },
-        checkedAt: "2026-10-20T10:05:00.000Z",
-        project: { ...SUMMARY, set: false },
-      },
-      null,
-    );
+    const data = projectOf({
+      branches: [],
+      branchesNote: "gh is not installed: the pull requests could not be read.",
+      card: { ...CARD, set: false },
+      checkedAt: "2026-10-20T10:05:00.000Z",
+      project: { ...SUMMARY, set: false },
+    });
     expect(data.answers).toBe(null);
     expect(data.setup.answers?.base).toBe("main");
     expect(data.branchesNote).toBe("gh is not installed: the pull requests could not be read.");
@@ -1045,5 +1036,126 @@ describe("the flow report that did not run (B6e)", () => {
       "No session can show that it waits on a prompt: the plugin is not installed",
     );
     expect(workOf({ ...answer, waitsError: null }).waitsNote).toBe(null);
+  });
+});
+
+describe("a project's Workflow card (D57)", () => {
+  /** Two rows as `/api/settings` sends them: the portal's own folder's values, the specs. */
+  const SPECS: SettingsRow[] = [
+    {
+      card: "flow",
+      help: "Commit each finished, reviewed step without asking.",
+      id: "set-commit",
+      key: "autoCommit",
+      kind: "boolean",
+      label: "Auto commit",
+      readOnly: false,
+      source: "personal",
+      value: false,
+      where: "personal",
+      why: null,
+    },
+    {
+      card: "switches",
+      help: "Show the kit's status line.",
+      id: "set-status",
+      key: "switches.statusLine",
+      kind: "boolean",
+      label: "Status line",
+      readOnly: false,
+      source: "default",
+      value: true,
+      where: "personal",
+      why: null,
+    },
+    {
+      card: "switches",
+      help: "Name each session after its branch.",
+      id: "set-names",
+      key: "switches.sessionNames",
+      kind: "boolean",
+      label: "Session names",
+      readOnly: true,
+      source: "default",
+      value: false,
+      where: "project",
+      why: "this project has no .claude/cc-smart-dev-kit.json yet",
+    },
+  ];
+  const ANSWER: ProjectWorkflowAnswer = {
+    base: "main",
+    gh: "in",
+    note: null,
+    settings: [
+      { key: "switches.sessionNames", source: "project", value: true },
+      { key: "autoCommit", source: "project", value: true },
+      { key: "crew.tag", source: "default", value: null },
+    ],
+  };
+
+  test("each setting takes its row's words and control, with the project's value and source", () => {
+    const data = projectWorkflowOf(ANSWER, SPECS);
+    expect(data.base).toBe("main");
+    expect(data.gh).toBe("in");
+    expect(data.note).toBe(null);
+    // The rows keep the specs' order (the groups' order on Settings), not the answer's; a
+    // setting the project's file cannot hold (the status line) is not on the card.
+    expect(
+      data.rows.map((row) => [row.key, row.label, row.value, row.source, row.where, row.readOnly]),
+    ).toEqual([
+      ["autoCommit", "Auto commit", true, "project", "project", false],
+      ["switches.sessionNames", "Session names", true, "project", "project", false],
+    ]);
+    // The portal folder's own reason for a read-only row is not this project's.
+    expect(data.rows[1]?.why).toBe(null);
+    // A setting with no row of its own is still shown, with its value.
+    expect(data.others).toEqual([{ key: "crew.tag", source: "default", value: null }]);
+  });
+
+  test("without a gh login every control is read-only; the card says why once", () => {
+    for (const gh of ["missing", "out"] as const) {
+      const data = projectWorkflowOf({ ...ANSWER, gh }, SPECS);
+      expect(data.gh).toBe(gh);
+      expect(data.rows.map((row) => [row.readOnly, row.why])).toEqual([
+        [true, null],
+        [true, null],
+      ]);
+    }
+  });
+
+  test("no specs (Settings could not be read): every setting is shown with its value", () => {
+    const data = projectWorkflowOf(ANSWER, null);
+    expect(data.rows).toEqual([]);
+    expect(data.others.map((one) => one.key)).toEqual([
+      "switches.sessionNames",
+      "autoCommit",
+      "crew.tag",
+    ]);
+  });
+
+  test("a note and no settings stays a note", () => {
+    const data = projectWorkflowOf(
+      { base: null, gh: "in", note: "no worktrees.base", settings: [] },
+      SPECS,
+    );
+    expect(data).toEqual({ base: null, gh: "in", note: "no worktrees.base", others: [], rows: [] });
+  });
+
+  test("a value as the command takes it: a word, a number, a list with commas", () => {
+    expect(proposeValueText(true)).toBe("true");
+    expect(proposeValueText(false)).toBe("false");
+    expect(proposeValueText(85)).toBe("85");
+    expect(proposeValueText("draft")).toBe("draft");
+    expect(proposeValueText(["needs-you", "failed"])).toBe("needs-you,failed");
+  });
+
+  test("a value as the card shows it", () => {
+    expect(workflowValueText(true)).toBe("on");
+    expect(workflowValueText(false)).toBe("off");
+    expect(workflowValueText(20)).toBe("20");
+    expect(workflowValueText("my-app")).toBe("my-app");
+    expect(workflowValueText(["a", "b"])).toBe("a, b");
+    expect(workflowValueText([])).toBe("nothing");
+    expect(workflowValueText(null)).toBe("not set");
   });
 });

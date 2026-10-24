@@ -33,6 +33,7 @@ import type {
   PortalFacts,
   ProjectData,
   ProjectList,
+  ProjectWorkflowData,
   RequestPage,
   RequestQuery,
   SettingsData,
@@ -63,6 +64,8 @@ export interface PortalClient {
   settings(): Promise<SettingsData>;
   projects(): Promise<ProjectList>;
   project(id: string): Promise<ProjectData>;
+  /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
+  projectWorkflow(id: string): Promise<ProjectWorkflowData>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
@@ -149,6 +152,12 @@ export function mockClient(scenario: MockScenario): PortalClient {
         const found = data.projectPages[id];
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         return found;
+      }),
+    projectWorkflow: (id) =>
+      answer(() => {
+        const found = data.workflowPages[id];
+        if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
+        return adapt.projectWorkflowOf(found, data.settings.rows);
       }),
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
@@ -251,10 +260,16 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     },
     settings: async () => adapt.settingsOf(await settings()),
     projects: async () => adapt.projectsOf(await get<Wire.ProjectsAnswer>("/api/projects")),
-    project: async (id) => {
-      const answer = await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`);
-      // `/api/settings` reads the portal's own folder: only that project's page shows it.
-      return adapt.projectOf(answer, answer.project.current ? await settings() : null);
+    project: async (id) =>
+      adapt.projectOf(await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`)),
+    projectWorkflow: async (id) => {
+      // The rows' words and controls are the Settings table's (`/api/settings`): the values are
+      // the project's own answer. Without that table the card still shows every value.
+      const [answer, specs] = await Promise.all([
+        get<Wire.ProjectWorkflowAnswer>(`/api/projects/${encodeURIComponent(id)}/workflow`),
+        settings().catch(() => null),
+      ]);
+      return adapt.projectWorkflowOf(answer, specs?.rows ?? null);
     },
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");

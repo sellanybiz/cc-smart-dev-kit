@@ -28,13 +28,13 @@ import { columnsFor, PortalTable } from "@/components/data-table";
 import { NarrowLabel, ProjectStatePills, STACK_ROWS_WHEN_NARROW } from "@/components/project-state";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
-import { SettingsCards } from "@/components/settings-rows";
 import { LoadingState, PagePad, ResourceView } from "@/components/states";
 import { StatusMark, TonePill } from "@/components/status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { WorkflowCard } from "@/components/workflow-card";
 import { ago, KIT_NAME } from "@/lib/format";
 
 /** The project's answers: its base, the bases by prefix, the protected branches, the guards. */
@@ -400,7 +400,7 @@ function ProjectPage({
   setupAsked: boolean;
   refresh: () => void;
 }) {
-  const { project, answers, setup, settings } = data;
+  const { project, answers, setup } = data;
   // The write's result lives here: it stays when the set-up card gives way to the settings.
   const [written, setWritten] = useState<ActionResult | null>(null);
   return (
@@ -522,8 +522,8 @@ function ProjectPage({
             </CardContent>
           </Card>
         )}
+        {project.setUp && setup.error === null && <WorkflowCard project={project} />}
         <Branches data={data} />
-        {settings !== null && <SettingsCards rows={settings.rows} />}
       </PagePad>
     </>
   );
