@@ -46,6 +46,10 @@ export interface BackendTarget {
 
 export type Target = AnthropicTarget | BackendTarget;
 
+/** Claude Code's effort words, plus the backend-only value that turns reasoning off. */
+export const BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+export type BackendEffort = (typeof BACKEND_EFFORT_LEVELS)[number];
+
 /** A backend name: lower-case letters, digits, `-` and `_`. */
 const BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 

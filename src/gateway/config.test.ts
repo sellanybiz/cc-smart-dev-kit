@@ -55,6 +55,40 @@ function parsed(text: Record<string, unknown>) {
   return result.config;
 }
 
+describe("D64: effort pins", () => {
+  it("accepts none and rejects levels, slots and targets a pin cannot name", () => {
+    expect(parseConfig(raw({ effort: { [SCOUT]: { "omniroute:m1": "none" } } }))).toHaveProperty(
+      "config",
+    );
+    for (const effort of [
+      { [SCOUT]: { "omniroute:m1": "turbo" } },
+      { [SCOUT]: { "omniroute:gone": "high" } },
+      { [SCOUT]: { "claude-sonnet-5-5": "high" } },
+      { "cc-smart-dev-kit-gone": { "omniroute:m1": "high" } },
+    ])
+      expect(parseConfig(raw({ effort }))).toHaveProperty("error");
+  });
+
+  it("keeps future loose fields while saving active and kept effort pins", () => {
+    const file = join(tempDir("effort-config"), "gateway.json");
+    const cfg = parsed(
+      raw({
+        effort: { [SCOUT]: { "omniroute:m1": "xhigh" } },
+        kept: {
+          "cc-smart-dev-kit-extra": {
+            effort: { "omniroute:m2": "none" },
+            future: true,
+            targets: ["omniroute:m2"],
+          },
+        },
+        future: { untouched: true },
+      }),
+    );
+    saveConfig(file, cfg);
+    expect(loadConfigFile(file)).toEqual(cfg);
+  });
+});
+
 describe("the numbers", () => {
   it("a streaming request is held 240 s at most, a request that does not stream 60 s", () => {
     expect(BREAKER_HOLD_CEILING_MS).toBe(240_000);

@@ -3021,6 +3021,8 @@ describe("secrets", () => {
     record(await m.run(["gateway", "status"]));
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));
+    record(await m.run(["gateway", "effort", "worker", "omniroute:m1", "xhigh"]));
+    record(await m.run(["gateway", "effort", "worker", "omniroute:m1", "off"]));
     record(await m.run(["gateway", "slot", "judge", "omniroute:m2"]));
     record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
     record(await m.run(["gateway", "fallback", "opus", "on"]));

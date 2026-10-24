@@ -164,6 +164,7 @@ export interface SwitchFacts {
 // ── Slots ──────────────────────────────────────────────────────────────────────────────
 
 export interface SlotTarget {
+  effort?: string;
   target: string;
   from: string;
   restingFor: null | number;

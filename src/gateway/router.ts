@@ -123,6 +123,7 @@ import {
   BREAKER_HOLD_NON_STREAMING_MS,
   breakerHoldMs,
   breakerOn,
+  effortPin,
   fallbackOn,
   type GatewayConfig,
   historyRetentionDays,
@@ -353,6 +354,9 @@ export function sessionIdOf(headers: Headers): null | string {
  * Metadata only: never a prompt, an answer, a key or a header.
  */
 export interface RecentRequest {
+  /** The effort actually sent when a pin applied; absent on an unpinned request. */
+  effort?: string;
+  effortPinned?: true;
   /** When it came in: milliseconds since the epoch. */
   at: number;
   /** How long until its answer started: milliseconds. */
@@ -714,6 +718,16 @@ export function reasoningOffForBackend(
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 
+/** Apply the slot's backend-specific effort pin after the thinking-off translation. */
+export function effortPinForBackend(
+  body: Record<string, unknown>,
+  pin: undefined | string,
+): Record<string, unknown> {
+  if (pin === undefined) return body;
+  const outputConfig = isJsonObject(body.output_config) ? body.output_config : {};
+  return { ...body, output_config: { ...outputConfig, effort: pin } };
+}
+
 /** What a Claude target refuses with a 400, from one version of its family on. */
 interface ClaudeTargetRules {
   /** `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`. */
@@ -1007,6 +1021,8 @@ function sameModel(a: string, b: string): boolean {
 
 /** How one request ended — the log line and the response. */
 interface Outcome {
+  effort?: string;
+  effortPinned?: true;
   /**
    * The breaker's own answer (`breaker(<slot>)` is the target): whether the request waited
    * in the hold, and how many upstream calls it made as a probe while the breaker was open.
@@ -1846,6 +1862,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     target: Target,
     guard: boolean,
     asked: Asked | null,
+    pin: undefined | string,
   ): { error: string } | { upstream: Upstream } {
     if (target.kind === "anthropic" && asked !== null && sameModel(target.model, asked.model)) {
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
@@ -1867,9 +1884,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
     // `metadata` carries the Claude account id; an affordable backend never sees it.
     const affordableBody: Record<string, unknown> = {
-      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
-        absentIsOff: guard,
-      }),
+      ...effortPinForBackend(
+        reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+          absentIsOff: guard,
+        }),
+        pin,
+      ),
       model: target.model,
     };
     delete affordableBody.metadata;
@@ -1954,6 +1974,35 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     /** The Claude model the request named, and its bytes (`targetUpstream`); a size WARN names it. */
     asked: Asked | null = null,
     hold: HoldMode | null = null,
+  ): Promise<Outcome> {
+    const sentPins = new Map<string, string>();
+    const outcome = await chainAttempt(
+      req,
+      url,
+      config,
+      body,
+      targets,
+      name,
+      guard,
+      asked,
+      hold,
+      sentPins,
+    );
+    const pin = sentPins.get(outcome.target);
+    return pin === undefined ? outcome : { ...outcome, effort: pin, effortPinned: true };
+  }
+
+  async function chainAttempt(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    targets: Target[],
+    name: string,
+    guard: boolean,
+    asked: Asked | null,
+    hold: HoldMode | null,
+    sentPins: Map<string, string>,
   ): Promise<Outcome> {
     // A safety check is no conversation: the hint below ("/compact it …") would mislead.
     const standsInFor = guard ? null : (asked?.model ?? null);
@@ -2049,7 +2098,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       /** The hold's end, not the target, set this wait: a timeout then says nothing of it. */
       const holdCutShort =
         hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
-      const built = targetUpstream(req, url, config, body, target, guard, asked);
+      const pin = effortPin(config, name, label);
+      const built = targetUpstream(req, url, config, body, target, guard, asked, pin);
+      if (!("error" in built) && target.kind === "backend" && pin !== undefined)
+        sentPins.set(label, pin);
       // A call made while a breaker is open is a probe: it is the only one for this target.
       const probe = hold?.holding === true && !("error" in built);
       if (probe) {
@@ -3204,7 +3256,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         outcome.breaker === undefined
           ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`
           : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`
-      }`;
+      }${outcome.effortPinned === true ? ` effort=${outcome.effort} pinned` : ""}`;
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -3254,6 +3306,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     stats.fallbacks += outcome.fallbacks;
     deps.log(line(outcome));
     recent.push({
+      ...(outcome.effortPinned === true
+        ? { effort: outcome.effort, effortPinned: true as const }
+        : {}),
       at: startMs,
       ms: deps.now() - startMs,
       nextTarget: outcome.fallbacks > 0,

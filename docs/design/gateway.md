@@ -26,7 +26,10 @@ An optional local router between Claude Code and the model providers
   file holding only `env.ANTHROPIC_BASE_URL` and starts `claude` with it, attached to the
   terminal — plain Claude, the machine's gateway, or one profile — for that session alone,
   whatever the project and the machine say. `docs/gateway.md` § One session.
-- **No prompt text is ever changed.** An affordable backend gets two named, tested format
+- **A backend target can keep one effort in its slot (D64).** `gateway effort` sends a test
+  before saving the pin; `effortPinForBackend` applies it after the thinking-off translation.
+  A Claude target is never pinned. Details: `docs/gateway.md` § A backend target's effort pin.
+- **No prompt text is ever changed.** An affordable backend gets the named, tested format
   translations and nothing else. A slot's Claude target that is not the model asked for gets one,
   `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built
   the body for another model), never a word of the prompt. The rules:

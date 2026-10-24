@@ -780,6 +780,7 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | `cc-smart-dev-kit gateway slot <scout\|worker\|opus\|fable> <target>[,<target>…]` | Custom: a slot's chain (any targets, any order, from `gateway models`); live. `slot <slot> claude` (or `off`): Claude again, and the chain is saved, not used. `slot <slot> custom`: the saved chain again, with its fallback switch. `slot <slot> clear`: delete the chain, in use or saved. |
 | `cc-smart-dev-kit gateway slot judge <target>[,<target>…]` | Your own judge for auto mode, in the order you give: a `claude-<model>` target as it is, any other target only after it blocks a test force push to `main`. A weak judge can let a risky command through, and it reads the conversation. Without it, Claude judges first, and while Claude is limited or down the worker slot's targets that passed the same test judge. `slot judge claude` (or `off`): back to that, with the chain saved; `slot judge custom` uses the saved chain again (untested targets are tested first). |
 | `cc-smart-dev-kit gateway fallback <slot> on\|off` | May the next target answer when the one before it fails or rests? On by default for scout, worker and judge, off for opus and fable. Off: only the first answers, the rest stay saved. `fallback judge off`: Claude alone judges. |
+| `cc-smart-dev-kit gateway effort <slot> <target> <level>\|off` | Pin a backend target's reasoning effort in its slot: `none`, `low`, `medium`, `high`, `xhigh`, `max`. One test request before saving; a refusal saves nothing. `off` follows Claude Code again. Live, with no restart. No pin for a `claude-…` target. |
 | `cc-smart-dev-kit gateway breaker <slot> on\|off` | When every target of a slot is limited or down, may the router hold the request for a while and then ask Claude Code to retry (up to 240 s, `timeouts.breakerHoldMs`; 0 holds none)? Off: the last answer goes back at once. On by default for every slot but the judge, which never holds, so it has no switch. |
 | `cc-smart-dev-kit gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-smart-dev-kit owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
 | `cc-smart-dev-kit gateway off` | Points Claude Code back at Anthropic: the owned `ANTHROPIC_BASE_URL` is **set to Anthropic's own address instead of removed**, so every running session switches by itself within about a second — nothing to restart. The key stays owned (its value is the one `off` wrote), so `restore` takes it back later. `ENABLE_TOOL_SEARCH` is removed, which routes nothing and waits for each session's next restart. A key you set or changed since is yours and stays. A project that set its own `on` keeps pointing at the router, so `off` names each one with the command that turns it off too (`gateway project off --folder <dir>`). If you set `ANTHROPIC_BASE_URL` in your shell, the settings file's explicit address wins until `restore` removes it. |
@@ -822,6 +823,13 @@ answer reported and an estimated cost — in `~/.local/state/cc-smart-dev-kit/hi
 default: `"history": {"retentionDays": 7}` in `gateway.json` changes that, and `0` turns the
 log off. `gateway history` and the portal's Flow page read it; `doctor` and `gateway status`
 show its size. [docs/gateway.md](docs/gateway.md) § The request history.
+
+A backend target can keep one reasoning effort whatever Claude Code sends, including when
+thinking is off: `gateway effort <slot> <backend>:<model> xhigh`. The pin is per slot and
+target, tested before saving, and shown beside the target by `gateway status`. Switching the
+slot to Claude saves the pin with its chain; Custom restores it. Removing a target or clearing
+the chain removes its pin. `gateway effort <slot> <target> off` follows Claude Code again.
+See [the effort pin](docs/gateway.md#a-backend-targets-effort-pin-d64) for the config and limits.
 
 ### First setup
 
