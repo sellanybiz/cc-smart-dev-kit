@@ -13,6 +13,7 @@ import {
   type TargetStats,
 } from "@/components/chain-editor";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { EffortPins } from "@/components/effort-pins";
 import { ModeSwitch, type SlotModeName } from "@/components/mode-switch";
 import { EVERY_SESSION, SavedSwitch } from "@/components/saved-switch";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -274,6 +275,14 @@ function SlotCard({
               disabled={save.state.phase === "sending"}
             />
           </div>
+          <EffortPins
+            slot={row.name}
+            targets={saved}
+            levels={data.effortLevels}
+            live={custom}
+            judge={judge}
+            onChanged={onChanged}
+          />
           {changedElsewhere && (
             <Alert className="border-warn/40">
               <TriangleAlertIcon className="text-warn" aria-hidden="true" />

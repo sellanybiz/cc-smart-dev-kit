@@ -50,6 +50,7 @@ import type {
   WorkData,
   WorktreesData,
 } from "./types";
+import type { ActionResult } from "./wire";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -74,6 +75,35 @@ const CHAINS: Record<string, string[]> = {
   [key("worker")]: ["omniroute:deepseek-v4.1-flash", "claude-sonnet-5-5"],
   [key("opus")]: ["claude-opus-5-5", "omniroute:glm-5.3", "omniroute:deepseek-v4.1"],
 };
+
+/** The effort pins the mock's chains hold: one pinned target, the rest follow Claude Code. */
+const EFFORT_PINS: Record<string, Record<string, string>> = {
+  [key("opus")]: { "omniroute:glm-5.3": "xhigh" },
+};
+
+/**
+ * `slot.effort` in mock data: what `gateway effort` would answer. One target refuses `max`, so
+ * the refused state is seen too; nothing is saved either way.
+ */
+function effortAct(body: Record<string, unknown>): ActionResult {
+  const target = typeof body.target === "string" ? body.target : "";
+  const level = typeof body.level === "string" ? body.level : "";
+  if (target === "omniroute:minimax-m3" && level === "max") {
+    return {
+      lines: [
+        `${target} refused effort max: HTTP 400: {"error":{"message":"reasoning effort max is not supported by this model"}}. Nothing was saved.`,
+      ],
+      ok: false,
+    };
+  }
+  return {
+    lines: [
+      `Mock data: ${target} ${level === "off" ? "would follow Claude Code again" : `would be pinned to ${level}`}. The real portal runs it.`,
+      "The router uses it from its next request.",
+    ],
+    ok: true,
+  };
+}
 
 function recentRequests(now: number, count: number): RecentRequest[] {
   const random = seeded(7);
@@ -721,7 +751,10 @@ export function mockData(empty: boolean): MockData {
     ? []
     : [{ claim: "the 5-hour window", model: "claude-opus-5-5", resets: "13:00" }];
 
-  const slotTarget = (target: string, restingFor: null | number = null) => ({
+  const slotTarget = (target: string, restingFor: null | number = null, slot = "") => ({
+    ...(EFFORT_PINS[key(slot)]?.[target] === undefined
+      ? {}
+      : { effort: EFFORT_PINS[key(slot)]?.[target] }),
     target,
     from: target.startsWith("omniroute:") ? "omniroute" : "Claude login",
     restingFor,
@@ -769,7 +802,7 @@ export function mockData(empty: boolean): MockData {
       role: role[slot] ?? "model",
       stamp: `mock-${slot}`,
       targets: chain.map((target) =>
-        slotTarget(target, cooling[target as keyof typeof cooling] ?? null),
+        slotTarget(target, cooling[target as keyof typeof cooling] ?? null, slot),
       ),
     };
   });
@@ -778,6 +811,7 @@ export function mockData(empty: boolean): MockData {
     breakers,
     chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
     configured: true,
+    effortLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     error: null,
     fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
     models: [
@@ -807,7 +841,8 @@ export function mockData(empty: boolean): MockData {
   const projects = projectMocks(now, empty);
 
   return {
-    act: projects.act,
+    act: (action, body) =>
+      action === "slot.effort" ? effortAct(body) : projects.act(action, body),
     facts,
     history: (query) => historyFor(now, query, empty),
     requests: (query) => requestsFor(now, query, empty),
