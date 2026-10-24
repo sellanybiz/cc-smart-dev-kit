@@ -70,3 +70,10 @@ or run git in another worktree. Read `.claude/rules/hooks.md` before you touch t
    `high`.
 4. Commit a checkpoint after each green fix. Never send an empty report.
 5. Before you report, stop every background check you started.
+
+## Also (from WF1's hand-back, 2026-10-25)
+
+`plugin/skills/lead/SKILL.md`, the table of lines a lead without monitors sees: add "a newer watch
+of this lead runs: nothing to do, start no other `--once`". WF1 made one acting watch per lead (a
+lease, the newest wins), so a second `--once` takes the lease from the first, and the first's exit
+would otherwise start another one. Add the skill to your files.

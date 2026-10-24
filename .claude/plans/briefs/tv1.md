@@ -86,3 +86,10 @@ nor port 20100. Read `.claude/rules/hooks.md` before you touch a hook.
    `high`.
 4. Commit a checkpoint after each green step. Never send an empty report.
 5. Before you report, stop every background check you started.
+
+## Also (from WF1's hand-back, 2026-10-25)
+
+`src/hooks/stop-failure.ts` ~488 still tells the person a Claude limit's reset date for a session
+whose slot starts with a backend. It should judge with `claudeLimitHolds` (`src/crew/wait.ts`,
+WF1's one reading of "does this Claude limit hold this session"), never a second copy. Add the
+file and its test to yours; read `.claude/rules/notify.md` first.

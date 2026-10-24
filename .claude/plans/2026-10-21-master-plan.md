@@ -372,7 +372,11 @@ Close (before 2026-10-25): integration review, 1.2.0, the release skill, the own
 Branch `release-1.2.1`, cut from `main` after 1.2.0's merge. Merged in first, in this order:
 `release-1.1.3` (CL1, CL1F), `crew/CL2-cleanup-rest-10` (`6cad48b`), `crew/CL2B-hook-boundary`
 (`2953b08`; the old lead's full check on its branch: 6,246 pass, 0 fail, though its report said
-red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR1 started early),
+red), EF2 (`784d67b`), WF1 (gated 2026-10-25 at `5ab946e`: full check 6,285 pass, 0 fail, both
+validates, its Opus `xhigh` review fixed; **at its merge:** end the old watches that never read the
+lease — `ps -eo pid=,ppid=,args= | awk '$2==1 && /crew watch/ {print $1}' | xargs -r kill` — and
+restart the lead's monitor; the 1.2.1 CHANGELOG gets bugs A, B and C from its report; its other
+hand-back items are in WN1, LH1 and TV1's briefs), AR1. Then the phases below start at once from it (AR1 started early),
 each on its kind's own model (Claude Sonnet through the worker slot for `build`, `tests` and
 `security`), reviewers on `sonnet` `high`, SC1's on `opus` `xhigh` (the router). The owner,
 2026-10-25: Sonnet answers again (the "until Oct 29" limit had cleared), so the "opus `xhigh` for

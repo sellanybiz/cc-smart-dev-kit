@@ -76,3 +76,9 @@ or run git in another worktree.
    `high`.
 4. Commit a checkpoint after each green fix. Never send an empty report.
 5. Before you report, stop every background check and every load you started.
+
+## Also (from WF1's hand-back, 2026-10-25)
+
+`startQueued` (`src/crew/start.ts`): a compare-and-set that the record is still `queued`, under the
+places lock, closes the last window of a double start across a watch takeover (WF1's lease). With
+a test seen failing first: two starters of one queued record, one start.
