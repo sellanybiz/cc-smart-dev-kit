@@ -63,7 +63,8 @@ function fakeBackend(status = 200) {
         : Response.json({ error: { message: "effort max is not supported" } }, { status });
     },
   });
-  return { sent, server };
+  if (server.port === undefined) throw new Error("the fake backend listens on no port");
+  return { port: server.port, sent, server };
 }
 
 /** A gateway config with one backend at `port`, the scout chain, and the pins given. */
@@ -92,9 +93,9 @@ function effortWorld(port: number, effort?: Record<string, Record<string, "low" 
 
 describe("D64: slot.effort runs the CLI's own `gateway effort`", () => {
   test("pins a backend target after one test request at that level", async () => {
-    const { sent, server } = fakeBackend();
+    const { port, sent, server } = fakeBackend();
     try {
-      const { action, file } = effortWorld(server.port);
+      const { action, file } = effortWorld(port);
       const answer = await runAction(
         "slot.effort",
         { level: "xhigh", slot: "scout", target: "backend:model" },
@@ -115,9 +116,9 @@ describe("D64: slot.effort runs the CLI's own `gateway effort`", () => {
   });
 
   test("a level the backend refuses is not saved, and the refusal is the answer", async () => {
-    const { server } = fakeBackend(400);
+    const { port, server } = fakeBackend(400);
     try {
-      const { action, file } = effortWorld(server.port);
+      const { action, file } = effortWorld(port);
       const answer = await runAction(
         "slot.effort",
         { level: "max", slot: "scout", target: "backend:model" },
@@ -133,9 +134,9 @@ describe("D64: slot.effort runs the CLI's own `gateway effort`", () => {
   });
 
   test("off unpins, with no test request outside the judge", async () => {
-    const { sent, server } = fakeBackend();
+    const { port, sent, server } = fakeBackend();
     try {
-      const { action, file } = effortWorld(server.port, {
+      const { action, file } = effortWorld(port, {
         "cc-smart-dev-kit-scout": { "backend:model": "low" },
       });
       const answer = await runAction(
@@ -152,9 +153,9 @@ describe("D64: slot.effort runs the CLI's own `gateway effort`", () => {
   });
 
   test("a Claude target is refused in the command's words", async () => {
-    const { sent, server } = fakeBackend();
+    const { port, sent, server } = fakeBackend();
     try {
-      const { action, file } = effortWorld(server.port);
+      const { action, file } = effortWorld(port);
       const answer = await runAction(
         "slot.effort",
         { level: "high", slot: "scout", target: "claude-haiku-5-5" },
@@ -170,9 +171,9 @@ describe("D64: slot.effort runs the CLI's own `gateway effort`", () => {
   });
 
   test("a body the command would refuse is refused before anything runs", async () => {
-    const { sent, server } = fakeBackend();
+    const { port, sent, server } = fakeBackend();
     try {
-      const { action } = effortWorld(server.port);
+      const { action } = effortWorld(port);
       for (const body of [
         { level: "huge", slot: "scout", target: "backend:model" },
         { level: 3, slot: "scout", target: "backend:model" },

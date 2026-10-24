@@ -9,7 +9,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when
   thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
   when their target leaves, and show in `gateway status`, Slots data, the log and health's
-  recent requests. Claude targets are never pinned. No router restart is needed.
+  recent requests. Claude targets are never pinned. No router restart is needed. The portal's
+  Slots page shows each backend target's pin, or "follows Claude Code", and sets it: it asks
+  first, runs `gateway effort`, and shows the test request and a backend's refusal in place.
 
 - **claude-mem's route, key and fallback are yours to change — from the portal or your own
   terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every

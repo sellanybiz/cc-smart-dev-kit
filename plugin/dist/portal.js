@@ -36882,6 +36882,19 @@ async function setSlotBreaker(action, body) {
   }
   return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
 }
+async function setSlotEffort(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  const target = typeof body.target === "string" ? body.target : "";
+  const level = typeof body.level === "string" ? body.level : "";
+  if (slot === "" || target === "" || level !== "off" && !BACKEND_EFFORT_LEVELS.some((one) => one === level)) {
+    return { lines: ["Pick a slot, one of its backend targets, and a level or off."], ok: false };
+  }
+  try {
+    return await gateway(action, ["effort", slot, target, level]);
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
 async function saveSlot(action, body) {
   const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
   const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
@@ -37776,6 +37789,8 @@ async function runAction(name, body, action) {
       return setSlotFallback(action, body);
     case "slot.breaker":
       return setSlotBreaker(action, body);
+    case "slot.effort":
+      return setSlotEffort(action, body);
     case "slot.mode":
       return setSlotMode(action, body);
     case "switch": {
@@ -38073,6 +38088,7 @@ async function slotsData(deps, config) {
     breakers: router.breakers,
     backendNotes: backends.filter((backend) => backend.state !== "answers").map((backend) => `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`),
     chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
+    effortLevels: [...BACKEND_EFFORT_LEVELS],
     fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
     models,
     slots: rows,
@@ -39485,6 +39501,7 @@ async function slotsAnswer(deps) {
       backendNotes: [],
       breakers: {},
       chains: {},
+      effortLevels: [...BACKEND_EFFORT_LEVELS],
       fallback: {},
       models: [],
       slots: [],
