@@ -88,7 +88,12 @@ because nothing else went. In this order, stopping at the first refusal:
   4. the worktree is judged the way worktrees --clean judges it (no program or container uses
      it, no file git does not keep) and removed, then its branch;
   5. only then claude rm deletes the session, and the crew session is marked removed, keeping
-     whether the lead had merged it before the removal.
+     whether the lead had merged it before the removal;
+  6. last, the session's conversation, which claude rm leaves in /resume, moves out of Claude
+     Code's projects folder into the kit's crew archive (gzipped, deleted after
+     workflow.crew.archiveDays, 7 by default). A lead's session, one a running Claude holds and any
+     file the kit does not know stay where they are. A move that cannot happen says why and never
+     fails the removal: sessions --finished --remove moves it later.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
 command again.
 
