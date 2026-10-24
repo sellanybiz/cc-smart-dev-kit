@@ -9,11 +9,12 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
-import { OTHER_SESSION } from "../testing/crew-world";
+import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
 import { parseResumeArgs, runCrew } from "./command";
 import {
+  appendCrewEvent,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
@@ -597,6 +598,103 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       expect(await ended(check)).toBe(true);
     } finally {
       if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a session an answer brought back ends again: what it started in between is its own", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const events = (state: string, atMs: number, type: "report" | "state") =>
+      appendCrewEvent(
+        world.paths.stateDir,
+        world.repo,
+        {
+          crew: record.id,
+          lead: LEAD_SESSION,
+          name: record.name,
+          state,
+          text: state,
+          type,
+        },
+        atMs,
+      );
+    // It reported done, was answered back to work, and reported done again.
+    await events("done", NOW - 30 * MINUTE, "report");
+    await events("working", NOW - 20 * MINUTE, "state");
+    await events("done", NOW - 10 * MINUTE, "report");
+    const check = startProgram(worktree);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                {
+                  parentPid: 1,
+                  path: join(worktree, "check.sh"),
+                  pid: check.pid,
+                  // Started in its second run, before that one ended: its own.
+                  startedAt: NOW - 15 * MINUTE,
+                },
+              ],
+            },
+          }),
+        ),
+      ).toBe(0);
+      expect(world.out).toContain("C my-app B1 help: stopped its own leftover programs (check.sh)");
+      expect(await ended(check)).toBe(true);
+    } finally {
+      if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a live session's children are never stopped, whoever they look like", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const check = startProgram(worktree);
+    try {
+      // Agent view lists the session with a process: it is not finished, its children are its work.
+      const live = JSON.stringify([
+        {
+          id: "a1b2c3d4",
+          pid: 4242,
+          sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+          state: "working",
+        },
+      ]);
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx(
+            {
+              scanFacts: {
+                ...QUIET_MACHINE,
+                programs: [
+                  {
+                    parentPid: 4242,
+                    path: join(worktree, "check.sh"),
+                    pid: check.pid,
+                    startedAt: NOW - 13 * MINUTE,
+                  },
+                ],
+              },
+            },
+            { FAKE_AGENTS_JSON: live },
+          ),
+        ),
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: check.sh",
+      );
+      expect(check.exitCode).toBeNull();
+    } finally {
+      check.kill("SIGKILL");
     }
   });
 

@@ -42,7 +42,6 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { listCrew } from "../crew/store";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
-import { isParkedWorktree } from "../worktrees/scan";
 import { isAttended } from "./attended";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -317,8 +316,6 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   const finished: ListedWorktree[] = [];
   const gone: ListedWorktree[] = [];
   for (const listed of linked) {
-    // A folder a removal moved aside is the clean's own to finish (`src/worktrees/scan.ts`).
-    if (isParkedWorktree(listed.path)) continue;
     if (crewWorktrees.some((path) => samePath(path, listed.path))) continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished") finished.push(listed);

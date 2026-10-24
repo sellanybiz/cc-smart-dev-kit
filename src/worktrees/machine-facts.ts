@@ -54,9 +54,10 @@ export interface RunningProgram {
    */
   parentPid?: number;
   /**
-   * When it was started (epoch ms), when the listing says: the removal tells a program a
-   * finished crew session left behind (started before its turn ended) from one the person
-   * started there later (`crew rm`, D62). Absent on Windows, whose probe does not read it.
+   * When it was started (epoch ms), when known: the removal tells a program a finished crew
+   * session left behind (started before its turn ended) from one the person started there later
+   * (`crew rm`, D62). The listing does not carry it; `startTimes` reads it for the few programs
+   * a removal is about to stop, and a test gives it. Absent when unknown.
    */
   startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
@@ -264,25 +265,29 @@ export function parseElapsedSeconds(text: string): null | number {
 }
 
 /**
- * When every running process started (epoch ms), by pid, from `ps -o pid=,etimes=`. macOS has no
- * `etimes`; there `etime` gives the elapsed time in a form `parseElapsedSeconds` reads. A listing
- * that cannot be read leaves every start unknown, and an unknown start never proves a program
- * belongs to a finished session (`crew rm` keeps the worktree then).
+ * When the processes `pids` started (epoch ms), by pid, from `ps -o pid=,etimes= -p <pids>`.
+ * macOS has no `etimes`; there `etime` gives the elapsed time in a form `parseElapsedSeconds`
+ * reads. Asked only for the few programs a removal is about to stop, never for the whole
+ * machine. A pid `ps` does not know, and a `ps` that cannot answer, leave that start unknown —
+ * and an unknown start never proves a program belongs to a finished session (`crew rm` keeps the
+ * worktree then). `ps -p` exits 1 when one pid is gone and still prints the others, so its
+ * output counts whatever the exit code says. Windows has no such `ps`: nothing is known there.
  */
-function startTimesMs(now: number): Map<number, number> {
-  const read = (format: string): Map<number, number> => {
-    const starts = new Map<number, number>();
+export function startTimes(pids: readonly number[], now: number): Map<number, number> {
+  const starts = new Map<number, number>();
+  if (pids.length === 0) return starts;
+  const read = (format: string): void => {
     let output: string;
     try {
-      const run = Bun.spawnSync(["ps", "-o", `pid=,${format}=`], {
+      const run = Bun.spawnSync(["ps", "-o", `pid=,${format}=`, "-p", pids.join(",")], {
         stderr: "pipe",
         stdout: "pipe",
         timeout: PROGRAMS_TIMEOUT_MS,
       });
-      if (run.exitCode !== 0) return starts;
       output = run.stdout.toString();
     } catch {
-      return starts;
+      // No `ps` here (Windows): the starts stay unknown.
+      return;
     }
     for (const line of output.split(/\r?\n/)) {
       const fields = line.trim().split(/\s+/);
@@ -291,10 +296,10 @@ function startTimesMs(now: number): Map<number, number> {
       if (!Number.isInteger(pid) || pid <= 0 || seconds === null) continue;
       starts.set(pid, now - seconds * 1000);
     }
-    return starts;
   };
-  const seconds = read("etimes");
-  return seconds.size > 0 ? seconds : read("etime");
+  read("etimes");
+  if (starts.size === 0) read("etime");
+  return starts;
 }
 
 /** The tools this scan runs itself: short-lived children that would otherwise keep a worktree. */
@@ -445,9 +450,8 @@ function procPids(): number[] {
  *
  * Linux reads both the command lines and each process's working folder; macOS reads the
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
- * folder a program's file is in cannot be renamed there. Linux and macOS also read when each
- * process started; Windows' probe does not, so there an unknown start never proves a program
- * belongs to a finished session.
+ * folder a program's file is in cannot be renamed there. When a process started is asked
+ * separately, for the few programs a removal is about to stop (`startTimes`).
  */
 export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
   if (on === "win32") {
@@ -481,21 +485,13 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
     return "unknown";
   }
   const programs = parseCommandLines(lines);
-  if (on === "linux") {
-    for (const pid of procPids()) {
-      const cwd = cwdOf(pid);
-      if (cwd === undefined) continue;
-      const known = programs.find((program) => program.pid === pid);
-      if (known === undefined) programs.push({ cwd, path: null, pid });
-      else known.cwd = cwd;
-    }
-  }
-  // When each started, so a crew session's removal can tell the programs its finished turn left
-  // behind from one the person started there later (D62). One more `ps`, read once.
-  const starts = startTimesMs(Date.now());
-  for (const program of programs) {
-    const startedAt = starts.get(program.pid);
-    if (startedAt !== undefined) program.startedAt = startedAt;
+  if (on !== "linux") return programs;
+  for (const pid of procPids()) {
+    const cwd = cwdOf(pid);
+    if (cwd === undefined) continue;
+    const known = programs.find((program) => program.pid === pid);
+    if (known === undefined) programs.push({ cwd, path: null, pid });
+    else known.cwd = cwd;
   }
   return programs;
 }

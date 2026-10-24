@@ -32,6 +32,7 @@ import {
   programsUsing,
   type RunningProgram,
   runningPrograms,
+  startTimes,
 } from "../worktrees/machine-facts";
 import { type WorkOnRef, workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
@@ -213,13 +214,19 @@ function signal(pid: number, sig: NodeJS.Signals): boolean {
   }
 }
 
-/** The states whose event ends the crew session's turn: the work is over from then on. */
-const END_EVENT_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
+/**
+ * The states whose event says the crew session's own session ended: a report that closes its
+ * phase, or a stop. **Not `merged` or `removed`:** those are the lead's acts, and a program the
+ * person started after the session ended must not look like the session's own.
+ */
+const SESSION_END_STATES: readonly string[] = ["done", "failed", "handoff", "stopped"];
 
 /**
- * When the crew session's turn ended: the earliest `state` or `report` event of its own whose
- * state is one of `END_EVENT_STATES`. The record's `updatedAt` stands in when the log cannot say
- * (a store that cannot be read, or a record written before the log). Null when neither reads.
+ * When the crew session's own session last ended: the newest `state` or `report` event of its own
+ * whose state is one of `SESSION_END_STATES` (a session an answer brought back ends again, and
+ * what it started in between is its own). The record's `updatedAt` stands in when the log has no
+ * such event (a store that cannot be read, or a record written before the log). Null when
+ * neither reads.
  */
 export function sessionEndedAt(record: CrewRecord, ctx: CrewContext): null | number {
   try {
@@ -227,9 +234,9 @@ export function sessionEndedAt(record: CrewRecord, ctx: CrewContext): null | num
     for (const event of readCrewEvents(ctx.paths.stateDir, record.repo, 0).events) {
       if (event.crew !== record.id) continue;
       if (event.type !== "state" && event.type !== "report") continue;
-      if (!END_EVENT_STATES.includes(event.state)) continue;
+      if (!SESSION_END_STATES.includes(event.state)) continue;
       const at = Date.parse(event.at);
-      if (Number.isFinite(at) && (ended === null || at < ended)) ended = at;
+      if (Number.isFinite(at) && (ended === null || at > ended)) ended = at;
     }
     if (ended !== null) return ended;
   } catch {
@@ -270,11 +277,18 @@ export async function stopLeftoverProcesses(
   if (isLiveRow(row)) return { line: null, programs };
   const endedAt = sessionEndedAt(record, ctx);
   const sessionPid = row?.pid ?? null;
-  const theirs = inside.every(
-    (program) =>
-      (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) ||
-      (program.startedAt !== undefined && endedAt !== null && program.startedAt <= endedAt),
+  // When each started: a test gives it; on the machine it is read for exactly these programs.
+  const read = startTimes(
+    inside.filter((one) => one.startedAt === undefined).map((one) => one.pid),
+    ctx.now(),
   );
+  const startedAt = (program: RunningProgram): number | undefined =>
+    program.startedAt ?? read.get(program.pid);
+  const theirs = inside.every((program) => {
+    if (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) return true;
+    const started = startedAt(program);
+    return started !== undefined && endedAt !== null && started <= endedAt;
+  });
   if (!theirs) return { line: null, programs };
   const pids = [...new Set(inside.map((one) => one.pid))].filter((pid) => pid !== process.pid);
   const signalled = new Set(pids.filter((pid) => signal(pid, "SIGTERM")));

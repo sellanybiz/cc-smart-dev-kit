@@ -74,10 +74,13 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  * - `paused` — it waits for a usage limit to reset, or for its gateway slot to answer again
  *   (`waitingFor` says which);
  * - `quiet` — agent view says working, but its transcript has not moved for a while (an alert);
- * - `done` / `failed` — its turn ended with that report;
- * - `stopped` — its session was stopped (`claude stop`); the conversation stays on disk;
+ * - `done` / `failed` — its turn ended with that report; **`done` stays `done`** when the
+ *   watch stops its session afterwards (D62: `stopped` means something else);
+ * - `stopped` — a crew session its phase was not over for was stopped (`claude stop`, by the
+ *   lead, or by the watch's idle stop); the conversation stays on disk, and **its removal is
+ *   the lead's call** — the watch neither marks it merged nor removes it (D62);
  * - `handoff` — it handed off to a next crew session, and ended;
- * - `merged` — the lead merged its branch;
+ * - `merged` — the lead merged its branch; the watch then removes it, unless a refusal was said;
  * - `removed` — its session, worktree and branch are gone.
  */
 export const CREW_STATES = [
@@ -421,6 +424,13 @@ const crewFields = z.object({
    * store (`changeCrew`), so no command can set a state that disagrees with it.
    */
   mergedBeforeRemoval: z.boolean().optional(),
+  /**
+   * Set when the crew session became `merged` while it was `stopped` (D62): stopping a crew
+   * session was the lead's call, and so is removing it, so the watch marks it merged — what
+   * waits for its phase starts on the merge — and never removes it by itself. Kept by the store
+   * (`changeCrew`), from the state the record was in; absent on any other record.
+   */
+  mergedWhileStopped: z.boolean().optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -922,6 +932,9 @@ async function changeCrew(
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
+    // here, from the state the record was in, so the watch cannot forget it on a later pass.
+    if (merged.state === "merged" && before.state === "stopped") merged.mergedWhileStopped = true;
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);

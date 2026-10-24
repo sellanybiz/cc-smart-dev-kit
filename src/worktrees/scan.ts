@@ -44,22 +44,21 @@ import {
 
 /**
  * The mark a removal gives the folder it moves aside before removing it:
- * `<path>-removing-<milliseconds>`. A folder carrying it is one whose removal stopped halfway,
- * and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it (D62).
+ * `<path>-removing-<milliseconds>` (`removeWorktree`). A folder carrying it is one whose removal
+ * stopped halfway, and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it
+ * (D62). An older kit moved such a folder aside again, so the mark may stand more than once.
  */
-export const PARKED_MARK = "-removing-";
-
-const PARKED_END = /-removing-\d+$/;
+const PARKED_END = /(?:-removing-\d+)+$/;
 
 /** The folder a half-done removal moved aside was at, or null when `path` is not one. */
 export function parkedOriginal(path: string): null | string {
   const found = PARKED_END.exec(path);
-  return found === null ? null : path.slice(0, found.index);
+  return found === null || found.index === 0 ? null : path.slice(0, found.index);
 }
 
 /** True when `path` is a folder a half-done removal moved aside (`<path>-removing-<time>`). */
 export function isParkedWorktree(path: string): boolean {
-  return PARKED_END.test(path);
+  return parkedOriginal(path) !== null;
 }
 
 /**
@@ -117,9 +116,35 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
   return null;
 }
 
-/** What removing the worktree would lose. */
-function contentsOf(worktree: string, mainCheckout: string, env: Env): WorktreeContents {
-  if (hasChanges(worktree, env)) return { localFiles: [], uncommitted: true };
+/**
+ * True when the folder has anything uncommitted beyond tracked files that are gone: what a
+ * removal that stopped halfway leaves behind is files it deleted itself, and `git status` reads
+ * those as changes. A file someone changed, added or staged is not the removal's own work.
+ * `git status` prints ` D path` or `D  path`, and `runGit` trims the first line's leading space,
+ * so a deletion reads `D path` there.
+ */
+function hasChangesBeyondDeletions(worktree: string, env: Env): boolean {
+  const status = runGit(
+    worktree,
+    ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+    env,
+  );
+  if (!status.ok) return true;
+  return status.out.split("\n").some((line) => line !== "" && !/^(?: D|D) /.test(line));
+}
+
+/**
+ * What removing the worktree would lose. `parked`: a folder a removal moved aside (D62), whose
+ * deleted tracked files are the removal's own and are not changes.
+ */
+function contentsOf(
+  worktree: string,
+  mainCheckout: string,
+  env: Env,
+  parked = false,
+): WorktreeContents {
+  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasChanges(worktree, env);
+  if (changed) return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
   if (ignored === null) {
     return { localFiles: ["(git could not list the ignored files)"], uncommitted: false };
@@ -415,6 +440,8 @@ function judgeOne(
   // the path the worktree was made with, while a session record holds the physical one when
   // the repo is reached through a symlink.
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
+  // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
+  const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   const facts: WorktreeFacts = {
     aheadOfBase,
     base: look.label,
@@ -431,13 +458,11 @@ function judgeOne(
       aheadOfBase > 0
         ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
         : null,
+    parked,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
   };
-  // A folder a removal moved aside asks for no idle hour (D62): the move was the removal's own
-  // touch, and it is judged now. Every other worktree waits the limit its caller asked for.
-  const idleLimit = isParkedWorktree(listed.path) ? 0 : look.idleLimit;
-  return verdict(facts, () => contentsOf(listed.path, repo, look.env), idleLimit);
+  return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
 }
 
 /** The machine's facts, read once for a whole scan (or one removal). */
@@ -551,33 +576,50 @@ export function removeWorktree(
       status: fresh.held ? "held" : "kept",
     };
   }
-  const parked = `${listed.path}-removing-${String(Date.now())}`;
-  const moved = runGit(repo, ["worktree", "move", listed.path, parked], options.env);
-  if (!moved.ok) {
-    // A worktree holding a submodule can never be moved, however long anyone waits: git
-    // refuses those by its own rule, so the message says the way out, and no "try again".
-    if (holdsSubmodule(listed.path, options.env)) {
+  // A folder an earlier removal already moved aside (D62) is not moved again: that would stack
+  // a second mark on the first, and the record's folder could no longer be read from the name.
+  const alreadyParked = isParkedWorktree(listed.path);
+  const parked = alreadyParked ? listed.path : `${listed.path}-removing-${String(Date.now())}`;
+  if (!alreadyParked) {
+    const moved = runGit(repo, ["worktree", "move", listed.path, parked], options.env);
+    if (!moved.ok) {
+      // A worktree holding a submodule can never be moved, however long anyone waits: git
+      // refuses those by its own rule, so the message says the way out, and no "try again".
+      if (holdsSubmodule(listed.path, options.env)) {
+        return {
+          said: [
+            `kept ${listed.path}: it holds a git submodule, and git cannot move or remove such a ` +
+              `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
+              `\`${COMMAND} worktrees\` again: a worktree whose folder is gone is forgotten.`,
+          ],
+          status: "kept",
+        };
+      }
       return {
         said: [
-          `kept ${listed.path}: it holds a git submodule, and git cannot move or remove such a ` +
-            `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
-            `\`${COMMAND} worktrees\` again: a worktree whose folder is gone is forgotten.`,
+          `kept ${listed.path}: a program may still work in it — a terminal, a background command, ` +
+            `or an MCP server restarted while a session was in it (${moved.err})`,
         ],
-        status: "kept",
+        status: "held",
       };
     }
-    return {
-      said: [
-        `kept ${listed.path}: a program may still work in it — a terminal, a background command, ` +
-          `or an MCP server restarted while a session was in it (${moved.err})`,
-      ],
-      status: "held",
-    };
   }
-  const removed = runGit(repo, ["worktree", "remove", parked], options.env);
+  // A folder moved aside whose removal stopped halfway has lost tracked files to that removal,
+  // and git refuses such a worktree without `--force` ("contains modified or untracked files").
+  // Our own verdict already proved those deletions are all it holds (`hasChangesBeyondDeletions`),
+  // so the force is limited to exactly this folder, after that proof, and to no other.
+  const removed = runGit(
+    repo,
+    alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
+    options.env,
+  );
   if (!removed.ok) {
     return {
-      said: [`moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`],
+      said: [
+        alreadyParked
+          ? `could not remove ${parked}: ${removed.err}`
+          : `moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`,
+      ],
       status: "failed",
     };
   }

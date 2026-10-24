@@ -97,6 +97,16 @@ export function crewOfWorktree(records: readonly CrewRecord[], path: string): nu
 }
 
 /**
+ * True for a worktree the crew store names: the clean leaves it to its lead (D62). The main
+ * checkout is none, and neither is a folder that is gone — there is nothing of it to remove, and
+ * the clean forgets it like any other.
+ */
+export function isCrewWorktree(worktree: ScannedWorktree, records: readonly CrewRecord[]): boolean {
+  if (worktree.state === "main" || worktree.state === "gone") return false;
+  return crewOfWorktree(records, worktree.listed.path) !== null;
+}
+
+/**
  * The step a crew session's worktree waits for, in its state's own words. A crew session's work
  * goes to its **lead's** branch, and the lead merges it there: `worktrees --clean` judges against
  * `origin/<base>` and is the wrong tool, so the line names `crew rm` or the watch (D62).
@@ -437,10 +447,9 @@ export async function runWorktrees(
     // A crew session's worktree is never cleared here: its lead removes it with `crew rm`, or
     // the watch does once the branch is merged (D62). The summary says so, so a person is not
     // sent to a command that does nothing for them.
-    const going = scanned.filter((one) => canGo(one) && crewAt(one.listed.path) === null);
-    const crewCount = scanned.filter(
-      (one) => one.state !== "main" && crewAt(one.listed.path) !== null,
-    ).length;
+    const isCrew = (one: ScannedWorktree): boolean => isCrewWorktree(one, crewRecords);
+    const going = scanned.filter((one) => canGo(one) && !isCrew(one));
+    const crewCount = scanned.filter(isCrew).length;
     const crewLine =
       crewCount === 0
         ? null
@@ -456,13 +465,7 @@ export async function runWorktrees(
       return 0;
     }
 
-    cleanFinished(
-      repo,
-      scanned,
-      judged,
-      (line) => print(line),
-      (one) => crewAt(one.listed.path) !== null,
-    );
+    cleanFinished(repo, scanned, judged, (line) => print(line), isCrew);
     if (crewLine !== null) print(crewLine);
     if (going.length === 0 && crewLine === null) print("Nothing finished to clear.");
     return 0;

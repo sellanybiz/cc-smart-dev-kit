@@ -44,7 +44,7 @@ import {
   recordStart,
 } from "./auto-state";
 import { type CleanLock, cleanFinished, holdCleanLock, type KeptWorktree } from "./clean";
-import { baseBranch, crewOfWorktree, crewRecordsOf } from "./command";
+import { baseBranch, crewRecordsOf, isCrewWorktree } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
 
 export interface AutoCleanDeps {
@@ -226,7 +226,7 @@ export async function runAutoClean(
       scanned,
       judged,
       () => undefined,
-      (one) => crewOfWorktree(crewRecords, one.listed.path) !== null,
+      (one) => isCrewWorktree(one, crewRecords),
     );
     recordRun(files, main, { base, kept: report.kept, now, removed: report.removed });
     log(

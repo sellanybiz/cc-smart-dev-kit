@@ -12,6 +12,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -27,12 +28,16 @@ import {
   hostPath,
   parseCommandLines,
   parseContainerMounts,
+  parseElapsedSeconds,
   parsePrograms,
   programsInside,
+  startTimes,
 } from "./machine-facts";
 import {
   deleteMergedBranch,
   fetchBase,
+  isParkedWorktree,
+  parkedOriginal,
   pullRequestMerged,
   removeWorktree,
   replayOntoBase,
@@ -69,6 +74,7 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   innerWorktree: null,
   locked: false,
   mergedBy: null,
+  parked: false,
   programs: [],
   sessionName: null,
   ...over,
@@ -162,6 +168,26 @@ function crewAt(repo: string, worktree: string): NewCrew {
 describe("the verdict on one worktree", () => {
   test("everything clean: finished", () => {
     expect(verdict(facts(), () => clean)).toEqual({ finished: true, note: null });
+  });
+
+  test("D62: a folder a removal moved aside asks for neither the base's commits nor the idle hour", () => {
+    // Its branch keeps the commits, and the move itself was the removal's own touch.
+    expect(
+      verdict(facts({ aheadOfBase: 3, idleMinutes: 0, parked: true }), () => clean, IDLE_MINUTES),
+    ).toEqual({ finished: true, note: null });
+    // Every other reason to keep it stands.
+    expect(verdict(facts({ parked: true, programs: ["bun"] }), () => clean)).toMatchObject({
+      finished: false,
+      why: "a program runs from its files: bun",
+    });
+    expect(
+      verdict(facts({ parked: true }), () => ({ localFiles: [], uncommitted: true })),
+    ).toMatchObject({ finished: false, why: "uncommitted changes" });
+    // And a worktree that is not parked still waits for both.
+    expect(verdict(facts({ aheadOfBase: 3 }), () => clean)).toMatchObject({ finished: false });
+    expect(verdict(facts({ idleMinutes: 0 }), () => clean, IDLE_MINUTES)).toMatchObject({
+      finished: false,
+    });
   });
 
   test("each reason to keep it, with the words a person reads", () => {
@@ -1169,6 +1195,165 @@ describe("the worktrees command", () => {
     const item = answer.worktrees.find((one) => one.path === worktree);
     expect(item?.kind).toBe("kept");
     expect(item?.why).toContain("crew session `C app B7 tidy` (lead `LEAD app master-plan`)");
+  });
+
+  test("D62: the mark a removal gives a folder it moves aside is read back, once or repeated", () => {
+    expect(
+      isParkedWorktree("/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000"),
+    ).toBe(true);
+    expect(parkedOriginal("/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000")).toBe(
+      "/work/app/.claude/worktrees/crew-B1-help",
+    );
+    // An older removal moved a parked folder again: every mark comes off, not only the last.
+    expect(
+      parkedOriginal(
+        "/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000-removing-1761300090000",
+      ),
+    ).toBe("/work/app/.claude/worktrees/crew-B1-help");
+    // A worktree that is not one, and a name that only looks like one.
+    expect(isParkedWorktree("/work/app/.claude/worktrees/crew-B1-help")).toBe(false);
+    expect(parkedOriginal("/work/app/.claude/worktrees/crew-B1-help")).toBeNull();
+    expect(isParkedWorktree("/work/app/.claude/worktrees/removing-things")).toBe(false);
+    expect(isParkedWorktree("/work/app-removing-1761300000000/.claude/worktrees/x")).toBe(false);
+  });
+
+  test("D62: the programs of a finished turn tell when they started", async () => {
+    expect(parseElapsedSeconds("42")).toBe(42);
+    expect(parseElapsedSeconds("   7 ")).toBe(7);
+    expect(parseElapsedSeconds("01:05")).toBe(65);
+    expect(parseElapsedSeconds("02:03:04")).toBe(2 * 3600 + 3 * 60 + 4);
+    expect(parseElapsedSeconds("3-04:05:06")).toBe(3 * 86400 + 4 * 3600 + 5 * 60 + 6);
+    expect(parseElapsedSeconds("soon")).toBeNull();
+    // A real process: its start is read from `ps`, within a few seconds of when it began.
+    const child = Bun.spawn(["sleep", "30"], { stderr: "ignore", stdout: "ignore" });
+    try {
+      const before = Date.now();
+      const starts = startTimes([child.pid, 999_999_999], before);
+      const started = starts.get(child.pid);
+      expect(started).toBeDefined();
+      expect(Math.abs((started ?? 0) - before)).toBeLessThan(5_000);
+      // A pid nobody has says nothing.
+      expect(starts.has(999_999_999)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a removal that stopped halfway keeps its work on its branch and is finished", () => {
+    const { main, worktree } = repo();
+    // The session's own commit: on its branch, and on no other ref the base reads.
+    writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "work");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === parked);
+    // Judged now: no idle hour, and 1 commit ahead of the base is its branch's to keep.
+    expect(found?.state).toEqual({ finished: true, note: null });
+    const listed = found?.listed;
+    if (listed === undefined) throw new Error("the parked folder is not listed");
+    const removal = removeWorktree(main, listed, options);
+    expect(removal.status).toBe("removed");
+    expect(removal.said).toEqual([
+      `removed ${parked}`,
+      "kept branch fix/login: it has commits that are not on main",
+    ]);
+    expect(existsSync(parked)).toBe(false);
+    // The commit is still there, on the branch the folder had.
+    expect(git(main, "log", "--format=%s", "-1", "fix/login").trim()).toBe("work");
+  });
+
+  test("D62: the tracked files a half-done removal deleted are its own, anything else is not", () => {
+    const { main, worktree } = repo();
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // `git worktree remove` deleted a tracked file before it failed.
+    rmSync(join(parked, "README.md"));
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    };
+    const state = () =>
+      scanWorktrees(main, options).find((one) => one.listed.path === parked)?.state;
+    expect(state()).toEqual({ finished: true, note: null });
+    // A file someone changed is not the removal's own work.
+    writeFileSync(join(parked, "README.md"), "# mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+    git(parked, "checkout", "--", "README.md");
+    expect(state()).toEqual({ finished: true, note: null });
+    // Nor is a file nobody tracks.
+    writeFileSync(join(parked, "notes.txt"), "mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+  });
+
+  test("D62: a folder that moved aside on a detached head keeps the commits the base lacks", () => {
+    const { main, worktree } = repo();
+    git(worktree, "checkout", "--detach");
+    writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "work");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    const found = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    }).find((one) => one.listed.path === parked);
+    // No branch holds this commit: removing the folder would lose it.
+    expect(found?.state).toMatchObject({ finished: false, why: "1 commit not on main" });
+  });
+
+  test("D62: a folder already moved aside is not moved again, whatever fails", () => {
+    const { main, worktree } = repo();
+    // A directory git cannot empty: the removal deletes what it can, then fails.
+    mkdirSync(join(worktree, "sub"));
+    writeFileSync(join(worktree, "sub", "kept.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "sub");
+    git(main, "merge", "--no-ff", "-m", "merge", "fix/login");
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    };
+    const listing = () =>
+      git(main, "worktree", "list", "--porcelain")
+        .split("\n")
+        .filter((line) => line.startsWith("worktree "))
+        .map((line) => line.slice("worktree ".length));
+    const first = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (first === undefined) throw new Error("the worktree is not listed");
+    chmodSync(join(worktree, "sub"), 0o555);
+    try {
+      removeWorktree(main, first.listed, options);
+      const parkedNow = listing().filter((path) => isParkedWorktree(path));
+      // Whether git could finish or not (a user with every right can), a second attempt at a
+      // folder that is still there never nests one mark inside another.
+      for (const path of parkedNow) {
+        const again = scanWorktrees(main, options).find((one) => one.listed.path === path);
+        if (again !== undefined) removeWorktree(main, again.listed, options);
+      }
+      for (const path of listing()) expect(path.match(/-removing-/g)?.length ?? 0).toBeLessThan(2);
+    } finally {
+      for (const path of listing()) {
+        try {
+          chmodSync(join(path, "sub"), 0o755);
+        } catch {
+          // The folder is gone: nothing to put back.
+        }
+      }
+    }
   });
 
   test("D62: a removal that stopped halfway is finished by --clean, with no record of it", async () => {

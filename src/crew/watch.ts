@@ -44,6 +44,7 @@ import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
+import { baseBranch } from "../worktrees/command";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
 import { type Caller, readCaller, reasonOf } from "./caller";
@@ -94,11 +95,11 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
 
 /**
  * The states a crew session's work is over in: the watch looks at the lead's merge for each of them,
- * because the merge can come after the crew session's turn ended. **`stopped` is not one (D62):**
- * a crew session something stopped before its phase was over is the lead's call, and the watch
- * neither marks it merged nor removes it — `crew rm` does, when the lead says so.
+ * because the merge can come after the crew session was stopped. A `stopped` one is marked merged
+ * too — what waits for its phase starts on the merge — but **never removed by the watch (D62)**:
+ * stopping it was the lead's call, and so is its removal (`mergedWhileStopped`, `store.ts`).
  */
-const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged"];
+const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -631,11 +632,6 @@ export async function watchPass(
     }
   }
 
-  // Removals that stopped halfway are finished here too (D62): a folder a removal moved aside
-  // (`<path>-removing-<time>`) and could not remove, whether or not the store still knows its
-  // crew session. A folder that stays is not news; the next pass judges it again.
-  finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
-
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
   const allRecords = listCrew(ctx.paths.stateDir, repo).records;
@@ -650,15 +646,24 @@ export async function watchPass(
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
     if (OVER_STATES.includes(record.state) && branchMerged(record, ctx)) {
-      const reason = "the lead merged its branch; the watch removes it";
-      await updateCrew(
-        ctx.paths.stateDir,
-        record.repo,
-        record.id,
-        { state: "merged" },
-        ctx.now(),
-        reason,
-      );
+      const wasStopped = record.state === "stopped";
+      // Marked once: a record that is merged already is not written again on every pass.
+      if (record.state !== "merged") {
+        await updateCrew(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          { state: "merged" },
+          ctx.now(),
+          wasStopped
+            ? "the lead merged its branch; it was stopped, so `crew rm` removes it"
+            : "the lead merged its branch; the watch removes it",
+        );
+      }
+      // D62: stopping a crew session was the lead's call, and so is removing it. It is marked
+      // merged all the same — what waits for its phase starts on the merge — and left for
+      // `crew rm`. The store keeps the fact (`mergedWhileStopped`), so a later pass sees it too.
+      if (wasStopped || record.mergedWhileStopped === true) continue;
       // A queued or starting continuation is cut from this branch when it starts: keep the branch
       // until then, and say so once.
       const continuations = allRecords.filter(
@@ -745,6 +750,13 @@ export async function watchPass(
     }
   }
 
+  // Removals that stopped halfway are finished here too (D62): a folder a removal moved aside
+  // (`<path>-removing-<time>`) and could not remove, whether or not the store still knows its
+  // crew session. After the loop above, so a crew session whose branch this folder's removal
+  // deletes was marked merged first — what waits for its phase starts on that mark. A folder
+  // that stays is not news; the next pass judges it again.
+  finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+
   // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here
@@ -814,21 +826,17 @@ export function leadOf(
 }
 
 /**
- * The base a removal that stopped halfway is judged against when its record is gone:
- * `origin/<base>`, where `<base>` is the project's `worktrees.base` else the remote's default
- * branch. Null when this repository has neither, and then such a folder is left alone.
+ * The ref a removal that stopped halfway is judged against when its record is gone: the base
+ * `worktrees` judges against (`baseBranch`: the project's `worktrees.base`, else the remote's
+ * default branch, else `main`) as `origin/<base>`, else — a repository with no remote — the
+ * local branch of that name. Null when neither is there, and then such a folder is left alone:
+ * nothing is judged against a guess.
  */
 function watchBase(caller: Caller, ctx: CrewContext): null | { label: string; ref: string } {
-  const labels: string[] = [];
-  const named = caller.config?.worktrees?.base;
-  if (named !== undefined) labels.push(named);
-  const head = runGit(caller.repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], ctx.env);
-  if (head.ok) labels.push(head.out.replace(/^origin\//, ""));
-  for (const label of labels) {
-    if (label === "" || label === "HEAD") continue;
-    const ref = `refs/remotes/origin/${label}`;
+  const { base } = baseBranch(caller.checkout, ctx.env, caller.repo);
+  for (const ref of [`refs/remotes/origin/${base}`, `refs/heads/${base}`]) {
     if (runGit(caller.repo, ["rev-parse", "--verify", "--quiet", ref], ctx.env).ok) {
-      return { label, ref };
+      return { label: base, ref };
     }
   }
   return null;
