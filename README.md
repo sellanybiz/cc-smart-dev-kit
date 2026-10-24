@@ -1494,8 +1494,8 @@ you choose here**, and the card says so.
   reach that backend either way. A Claude fallback needs a route that is not Claude, for the
   same reason, and the card says so. Since claude-mem 13.37.0 an empty fallback means Claude,
   with claude-mem's own model (`CLAUDE_MEM_QUOTA_FALLBACK_MODEL`, else `CLAUDE_MEM_MODEL`:
-  Haiku, unless you changed it), and `off` means none; before it, an empty one means none (and
-  "off" writes that).
+  Haiku, unless you changed it), and the card shows it so, naming that model; `off` means none.
+  Before 13.37.0, an empty one means none (and "off" writes that).
 - **Let setup decide again** forgets your choices and runs setup's own claude-mem step: the
   route follows the scout slot again, and the fallback goes back to claude-mem's default.
 
@@ -1510,12 +1510,13 @@ The rules:
   (`~/.claude/cc-smart-dev-kit/claude-mem-choices.json`): a later `setup` leaves the provider
   keys, and a fallback you chose, as they are. `restore` takes your writes out and removes
   that record, so the next setup follows the scout slot again.
-- **A value you set by hand stays yours — until you take it over.** The card says so, and a
-  change to it is refused in words: change it in the file, or remove it there to set it here.
-  The **take-over** is the other answer: it records those values as cc-smart-dev-kit's own, so
-  the route, the key and the fallback can change. `cc-smart-dev-kit claude-mem take-over` (below)
-  does it from your own terminal. It names
-  the values it would take and asks first. **Nothing in claude-mem's settings file changes**:
+- **A value you set by hand stays yours — until you take it over.** The card names each such
+  value at its top, marks the part whose change it refuses, and keeps that part's button off:
+  change the value in the file, or take it over. The **take-over** is the card's **Let the kit
+  manage these**: it records those values as cc-smart-dev-kit's own, so the route, the key and
+  the fallback can change, in place, with no page reload. `cc-smart-dev-kit claude-mem
+  take-over` (below) does it from your own terminal. Both name the values they would take and
+  ask first. **Nothing in claude-mem's settings file changes**:
   each value stays exactly as it is until you pick another. `restore` puts a taken-over value
   back as it was (one you changed in the file since stays yours). A key's value is never written
   down: `restore` leaves a taken-over key exactly as you set it while it is still yours; once
