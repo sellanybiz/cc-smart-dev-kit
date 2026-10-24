@@ -13,12 +13,19 @@ export function appliedEdit<D, A>(edit: Edit<D, A> | null, answer: A): Edit<D, A
   return edit === null ? null : { answer, applied: true, draft: edit.draft };
 }
 
-/** What the form shows: the edit, until a new answer replaces the one an applied edit was made on. */
+/**
+ * The edit while it counts: one being typed, or an applied one on the answer it was made
+ * against. An applied edit that a new answer replaced is no edit — nothing is left to discard.
+ */
+export function liveEdit<D, A>(edit: Edit<D, A> | null, answer: A): Edit<D, A> | null {
+  return edit?.applied && edit.answer !== answer ? null : edit;
+}
+
+/** What the form shows: the live edit, else the answer's own draft. */
 export function shownDraft<D, A>(
   edit: Edit<D, A> | null,
   answer: A,
   fromAnswer: (answer: A) => D,
 ): D {
-  if (edit === null) return fromAnswer(answer);
-  return edit.applied && edit.answer !== answer ? fromAnswer(answer) : edit.draft;
+  return liveEdit(edit, answer)?.draft ?? fromAnswer(answer);
 }

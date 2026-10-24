@@ -53,24 +53,34 @@ export function useAction(action: ActionName, onDone?: (result: ActionResult) =>
     const timer = window.setTimeout(() => setState({ phase: "idle" }), DONE_SHOWN_MS);
     return () => window.clearTimeout(timer);
   }, [state]);
-  // The run this control has going, so the action's progress lines can tell whose they are.
-  const endRun = useRef<(() => void) | null>(null);
-  useEffect(() => () => endRun.current?.(), []);
+  // The runs this control has going, so the action's progress lines can tell whose they are.
+  // Each run ends its own token; an unmount ends whatever is left.
+  const ends = useRef(new Set<() => void>());
+  useEffect(() => {
+    const held = ends.current;
+    return () => {
+      for (const end of held) end();
+    };
+  }, []);
   const run = useCallback(
     (body: Record<string, unknown>) => {
       setState({ line: null, phase: "sending" });
-      endRun.current?.();
-      endRun.current = beginRun(action);
+      const end = beginRun(action);
+      ends.current.add(end);
+      const finish = () => {
+        end();
+        ends.current.delete(end);
+      };
       portalClient()
         .act(action, body)
         .then(
           (result) => {
-            endRun.current?.();
+            finish();
             setState({ phase: "done", result });
             doneRef.current?.(result);
           },
           (error: unknown) => {
-            endRun.current?.();
+            finish();
             setState({
               phase: "done",
               result: {
