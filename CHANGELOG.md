@@ -26,7 +26,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   A crew session in a profile project now waits on its profile's breaker, not the machine's.
   The status line shows a fallback or breaker only in a session on that chain: a profile's
   record no longer appears in every session on the machine, and a session off the gateway shows
-  none.
+  none. `crew start` and the opus usage guard read a project's own gateway (its settings, and its
+  profile's chains), not the user's file alone: a project turned on or off with `gateway project`
+  now decides which effort a crew session gets and whether the usage guard holds.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and

@@ -328,7 +328,7 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs);
+    usage = usageFacts(input.paths, input.nowMs, input.checkout.root);
   } catch {
     return null;
   }

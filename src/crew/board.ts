@@ -272,7 +272,7 @@ export async function capsOf(ctx: CrewContext, checkout: Checkout | null): Promi
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now());
+    const usage = usageFacts(ctx.paths, ctx.now(), checkout?.root ?? ctx.cwd);
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,

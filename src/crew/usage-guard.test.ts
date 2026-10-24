@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { readUsageWindow, recordUsageWindow, usageWindowFile, windowOf } from "../cli/usage-window";
 import { emptyConfig, type GatewayConfig } from "../gateway/config";
@@ -136,9 +136,10 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
 
   test("the facts a start reads: the window from the state file and the chain from the gateway", () => {
     const paths = pathsFor();
-    expect(usageFacts(paths, NOW)).toEqual({ opusFallback: false, percent: null });
+    const folder = tempDir("project");
+    expect(usageFacts(paths, NOW, folder)).toEqual({ opusFallback: false, percent: null });
     recordUsageWindow(paths, inputOf(87), NOW);
-    expect(usageFacts(paths, NOW)).toEqual({ opusFallback: false, percent: 87 });
+    expect(usageFacts(paths, NOW, folder)).toEqual({ opusFallback: false, percent: 87 });
     mkdirSync(dirname(paths.gatewayConfigFile), { mode: 0o700, recursive: true });
     writeFileSync(paths.gatewayConfigFile, `${JSON.stringify({ ...chain, version: 1 })}\n`, {
       mode: 0o600,
@@ -147,7 +148,73 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
       paths.settingsFile,
       JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
     );
-    expect(usageFacts(paths, NOW)).toEqual({ opusFallback: true, percent: 87 });
+    expect(usageFacts(paths, NOW, folder)).toEqual({ opusFallback: true, percent: 87 });
+  });
+
+  describe("RV3: the project's own address decides, not the user's file alone", () => {
+    const ROUTER = "http://127.0.0.1:20199";
+
+    /** A machine with the gateway config, the user's file saying `machineUrl`, and a project folder. */
+    function world(machineUrl: null | string, config: object = chain) {
+      const paths = pathsFor();
+      mkdirSync(dirname(paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+      writeFileSync(paths.gatewayConfigFile, `${JSON.stringify({ ...config, version: 1 })}\n`, {
+        mode: 0o600,
+      });
+      if (machineUrl !== null) {
+        writeFileSync(
+          paths.settingsFile,
+          JSON.stringify({ env: { ANTHROPIC_BASE_URL: machineUrl } }),
+        );
+      }
+      const folder = tempDir("project");
+      /** The project's team file, the one a session started in the folder reads. */
+      const projectUrl = (url: string) => {
+        mkdirSync(join(folder, ".claude"), { recursive: true });
+        writeFileSync(
+          join(folder, ".claude", "settings.json"),
+          JSON.stringify({ env: { ANTHROPIC_BASE_URL: url } }),
+        );
+      };
+      return { folder, paths, projectUrl };
+    }
+
+    test("the machine is off and the project is on: the opus chain answers, the guard is lifted", () => {
+      const { folder, paths, projectUrl } = world(null);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(false);
+      projectUrl(ROUTER);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(true);
+    });
+
+    test("the machine is on and the project is off: Claude answers, the window still holds", () => {
+      const { folder, paths, projectUrl } = world(ROUTER);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(true);
+      projectUrl("https://api.anthropic.com");
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(false);
+    });
+
+    test("a profile's chain decides for a project on its address", () => {
+      // The machine's opus slot has no chain; the profile `cheap` has one, with its fallback on.
+      const config = {
+        ...chain,
+        fallback: {},
+        port: 20199,
+        profiles: {
+          cheap: {
+            fallback: { "cc-smart-dev-kit-opus": true },
+            slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+          },
+        },
+        slots: {},
+      };
+      const { folder, paths, projectUrl } = world(ROUTER, config);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(false);
+      projectUrl(`${ROUTER}/p/cheap`);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(true);
+      // A profile the config does not hold answers as plain Claude, as the router does.
+      projectUrl(`${ROUTER}/p/nope`);
+      expect(usageFacts(paths, NOW, folder).opusFallback).toBe(false);
+    });
   });
 
   test("the one line said when the window cannot be read", () => {

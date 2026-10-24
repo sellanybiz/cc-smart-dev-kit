@@ -38,7 +38,11 @@ blocked one is stopped (D35: a crew session never outlives its work) — and the
 `CREW_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
 `sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
-Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). So does code that
+Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
+is the project's: the address its own settings choose over the machine's — its personal file, its
+team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
+`src/crew/usage-guard.ts`; `crew start` runs outside any session, so the user's file alone would
+miss a project turned on or off with `gateway project`). So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
 Work that needs judgment — `architecture` — runs on `opus` at `xhigh`, whatever answers the
 tier. `ui` is the exception (`UI_POLICY`, D50): it runs on `opus` at `high`, never on an
@@ -237,7 +241,8 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    ceiling no lead reaches alone, and `workflow.crew.maxOpus` an optional machine-wide opus
    ceiling, unset by default (a person who sets one keeps it); **the 5-hour usage window**
    (D54) — past `workflow.crew.usagePercent` (85) a new opus-tier crew session waits, unless
-   the gateway's opus slot has a chain in use with its fallback on (`src/crew/usage-guard.ts`);
+   the project's gateway has an opus slot with a chain in use and its fallback on
+   (`src/crew/usage-guard.ts`, the same `crewGatewayOf`);
    the window is the one Claude Code's status line reads, recorded by
    `cc-smart-dev-kit statusline` in `<stateDir>/usage-window.json` (the reader's one home,
    `src/cli/usage-window.ts`), and with no reading — or one whose window has reset — the guard
