@@ -186,6 +186,7 @@ describe("the adapters", () => {
       jobs: { budgetGb: 8, heldGb: 2, waiting: 1 },
       limits: [],
       limitsRead: true,
+      requests: { perMinute: 21.6, sinceRouterStart: 892 },
       router: ROUTER,
       slots: [SLOTS_ROW],
       switches: {

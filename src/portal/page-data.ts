@@ -10,11 +10,13 @@
 
 import type { Check } from "../cli/doctor";
 import type { GatewayConfig } from "../gateway/config";
+import { historyDbExists } from "../gateway/history";
+import { requestsSince } from "../gateway/history-read";
 import { backendAddress } from "../gateway/settings";
 import { isOlder } from "../update/check";
 import type { LastCheck } from "../update/state";
 import { type ActionContext, autoModeChange, jobLines, updateState } from "./actions";
-import type { ProjectDefaultsReader } from "./facts";
+import type { ProjectDefaultsReader, RouterFacts } from "./facts";
 import {
   backendRows,
   browserCardData,
@@ -35,7 +37,7 @@ import {
   switchFacts,
   warpRow,
 } from "./facts";
-import type { HealthData, MachineData, OverviewData, SlotsData } from "./views";
+import type { HealthData, MachineData, OverviewData, OverviewRequests, SlotsData } from "./views";
 import type { WorkflowAdapter } from "./workflow-adapter";
 
 /** What every screen's data is built from: the actions' context and the server's memory. */
@@ -142,6 +144,46 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
   };
 }
 
+/**
+ * How far back the Overview's request rate looks. Its card says "last 5 min", and the rate is
+ * the window's count divided by its minutes (F4).
+ */
+export const OVERVIEW_RATE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * The Overview's model-request numbers, from the history database: the rate over the last five
+ * minutes, and the count since the router started. Read through `history-read.ts`, the one home
+ * for a history query (F4, F5).
+ *
+ * A machine with no history file has logged no request at all — a new machine, or one whose
+ * history is off — so both numbers are null and the page says so, rather than showing a rate of
+ * 0 as though requests were counted and simply absent. A router that does not answer has no
+ * uptime to count from, so the count since its start is null too.
+ */
+export function overviewRequests(
+  deps: PageDataDeps,
+  router: RouterFacts,
+  now: number,
+): OverviewRequests {
+  const file = deps.action.portal.paths.historyDbFile;
+  if (!historyDbExists(file)) return { perMinute: null, sinceRouterStart: null };
+  try {
+    return {
+      perMinute:
+        requestsSince(file, { from: now - OVERVIEW_RATE_WINDOW_MS }) /
+        (OVERVIEW_RATE_WINDOW_MS / 60_000),
+      sinceRouterStart: router.up
+        ? requestsSince(file, { from: now - router.uptimeSec * 1000 })
+        : null,
+    };
+  } catch {
+    // The file is there but cannot be read as a database. The history's own routes answer a
+    // 500 saying so; the Overview is not worth losing over it, and its card says it has no
+    // number rather than showing a zero. `doctor` is where the file's state is reported.
+    return { perMinute: null, sinceRouterStart: null };
+  }
+}
+
 /** The Overview's data: needs a usable gateway config. */
 export async function overviewData(
   deps: PageDataDeps,
@@ -159,6 +201,7 @@ export async function overviewData(
     fallbacks: limits.fallbacks,
     limits: limits.limits,
     limitsRead: limits.read,
+    requests: overviewRequests(deps, router, ctx.now()),
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),

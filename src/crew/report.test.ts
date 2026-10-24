@@ -5,7 +5,7 @@
  * the model's part against the store's report shape.
  */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
@@ -22,6 +22,39 @@ import {
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
+/** The session id `crewWorld1` records for its crew session: the folder its task list is in. */
+const SESSION_ID = "aaaa1111-2222-3333-4444-555555555555";
+
+/**
+ * One task file, as Claude Code writes it, in the crew session's task folder (or in `list`,
+ * the folder `CLAUDE_CODE_TASK_LIST_ID` names). Written by hand: the report reads Claude Code's
+ * files, and a test that built them with the reader would prove nothing about the shape.
+ */
+function taskFile(
+  world: { paths: { claudeConfigDir: string } },
+  n: number,
+  status: string,
+  list: string = SESSION_ID,
+): void {
+  const folder = join(world.paths.claudeConfigDir, "tasks", list);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, `${String(n)}.json`),
+    `${JSON.stringify(
+      {
+        id: String(n),
+        subject: `Part ${String(n)}`,
+        description: "x",
+        activeForm: `Doing part ${String(n)}`,
+        status,
+        blocks: [],
+        blockedBy: [],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
 
 /** A world with one crew session that has committed something on its branch. */
 async function crewWorld1(options: { files?: string[]; state?: "working" | "blocked" } = {}) {
@@ -76,7 +109,7 @@ async function crewWorld1(options: { files?: string[]; state?: "working" | "bloc
       questions: [],
       repo: world.repo,
       reportPath: null,
-      sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      sessionId: SESSION_ID,
       shortId: "aaaa1111",
       slug: "portal-live",
       state: options.state ?? "working",
@@ -367,6 +400,135 @@ describe("crew report", () => {
     );
     const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
     expect(report?.outsideBrief).toEqual(["extra.ts"]);
+  });
+
+  test("D23: a done report is refused while a task is open, and each open task is named", async () => {
+    const world = await crewWorld1();
+    taskFile(world, 1, "completed");
+    taskFile(world, 3, "pending");
+    taskFile(world, 5, "in_progress");
+    const code = await runCrew(
+      ["report", "--status", "done"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      'crew report: the task list still has 2 open tasks: #3 "Part 3" (pending), #5 "Part 5" (in_progress)',
+      "Fix: Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+    ]);
+    // Nothing was written and nothing was said: the phase is still working.
+    expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))).toBeNull();
+    expect(readCrewEvents(world.paths.stateDir, world.repo).events).toHaveLength(1);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("working");
+    expect(world.out).toEqual([]);
+  });
+
+  test("D23: one open task is named alone, and the report goes through once it is completed", async () => {
+    const world = await crewWorld1();
+    taskFile(world, 2, "in_progress");
+    const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
+    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(1);
+    expect(world.err).toEqual([
+      'crew report: the task list still has 1 open task: #2 "Part 2" (in_progress)',
+      "Fix: Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+    ]);
+    world.err.length = 0;
+    taskFile(world, 2, "completed");
+    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
+    ]);
+    expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))?.status).toBe("done");
+  });
+
+  test.each(["handoff", "failed", "blocked"] as const)(
+    "D23: a %s report is never held by an open task",
+    async (status) => {
+      const world = await crewWorld1();
+      taskFile(world, 1, "pending");
+      const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
+      if (status === "blocked") {
+        // A blocked report names the question it waits on: its own, asked first.
+        await runCrew(
+          ["report", "--question", "which port?", "--option", "3210", "--option", "3211"],
+          ctx,
+        );
+      }
+      expect(await runCrew(["report", "--status", status], ctx)).toBe(0);
+      expect(world.err).toEqual([]);
+      expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))?.status).toBe(status);
+    },
+  );
+
+  test("D23: no task list at all: the report goes through, with one note saying so", async () => {
+    const world = await crewWorld1();
+    const code = await runCrew(
+      ["report", "--status", "done"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    expect(code).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "note: no task list was found for this session; nothing was checked before the report",
+      `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
+    ]);
+  });
+
+  test("D23: an empty list after every task was removed is a finished list: no note, no hold", async () => {
+    const world = await crewWorld1();
+    // What a live run left after its last task was removed: no `N.json` at all.
+    const folder = join(world.paths.claudeConfigDir, "tasks", SESSION_ID);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, ".lock"), "");
+    writeFileSync(join(folder, ".highwatermark"), "2");
+    expect(
+      await runCrew(
+        ["report", "--status", "done"],
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      ),
+    ).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
+    ]);
+  });
+
+  test("D23: a list the command cannot read holds nothing back, and says so", async () => {
+    const world = await crewWorld1();
+    // A file where the session's task folder belongs: the list cannot be read.
+    mkdirSync(join(world.paths.claudeConfigDir, "tasks"), { recursive: true });
+    writeFileSync(join(world.paths.claudeConfigDir, "tasks", SESSION_ID), "{}");
+    expect(
+      await runCrew(
+        ["report", "--status", "done"],
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      `note: the task list in ${join(world.paths.claudeConfigDir, "tasks", SESSION_ID)} cannot be read; nothing was checked before the report`,
+      `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
+    ]);
+  });
+
+  test("D23: CLAUDE_CODE_TASK_LIST_ID names the list the report checks, and only that one", async () => {
+    const world = await crewWorld1();
+    // The session's own folder holds an open task; the shared list the environment names holds
+    // another. With the variable set, only the shared list counts.
+    taskFile(world, 1, "pending");
+    taskFile(world, 7, "in_progress", "shared-list");
+    const ctx = world.ctx(
+      { cwd: world.worktree },
+      { CC_SMART_DEV_KIT_CREW: ID, CLAUDE_CODE_TASK_LIST_ID: "shared-list" },
+    );
+    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(1);
+    expect(world.err[0]).toBe(
+      'crew report: the task list still has 1 open task: #7 "Part 7" (in_progress)',
+    );
+    world.err.length = 0;
+    taskFile(world, 7, "completed", "shared-list");
+    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(0);
+    expect(world.err).toEqual([]);
   });
 
   test("D36: options belong to a question, and a question has no file", async () => {

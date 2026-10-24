@@ -21,8 +21,8 @@
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
- * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
+ * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the first edit held until the task list exists, the report block, the pause at a limit (`crew-role.ts`) |
+ * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once, its task-list reminder at each prompt, and the crew rule at a session start (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
@@ -61,7 +61,7 @@ import {
   WORKFLOW_TOOLS,
 } from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
-import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
+import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import {
@@ -388,14 +388,17 @@ export const sessionNameHook: HookSpec = {
  * with the session's own `cwd` checked against its worktree — a `starting` record becomes `working`
  * inside it, and an open one is `failed` with the reason outside it (H101; `updateCrewIfState`
  * reads the state again under the store's lock);
- * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the person's own prompt
+ * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); an edit denied with the
+ * task-list step until the session's list has one (D23, its own cache in
+ * `src/crew/tasks.ts`); the person's own prompt
  * recorded as one `person` event with one line of context (D55); the last line recorded at
  * a stop, and one block when the turn ended on a step with no report; the crew session marked
  * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
  * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
- * file — the PreToolUse deny reads no store at all, so a broken or too new file, and a folder
- * outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
- * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools),
+ * file — the two PreToolUse answers read no project file, and the edit gate the store only for
+ * its own cache, so a broken or too new file, and a folder outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
+ * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools
+ * that ask the person, and the three edits that wait for the task list),
  * and is silent outside a crew session: a plain session must never be asked because of this hook.
  * A StopFailure pauses the record and answers nothing: Claude Code ignores that hook's output, so
  * the pause is fail-open like the Stop block.
@@ -417,15 +420,22 @@ export const crewRoleHook: HookSpec = {
     if (crewIdOf(context.env) === null) return SILENT;
     if (event !== "" && event !== "PreToolUse") return SILENT;
     const tool = input === null ? null : stringField(input.tool_name);
+    const edits = tool !== null && (CREW_EDIT_TOOLS as readonly string[]).includes(tool);
     if (
       input !== null &&
+      !edits &&
       (tool === null || !(CREW_ASK_TOOLS as readonly string[]).includes(tool))
     ) {
       return SILENT;
     }
     return toolDecision(
       "ask",
-      cannotCheck("whether this crew session asks the person itself", why),
+      cannotCheck(
+        edits
+          ? "whether this crew session keeps its task list"
+          : "whether this crew session asks the person itself",
+        why,
+      ),
     );
   },
   run: ({ input, event, project, env, paths }) =>
@@ -436,8 +446,11 @@ export const crewRoleHook: HookSpec = {
  * The lead's notes (`lead-notes.ts`): on a turn a registered lead starts, one line about what
  * changed among its crew sessions since its last turn — the store's events from a per-lead cursor,
  * rendered by the watch's own `eventLine`, said once. **Machine-wide**: it is silent unless the
- * input's `session_id` is a lead recorded in this repository, and it reads no project file. A crash
- * is one line on stderr and exit 0: a note never stops a lead's turn.
+ * input's `session_id` is a lead recorded in this repository, and it reads no project file. At a
+ * SessionStart — a start, a resume, a clear, a compaction — it adds one line first: the lead's
+ * crew sessions build the work (D61). At a prompt it also adds one reminder line while the lead's
+ * own task folder holds no task file (D23); never a block. A crash is one line on stderr and
+ * exit 0: a note never stops a lead's turn.
  */
 export const leadNotesHook: HookSpec = {
   name: "lead-notes",
@@ -459,10 +472,13 @@ export const leadNotesHook: HookSpec = {
  * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
  * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
  * `update-check`), and its answer never depends on the project's file — it judges the model
- * and effort a launch names (§ `agent-guard.ts`). A project that runs its own Agent guard
+ * and effort a launch names (§ `agent-guard.ts`) — save its D59 queue rule, which needs the
+ * project's caps and this repository's store, so `run` is handed the frame's checkout for it. A
+ * project that runs its own Agent guard
  * lists `"agent-guard"` in `ownHooks`, and this one stays silent there. `onConfigProblem` and
- * `outsideGit` judge the same way: a broken or too new cc-smart-dev-kit.json, or a folder that
- * is not in git, does not change which model a launch runs on.
+ * `outsideGit` judge the model and effort alone: a broken or too new cc-smart-dev-kit.json, or a
+ * folder that is not in git, does not change which model a launch runs on, and with no caps to
+ * read a lead's building launch is never held.
  *
  * PostToolUse is the **record**: a launch the guard asked about on PreToolUse, and the person
  * allowed, ran, and is recorded there (`RAN_EVENT` in `agent-guard.ts`). Claude Code runs
@@ -489,7 +505,10 @@ export const agentGuardHook: HookSpec = {
     ([...AGENT_TOOLS, ...WORKFLOW_TOOLS] as readonly string[]).includes(toolOf(input)),
   ),
   logFacts: guardFacts,
-  run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
+  // The frame's own checkout finds the repository's lead record, so a recorded lead's building
+  // launch can be held by the crew queue (D59); the paths without one judge model and effort.
+  run: ({ input, env, paths, cwd, nowMs, project }) =>
+    agentGuard(input, env, paths, cwd, nowMs, project),
 };
 
 /**
@@ -641,7 +660,7 @@ export const USER_HOOKS: readonly string[] = [
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
  * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
  * goes around the limits set for the session), `crew-role` (a crew session's own card, ask and
- * report), `lead-notes` (a lead's missed crew news) and `agent-usage` (each subagent's cost on
+ * report), `lead-notes` (a lead's missed crew news and task-list reminder) and `agent-usage` (each subagent's cost on
  * record: the person's spend, not a project's policy). `doctor`'s project checks never warn
  * about a project hook that runs beside one of these: it is the person's own business, not a
  * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.

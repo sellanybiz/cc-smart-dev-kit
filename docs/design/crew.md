@@ -69,8 +69,8 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   8) is always whole in the name, never cut: it is the crew session's identity. What a long name
   loses is the end of its slug, never the phase or the hand-off number.
 - **A record keeps its name.** Crew records written by 1.1.1 and earlier say
-  `C <tag> <phase> <slug>`; nothing renames them, and `roleOf` and the store read both shapes.
-  Only a crew session started after the update gets the plan in its name.
+  `C <tag> <phase> <slug>`; nothing renames them, and `roleOf` recognises both shapes. Only a
+  crew session started after the update gets the plan in its name.
 - **ASCII only, no brackets or quotes**, so a name is safe in a title bar, a shell line and a file
   name, and it **never ends in `]`**: the message guard drops the ` [ref]` ListAgents prints after
   a name before it looks the name up (`withoutListRef`, one home), so a name of ours that ended in
@@ -81,10 +81,11 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   `workflow.crew.tag` (`crewTag`). A folder name that leaves nothing (one of non-Latin
   letters only) is refused with the line to set the tag.
 - `roleOf(name)` reads the shape only — `lead`, `crew`, or null for any other name, a ListAgents
-  ` [ref]` read past. A person may name a session in that shape by hand, so **the store, never the
-  name, is what anything that stops or removes a session goes by.** The commands, the board, the
-  message guard and the portal look a crew session up by its record, never by splitting its name,
-  so both shapes work there.
+  ` [ref]` read past. **No crew command calls it**: it is the shape check the tests hold the names
+  to, here for a caller that must tell our names from a person's with no store to read. A person
+  may name a session in that shape by hand, so **the store, never the name, is what anything that
+  stops or removes a session goes by.** The commands, the board, the message guard and the portal
+  look a crew session up by its record, never by splitting its name, so both shapes work there.
 
 **The store** (`src/crew/store.ts`) is what the kit knows of each lead and crew session, per
 repository, under the state folder:
@@ -176,8 +177,22 @@ a lead taking its role name: a title is set only when the session is not already
 the kit did not set it. So the first prompt after `crew lead` replaces whatever name the
 session had, and a person's own `/rename` made after that stays: the kit takes the name back
 only when the lead registers again with another plan. Two names never compete: one title has
-one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch name is its address; the command refuses there). A session id no naming record can be made for (not
-a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
+one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch
+name is its address; the command refuses there). **The crew record owns the title**: `crew-role`
+puts `record.name` back on the title when the title says something else, through the same
+`titleToSet` (so a `/rename` the person makes after the kit set it stays, as with a lead's name).
+It is the fix for a session 1.1.1 renamed after its task and 1.1.2 left renamed, which lost the
+address its lead, `crew answer` and the message guard reach it by. A session id no naming record
+can be made for (not a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
+
+**The lead's role** (D61): a lead plans, writes the briefs, starts the phases, answers the
+questions, merges each branch with one full check after it, keeps the plan file true and talks to
+the person. The building — code, tests, research across many files, long debugging — goes to a
+crew session, and the reading a brief needs to a scout subagent. The rule is **words only**: the
+lead skill's "Your crew builds" section, and one line in the lead's start note from this hook at
+a start, a resume, a clear and a compaction — never at a prompt, never on an edit, and no block.
+Why: the lead's context is re-read on the premium model every turn, so every file it reads or
+writes costs on every later turn, while the crew session that does the same work ends.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
@@ -236,6 +251,11 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
+   **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
+   input for the lead a session id names, with no phases waited for and the memory read only when
+   nothing else holds, so the guard refuses a subagent that can change files exactly while a
+   `crew start` would queue, and keeps no second copy of a cap. A project with crew sessions off
+   has no queue to hold a phase: the reader answers nothing there.
    **A file clash is said, and never blocks** (D55): once the record exists, the phase's `--files`
    are compared with those of every running or queued crew session of **another lead** in this
    repository (`fileClashSessions`). The tracked files (`git ls-files`) decide; for a pattern
@@ -422,7 +442,13 @@ record does not hold** is refused — so the lead's gate (D22) never has to doub
 ends the crew session's phase: its state becomes the status, and the report file, the record and the
 `report` event are written under one hold. **Only a `blocked` report carries a question** — the
 one it waits on, or else the newest the crew session asked that nobody answered; a `done` report with
-an old open question in it would tell the lead the crew session is blocked.
+an old open question in it would tell the lead the crew session is blocked. **A `done` report waits
+for the task list** (D23): while any task on the session's own list is `pending` or `in_progress`
+the report is refused, with each open task named (`#3 "Part 3" (pending)`), and the fix is to finish
+it with `TaskUpdate status completed`, or to delete it (`status deleted`) and say why under `open` in the report — a deleted task's file is gone, so a reason written in the task would vanish with it (proved live, `docs/claude-code-contract.md` § The to-do list). A
+`handoff`, `blocked` or `failed` report is never held: those exist because the phase could not be
+finished. No list at all — a session that never got the tools, or one whose folder cannot be read —
+lets the report through with one `note:` line on stdout, so the lead can tell the two apart.
 
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
@@ -481,7 +507,15 @@ the store records — a session the kit does not know is the person's own:
 
 - it **starts the queued crew sessions** of this lead when a place frees — through the launcher's own
   path (`startQueued`, in `start.ts`: the same `launch` that `crew start` runs, never a second
-  launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
+  launcher). **The workflow is read again at each pass** (`readCaller`, the reader `crew start`
+  itself uses), so a cap, a threshold or the `crew.enabled` switch the person changes while a
+  lead's watch runs reaches it within one pass; reading it once, before the loop, meant the
+  owner's `crew.max 16` on 2026-10-23 never reached a running watch, which went on starting
+  queued phases up to the old 24. A pass that **cannot** read it — a broken or too new file, and
+  equally the person's own switch (`crew.enabled` off, a session in bypass mode, which
+  `readCaller` refuses the same way) — **starts nothing**, keeps the last good caps for that
+  pass's read-only decisions (the quiet and idle thresholds) and says why, once: a cap nobody
+  could read is no licence to start a session. A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one. A queued crew session held by a
   phase that was **removed before its work was merged** never starts by itself, and the watch
@@ -733,22 +767,40 @@ each is silent unless its own session is the one it is about, and neither reads
   `crew report --question …` step (D36): a crew session never asks the person. The deny reads no
   store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
   one, and outside git.
+  At **PreToolUse** on `Edit`, `Write` and `NotebookEdit` it **denies a crew session's first
+  edit until its task list exists** (D23): while the session's task folder holds no task file, the
+  call is refused with the step — look the task tools up (`ToolSearch
+  select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per part of the brief, each with
+  its done-check — and the card names the same step at the start. The list is Claude Code's own
+  (`src/crew/tasks.ts`: `<config dir>/tasks/<CLAUDE_CODE_TASK_LIST_ID or the input's session id>/`,
+  proved live in `docs/claude-code-contract.md` § The to-do list), a subagent's edit is judged
+  against the same folder, and the first answer that sees a task file is cached in the crew
+  session's store folder (`files/<crew id>/task-gate.json`), so an edit costs one small file read
+  and never lists the folder again for that list. Every answer that cannot be made lets the edit
+  through: no session id names no folder, a folder or a record the hook cannot read is one line on
+  stderr, and a gate it cannot write is only a slower next call. The step also says what to do when
+  `ToolSearch` finds no task tools (the legacy `TodoWrite`, a deny rule): tell the lead, who tells
+  the person — otherwise a refusal nobody can satisfy would hold every edit for good.
   At **UserPromptSubmit** it hears the person (D55): a prompt typed into the crew session is one
   `person` event (its first line, masked and clipped) and one line of context — their word wins
   over the brief, a change of scope or files is said in the report, and a word to stop still gets
   a report (`blocked` or `handoff`) before the turn ends. Claude Code runs this hook for every
   turn a session gets and its input carries no field that says where a turn came from
   (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
-  (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
-  continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
-  the three prompts a transport gives a crew session **bare** —
+  (`<cross-session-message …>`), a monitor's line (`<task-notification>`), a subagent's hand-back
+  the session itself launched (`<agent-message from=…>`, seen live on 2.1.309) and a Stop hook's
+  own continuation (`Stop hook feedback:`, the kit's block line included) are its lead's or its
+  own subagent's, and so are the three prompts a transport gives a crew session **bare** —
   `crew start`'s launch line (its own name, lead and brief file, from `firstPrompt`; a hand-off's
   next crew session gets its own), `crew answer`'s resume of a stopped session (a question still
   open, or the answer the store recorded) and the watch's `resumeText` of a paused one. A bare
   prompt none of those explain is recorded as the person's: nothing else in the kit gives a crew
   session a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has
   no other way to be heard. One the hook cannot read at all records nothing. It never blocks and
-  never asks.
+  never asks. **Whatever the turn is, the record's name goes back on the title when the title says
+  something else** (`titleAnswer`, through `titleToSet`): a crew session its lead drives gets no
+  person prompt at all, so the address is put right on those turns too, and `session-name` stays
+  silent here (one title, one owner).
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
@@ -775,4 +827,11 @@ each is silent unless its own session is the one it is about, and neither reads
   mark on a report line uses the built-in review agents: this hook reads no project file, and the
   watch's own line is the one that resolves a project's list. At a prompt it also sets the lead's
   name (`sessionTitle`, beside the note in the same answer), through `titleToSet`, the one rule and
-  record `session-name` keeps (§ The lead and the launch › The lead's name).
+  record `session-name` keeps (§ The lead and the launch › The lead's name). **At a prompt it also
+  reminds a lead with no to-do list** (D23): while the lead's own task folder (`taskListId`, the
+  same reader the crew session's gate uses) holds no task file, one more line of context — put the
+  person's asks and the lead's open work on the list, and keep it true as they move — said before
+  the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
+  (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
+  turn — at a start, a resume, a clear and a compaction, never at a prompt and never on an edit.
+  **Never a block**: a lead is reminded, never held.

@@ -35,6 +35,12 @@ below.
 
 Review is your own job first: an agent is a second reader, never a substitute for your pass.
 
+**When the project runs crew sessions, the queue comes before a builder subagent.** A
+session registered as a lead that would have to queue a `crew start` cannot put that work into a
+subagent instead: the agent guard refuses one that can change files, with the cap and the start
+step, so the phase waits for its place like any other. A read-only agent — `Explore`, `Plan`, a
+reviewer, an auditor, a `ui-verifier` — is never held back.
+
 ## How to brief
 
 A subagent has none of your conversation, and an under-briefed agent costs more than doing the

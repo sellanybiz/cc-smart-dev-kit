@@ -11,6 +11,7 @@ import {
   acquireFrom,
   type DecideInput,
   decide,
+  durationText,
   formatSince,
   type HolderRecord,
   holderLines,
@@ -740,8 +741,13 @@ describe("acquireFrom: waiting lines", () => {
     expect(lines[0]).toBe(
       "Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free; /srv/shared: 30 of 30 GB free. Why: only 2 GB of this machine's budget is free.",
     );
+    // The hint rides with the first waiting line, and only with it: a piped job's status
+    // is the pipe's, so the person is told where the job's own status shows up.
+    expect(lines[1]).toBe(
+      'A pipe (| tail) hides this job\'s exit status: the "Heavy job ended" line carries it.',
+    );
     // The fake clock starts at 12:00 the same day: the holder's start reads as a time.
-    expect(lines.slice(1, 3)).toEqual([
+    expect(lines.slice(2, 4)).toEqual([
       "  this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 77)",
       "  this machine: 2 GB held by an unknown holder",
     ]);
@@ -755,6 +761,60 @@ describe("acquireFrom: waiting lines", () => {
     expect(lines.filter((line) => line.startsWith("Heavy job waits"))[1]).toContain(
       "(waiting 1 min)",
     );
+  });
+
+  test("says the pipe hint once, with the first waiting line", async () => {
+    const time = fakeTime();
+    const store = new FakeStore({ capacity: 10, label: "this machine" });
+    const blocker = store.hold(10, "");
+    const lines: string[] = [];
+    const waiting = start([store], job(4), time, "host-a", lines);
+    await settle(20);
+    // Every minute after the first, so the hint's once-per-job promise is proved, not assumed.
+    while (lines.filter((line) => line.startsWith("Heavy job waits")).length < 3) await settle(1);
+    expect(waiting.reservation).toBeNull();
+    expect(lines.filter((line) => line.startsWith("Heavy job waits")).length).toBeGreaterThan(1);
+    expect(lines.filter((line) => line.includes("A pipe (| tail)"))).toHaveLength(1);
+    expect(lines[1]).toBe(
+      'A pipe (| tail) hides this job\'s exit status: the "Heavy job ended" line carries it.',
+    );
+    blocker();
+  });
+
+  test("the reservation says when the job's first waiting line was printed", async () => {
+    const time = fakeTime();
+    const store = new FakeStore({ capacity: 10, label: "this machine" });
+    const blocker = store.hold(10, "");
+    const beganAt = time.now();
+    const waiting = start([store], job(4), time);
+    await settle();
+    blocker();
+    await settle(10);
+    expect(waiting.reservation?.gb).toBe(4);
+    // The first report is the job's first look, before it sleeps: the wait began there.
+    expect(waiting.reservation?.waitedSince).toBe(beganAt);
+  });
+
+  test("a job that never waited reports no wait at all", async () => {
+    const time = fakeTime();
+    const store = new FakeStore({ capacity: 10, label: "this machine" });
+    const free = start([store], job(4), time);
+    await settle();
+    expect(free.reservation?.gb).toBe(4);
+    // Nothing was said, so there is no wait to report: the wrapper prints no lines.
+    expect(free.reservation?.waitedSince).toBeNull();
+  });
+
+  test("formats how long something took in seconds, minutes and hours", () => {
+    expect(durationText(0)).toBe("0 s");
+    expect(durationText(30_000)).toBe("30 s");
+    expect(durationText(59_400)).toBe("59 s");
+    expect(durationText(60_000)).toBe("1 min");
+    expect(durationText(18 * 60_000)).toBe("18 min");
+    expect(durationText(90_000)).toBe("2 min");
+    expect(durationText(60 * 60_000)).toBe("1 h");
+    expect(durationText(72 * 60_000)).toBe("1 h 12 min");
+    expect(durationText(-5_000)).toBe("0 s");
   });
 
   test("formats a holder's start as a time today, and with the date on another day", () => {

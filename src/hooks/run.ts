@@ -25,8 +25,10 @@
  *    one line on stderr and never changes the answer.
  *
  * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
- * project: it runs with or without `cc-smart-dev-kit.json`, and its answer never depends on the
- * project's file. It gets the input and the environment (`HookEnvContext`) where the frame's
+ * project: it runs with or without `cc-smart-dev-kit.json`, and its answer does not depend on the
+ * project's file — except the one rule D59 gives `agent-guard` (a lead's building launch waits
+ * for the crew queue), which reads the store and the project's caps. It gets the input and the
+ * environment (`HookEnvContext`) where the frame's
  * checkout or config step does not apply, and a project may still silence it through
  * `ownHooks` (which is read on its own, before the file).
  *
@@ -83,8 +85,9 @@ export interface HookContext {
 /**
  * What a hook gets besides the input when the frame's project steps do not apply (no
  * checkouts, a broken cc-smart-dev-kit.json, outside git): the environment and the paths. A
- * machine-wide hook (agent-guard) judges from these alone, so its answer does not change
- * with the project's file.
+ * machine-wide hook (agent-guard) judges the model and effort from these alone, so those do not
+ * change with the project's file — its D59 queue rule, which needs the checkout, does not run
+ * here and lets the launch through.
  */
 export interface HookEnvContext {
   env: Env;

@@ -19,8 +19,12 @@ branch, how you report and ask).
   dependency install, is your first step.
 - **Your role card** comes at the start, and again on a resume and after a compaction: it names
   your phase, the files it owns, your brief's path, how you report and ask, and the git rule.
-- **Write your task list** from the brief (`/cc-smart-dev-kit:memory-routing`): each part and
-  its done-check. You resume from it, and from your commits, after a compaction.
+- **Write your task list before you change any file** (`/cc-smart-dev-kit:memory-routing`): one
+  `TaskCreate` per part of the brief, each with its done-check. **The `crew-role` hook refuses your
+  first `Edit`, `Write` or `NotebookEdit` until one task exists**, and a `done` report is refused
+  while any task is still `pending` or `in_progress`. Claude Code leaves the task tools out until
+  you look them up: `ToolSearch` with `select:TaskCreate,TaskUpdate,TaskList` first. You resume
+  from the list, and from your commits, after a compaction.
 - **Your own subagents** — a search, a separable piece — run in the background
   (`run_in_background: true`), so your turn goes on while they work.
 

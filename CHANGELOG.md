@@ -25,6 +25,133 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   backend models for the fallback on every route); an empty fallback provider is
   now shown as Claude with the model it really runs on.
 
+## 1.1.3
+
+**Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
+this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
+Claude Code leaves the task tools out until a session looks them up and the crew skill only
+asked. The list is what a crew session resumes from after a compaction, and what you read when
+you open it.
+
+- **A crew session's first edit waits for its list.** Until the session's task folder holds one
+  task, the `crew-role` hook refuses its `Edit`, `Write` and `NotebookEdit` with the step: look
+  the task tools up, then one `TaskCreate` per part of the brief, each with its done-check. The
+  role card names the same first step. Once a task exists the hook answers from its own cache
+  and reads nothing more, so an edit costs one small file.
+- **A `done` report waits for the list to be finished.** `crew report --status done` refuses
+  while any task is still open, and names each one: finish it, or delete it and say why in the
+  report. A `handoff`, `blocked` or `failed` report is never held, and a session with no list at
+  all reports with one `note:` line saying nothing was checked.
+- **A lead is reminded, never blocked.** While your session has no to-do list, each prompt
+  carries one line: put the person's asks and your open work on it. It goes silent the moment a
+  task exists.
+- **The kit's builder and rules-maintainer agents get the task tools**, and one line each to
+  keep a list for a multi-step brief. The read-only reviewer, auditor and ui-verifier stay as
+  they are.
+- **A lead sends the building to its crew.** The lead skill gains "Your crew builds": the code,
+  the tests, research across many files and long debugging go to a crew session, and the lead
+  keeps the plan, the briefs, the starts, the questions, the merges, the plan file and the
+  person. The `lead-notes` hook adds the same rule in one line when a lead's context is built
+  again — a start, a resume, a clear, a compaction — and never at a prompt or on an edit. Words
+  only (D61): the lead's context is re-read on the premium model every turn, so every file it
+  reads or writes costs on every later turn.
+- **A lead never routes a phase around the crew queue.** The queue exists for the machine and for
+  each lead's share of it, and a builder subagent runs outside every one of those counts — with
+  none of a crew phase's worktree, review, report gate or to-do list. So in a session registered
+  as a lead, the agent guard refuses a launch that can change files while a `crew start` from it
+  would queue right now, and names the cap that holds and the `crew start` step. Read-only work
+  is never held: the kit's own reviewer, auditor and ui-verifier, the built-in Explore, Plan,
+  claude-code-guide and statusline-setup, and the kit's read-only Workflows — a project's own
+  read-only agent is exempt only when its `cc-smart-dev-kit.json` lists it. An ordinary session
+  or a crew session is judged exactly as before.
+- **A heavy job that waited says when it started and how it ended.** A job whose output went
+  down a pipe (`bun run tsc --noEmit | tail -20`) reported the pipe's own status, so a session
+  that queued one saw the waiting lines, then nothing: a passing type check prints nothing of
+  its own, and a failed test run read as exit 0. A job that waited now says `Heavy job starts
+  after 18 min: tsgo --noEmit (8 GB)` as it starts, and `Heavy job ended: tsgo --noEmit, exit 0
+  after 3 min` when it ends — with the signal that stopped it, `(sent on by job run)` when
+  `job run` sent that one on, and its leftover processes when they had to be stopped. The first
+  waiting line carries one hint about the pipe, once per job. A job that never waited prints
+  neither line: no noise on a free machine.
+
+**Three more fixes, found by 1.1.2's own review.**
+
+- **Two crew sessions can no longer take one name.** A long tag, plan and phase leave only
+  17–19 characters of the slug, so two slugs of one phase that share a longer prefix made the
+  **same** name on two different branches — and the name is how `crew answer`, `crew tell` and
+  the message guard reach a session. `crew start` now refuses the second one and says to pick a
+  shorter `--slug`.
+- **A crew session renamed in 1.1.1 gets its name back.** 1.1.2 stopped new renames but nothing
+  set the title back, so such a session kept a task name while its lead, `crew answer` and the
+  message guard went on addressing it by its record's name. Its next turn puts the record's name
+  back — on the lead's turns too, not only the person's.
+- **A cap you change now reaches a running lead's watch.** `crew watch` read the workflow once
+  and kept that value for its whole run: `crew.max 16` set while it ran never reached it, and a
+  lead's watch went on starting queued phases up to the old 24 (seen live on 2026-10-23, with
+  the machine five times overloaded). Each pass reads the workflow again, and a pass that cannot
+  read it — a broken file, or crew sessions turned off — starts nothing and says so once.
+
+**What to run:** nothing. The hooks come with the plugin update. A session that is already
+running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
+started after the update are held to the list or reminded.
+
+**The portal's usage and cost numbers now say the truth.** You reported that the portal does
+not report usage and cost correctly. Every number was then measured against the router's
+history database, its log and its state files on a live machine, and each finding was fixed at
+its cause. Where a number cannot be given, the page now says so instead of showing a number
+that is not one.
+
+- **A request with no price is counted, never added as $0.** In one measured day 62 % of the
+  rows — every affordable-backend request: 17,373 of them, with real tokens and no cost — were
+  added as $0, so the Usage page's cost card, "Where the cost goes" and "Top sessions by cost",
+  and the Overview's cost chart and its "$X in the last day" line, all read low and said
+  nothing. A sum now says what it leaves out — "$12.40 + 1,234 requests with no price" — and a
+  sum made only of unpriced requests reads "no price", never "$0", the words
+  `cc-smart-dev-kit usage` already used. A chart whose rows exist but carry no price says that,
+  never "nothing matches".
+- **A backend's price list in OmniRoute's shape was read 1,000,000× too high.** OmniRoute's
+  `/v1/models` gives `pricing` in **dollars per million tokens**, as numbers
+  (`{"input":5,"cached":0.5,"output":25}` for a $5 / $25 model); the reader took those for
+  per-token prices and multiplied by a million, and never read `cached`, the cache-read price.
+  Both real shapes are now read, each in its own unit: OpenRouter's per-token `prompt`,
+  `completion`, `input_cache_read` and `input_cache_write`, and OmniRoute's per-million
+  `input`, `output`, `cached` and `cache_creation`. **A row already logged keeps the cost it
+  was written with**, so an affordable-backend row written before this fix stays at the price
+  that was wrong at the time — `cc-smart-dev-kit gateway history` shows those totals until the
+  retention drops them (90 days by default).
+- **Claude Sonnet 5.5's cache read was half its list price.** The table held $0.10 a million
+  where Anthropic charges $0.20 — a tenth of its $2 input rate, as Sonnet 5's own row has. A
+  test now holds every row's cache read to its family's published share (Opus 5.5's a
+  twentieth, Fable 5.1's a fortieth, the rest a tenth). **A row already in the history keeps
+  the estimate it was written with**; only new rows use the corrected price.
+- **About a nine-hundredth of a translated stream's input tokens were recorded.** A backend
+  that translates an OpenAI stream (OmniRoute) knows the prompt's usage only at the end: it
+  sends zeros in `message_start` and the real counts in the last `message_delta`. The reader
+  took input and cache from `message_start` alone, so 1,040 calls that had spent 242M input and
+  235M cache-read tokens were logged as about 270K. Each usage field is now taken from the last
+  event that reports it, and the two are never added together. Anthropic's own streams keep
+  their counts, except where its `message_delta` carries the cumulative input count its docs
+  describe. **A row already logged keeps the count it was written with.**
+- **The Overview's "Requests a minute" could never pass 40.0**, because it was read off the
+  router's capped list of the last 200 routed requests — 85 of them, in one measured hour,
+  Claude Code's own health pings. It is now the history's **model** requests over the last five
+  minutes, one query against the database. The router's own counter is still shown, labelled
+  for what it holds, and the Health page's "N requests since start" gets the same label.
+- **The Usage page left out auto mode's safety checks without saying so.** They are kept out of
+  the history on purpose, so they were in none of its numbers and nothing said so. The page now
+  says they are counted apart, and shows the file's own count for the local days the range
+  covers — read through the reader `cc-smart-dev-kit usage` prints, so the two can never
+  disagree.
+- **Two smaller wrong claims.** The "Cache share" card said a cache read costs a tenth of a new
+  token, which is wrong for Opus 5.5 (a twentieth) and Fable 5.1 (a fortieth), and it no longer
+  names a number. And the Requests table ignored the range switch: it showed rows from outside
+  the window the charts drew, and its rows are now bounded by the range, as the dev mock
+  already was.
+
+**What to run:** `cc-smart-dev-kit gateway setup`. The reader and the price table live in the
+router bundle, so a machine updates the copy it runs; setup says what the restart costs and
+asks first.
+
 ## 1.1.2
 
 - **A crew session's name says whose it is.** With several leads in one project, every crew

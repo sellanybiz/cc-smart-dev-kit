@@ -76,6 +76,11 @@ export interface QueuedJob {
 
 export interface Reservation {
   readonly gb: number;
+  /**
+   * When this job's first waiting line was printed, or null when it never waited: what
+   * `job run` reads to say how long the job waited, and that it waited at all.
+   */
+  readonly waitedSince: number | null;
   /** Gives the memory back. Safe to call twice. */
   release(): void;
 }
@@ -415,6 +420,17 @@ export function oneDecimal(gb: number): string {
   return String(Math.round(gb * 10) / 10);
 }
 
+/** How long something took, as a person reads it: `40 s`, `18 min`, `1 h 12 min`. */
+export function durationText(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${String(seconds)} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${String(minutes)} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${String(hours)} h` : `${String(hours)} h ${String(rest)} min`;
+}
+
 function reasonText(reason: WaitReason, store: string): string {
   switch (reason.kind) {
     case "alone":
@@ -461,6 +477,23 @@ export function holderLines(held: readonly ParsedHeld[], store: string, now: num
 const POLL_MS = 500;
 /** How often a waiting job says it still waits. */
 const WAITING_LINE_EVERY_MS = 60_000;
+
+/**
+ * What the end line leads with: `run.ts` builds that line from this, and the first waiting
+ * line's hint points at it by this name. One home for the wording, so a rename cannot leave
+ * the hint naming a line that no longer exists.
+ */
+export const ENDED_LINE_LEAD = "Heavy job ended";
+
+/**
+ * What the first waiting line carries besides the wait. A job whose output goes down a
+ * pipe (`| tail`) reports the pipe's own status, so the person is told where the job's own
+ * status shows up. Once per job, never again on the minute lines after it — and never for
+ * a job that does not wait: those get no hint and no end line.
+ */
+function pipeHint(): string {
+  return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
+}
 
 /** Thrown when `signal` stops a wait; everything taken so far is given back first. */
 export class WaitStoppedError extends Error {
@@ -539,9 +572,12 @@ export async function acquireFrom(
   const report = async (store: Store, reason: WaitReason) => {
     const at = now();
     if (at - lastLineAt < lineEveryMs) return;
+    // The job's first line: the hint rides with it, and never again.
+    const first = waitStartedAt === null;
     waitStartedAt ??= at;
     lastLineAt = at;
-    const waited = Math.round((at - waitStartedAt) / 60_000);
+    const waitedMs = at - waitStartedAt;
+    const waited = first ? "" : ` (waiting ${durationText(waitedMs)})`;
     const budgets: string[] = [];
     const holders: string[] = [];
     // The report only describes. A store it cannot read is named so, and never stops the
@@ -561,8 +597,9 @@ export async function acquireFrom(
       }
     }
     options.onWaiting(
-      `Heavy job waits for memory: ${job.what} ${wants}${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
+      `Heavy job waits for memory: ${job.what} ${wants}${waited}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
     );
+    if (first) options.onWaiting(pipeHint());
     for (const line of holders) options.onWaiting(line);
   };
 
@@ -655,7 +692,7 @@ export async function acquireFrom(
     release();
     throw error;
   }
-  return { gb: job.gb, release };
+  return { gb: job.gb, release, waitedSince: waitStartedAt };
 }
 
 /**

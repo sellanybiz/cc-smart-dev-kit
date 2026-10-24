@@ -5,6 +5,7 @@
 
 import { rangeOf } from "@/lib/history";
 import { seeded } from "./mock-history";
+import { mockCrewName } from "./mock-names";
 import type {
   CrewDetail,
   CrewEvent,
@@ -50,7 +51,7 @@ export function needsData(
         kind: "question",
         id: "q-d9e2f7a4-1",
         since: iso(now - 9 * MINUTE),
-        crew: { id: "d9e2f7a4", name: "C my-app C2 skills-agents", shortId: "d9e2f7a4" },
+        crew: { id: "d9e2f7a4", name: mockCrewName("C2", "skills-agents"), shortId: "d9e2f7a4" },
         ask: {
           question:
             "The reviewer agent lists Bash, so Claude Code drops Grep and Glob from it. Keep Grep, or Bash only?",
@@ -69,7 +70,7 @@ export function needsData(
         kind: "permission",
         id: "p-a1f04c2e",
         since: iso(now - 4 * MINUTE),
-        crew: { id: "a1f04c2e", name: "C my-app B6b live-stream", shortId: "a1f04c2e" },
+        crew: { id: "a1f04c2e", name: mockCrewName("B6b", "live-stream"), shortId: "a1f04c2e" },
         asker: "git-guard",
         session: "a1f04c2e-session",
         project: "my-app",
@@ -382,7 +383,7 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
         verdict: {
           finished: false,
           held: true,
-          why: "a Claude session works in it: C my-app B6b live-stream",
+          why: `a Claude session works in it: ${mockCrewName("B6b", "live-stream")}`,
         },
       },
       {
@@ -479,7 +480,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 kind: "typecheck",
                 command: "tsc --noEmit",
                 folder,
-                user: "C my-app B6b live-stream",
+                user: mockCrewName("B6b", "live-stream"),
                 since: now - 2 * MINUTE - 10_000,
                 pid: 48211,
               },
@@ -492,7 +493,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 kind: "test",
                 command: "bun test",
                 folder: "/home/user/code/my-app/.claude/worktrees/c2-skills-agents",
-                user: "C my-app C2 skills-agents",
+                user: mockCrewName("C2", "skills-agents"),
                 since: now - 40_000,
                 pid: 48390,
               },

@@ -2742,6 +2742,14 @@ describe("cc-smart-dev-kit gateway history", () => {
         tokens: null,
       }),
     );
+    // A row its backend's list gave no price for: it is in the requests and the tokens, and
+    // in its own column, never in the cost as $0. A row with no tokens at all is not counted.
+    writer.record(
+      seededRow(now - 3 * 60_000, {
+        cost: null,
+        tokens: { cacheRead: 0, cacheWrite: 0, input: 7, output: 3 },
+      }),
+    );
     writer.flush();
     writer.close();
 
@@ -2749,15 +2757,16 @@ describe("cc-smart-dev-kit gateway history", () => {
     expect(history.stderr).toBe("");
     expect(history.exitCode).toBe(0);
     expect(history.stdout).toContain(
-      "History, last 1h (1-minute buckets), by target\nCost is estimated: Claude at its list price, a backend at the price its own list gives.\n",
+      "History, last 1h (1-minute buckets), by target\nCost is estimated: Claude at its list price, a backend at the price its own list gives. A request with no price is counted in the last column and adds nothing to cost.\n",
     );
-    // One target, two rows: 100 and 300 ms, one error, the tokens and the cost summed.
+    // One target, three rows: 100 and 300 ms, one error, the tokens and the cost summed, and
+    // the one row with no price counted in its own column rather than added as $0.
     expect(history.stdout).toMatch(
-      /claude-sonnet-5-5 {2,}2 +1 +100 +10 +1,000 +20 +\$0\.001 +300 ms/,
+      /claude-sonnet-5-5 {2,}3 +1 +107 +13 +1,000 +20 +\$0\.001 +1 +300 ms/,
     );
-    // A filter narrows it: --errors leaves only the 500.
+    // A filter narrows it: --errors leaves only the 500, which has no tokens and no price.
     const errors = await m.run(["gateway", "history", "1h", "--errors"]);
-    expect(errors.stdout).toMatch(/claude-sonnet-5-5 {2,}1 +1 +0 +0 +0 +0 +\$0 +300 ms/);
+    expect(errors.stdout).toMatch(/claude-sonnet-5-5 {2,}1 +1 +0 +0 +0 +0 +\$0 +0 +300 ms/);
     // `gateway status` shows the database's size and the retention (D51).
     const status = await m.run(["gateway", "status"]);
     expect(status.stdout).toMatch(

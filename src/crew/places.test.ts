@@ -3,18 +3,21 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFacts } from "../jobs/memory";
-import { tempDir } from "../testing/temp";
+import { locateCheckout } from "../project/resolve";
+import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   freeForCrewGb,
   onOpusTier,
   placeFor,
+  placeForLeadStart,
   RUNNING_STATES,
   runningCrew,
   runningForLead,
   unmetWaits,
   withPlacesLock,
 } from "./places";
-import type { CrewRecord } from "./store";
+import { type CrewRecord, createCrew, type NewCrew, writeLead } from "./store";
 
 /** A crew record of `phase` in `state`, recorded at minute `minute`. */
 function crew(phase: string, state: string, minute = 0): CrewRecord {
@@ -281,31 +284,28 @@ describe("the machine-wide lock", () => {
   });
 });
 
-describe("the memory a new crew session may use", () => {
-  /**
-   * Linux with `MemAvailable` of `availableKb`, no cgroup ceiling, and — when `sliceGb` is given
-   * — the heavy jobs' slice using that much (`memory.current` of `cc-smart-dev-kit-heavy.slice`).
-   */
-  function linux(availableKb: number, sliceGb?: number): MemoryFacts {
-    const files: Record<string, string> = {
-      "/proc/meminfo": `MemTotal:       33554432 kB\nMemAvailable:   ${availableKb} kB\n`,
-    };
-    return {
-      freemem: () => 0,
-      platform: "linux",
-      read: (path) => {
-        if (
-          sliceGb !== undefined &&
-          path.endsWith("/cc-smart-dev-kit-heavy.slice/memory.current")
-        ) {
-          return String(sliceGb * 1024 ** 3);
-        }
-        return files[path] ?? null;
-      },
-      totalmem: () => 32 * 1024 ** 3,
-    };
-  }
+/**
+ * Linux with `MemAvailable` of `availableKb`, no cgroup ceiling, and — when `sliceGb` is given
+ * — the heavy jobs' slice using that much (`memory.current` of `cc-smart-dev-kit-heavy.slice`).
+ */
+function linux(availableKb: number, sliceGb?: number): MemoryFacts {
+  const files: Record<string, string> = {
+    "/proc/meminfo": `MemTotal:       33554432 kB\nMemAvailable:   ${availableKb} kB\n`,
+  };
+  return {
+    freemem: () => 0,
+    platform: "linux",
+    read: (path) => {
+      if (sliceGb !== undefined && path.endsWith("/cc-smart-dev-kit-heavy.slice/memory.current")) {
+        return String(sliceGb * 1024 ** 3);
+      }
+      return files[path] ?? null;
+    },
+    totalmem: () => 32 * 1024 ** 3,
+  };
+}
 
+describe("the memory a new crew session may use", () => {
   /** A heavy job's lease of `gb` in `home`'s queue, written just now by another host's process. */
   function lease(home: string, gb: number): void {
     const leases = join(home, ".local", "share", "cc-smart-dev-kit", "jobs", "leases");
@@ -346,5 +346,138 @@ describe("the memory a new crew session may use", () => {
     mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(join(home, ".config", "cc-smart-dev-kit", "jobs.json"), "{ not json");
     expect(await freeForCrewGb(home, linux(4 * 1024 ** 2))).toBe(4);
+  });
+});
+
+describe("D59: would a crew start from this lead queue now", () => {
+  const NOW = Date.parse("2026-10-21T10:00:00.000Z");
+
+  /** A record as `createCrew` takes it: the `crew` builder without the store's own stamps. */
+  function fresh(one: CrewRecord): NewCrew {
+    const { createdAt, updatedAt, version, ...rest } = one;
+    return rest;
+  }
+
+  /** A real project with a recorded lead, its crew caps as the test's file sets them. */
+  async function leadWorld(crew: Record<string, unknown> = {}) {
+    const world = crewWorld();
+    world.writeConfig({ memoryGb: 1, ...crew });
+    const checkout = locateCheckout(world.repo, { env: cleanGitEnv() });
+    if (checkout === null) throw new Error("the test repository has no checkout");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app plan",
+        plan: "plan",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app",
+      },
+      NOW,
+    );
+    return { checkout, world };
+  }
+
+  /** A crew session of this lead in the store, in `state`; `change` overrides any field. */
+  async function stored(
+    world: CrewWorld,
+    phase: string,
+    state: string,
+    change: Partial<NewCrew> = {},
+  ): Promise<void> {
+    await createCrew(
+      world.paths.stateDir,
+      {
+        ...fresh(crew(phase, state)),
+        leadSessionId: LEAD_SESSION,
+        repo: world.repo,
+        ...change,
+      },
+      NOW,
+    );
+  }
+
+  /** What a start from this lead would do now, with 8 GB free unless the test says otherwise. */
+  async function startNow(
+    made: Awaited<ReturnType<typeof leadWorld>>,
+    opus = false,
+    memory: MemoryFacts = linux(8 * 1024 ** 2),
+  ) {
+    return await placeForLeadStart({
+      checkout: made.checkout,
+      leadSessionId: LEAD_SESSION,
+      memory,
+      nowMs: NOW,
+      opus,
+      paths: made.world.paths,
+    });
+  }
+
+  /** A crew session on the opus tier: what `perLeadOpus` and `maxOpus` count (D54). */
+  const ON_OPUS: Partial<NewCrew> = {
+    model: { named: "opus", resolved: "opus", slot: null, tier: "opus" },
+  };
+
+  test("this lead's perLead is full", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    expect(await startNow(made)).toEqual({
+      start: false,
+      why: "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
+    });
+  });
+
+  test("the machine's max is full, by another lead's crew sessions", async () => {
+    const made = await leadWorld({ max: 1 });
+    await stored(made.world, "B1", "working", { leadSessionId: OTHER_SESSION });
+    expect(await startNow(made)).toEqual({
+      start: false,
+      why: "1 of 1 crew sessions running on this machine; it starts when one finishes",
+    });
+  });
+
+  test("only an opus place is short, so only an opus launch waits", async () => {
+    const made = await leadWorld({ perLead: 4, perLeadOpus: 1 });
+    await stored(made.world, "B1", "working", ON_OPUS);
+    expect(await startNow(made, true)).toEqual({
+      start: false,
+      why: "its lead has 1 of 1 opus crew sessions running; it starts when one of them finishes",
+    });
+    // The same store, for a launch that would not spend the opus tier: a place is free.
+    expect(await startNow(made)).toEqual({ start: true });
+  });
+
+  test("a free place: the start would go now", async () => {
+    const made = await leadWorld();
+    expect(await startNow(made)).toEqual({ start: true });
+  });
+
+  test("phases that wait only for a merge are no cap", async () => {
+    const made = await leadWorld();
+    // B1 finished its work and waits for the lead's merge; B2 waits in the queue for B1. Neither
+    // is a cap on a new start: `--waits-for` is a merge, not a place.
+    await stored(made.world, "B1", "done");
+    await stored(made.world, "B2", "queued", { waitsFor: ["B1"] });
+    expect(await startNow(made)).toEqual({ start: true });
+  });
+
+  test("the memory a crew session needs is read when nothing else holds", async () => {
+    const made = await leadWorld({ memoryGb: 8 });
+    expect(await startNow(made, false, linux(3 * 1024 ** 2))).toEqual({
+      start: false,
+      why: "3 GB free, a crew session needs 8 GB; it starts when memory frees",
+    });
+  });
+
+  test("caps it cannot read: null, and the caller lets the launch through", async () => {
+    const made = await leadWorld();
+    writeFileSync(join(made.world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+    expect(await startNow(made)).toBeNull();
+  });
+
+  test("crew sessions off here: no start would queue", async () => {
+    const made = await leadWorld({ enabled: false });
+    expect(await startNow(made)).toBeNull();
   });
 });

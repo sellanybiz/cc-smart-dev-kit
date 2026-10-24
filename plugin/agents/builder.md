@@ -11,6 +11,10 @@ tools:
   - Glob
   - Bash
   - LSP
+  - TaskCreate
+  - TaskGet
+  - TaskList
+  - TaskUpdate
   - mcp__plugin_claude-mem_mcp-search__smart_search
   - mcp__plugin_claude-mem_mcp-search__smart_outline
   - mcp__plugin_claude-mem_mcp-search__smart_unfold
@@ -35,14 +39,16 @@ your caller. You do not commit, push, start agents, message other sessions or as
 ## How to build
 
 1. **Read first** — the files, their callers, the tests beside them, the pattern the brief names.
-2. **The failing test first**, where the project tests this kind of code: it proves the bug or the
+2. **A brief of several steps gets a task list first** — one `TaskCreate` per step, kept true as
+   you go. In a crew session its hook holds your first edit until the session's list has a task.
+3. **The failing test first**, where the project tests this kind of code: it proves the bug or the
    missing behaviour before the fix, and it is the test that stays. A project with no test for
    this kind of code gets none invented for it.
-3. **The whole phase, in one pass** — not a slice, not "here is the first half". New ambiguity
+4. **The whole phase, in one pass** — not a slice, not "here is the first half". New ambiguity
    your brief does not settle: choose the simpler reading, write it down in the report, go on.
-4. **The done-check** — run the exact command the brief names, then the tests your files touch.
+5. **The done-check** — run the exact command the brief names, then the tests your files touch.
    Keep the real output: a report without it is a claim.
-5. **Your own pass** — read your diff as a stranger would, with the review skill's dimensions and
+6. **Your own pass** — read your diff as a stranger would, with the review skill's dimensions and
    only the edge cases your files touch (`/cc-smart-dev-kit:review`).
 
 ## Hand back
