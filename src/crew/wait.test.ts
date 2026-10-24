@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { emptyConfig, saveConfig } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
@@ -115,7 +115,11 @@ describe("what a pause waits for, from the router's state file", () => {
     const file = join(tempDir("state"), "gateway-state.json");
     const value: LimitState = { fallbacks: {}, limits: {}, version: 1, ...change };
     writeFileSync(file, formatLimitState(value));
-    return readWaitFacts({ gatewayStateFile: file }, NOW);
+    // No gateway config: the chains are not known, and the pause reads the state file alone.
+    return readWaitFacts(
+      { gatewayConfigFile: join(dirname(file), "missing.json"), gatewayStateFile: file },
+      NOW,
+    );
   }
 
   test("the slot's own breaker comes first, with the time it opened", () => {
@@ -192,6 +196,151 @@ describe("what a pause waits for, from the router's state file", () => {
     expect(waitFor(paused({ model: { ...paused().model, slot: null } }), read, NOW).kind).toBe(
       "unknown",
     );
+  });
+});
+
+/**
+ * A Claude model that is only a fallback in the slot's chain (2026-10-25): the worker slot ran
+ * `omniroute:codex/gpt-6-luna → claude-sonnet-5-5`, one empty answer from Codex fell through to
+ * Sonnet, and Sonnet's weekly limit paused two crew sessions until its reset days later, while
+ * their own model answered again within seconds.
+ */
+describe("a Claude limit holds a session only when Claude answers its slot first", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const SONNET_LIMIT = {
+    "claude-sonnet-5-5": { claim: "seven_day", resetsAt: 1_793_217_600, seenAt: NOW - MINUTE },
+  };
+  /** A crew session on the worker slot, as `crew start` records one. */
+  const onWorker = paused({
+    model: { named: WORKER, resolved: "omniroute:codex/gpt-6-luna", slot: WORKER, tier: null },
+  });
+
+  test("a backend-first chain: no claude-limit wait; it waits for its slot, from now", () => {
+    const read = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitFor(onWorker, read, NOW)).toEqual({
+      kind: "slot",
+      since: "2026-10-21T22:00:00.000Z",
+      slot: WORKER,
+    });
+  });
+
+  test("the chain is read from the gateway's config at the pause", () => {
+    const home = tempDir("gateway");
+    const configFile = join(home, "gateway.json");
+    const stateFile = join(home, "gateway-state.json");
+    saveConfig(configFile, {
+      ...emptyConfig(),
+      backends: { omniroute: { apiKey: "test-key", baseUrl: "http://127.0.0.1:47124" } },
+      fallback: { [WORKER]: true },
+      slots: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+    });
+    writeFileSync(stateFile, formatLimitState({ fallbacks: {}, limits: SONNET_LIMIT, version: 1 }));
+    const read = readWaitFacts({ gatewayConfigFile: configFile, gatewayStateFile: stateFile }, NOW);
+    expect(read.inUse).toEqual({ [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] });
+    expect(waitFor(onWorker, read, NOW).kind).toBe("slot");
+  });
+
+  test("a Claude-first chain keeps today's wait: the limit and its reset", () => {
+    const read = facts({
+      inUse: { [WORKER]: ["claude-sonnet-5-5[1m]", "omniroute:codex/gpt-6-luna"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitFor(onWorker, read, NOW)).toEqual({
+      kind: "claude-limit",
+      model: "claude-sonnet-5-5",
+      resetsAt: "2026-10-28T20:00:00.000Z",
+    });
+  });
+
+  test("a session on Claude itself (no slot) keeps today's wait", () => {
+    const read = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitFor(paused({ model: { ...paused().model, slot: null } }), read, NOW)).toEqual({
+      kind: "claude-limit",
+      model: "claude-sonnet-5-5",
+      resetsAt: "2026-10-28T20:00:00.000Z",
+    });
+  });
+
+  test("its line names the slot, never a reset date that does not hold it", () => {
+    const read = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(pauseText(waitFor(onWorker, read, NOW), "rate_limit", NOW, "UTC")).toBe(
+      "worker slot limited since 22:00; goes on by itself when it answers",
+    );
+  });
+
+  test("resumed after the backoff, while the Claude limit is still current", () => {
+    const read = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    const first = paused({
+      ...onWorker,
+      lastPause: { backoffMs: 0, since: "2026-10-21T22:00:00.000Z" },
+      waitingFor: waitFor(onWorker, read, NOW),
+    });
+    expect(waitOver(first, read, NOW)).toBe(true);
+    const again = paused({
+      ...first,
+      lastPause: { backoffMs: FIRST_BACKOFF_MS, since: "2026-10-21T22:00:00.000Z" },
+    });
+    expect(waitOver(again, read, NOW + 4 * MINUTE)).toBe(false);
+    expect(waitOver(again, read, NOW + 5 * MINUTE)).toBe(true);
+  });
+
+  test("a claude-limit wait an older kit recorded on such a chain goes on after the backoff too", () => {
+    const stuck = paused({
+      ...onWorker,
+      lastPause: { backoffMs: 0, since: "2026-10-21T21:55:00.000Z" },
+      waitingFor: {
+        kind: "claude-limit",
+        model: "claude-sonnet-5-5",
+        resetsAt: "2026-10-28T20:00:00.000Z",
+      },
+    });
+    const backendFirst = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitOver(stuck, backendFirst, NOW)).toBe(true);
+    // Its slot's breaker open on its first target holds it, as a slot wait is held.
+    expect(
+      waitOver(
+        stuck,
+        {
+          ...backendFirst,
+          breakers: {
+            [WORKER]: {
+              ...breaker(),
+              targets: [
+                { status: 502, target: "omniroute:codex/gpt-6-luna", until: NOW + 60 * MINUTE },
+              ],
+            },
+          },
+        },
+        NOW,
+      ),
+    ).toBe(false);
+    // The chain unknown, or Claude first: the limit holds it, as before.
+    expect(waitOver(stuck, { ...backendFirst, inUse: null }, NOW)).toBe(false);
+    expect(
+      waitOver(
+        stuck,
+        {
+          ...backendFirst,
+          inUse: { [WORKER]: ["claude-sonnet-5-5", "omniroute:codex/gpt-6-luna"] },
+        },
+        NOW,
+      ),
+    ).toBe(false);
   });
 });
 

@@ -26719,13 +26719,27 @@ function breakersBySlot(state, nowMs) {
 function limitsByModel(state, nowMs) {
   return Object.fromEntries(currentLimits(state, nowMs));
 }
+function readConfig(file) {
+  try {
+    return loadConfigFile(file);
+  } catch {
+    return null;
+  }
+}
 function readWaitFacts(paths, nowMs) {
   const state = readState2(paths.gatewayStateFile);
+  const config = readConfig(paths.gatewayConfigFile);
   return {
     breakers: breakersBySlot(state, nowMs),
-    inUse: null,
+    inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs)
   };
+}
+function targetsNow(config) {
+  return Object.fromEntries(Object.entries(config.slots).map(([slot, chain]) => [
+    slot,
+    targetsInUse(chain, fallbackOn(config, slot))
+  ]));
 }
 function iso2(atMs) {
   return new Date(atMs).toISOString();
@@ -26743,6 +26757,11 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
+function claudeLimitHolds(record, model, inUse) {
+  const slot = record.model.slot;
+  const first = slot === null ? undefined : inUse?.[slot]?.[0];
+  return first === undefined || withoutContextSuffix(first) === model;
+}
 function waitFor(record, facts, nowMs) {
   const slot = record.model.slot;
   const breaker = slot === null ? undefined : facts.breakers[slot];
@@ -26750,13 +26769,15 @@ function waitFor(record, facts, nowMs) {
     return { kind: "slot", since: iso2(breaker.since), slot };
   }
   const limit = limitForStop(record, facts.limits);
-  if (limit !== undefined) {
+  if (limit !== undefined && claudeLimitHolds(record, limit[0], facts.inUse)) {
     return {
       kind: "claude-limit",
       model: limit[0],
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
+  if (slot !== null && limit !== undefined)
+    return { kind: "slot", since: iso2(nowMs), slot };
   return { kind: "unknown", since: iso2(nowMs) };
 }
 function pauseBackoff(previous, nowMs) {
@@ -34616,7 +34637,7 @@ function parseSettingValue(spec, value) {
 }
 
 // src/portal/facts.ts
-function readConfig(ctx) {
+function readConfig2(ctx) {
   try {
     return { config: loadConfigFile(ctx.paths.gatewayConfigFile) };
   } catch (error) {
@@ -40768,7 +40789,7 @@ async function startPortal(ctx, options) {
     pollMs: options.livePollMs,
     publish: (event, data) => hub.publish(event, data),
     routerPort: () => {
-      const found = readConfig(ctx);
+      const found = readConfig2(ctx);
       return "config" in found ? found.config.port : null;
     }
   });
@@ -40853,7 +40874,7 @@ async function startPortal(ctx, options) {
     }
     if (url.pathname.startsWith("/api/")) {
       if (method === "GET") {
-        const answer = await answerApi(pageDeps(readConfig(ctx)), url);
+        const answer = await answerApi(pageDeps(readConfig2(ctx)), url);
         return answer === null ? json({ lines: ["An action is a POST."], ok: false }, 405) : json(answer.body, answer.status);
       }
       if (method !== "POST")
@@ -40883,7 +40904,7 @@ async function startPortal(ctx, options) {
     }
     if (method !== "GET")
       return refused();
-    const found = readConfig(ctx);
+    const found = readConfig2(ctx);
     const shell = {
       bun: ctx.bunVersion,
       csrf: state.csrf,

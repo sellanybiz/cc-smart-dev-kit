@@ -30276,11 +30276,19 @@ function breakersBySlot(state, nowMs) {
 function limitsByModel(state, nowMs) {
   return Object.fromEntries(currentLimits(state, nowMs));
 }
+function readConfig(file) {
+  try {
+    return loadConfigFile(file);
+  } catch {
+    return null;
+  }
+}
 function readWaitFacts(paths, nowMs) {
   const state = readState2(paths.gatewayStateFile);
+  const config = readConfig(paths.gatewayConfigFile);
   return {
     breakers: breakersBySlot(state, nowMs),
-    inUse: null,
+    inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs)
   };
 }
@@ -30332,12 +30340,7 @@ function healthNow(body, nowMs) {
 }
 async function gatewayNow(paths, nowMs, fetchImpl) {
   const state = readState2(paths.gatewayStateFile);
-  let config = null;
-  try {
-    config = loadConfigFile(paths.gatewayConfigFile);
-  } catch {
-    config = null;
-  }
+  const config = readConfig(paths.gatewayConfigFile);
   let breakers = breakersBySlot(state, nowMs);
   let requests = null;
   if (config !== null) {
@@ -30373,6 +30376,11 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
+function claudeLimitHolds(record, model, inUse) {
+  const slot = record.model.slot;
+  const first = slot === null ? undefined : inUse?.[slot]?.[0];
+  return first === undefined || withoutContextSuffix(first) === model;
+}
 function waitFor(record, facts, nowMs) {
   const slot = record.model.slot;
   const breaker = slot === null ? undefined : facts.breakers[slot];
@@ -30380,13 +30388,15 @@ function waitFor(record, facts, nowMs) {
     return { kind: "slot", since: iso2(breaker.since), slot };
   }
   const limit = limitForStop(record, facts.limits);
-  if (limit !== undefined) {
+  if (limit !== undefined && claudeLimitHolds(record, limit[0], facts.inUse)) {
     return {
       kind: "claude-limit",
       model: limit[0],
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
+  if (slot !== null && limit !== undefined)
+    return { kind: "slot", since: iso2(nowMs), slot };
   return { kind: "unknown", since: iso2(nowMs) };
 }
 function pauseBackoff(previous, nowMs) {
@@ -30421,23 +30431,26 @@ function pauseStartedAt(record) {
   const at = since === null || since === undefined ? Date.parse(record.updatedAt) : Date.parse(since);
   return Number.isFinite(at) ? at : 0;
 }
+function slotAnswers(slot, facts) {
+  const breaker = facts.breakers[slot];
+  if (breaker === undefined)
+    return true;
+  const first = facts.inUse?.[slot]?.[0];
+  return first !== undefined && !breaker.targets.some((one) => one.target === first);
+}
 function waitOver(record, facts, nowMs) {
   const waiting = record.waitingFor ?? { kind: "unknown", since: record.updatedAt };
   const backoff = record.lastPause?.backoffMs ?? 0;
   if (nowMs < pauseStartedAt(record) + backoff)
     return false;
   switch (waiting.kind) {
-    case "slot": {
-      const breaker = facts.breakers[waiting.slot];
-      if (breaker === undefined)
-        return true;
-      const inUse = facts.inUse?.[waiting.slot];
-      if (inUse === undefined)
-        return false;
-      const first = inUse[0];
-      return first !== undefined && !breaker.targets.some((one) => one.target === first);
-    }
+    case "slot":
+      return slotAnswers(waiting.slot, facts);
     case "claude-limit": {
+      const slot = record.model.slot;
+      if (slot !== null && !claudeLimitHolds(record, waiting.model, facts.inUse)) {
+        return slotAnswers(slot, facts);
+      }
       if (facts.limits[waiting.model] !== undefined)
         return false;
       if (waiting.resetsAt === null)
