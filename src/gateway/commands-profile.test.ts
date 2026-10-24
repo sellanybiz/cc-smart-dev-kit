@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
 import { type GatewayContext, runGateway } from "./commands";
+import { PROFILE_HELP } from "./commands-profile";
 import {
   DEFAULT_ANTHROPIC_BASE_URL,
   fallbackOn,
@@ -167,6 +168,28 @@ describe("gateway profile <name> slot", () => {
     );
   });
 
+  test("judge off in a profile says who judges there: Claude first, the profile's tested worker targets while it cannot (RV3)", async () => {
+    // The router keeps those stand-ins in a profile (`claudeFirstJudge` reads the profile's
+    // view), so "plain Claude in this profile" would say more than it does.
+    const m = machine({ judgeProof: true });
+    await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
+    m.reset();
+    expect(await m.run(["profile", "team", "slot", "judge", "off"])).toBe(0);
+    expect(m.output()).toContain(
+      "team: cc-smart-dev-kit-judge: Claude: Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
+    );
+    expect(m.output()).not.toContain("plain Claude in this profile");
+    // With the profile's judge fallback off, Claude judges alone, and the words say so.
+    const alone = machine({ judgeProof: true });
+    await alone.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
+    await alone.run(["profile", "team", "fallback", "judge", "off"]);
+    alone.reset();
+    expect(await alone.run(["profile", "team", "slot", "judge", "claude"])).toBe(0);
+    expect(alone.output()).toContain(
+      "team: cc-smart-dev-kit-judge: Claude: Claude judges every check, alone (fallback off)",
+    );
+  });
+
   test("clear takes the entry out: the machine's chain applies there again", async () => {
     const m = machine();
     await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
@@ -232,6 +255,55 @@ describe("gateway profile <name> fallback", () => {
     await expect(m.run(["profile", "team", "fallback", "worker", "yes"])).rejects.toThrow(
       'say on or off, not "yes"',
     );
+  });
+});
+
+describe("gateway profile <name> breaker (RV3: the switch the docs call the command line's)", () => {
+  test("sets the profile's breaker switch over the machine's, which stays on", async () => {
+    const m = machine();
+    expect(await m.run(["profile", "team", "breaker", "worker", "off"])).toBe(0);
+    const config = m.config();
+    expect(config.profiles?.team?.breaker?.["cc-smart-dev-kit-worker"]).toBe(false);
+    expect(config.breaker).toBeUndefined();
+    expect(m.output()).toContain("team: cc-smart-dev-kit-worker: breaker on → off");
+    expect(m.output()).toContain(
+      "In this profile, when every target is limited or down the last answer goes back at once; the router holds no request.",
+    );
+  });
+
+  test("a value equal to the default is written as no entry, and 'on' says what the hold does", async () => {
+    const m = machine();
+    await m.run(["profile", "team", "breaker", "worker", "off"]);
+    m.reset();
+    expect(await m.run(["profile", "team", "breaker", "worker", "on"])).toBe(0);
+    expect(m.config().profiles?.team?.breaker).toBeUndefined();
+    expect(m.output()).toContain("team: cc-smart-dev-kit-worker: breaker off → on");
+  });
+
+  test("a slot the profile uses from the machine takes a switch too; one with no chain is refused", async () => {
+    const m = machine();
+    await m.run(["profile", "team", "slot", "worker", "off"]);
+    m.reset();
+    await expect(m.run(["profile", "team", "breaker", "worker", "off"])).rejects.toThrow(
+      "profile team has no chain for cc-smart-dev-kit-worker, so there is no request for the breaker to hold",
+    );
+  });
+
+  test("the judge never holds, a missing profile and a bad word are refused", async () => {
+    const m = machine();
+    await expect(m.run(["profile", "team", "breaker", "judge", "off"])).rejects.toThrow(
+      "cc-smart-dev-kit-judge: the judge never holds a request",
+    );
+    await expect(m.run(["profile", "gone", "breaker", "worker", "off"])).rejects.toThrow(
+      'gateway.json has no profile "gone"',
+    );
+    await expect(m.run(["profile", "team", "breaker", "worker", "yes"])).rejects.toThrow(
+      'say on or off, not "yes"',
+    );
+  });
+
+  test("it is in the command's help", () => {
+    expect(PROFILE_HELP).toContain("breaker <slot> on|off");
   });
 });
 

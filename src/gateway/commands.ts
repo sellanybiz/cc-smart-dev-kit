@@ -29,7 +29,14 @@ import { withLock } from "../setup/lock";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
-import { chainProblem, chainToCheck, notSlotName, SLOT_WORDS, slotName } from "./commands-chains";
+import {
+  chainProblem,
+  chainToCheck,
+  judgeDefaultWords,
+  notSlotName,
+  SLOT_WORDS,
+  slotName,
+} from "./commands-chains";
 import { changeLines, gatewayOut, printChanges } from "./commands-out";
 import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./commands-profile";
 import {
@@ -125,7 +132,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   FAMILY_SLOTS,
-  formatTarget,
   isModelSlot,
   JUDGE_SLOT,
   parseTarget,
@@ -1260,34 +1266,9 @@ function keptWords(key: string, kept: KeptChain): string {
 export const JUDGE_WARNING =
   "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
 
-/** The worker chain's backend targets that have not passed the judge test, in its order. */
-function untestedWorkerTargets(config: GatewayConfig): string[] {
-  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
-    const parsed = parseTarget(text);
-    return (
-      "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text)
-    );
-  });
-}
-
-/**
- * What the judge is, in words, while the person set no judge chain (owner D44): Claude
- * judges every check first, as it always did; while it is limited or down, the worker
- * chain's targets that passed the judge test judge in its place, as long as the judge's
- * fallback switch is on (it is, by default). One home for the words that `gateway status`,
- * `slot judge off`, `fallback judge` and `doctor` say.
- */
-export function judgeDefaultWords(config: GatewayConfig): string {
-  if (!fallbackOn(config, JUDGE_SLOT)) return "Claude judges every check, alone (fallback off)";
-  const standIns = workerJudgeTargets(config).map(formatTarget);
-  const untested = untestedWorkerTargets(config);
-  if (standIns.length === 0) {
-    return untested.length > 0
-      ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)`
-      : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
-  }
-  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
-}
+// What the judge is while no judge chain is set moved to `commands-chains.ts` (the profile
+// commands say it too); every caller of this module still imports it from here.
+export { judgeDefaultWords };
 
 /** What a slot's fallback switch means for its chain, in words. */
 function fallbackWords(config: GatewayConfig, key: string): string {

@@ -22,7 +22,13 @@ import { withLock } from "../setup/lock";
 import { formatKeyPath } from "../setup/managed-json";
 import { listModels } from "./backends";
 import type { GatewayContext } from "./commands";
-import { chainProblem, notSlotName, SLOT_WORDS, splitChain } from "./commands-chains";
+import {
+  chainProblem,
+  judgeDefaultWords,
+  notSlotName,
+  SLOT_WORDS,
+  splitChain,
+} from "./commands-chains";
 import { gatewayOut } from "./commands-out";
 import {
   fallbackOn,
@@ -279,6 +285,13 @@ export function planProfileRemove(
 
 /** The second line under a slot change: what the slot is in this profile now. */
 function slotNowWords(plan: ProfileSlotPlan, current: GatewayConfig): string {
+  if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
+    // Claude judges first there, but the router still lets the profile's tested worker targets
+    // judge while Claude cannot (`claudeFirstJudge`, on the profile's view), unless the
+    // profile's judge fallback is off: the words are the machine's, said for the profile.
+    const view = profileView(plan.config, plan.name);
+    return `Claude: ${view === null ? "Claude judges every check, alone" : judgeDefaultWords(view)}`;
+  }
   if (plan.next === "claude") return "Claude (plain Claude in this profile)";
   if (plan.next === null) {
     const machine = current.slots[plan.key];

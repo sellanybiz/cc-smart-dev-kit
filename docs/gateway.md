@@ -1130,7 +1130,12 @@ routes come with the portal's pages).
   fallback; whether the breaker held it; the input, output, cache-read and cache-write tokens
   the answer's `usage` reported; and an estimated USD cost. **Never** a prompt, a system text,
   a tool, an answer or a key. A database from before the `profile` column keeps every row;
-  those rows read as the machine's default.
+  those rows read as the machine's default. **The column raised the schema to 2**
+  (`HISTORY_SCHEMA_VERSION`), and a version refuses a database newer than its own (one log
+  line, no rows written). So a router from before 1.2.0 — a rollback to 1.1.x — stops writing
+  history on a machine that already ran this version, and the portal's reader of that older
+  version refuses the file. Move or delete `history.db` to start a new one; nothing else
+  reads it.
 - **Not a safety check, not `count_tokens`, not another path.** Auto mode's checks are
   counted by day in `safety-checks.json` (§ The safety-check counts); the history is the
   model calls.

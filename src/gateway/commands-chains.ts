@@ -6,8 +6,22 @@
  */
 
 import { COMMAND } from "../build-info";
-import { type GatewayConfig, keptChain } from "./config";
-import { parseTarget, SLOT_PREFIX, slotKeyFromArg, type Target } from "./targets";
+import {
+  fallbackOn,
+  type GatewayConfig,
+  judgeTargetTested,
+  keptChain,
+  workerJudgeTargets,
+} from "./config";
+import {
+  formatTarget,
+  JUDGE_SLOT,
+  parseTarget,
+  SLOT_PREFIX,
+  slotKeyFromArg,
+  type Target,
+  WORKER_SLOT,
+} from "./targets";
 
 /**
  * The words `gateway slot <slot> …` takes in place of a chain. None of them can be a target:
@@ -86,4 +100,34 @@ export function chainToCheck(config: GatewayConfig, slotArg: string, text: strin
     return [];
   }
   return splitChain(word);
+}
+
+/** The worker chain's backend targets that have not passed the judge test, in its order. */
+function untestedWorkerTargets(config: GatewayConfig): string[] {
+  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return (
+      "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text)
+    );
+  });
+}
+
+/**
+ * What the judge is, in words, while the person set no judge chain (owner D44): Claude
+ * judges every check first, as it always did; while it is limited or down, the worker
+ * chain's targets that passed the judge test judge in its place, as long as the judge's
+ * fallback switch is on (it is, by default). One home for the words that `gateway status`,
+ * `slot judge off`, `fallback judge` and `doctor` say, and for the profile commands: a
+ * profile's judge is read from the profile's view the same way (`claudeFirstJudge`).
+ */
+export function judgeDefaultWords(config: GatewayConfig): string {
+  if (!fallbackOn(config, JUDGE_SLOT)) return "Claude judges every check, alone (fallback off)";
+  const standIns = workerJudgeTargets(config).map(formatTarget);
+  const untested = untestedWorkerTargets(config);
+  if (standIns.length === 0) {
+    return untested.length > 0
+      ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)`
+      : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
+  }
+  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
 }
