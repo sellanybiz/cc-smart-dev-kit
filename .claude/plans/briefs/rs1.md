@@ -11,10 +11,12 @@ merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
   verified list nor the hunches. The cut is in track order (`pipeline` returns the tracks in
   order), not by severity, so one busy track can take every refuter and a critical finding of the
   last track is lost. `plugin/workflows/audit-run.js` ~76-78 has the same cut.
-- The lead passed the arguments as one string (as the skill listing's "Invoke" line shows); the
-  script reads an object (`base`, `head`, `folder`, `tracks`, `risky`, `budget`, `intent`), so it
-  ran one generic track on the ordinary tier (`sonnet` at `max`) instead of four risky tracks on
-  `opus` at `xhigh`. Nothing said the arguments were ignored. The lead stopped it and relaunched.
+- The lead passed the arguments as one string (it started the workflow from its own listing,
+  whose "Invoke" line passes the text it was given, not from the `review` skill, which already
+  shows the object at `plugin/skills/review/SKILL.md` ~109-111); the script reads an object
+  (`base`, `head`, `folder`, `tracks`, `risky`, `budget`, `intent`), so it ran one generic track on
+  the ordinary tier (`sonnet` at `max`) instead of four risky tracks on `opus` at `xhigh`. Nothing
+  said the arguments were ignored. The lead stopped it and relaunched.
 
 ## The change
 
@@ -26,9 +28,9 @@ merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
 3. **The arguments:** a string, or an object with an unknown key or a wrong type, is refused at
    the start with one line that names the expected object, never run on defaults. (Find whether
    the Workflow tool passes a string through as-is: `args` is "exposed to the script as the global
-   `args`, verbatim".) The skills that start each workflow (`plugin/skills/review/SKILL.md` for
-   `review-split`, `plugin/skills/audit/SKILL.md` for `audit-run`) show the object, with an
-   example of four tracks on the risky tier.
+   `args`, verbatim".) The `review` skill already shows the object; check that the `audit` skill
+   (`plugin/skills/audit/SKILL.md`) does too, and add `folder` and `budget` to each example if
+   they are missing.
 4. **Both scripts the same way, one home where it fits:** a shared piece only if the workflow
    scripts can import one (find whether Claude Code allows imports in a workflow script); if not,
    keep each script self-contained and say why (`check:duplicates` reads workflow scripts too:
