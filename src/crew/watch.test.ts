@@ -10,7 +10,7 @@ import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
-import { git } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
 import { runCrew } from "./command";
@@ -724,6 +724,50 @@ describe("crew watch", () => {
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("D62: the watch finishes a removal that stopped halfway, its record still there", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "stopped");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // What `removeWorktree` leaves when git cannot remove the folder it moved aside.
+    const parked = `${worktree}-removing-1234`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
+    );
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    // The record is untouched: a stopped one is the lead's call (D62).
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("stopped");
+  });
+
+  test("D62: the watch finishes a removal that stopped halfway with no record at all", async () => {
+    const world = await leadWorld();
+    // A remote, so the watch has a base for a folder no record names.
+    const origin = join(tempDir("origin"), "origin.git");
+    mkdirSync(origin);
+    git(origin, "init", "--bare", "--initial-branch=main", "-q");
+    git(world.repo, "remote", "add", "origin", origin);
+    git(world.repo, "push", "-q", "-u", "origin", "main");
+    git(world.repo, "remote", "set-head", "origin", "--auto");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-ghost");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/ghost", worktree);
+    const parked = `${worktree}-removing-1234`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
+    );
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
   });
 
   test("D62: a merged one whose own stopped session left a check running is removed after it is stopped", async () => {

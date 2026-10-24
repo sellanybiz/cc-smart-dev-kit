@@ -982,6 +982,33 @@ describe("the worktrees command", () => {
     expect(answer.worktrees).toEqual([]);
   });
 
+  test("D62: a removal that stopped halfway is finished by --clean, with no record of it", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    // What `removeWorktree` leaves when `git worktree remove` fails on the folder it moved
+    // aside: no crew record names the parked path, and the move itself is the removal's touch.
+    const parked = `${worktree}-removing-1234`;
+    git(main, "worktree", "move", worktree, parked);
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(out.join("\n")).toContain(`removed ${parked}`);
+    expect(existsSync(parked)).toBe(false);
+    expect(git(main, "worktree", "list")).not.toContain("-removing-");
+  });
+
   test("`--remove <path>` removes one now, without the one-hour wait", async () => {
     const { main, worktree } = repo();
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });

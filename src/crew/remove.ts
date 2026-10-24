@@ -35,6 +35,9 @@ import { tildify } from "../cli/paths";
 import { hasChanges, listWorktrees, runGit, samePath } from "../hooks/git";
 import {
   deleteBranchOnRef,
+  finishParked,
+  isParkedWorktree,
+  parkedOriginal,
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
@@ -59,7 +62,7 @@ import {
   stopLeftoverProcesses,
   stopSession,
 } from "./end";
-import { appendCrewEvent } from "./store";
+import { appendCrewEvent, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -217,6 +220,35 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   const facts =
     ctx.scanFacts === undefined ? undefined : { ...ctx.scanFacts, programs: leftovers.programs };
 
+  // 5c. A removal that stopped halfway left the worktree at `<path>-removing-<time>`: git lists
+  // it there and the record still names the old path. Finish it now, under the same safe checks,
+  // so it is never left behind (D62) — and refuse rather than leave it, because the record is
+  // about to say removed and nothing would come back for it.
+  const parkedPaths = listWorktrees(repo, ctx.env)
+    .filter((one) => {
+      const original = parkedOriginal(one.path);
+      return original !== null && samePath(original, record.worktree);
+    })
+    .map((one) => one.path);
+  const parkedOptions = {
+    against: { label: lead.label, ref: lead.sha },
+    base: lead.label,
+    claudeConfigDir: ctx.paths.claudeConfigDir,
+    env: ctx.env,
+    ...(facts === undefined ? {} : { facts }),
+    idleLimit: 0,
+  };
+  const finished = finishParked(repo, parkedPaths, parkedOptions, (line) => ctx.print(line));
+  const stuck = finished.kept[0];
+  if (stuck !== undefined) {
+    return refuseKept(
+      failure(
+        `crew rm: ${relative(repo, stuck.path)} is kept: ${stuck.why}`,
+        "Fix: clear that, then run crew rm again; it never forces",
+      ),
+    );
+  }
+
   // 6. and 7. The kit's own verdict and removal, judged against the lead's branch.
   if (listed !== undefined) {
     let judged: ReturnType<typeof scanWorktrees>[number] | undefined;
@@ -334,4 +366,56 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   const stored = await markState(record, "removed", "removed", ctx);
   ctx.print(`removed ${record.name}`);
   return stored ? 0 : 1;
+}
+
+/**
+ * Finishes every removal that stopped halfway in `repo` (D62): the folders a removal moved
+ * aside (`<path>-removing-<time>`) and could not then remove. A folder the store still knows is
+ * judged against its own crew session's branch; one whose record is gone is judged against
+ * `base`, the repository's `origin/<base>`. Nothing is said about a folder that stays: the next
+ * pass judges it again. A ref that is not known here leaves its folders alone.
+ */
+export function finishParkedWorktrees(
+  repo: string,
+  ctx: CrewContext,
+  base: null | { label: string; ref: string },
+  say: (line: string) => void,
+): string[] {
+  const parked = listWorktrees(repo, ctx.env).filter((one) => isParkedWorktree(one.path));
+  if (parked.length === 0) return [];
+  const records = listCrew(ctx.paths.stateDir, repo).records;
+  // One scan per ref: a whole scan is judged against one branch.
+  const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
+  for (const one of parked) {
+    const original = parkedOriginal(one.path) ?? one.path;
+    const record = records.find((two) => samePath(two.worktree, original));
+    let chosen: null | { label: string; ref: string } = null;
+    if (record !== undefined) {
+      const lead = leadRef(record, ctx);
+      if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+    }
+    chosen = chosen ?? base;
+    if (chosen === null) continue;
+    const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
+    group.paths.push(one.path);
+    groups.set(chosen.ref, group);
+  }
+  const removed: string[] = [];
+  for (const group of groups.values()) {
+    const pass = finishParked(
+      repo,
+      group.paths,
+      {
+        against: { label: group.label, ref: group.ref },
+        base: group.label,
+        claudeConfigDir: ctx.paths.claudeConfigDir,
+        env: ctx.env,
+        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+        idleLimit: 0,
+      },
+      say,
+    );
+    removed.push(...pass.removed);
+  }
+  return removed;
 }

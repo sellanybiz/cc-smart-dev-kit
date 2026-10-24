@@ -43,6 +43,38 @@ import {
 } from "./verdict";
 
 /**
+ * The mark a removal gives the folder it moves aside before removing it:
+ * `<path>-removing-<milliseconds>`. A folder carrying it is one whose removal stopped halfway,
+ * and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it (D62).
+ */
+export const PARKED_MARK = "-removing-";
+
+const PARKED_END = /-removing-\d+$/;
+
+/** The folder a half-done removal moved aside was at, or null when `path` is not one. */
+export function parkedOriginal(path: string): null | string {
+  const found = PARKED_END.exec(path);
+  return found === null ? null : path.slice(0, found.index);
+}
+
+/** True when `path` is a folder a half-done removal moved aside (`<path>-removing-<time>`). */
+export function isParkedWorktree(path: string): boolean {
+  return PARKED_END.test(path);
+}
+
+/**
+ * Said when a worktree whose folder is gone is forgotten. `git worktree prune` cannot tell a
+ * folder that was deleted from one on a disk that is not connected — and a LOCKED worktree is
+ * never pruned, so the line says how to be sure next time.
+ */
+export function forgottenLine(path: string): string {
+  return (
+    `forgot ${path} (its folder was already gone). A worktree on a disk that is not connected reads ` +
+    `the same way: lock one there (\`git worktree lock "${path}"\`) and prune leaves it alone.`
+  );
+}
+
+/**
  * Brings `origin/<base>` up to date, so work merged a minute ago counts as merged. Never asks
  * for credentials (a hook has nobody to answer) and gives up after 30 seconds, so a dead
  * network cannot hold a hook until its own timeout throws its output away.
@@ -402,7 +434,10 @@ function judgeOne(
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
   };
-  return verdict(facts, () => contentsOf(listed.path, repo, look.env), look.idleLimit);
+  // A folder a removal moved aside asks for no idle hour (D62): the move was the removal's own
+  // touch, and it is judged now. Every other worktree waits the limit its caller asked for.
+  const idleLimit = isParkedWorktree(listed.path) ? 0 : look.idleLimit;
+  return verdict(facts, () => contentsOf(listed.path, repo, look.env), idleLimit);
 }
 
 /** The machine's facts, read once for a whole scan (or one removal). */
@@ -559,6 +594,69 @@ export function removeWorktree(
   const said = [`removed ${listed.path}`];
   if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
   return { said, status: "removed" };
+}
+
+/** What one pass over a removal's parked folders came to. */
+export interface ParkedPass {
+  /** The folders that stayed, with the reason the verdict gave. */
+  kept: Array<{ path: string; why: string }>;
+  /** The folders that went (or were forgotten), and the lines said about each. */
+  removed: string[];
+  said: string[];
+}
+
+/**
+ * Finishes the removals that stopped halfway: the folders a removal moved aside
+ * (`<path>-removing-<time>`, `PARKED_MARK`) and could not then remove, so they are never left
+ * behind (D62). Each is judged again right before it goes, by the same verdict as any removal —
+ * nothing runs from it, nothing in it is uncommitted, and its work is on `options.against` — and
+ * a parked folder asks for no idle hour: the move was the removal's own touch.
+ *
+ * `paths` names the folders to finish; the caller passes only those it is entitled to (`crew rm`
+ * its own record's, the watch and `worktrees --clean` the rest). A folder that does not look
+ * finished stays, and nothing is said about it. A folder whose record is gone is finished just
+ * the same: this pass needs no store.
+ */
+export function finishParked(
+  repo: string,
+  paths: readonly string[],
+  options: ScanOptions,
+  say: (line: string) => void,
+): ParkedPass {
+  const pass: ParkedPass = { kept: [], removed: [], said: [] };
+  if (paths.length === 0) return pass;
+  let scanned: ScannedWorktree[];
+  try {
+    scanned = scanWorktrees(repo, options);
+  } catch {
+    // The ref is not known here: nothing may be judged against a guess.
+    return pass;
+  }
+  for (const worktree of scanned) {
+    if (worktree.state === "main") continue;
+    if (!paths.some((path) => samePath(path, worktree.listed.path))) continue;
+    const shown = worktree.listed.path;
+    if (worktree.state === "gone") {
+      pruneWorktrees(repo, options.env);
+      pass.removed.push(shown);
+      const line = forgottenLine(shown);
+      pass.said.push(line);
+      say(line);
+      continue;
+    }
+    if (!worktree.state.finished) {
+      pass.kept.push({ path: shown, why: worktree.state.why });
+      continue;
+    }
+    const removal = removeWorktree(repo, worktree.listed, options);
+    for (const line of removal.said) {
+      pass.said.push(line);
+      say(line);
+    }
+    if (removal.status === "removed") pass.removed.push(shown);
+    else pass.kept.push({ path: shown, why: removal.said[0] ?? removal.status });
+  }
+  return pass;
 }
 
 /**

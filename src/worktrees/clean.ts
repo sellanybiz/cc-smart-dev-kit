@@ -12,23 +12,14 @@ import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
 import {
   deleteMergedBranch,
+  forgottenLine,
   pruneWorktrees,
   removeWorktree,
   type ScannedWorktree,
   type ScanOptions,
 } from "./scan";
 
-/**
- * Said when a worktree whose folder is gone is forgotten. `git worktree prune` cannot tell a
- * folder that was deleted from one on a disk that is not connected — and a LOCKED worktree is
- * never pruned, so the line says how to be sure next time.
- */
-export function forgottenLine(path: string): string {
-  return (
-    `forgot ${path} (its folder was already gone). A worktree on a disk that is not connected reads ` +
-    `the same way: lock one there (\`git worktree lock "${path}"\`) and prune leaves it alone.`
-  );
-}
+export { forgottenLine } from "./scan";
 
 /** What holds the clean's machine-wide lock: closing it lets go (a listening `Server`). */
 export interface CleanLock {

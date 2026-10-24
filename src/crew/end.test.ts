@@ -652,6 +652,23 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(existsSync(worktree)).toBe(true);
   });
 
+  test("D62: a removal that stopped halfway is finished by crew rm", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    leadMerges(world.repo, branch);
+    // What `removeWorktree` leaves when git could not remove the folder it moved aside.
+    const parked = `${worktree}-removing-1234`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "removed",
+    });
+  });
+
   test("`claude rm` fails: the store says so, the worktree is gone, and a second run finishes it", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();

@@ -41,17 +41,18 @@
  * the background and its end starts the lead's next turn.
  */
 import { COMMAND } from "../build-info/names";
+import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
-import { readCaller, reasonOf } from "./caller";
+import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
-import { runCrewRm } from "./remove";
+import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { startQueued } from "./start";
 import {
   type CrewEvent,
@@ -317,6 +318,12 @@ export interface WatchScope {
   mergeInto: string;
   repo: string;
   resolved: ResolvedWorkflow;
+  /**
+   * The base a removal that stopped halfway is judged against when the store no longer knows
+   * its crew session: `origin/<base>`. Null when this repository has no such ref, and then such
+   * a folder is left alone rather than judged against a guess.
+   */
+  base?: null | { label: string; ref: string };
   /**
    * False: this pass starts no queued crew session (`startQueued`). The watch sets it for a pass
    * whose workflow it could not read again — a file it cannot use, **and the person's own
@@ -624,6 +631,11 @@ export async function watchPass(
     }
   }
 
+  // Removals that stopped halfway are finished here too (D62): a folder a removal moved aside
+  // (`<path>-removing-<time>`) and could not remove, whether or not the store still knows its
+  // crew session. A folder that stays is not news; the next pass judges it again.
+  finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
   const allRecords = listCrew(ctx.paths.stateDir, repo).records;
@@ -801,6 +813,27 @@ export function leadOf(
   return leadSessionIds.length === 1 ? (leadSessionIds[0] ?? null) : null;
 }
 
+/**
+ * The base a removal that stopped halfway is judged against when its record is gone:
+ * `origin/<base>`, where `<base>` is the project's `worktrees.base` else the remote's default
+ * branch. Null when this repository has neither, and then such a folder is left alone.
+ */
+function watchBase(caller: Caller, ctx: CrewContext): null | { label: string; ref: string } {
+  const labels: string[] = [];
+  const named = caller.config?.worktrees?.base;
+  if (named !== undefined) labels.push(named);
+  const head = runGit(caller.repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], ctx.env);
+  if (head.ok) labels.push(head.out.replace(/^origin\//, ""));
+  for (const label of labels) {
+    if (label === "" || label === "HEAD") continue;
+    const ref = `refs/remotes/origin/${label}`;
+    if (runGit(caller.repo, ["rev-parse", "--verify", "--quiet", ref], ctx.env).ok) {
+      return { label, ref };
+    }
+  }
+  return null;
+}
+
 /** `crew watch`; the exit code. */
 export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<number> {
   const read = readCaller("watch", ctx, { session: "optional" });
@@ -831,6 +864,7 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
   let state: WatchState = known ?? { noted: false, offset: 0, said: {} };
+  const parkedBase = watchBase(read.caller, ctx);
   // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
   // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
@@ -859,7 +893,14 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
         capsSaid = true;
       }
     }
-    const scope: WatchScope = { leadSessionId, mergeInto, mayStart, repo, resolved: caps };
+    const scope: WatchScope = {
+      base: parkedBase,
+      leadSessionId,
+      mergeInto,
+      mayStart,
+      repo,
+      resolved: caps,
+    };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
