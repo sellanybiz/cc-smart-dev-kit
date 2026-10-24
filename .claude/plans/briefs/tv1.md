@@ -7,7 +7,10 @@ merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
 
 **The owner's ask (2026-10-25):** the instructions must let Claude Code know whether the models
 behind the worker and scout slots are Claude models right now, so it picks the effort the task
-needs.
+needs. In the owner's words: Claude models are not like Codex and other cheap models, so they
+do not always need `max` effort; they do well at `high` and `xhigh`, according to the task. So a
+Claude tier takes `medium`, `high` or `xhigh` by the task (`max` only when the person asks), and
+only an affordable backend runs at `max`.
 
 **Today:** the general instructions say "an affordable gateway slot runs at `max`"
 (`plugin/instructions/core.md` ~73-74), and the subagent-decision skill calls `haiku` and
