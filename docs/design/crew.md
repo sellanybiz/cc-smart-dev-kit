@@ -123,7 +123,8 @@ repository, under the state folder:
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
-  open, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
+  open — the slot's key, or `<profile>/<slot>` for a crew session in a project on a profile, whose
+  breaker is the profile's —, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
   § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id

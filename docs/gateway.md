@@ -555,7 +555,8 @@ was (`config.ts`, tested in `config.test.ts`).
   `lastAt`, the way a limit without a reset time counts, so a record a stopped router left
   behind goes stale.
 - **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design/crew.md`) a
-  `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` or `{kind:
+  `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` (`slot` is the
+  state key: `<profile>/<slot>` for a worker in a project on a profile) or `{kind:
   "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
   own subagents waiting to be woken. Both are optional.
 

@@ -28,10 +28,11 @@
  * session on its chain** (`sessionGatewayOf`: the `ANTHROPIC_BASE_URL` the command's environment
  * carries is the session's own, `docs/claude-code-contract.md`): the machine's records on the
  * machine's address (or when it carries none), a profile's on that profile's address, none off
- * the gateway. A plan limit shows in every session: the login is one. **The warning share is a setting**
- * (`alerts.usagePercent`, 85 by default): the entry reads it once, at the folder the session
- * is in, with the same reader the alert hooks use (`alertsAt`), so the number lives in one
- * place (`src/workflow/schema.ts`).
+ * the gateway. A plan limit shows in every session: the login is one.
+ *
+ * **The warning share is a setting** (`alerts.usagePercent`, 85 by default): the entry reads it
+ * once, at the folder the session is in, with the same reader the alert hooks use (`alertsAt`),
+ * so the number lives in one place (`src/workflow/schema.ts`).
  *
  * **It also records the 5-hour window it read** (`recordUsageWindow`, D54): this command is
  * the only one Claude Code tells the number to, and the crew's opus guard reads it from the

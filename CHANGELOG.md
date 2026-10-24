@@ -53,6 +53,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
     shows in place. A crew session cannot propose one, and any other Claude Code session that
     runs `workflow propose` asks you first while `autoPush` is off or `openPr` is short of
     `ready`: it pushes and opens a pull request where the git and merge guards cannot see.
+- **The portal's OmniRoute update and rollback buttons work.** They ran the command in the portal's
+  own process, whose environment holds `CLAUDECODE` when a session started it, so the command
+  refused the person's own click as "inside a Claude Code session".
 - **The portal never waits on a slow command.** Its doctor pass and its project reads run off the
   server's loop, one CLI child serves every action, and its state folder follows
   `CLAUDE_CONFIG_DIR`.
