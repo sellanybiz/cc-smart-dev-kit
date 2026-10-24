@@ -1969,6 +1969,93 @@ describe("crew watch", () => {
     expect(world.out.join("\n")).toContain("crew resume");
   });
 
+  test.each(["stopped", "done", "failed"])(
+    "does not remind about old %s work after a continuation under another lead",
+    async (state) => {
+      const world = await leadWorld();
+      const original = await addCrew(world, "working");
+      git(world.repo, "worktree", "add", "-b", original.branch, original.worktree);
+      writeFileSync(join(original.worktree, "unmerged.txt"), "unmerged work\n");
+      git(original.worktree, "add", ".");
+      git(original.worktree, "commit", "-m", "unmerged work");
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        original.id,
+        { state },
+        T0 - 2 * 86_400_000,
+      );
+      await addCrew(world, "working", {
+        id: "continued-1a2b3c",
+        branch: "crew/continued",
+        name: "C my-app B6b continued",
+        leadSessionId: OTHER_SESSION,
+        continues: original.id,
+      });
+      const pass = await watchPass(
+        { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {}, noted: true },
+        world.ctx({}, { FAKE_AGENTS_JSON: "[]" }),
+        {
+          leadSessionId: LEAD_SESSION,
+          mergeInto: world.repo,
+          repo: world.repo,
+          resolved: resolveWorkflow(world.paths, null),
+        },
+      );
+      expect(world.out).toEqual([]);
+      expect(pass.state.stoppedRemindedAt?.[original.id]).toBeUndefined();
+      expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe(state);
+    },
+  );
+
+  test("a throttled stopped reminder skips its synchronous merge-tree check", async () => {
+    const world = await leadWorld();
+    const stopped = await addCrew(world, "working");
+    git(world.repo, "worktree", "add", "-b", stopped.branch, stopped.worktree);
+    writeFileSync(join(stopped.worktree, "unmerged.txt"), "unmerged work\n");
+    git(stopped.worktree, "add", ".");
+    git(stopped.worktree, "commit", "-m", "unmerged work");
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      stopped.id,
+      { state: "stopped" },
+      T0 - 2 * 86_400_000,
+    );
+    const realGit = Bun.which("git");
+    if (realGit === null) throw new Error("test requires git");
+    const log = join(world.bin, "merge-tree.log");
+    writeFileSync(log, "");
+    const fakeGit = join(world.bin, "git");
+    writeFileSync(
+      fakeGit,
+      `#!/bin/sh\nif [ "$1" = "merge-tree" ]; then printf 'replay\\n' >> "$MERGE_LOG"; fi\nexec "$REAL_GIT" "$@"\n`,
+    );
+    chmodSync(fakeGit, 0o755);
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: "[]", REAL_GIT: realGit, MERGE_LOG: log });
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const state: WatchState = {
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+      noted: true,
+      parkedAt: T0,
+      stoppedRemindedAt: { [stopped.id]: T0 - 60_000 },
+    };
+    const throttled = await watchPass(state, ctx, scope);
+    // The ordinary merge detection still runs once; no second replay for the hidden reminder.
+    expect(readFileSync(log, "utf8")).toBe("replay\n");
+    expect(world.out).toEqual([]);
+    writeFileSync(log, "");
+    await watchPass(throttled.state, { ...ctx, now: () => T0 + 86_400_000 }, scope);
+    expect(readFileSync(log, "utf8")).toBe("replay\nreplay\n");
+    expect(world.out.join("\n")).toContain("crew resume");
+  });
+
   test("D60: the person's own switch, turned off mid-run, starts nothing", async () => {
     // `readCaller` refuses the same way for a file it cannot use and for the switch the person
     // owns (`crew.enabled` off; a session in bypass mode). Neither is a reason to start a crew

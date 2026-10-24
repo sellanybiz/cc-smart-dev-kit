@@ -1551,7 +1551,8 @@ async function removeFinishedSession(
     action.portal,
     ["sessions", "--finished", "--remove", "--yes", "--id", session.id],
     {
-      cwd: session.folder,
+      // Machine-wide removal must still work after the session's worktree is gone.
+      cwd: action.portal.paths.home,
       onLine: (line) => action.publish?.("action", { action: "sessions.rm", line }),
     },
   );

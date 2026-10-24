@@ -24,7 +24,7 @@ import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
 import { processIsGone } from "../jobs/windows";
-import { processStartTime } from "../setup/lock";
+import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import {
@@ -194,6 +194,7 @@ export interface ScanOptions {
     processStartTime?: typeof processStartTime;
     processIsGone?: typeof processIsGone;
     platform?: NodeJS.Platform;
+    pidNamespace?: string | null;
   };
 }
 
@@ -421,6 +422,7 @@ interface MachineLook {
   processStartTime: typeof processStartTime;
   processIsGone: typeof processIsGone;
   platform: NodeJS.Platform;
+  pidNamespace: string | null;
   /** The ref commits are judged against: `origin/<base>`, or `against.ref`. */
   ref: string;
   /** The replay of a branch onto the base: git's own answer, and the git version it needs. */
@@ -433,12 +435,17 @@ interface MachineLook {
  * asked last. The scan uses this for each worktree, and the removal uses it again on the
  * folder as it is now (`removeWorktree`).
  */
+const INITIAL_PID_NAMESPACE = `pid:[${0xeffffffc}]`;
+
 function staleClaudeLock(listed: ListedWorktree, look: MachineLook): boolean {
   if (!listed.locked || listed.lockReason === undefined) return false;
   const match = /^claude session .+ \(pid (\d+) start (\d+)\)$/.exec(listed.lockReason);
   // The measured Linux format stores /proc ticks without our reader's `proc:` prefix.
   // Other formats and platforms have not been proved, so their locks stay.
-  if (match === null || look.platform !== "linux") return false;
+  // PID numbers from a parent namespace are invisible inside a sandbox: ESRCH there is no
+  // proof. Linux's PID_NS_INIT_INO is fixed in include/uapi/linux/nsfs.h (0xEFFFFFFC).
+  if (match === null || look.platform !== "linux" || look.pidNamespace !== INITIAL_PID_NAMESPACE)
+    return false;
   const pid = Number(match[1]);
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   if (look.processIsGone(pid)) return true;
@@ -512,6 +519,7 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
   processStartTime: typeof processStartTime;
   processIsGone: typeof processIsGone;
   platform: NodeJS.Platform;
+  pidNamespace: string | null;
 } {
   return {
     containers: options.facts?.containers ?? dockerMounts(),
@@ -521,6 +529,8 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
     processStartTime: options.facts?.processStartTime ?? processStartTime,
     processIsGone: options.facts?.processIsGone ?? processIsGone,
     platform: options.facts?.platform ?? process.platform,
+    pidNamespace:
+      options.facts?.pidNamespace === undefined ? ownPidNamespace() : options.facts.pidNamespace,
   };
 }
 

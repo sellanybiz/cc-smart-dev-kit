@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { createCrew, crewFile, leadFile, type NewCrew, writeLead } from "../crew/store";
@@ -293,8 +293,11 @@ describe("finished session reader and command", () => {
     w.rows.push(agent({ id: "bbbbbbbb", sessionId: "second", name: "Second", state: "stopped" }));
     w.terminal(w.rows[1]);
     let asks = 0;
-    w.deps.confirm = () => {
+    w.deps.confirm = (question) => {
       asks++;
+      expect(question).toBe(
+        "Remove these 2 finished sessions with claude rm? A registered or locked worktree must be cleared first.",
+      );
       expect(w.out.join("\n")).toContain("Second — /work/my-app — 1d 2h ago");
       return true;
     };
@@ -319,7 +322,38 @@ describe("finished session reader and command", () => {
     const bad = world();
     bad.deps.runClaude = () => 7;
     expect(await bad.run({ remove: true, yes: true })).toBe(1);
-    expect(bad.out.join("\n")).toContain("Could not remove Old session (exit 7)");
+    expect(bad.out.join("\n")).toContain("Could not remove Old session (aaaaaaaa, exit 7)");
+  });
+
+  test("a failed claude rm prints its exact error and safe next step, then attempts later sessions", async () => {
+    const w = world();
+    w.rows.push(agent({ id: "bbbbbbbb", sessionId: "second", name: "Second" }));
+    w.terminal(w.rows[1]);
+    const binary = join(w.home, "fake-claude");
+    const log = join(w.home, "removals.log");
+    writeFileSync(
+      binary,
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");
+if (process.argv[3] === "aaaaaaaa") {
+  console.error("worktree is still registered and locked");
+  process.exit(7);
+}
+`,
+    );
+    chmodSync(binary, 0o755);
+    delete w.deps.runClaude;
+    w.deps.which = (name) => (name === "claude" ? binary : null);
+    expect(await w.run({ remove: true, yes: true })).toBe(1);
+    expect(readFileSync(log, "utf8")).toBe("rm aaaaaaaa\nrm bbbbbbbb\n");
+    expect(w.out).toContain(
+      "✗ Could not remove Old session (aaaaaaaa, exit 7): worktree is still registered and locked",
+    );
+    expect(w.out.join("\n")).toContain(
+      "Check claude agents --json --all. Clear a registered or locked worktree with kit worktrees --clean from its repository's main checkout, or ExitWorktree, then retry kit sessions --finished --remove.",
+    );
+    expect(w.out).toContain("· Removed 1 finished session(s).");
   });
 
   test("rechecks immediately before every rm: resumed, waiting, renamed lead, and updated end time stay", async () => {

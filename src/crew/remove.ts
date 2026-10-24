@@ -49,9 +49,17 @@ import {
 } from "../worktrees/scan";
 import { finishParked, finishStrays } from "../worktrees/scan-parked";
 import { containersWhy, programsWhy } from "../worktrees/verdict";
+import { agentRows, rowOf } from "./agents";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
-import { archiveCrewDiscard, buildCrewDiscardFacts, type CrewDiscardFacts } from "./discard";
+import {
+  archiveCrewDiscard,
+  buildCrewDiscardFacts,
+  type CrewDiscardFacts,
+  completeCrewDiscard,
+  pendingDiscardWhy,
+  rollbackCrewDiscard,
+} from "./discard";
 import { lastLine } from "./display";
 import {
   actOn,
@@ -101,7 +109,20 @@ function discardBlocker(record: import("./store").CrewRecord, ctx: CrewContext):
     });
     const mount = mountKeptWhy(record.worktree, machine.mounts);
     if (mount !== null) return mount;
-    const programs = programsWithoutOwn(findOwnLeftovers(record, ctx));
+    const leftoverPrograms = programsWithoutOwn(findOwnLeftovers(record, ctx));
+    const row = agentRows(ctx);
+    const session = row === null ? null : rowOf(row, record);
+    const terminalSessionPid =
+      session !== null &&
+      session.pid !== null &&
+      session.state !== null &&
+      ["done", "failed", "stopped"].includes(session.state)
+        ? session.pid
+        : null;
+    const programs =
+      leftoverPrograms === "unknown" || terminalSessionPid === null
+        ? leftoverPrograms
+        : leftoverPrograms.filter((program) => program.pid !== terminalSessionPid);
     if (programs === "unknown")
       return "running programs could not be listed; nothing archived or removed";
     const names = programsInside(programs, record.worktree, undefined, ctx.pid);
@@ -131,6 +152,13 @@ export async function runCrewRm(
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   let { record } = found;
+  if (record.discardPending !== undefined) {
+    try {
+      record = await rollbackCrewDiscard(record, ctx);
+    } catch (error) {
+      return refuse(failure(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf(error)})`), ctx);
+    }
+  }
   const { repo } = record;
   const home = ctx.paths.home;
   const discard = options.discard === true;
@@ -160,6 +188,7 @@ export async function runCrewRm(
           : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
   if ("why" in lead) return refuse(failure(`crew rm: ${lead.why}`), ctx);
   let removalBase = { label: lead.label, ref: lead.sha };
+  const discardRollbackBase = removalBase;
   const mergeStep =
     lead.folder === null
       ? `merge ${record.branch} into ${lead.label}`
@@ -358,6 +387,14 @@ export async function runCrewRm(
   if (listed !== undefined && locked) {
     const unlock = runGit(repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS);
     if (!unlock.ok) {
+      if (record.discardPending !== undefined) {
+        try {
+          record = await rollbackCrewDiscard(record, ctx);
+          removalBase = discardRollbackBase;
+        } catch (error) {
+          ctx.error(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf(error)})`);
+        }
+      }
       return refuse(
         failure(
           `crew rm: ${shown} could not be unlocked: ${unlock.err}`,
@@ -373,7 +410,15 @@ export async function runCrewRm(
   // The lock is what keeps `worktrees --clean` and the background clean off the worktree. A
   // refusal after it was released must not leave the worktree unlocked: lock it again with the
   // same reason, and say so when that fails. The refusal still stands, and nothing is called gone.
-  const refuseKept = (refusal: Refusal): number => {
+  const refuseKept = async (refusal: Refusal): Promise<number> => {
+    if (record.discardPending !== undefined) {
+      try {
+        record = await rollbackCrewDiscard(record, ctx);
+        removalBase = discardRollbackBase;
+      } catch (error) {
+        ctx.error(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf(error)})`);
+      }
+    }
     if (releasedReason !== null && listed !== undefined) {
       const again = runGit(
         repo,
@@ -398,8 +443,24 @@ export async function runCrewRm(
   // an unreadable environment is never proof. One line says what went. A program that is
   // not the session's stays, and the verdict below keeps the worktree with its reason, as before.
   const leftovers = findOwnLeftovers(record, ctx);
+  // A terminal agent row may still expose its own lingering process. Exclude only that exact PID;
+  // every other program, including descendants, remains a blocker.
+  const rows = discard ? agentRows(ctx) : null;
+  const session = rows === null ? null : rowOf(rows, record);
+  const terminalSessionPid =
+    session !== null &&
+    session.pid !== null &&
+    session.state !== null &&
+    ["done", "failed", "stopped"].includes(session.state)
+      ? session.pid
+      : null;
+  const programs = programsWithoutOwn(leftovers);
+  const judgedPrograms =
+    discard && programs !== "unknown" && terminalSessionPid !== null
+      ? programs.filter((program) => program.pid !== terminalSessionPid)
+      : programs;
   // Judge every other blocker before stopping any owned program.
-  const facts = { ...ctx.scanFacts, programs: programsWithoutOwn(leftovers) };
+  const facts = { ...ctx.scanFacts, programs: judgedPrograms };
 
   // 5c. A removal that stopped halfway left a folder at `<path>-removing-<time>` (D62): git
   // lists it there and the record still names the old path, or git lists it no more and half of
@@ -408,13 +469,19 @@ export async function runCrewRm(
   // to say removed, and nothing would come back for the folder.
   const finished = options.skipParked
     ? { kept: [], removed: [] }
-    : await finishParkedWorktrees(repo, ctx, removalBase, (line) => ctx.print(line), facts);
+    : await finishParkedWorktrees(
+        repo,
+        ctx,
+        discard ? null : { label: lead.label, ref: lead.sha },
+        (line) => ctx.print(line),
+        facts,
+      );
   const stuck = finished.kept.find((one) => {
     const original = parkedOriginal(one.path);
     return samePath(one.path, repo) || (original !== null && samePath(original, record.worktree));
   });
   if (stuck !== undefined) {
-    return refuseKept(
+    return await refuseKept(
       failure(
         `crew rm: ${relative(repo, stuck.path)} is kept: ${stuck.why}`,
         "Fix: clear that, then run crew rm again; it never forces",
@@ -435,18 +502,20 @@ export async function runCrewRm(
         idleLimit: 0,
       }).find((one) => one.state !== "main" && samePath(one.listed.path, record.worktree));
     } catch (error) {
-      return refuseKept(failure(`crew rm: ${reasonOf(error)}`));
+      return await refuseKept(failure(`crew rm: ${reasonOf(error)}`));
     }
     if (judged === undefined || judged.state === "main") {
       // git lists it and the scan does not: nothing may be called gone that is not.
-      return refuseKept(failure(`crew rm: ${shown} is listed by git but could not be judged`));
+      return await refuseKept(
+        failure(`crew rm: ${shown} is listed by git but could not be judged`),
+      );
     }
     if (judged.state === "gone") {
       pruneWorktrees(repo, ctx.env);
       ctx.print(`forgot ${shown} (its folder was already gone)`);
     } else {
       if (!judged.state.finished) {
-        return refuseKept(
+        return await refuseKept(
           failure(
             `crew rm: ${shown} is kept: ${judged.state.why}`,
             "Fix: clear that, then run crew rm again; it never forces",
@@ -467,7 +536,7 @@ export async function runCrewRm(
       });
       for (const said of removal.said) ctx.print(said);
       if (removal.status !== "removed") {
-        return refuseKept(
+        return await refuseKept(
           failure(
             `crew rm: ${shown} was not removed`,
             "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces",
@@ -479,12 +548,11 @@ export async function runCrewRm(
   // A folder git does not list is not a worktree, and is not ours to delete: nothing below may
   // call the worktree gone while it is still there (`claude rm` would refuse it too).
   if (existsSync(record.worktree)) {
-    return refuse(
+    return await refuseKept(
       failure(
         `crew rm: ${shown} is still there, and git does not list it as a worktree`,
         "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know",
       ),
-      ctx,
     );
   }
   // The branch outlives a worktree that was gone or forgotten; it goes by the same rule.
@@ -498,6 +566,8 @@ export async function runCrewRm(
   if (branchLeft()) {
     ctx.print(deleteBranchOnRef(repo, removalBase.ref, removalBase.label, record.branch, ctx.env));
   }
+  if (discard && record.discardPending !== undefined && !branchLeft())
+    record = await completeCrewDiscard(record, ctx);
 
   // 8. Last, `claude rm`: it refuses a worktree that is still there.
   if (record.shortId !== null) {
@@ -538,6 +608,7 @@ export async function runCrewRm(
         : `removed session ${record.shortId}`,
     );
   }
+  if (discard) record = await completeCrewDiscard(record, ctx);
   const state = discard ? "discarded" : "removed";
   const stored = await markState(
     record,

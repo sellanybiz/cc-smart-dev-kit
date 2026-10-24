@@ -67,7 +67,8 @@ background sessions from the sessions command's reader. GET requests never persi
 A partial or unreadable agent view cannot prove absence. `crew.rm` requires explicit confirmation;
 discard also needs the exact shared content token and a second discard confirmation, then runs
 `crew rm --discard --yes --discard-token` in the record's repository. `sessions.rm` confirms and
-revalidates one id, then runs targeted `sessions --finished --remove --yes --id` in its folder.
+revalidates one id, then runs targeted `sessions --finished --remove --yes --id` from the existing
+home folder; a session folder already removed does not prevent removing its agent entry.
 Both paths use asynchronous CLI children and return their lines in place. The wire mirror carries
 these fields, but the current adapters and views do not render them: a separate UI phase must add
 the cards, shared-word dialogs, errors and results before claiming visible cleanup controls.

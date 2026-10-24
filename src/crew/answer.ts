@@ -31,6 +31,7 @@ import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
 import { callClaude, findClaude, sessionFlags } from "./claude";
 import type { CrewContext } from "./context";
+import { pendingDiscardWhy } from "./discard";
 import {
   answerCrewQuestion,
   type CrewRecord,
@@ -116,6 +117,11 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 1;
   }
   const { record } = found;
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null) {
+    ctx.error(`crew answer: ${pending}`);
+    return 1;
+  }
   const index = openQuestionIndex(record);
   if (index === null) {
     // A question left behind at the end of the phase needs no answer: the crew session is
@@ -204,6 +210,8 @@ export type ResumePlace = { folder: string; ok: true } | { ok: false; why: strin
  * to resume in.
  */
 export function resumePlace(record: CrewRecord): ResumePlace {
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null) return { ok: false, why: pending };
   if (!existsSync(record.worktree)) {
     return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
   }

@@ -4,22 +4,123 @@ import {
   closeSync,
   copyFileSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   readSync,
+  renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runGit } from "../hooks/git";
 import { localFiles, safeIgnoredEntry } from "../hooks/local-files";
 import { gitEnv } from "../project/git-env";
 import type { CrewContext } from "./context";
 import { GIT_TIMEOUT_MS, leadRef } from "./end";
-import { type CrewRecord, listCrew, updateCrew } from "./store";
+import { type CrewRecord, crewFilesDir, listCrew, readCrew, updateCrew } from "./store";
+
+/** Resume and continuation must not run on a half-installed discard snapshot. */
+export function pendingDiscardWhy(record: CrewRecord): string | null {
+  return record.discardPending === undefined
+    ? null
+    : `discard recovery is pending; retry crew rm ${record.id} --discard --yes before resuming or continuing`;
+}
+
+/** Flat and per-record; a rolled-back attempt never blocks a later discard. */
+export function archiveRefOf(record: CrewRecord): string {
+  const attempts = [
+    ...(record.archiveHistory ?? []),
+    ...(record.archive === undefined ? [] : [record.archive]),
+  ];
+  let ref = `refs/crew-discarded/${record.id}`;
+  let attempt = 1;
+  while (attempts.some((one) => one.ref === ref))
+    ref = `refs/crew-discarded/${record.id}-${++attempt}`;
+  return ref;
+}
+
+/** Restore a pending discard's exact original branch and index, retaining only a recoverable archive ref. */
+export async function rollbackCrewDiscard(
+  record: CrewRecord,
+  ctx: CrewContext,
+): Promise<CrewRecord> {
+  const pending = record.discardPending;
+  const archive = record.archive;
+  if (pending === undefined || archive === undefined) return record;
+  const branch = checkedGit(
+    record.repo,
+    ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`],
+    ctx,
+  );
+  if (branch === pending.archivedHead)
+    checkedGit(
+      record.repo,
+      ["update-ref", `refs/heads/${record.branch}`, pending.head, pending.archivedHead],
+      ctx,
+    );
+  else if (branch !== pending.head)
+    throw new Error("the crew branch changed after discard was prepared");
+  const currentIndex = readFileSync(pending.indexPath);
+  const originalIndex = readFileSync(pending.indexBackup);
+  const preparedIndex = readFileSync(pending.indexArchived);
+  if (!currentIndex.equals(originalIndex)) {
+    if (!currentIndex.equals(preparedIndex))
+      throw new Error("the crew index changed after discard was prepared");
+    const lock = `${pending.indexPath}.lock`;
+    const fd = openSync(lock, "wx", 0o600);
+    try {
+      writeFileSync(fd, originalIndex);
+      closeSync(fd);
+      renameSync(lock, pending.indexPath);
+    } catch (error) {
+      try {
+        closeSync(fd);
+      } catch {}
+      try {
+        rmSync(lock, { force: true });
+      } catch {}
+      throw error;
+    }
+  }
+  const updated = await updateCrew(
+    ctx.paths.stateDir,
+    record.repo,
+    record.id,
+    {
+      archive: undefined,
+      archiveHistory: [...(record.archiveHistory ?? []), archive],
+      discardPending: undefined,
+    },
+    ctx.now(),
+  );
+  rmSync(pending.indexBackup, { force: true });
+  rmSync(pending.indexArchived, { force: true });
+  return updated;
+}
+
+/** Removal completed; keep the active archive and release the resume/continue guard. */
+export async function completeCrewDiscard(
+  record: CrewRecord,
+  ctx: CrewContext,
+): Promise<CrewRecord> {
+  const pending = record.discardPending;
+  if (pending === undefined) return record;
+  const updated = await updateCrew(
+    ctx.paths.stateDir,
+    record.repo,
+    record.id,
+    { discardPending: undefined },
+    ctx.now(),
+  );
+  rmSync(pending.indexBackup, { force: true });
+  rmSync(pending.indexArchived, { force: true });
+  return updated;
+}
 
 /** Both cleaners use this expiry. Proof refs have no expiry: they keep a once-proved merge alive. */
 export const CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60_000;
@@ -112,18 +213,8 @@ export function buildCrewDiscardFacts(record: CrewRecord, ctx: CrewContext): Cre
     ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`],
     ctx,
   );
-  if (
-    record.archive === undefined &&
-    runGit(
-      record.repo,
-      ["show-ref", "--verify", "--quiet", `refs/crew-discarded/${record.branch}`],
-      ctx.env,
-      GIT_TIMEOUT_MS,
-    ).ok
-  )
-    throw new Error(
-      `an immutable discard archive already exists for ${record.branch}; recover it first, nothing removed`,
-    );
+  if (record.discardPending !== undefined)
+    throw new Error(pendingDiscardWhy(record) ?? "discard recovery is pending");
   const symbolic = checkedGit(record.worktree, ["symbolic-ref", "HEAD"], ctx);
   if (symbolic !== `refs/heads/${record.branch}`)
     throw new Error("the worktree is not on its recorded crew branch");
@@ -275,7 +366,7 @@ export function buildCrewDiscardFacts(record: CrewRecord, ctx: CrewContext): Cre
         .filter(Boolean);
     }
   }
-  const archiveRef = `refs/crew-discarded/${record.branch}`;
+  const archiveRef = archiveRefOf(record);
   const lines = [
     `Discard ${record.name}?`,
     `${count ?? "unknown"} unmerged commit${count === 1 ? "" : "s"}${subjects.length === 0 ? "" : ":"}`,
@@ -372,17 +463,80 @@ export async function archiveCrewDiscard(
       );
     checkedGit(record.repo, ["update-ref", facts.archiveRef, commit, ""], ctx);
     const archive = { ref: facts.archiveRef, head: commit, at: new Date(ctx.now()).toISOString() };
-    // Persist recovery BEFORE moving the branch/index. A partial failure leaves every file and ref.
-    const saved = await updateCrew(
-      ctx.paths.stateDir,
-      record.repo,
-      record.id,
-      { archive },
-      ctx.now(),
+    const indexPath = checkedGit(
+      record.worktree,
+      ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+      ctx,
     );
-    checkedGit(record.repo, ["update-ref", `refs/heads/${record.branch}`, commit, facts.head], ctx);
-    checkedGit(record.worktree, ["read-tree", commit], ctx);
-    return saved;
+    const indexBackup = join(
+      crewFilesDir(ctx.paths.stateDir, record.repo, record.id),
+      `discard-index-${commit}.bak`,
+    );
+    const indexArchived = join(
+      crewFilesDir(ctx.paths.stateDir, record.repo, record.id),
+      `discard-index-${commit}.new`,
+    );
+    mkdirSync(dirname(indexBackup), { recursive: true, mode: 0o700 });
+    copyFileSync(sourceIndex, indexBackup);
+    copyFileSync(index, indexArchived);
+    const pending = {
+      head: facts.head,
+      archivedHead: commit,
+      indexPath,
+      indexBackup,
+      indexArchived,
+    };
+    try {
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { archive, discardPending: pending },
+        ctx.now(),
+      );
+    } catch (error) {
+      checkedGit(record.repo, ["update-ref", "-d", facts.archiveRef, commit], ctx);
+      rmSync(indexBackup, { force: true });
+      rmSync(indexArchived, { force: true });
+      throw error;
+    }
+    try {
+      checkedGit(
+        record.repo,
+        ["update-ref", `refs/heads/${record.branch}`, commit, facts.head],
+        ctx,
+      );
+      const lock = `${indexPath}.lock`;
+      const fd = openSync(lock, "wx", 0o600);
+      try {
+        if (!readFileSync(indexPath).equals(readFileSync(indexBackup)))
+          throw new Error("the index changed during discard");
+        writeFileSync(fd, readFileSync(indexArchived));
+        closeSync(fd);
+        renameSync(lock, indexPath);
+      } catch (error) {
+        try {
+          closeSync(fd);
+        } catch {}
+        try {
+          rmSync(lock, { force: true });
+        } catch {}
+        throw error;
+      }
+      return readCrew(ctx.paths.stateDir, record.repo, record.id) ?? record;
+    } catch (error) {
+      try {
+        const current = readCrew(ctx.paths.stateDir, record.repo, record.id);
+        if (current?.discardPending === undefined)
+          throw new Error("discard recovery record is missing");
+        await rollbackCrewDiscard(current, ctx);
+      } catch (rollback) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; ${pendingDiscardWhy({ ...record, discardPending: pending })}; rollback failed: ${rollback instanceof Error ? rollback.message : String(rollback)}`,
+        );
+      }
+      throw error;
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -394,34 +548,41 @@ export async function pruneCrewDiscarded(repo: string, ctx: CrewContext): Promis
   if (listed.broken.length > 0) return [];
   const lines: string[] = [];
   for (const record of listed.records) {
-    const archive = record.archive;
-    if (record.state !== "discarded" || archive === undefined || archive.prunedAt !== undefined)
-      continue;
-    const age = ctx.now() - Date.parse(archive.at);
-    if (
-      !Number.isFinite(age) ||
-      age <= CREW_DISCARD_RETENTION_MS ||
-      archive.ref !== `refs/crew-discarded/${record.branch}`
-    )
-      continue;
-    const removed = runGit(
-      repo,
-      ["update-ref", "-d", archive.ref, archive.head],
-      ctx.env,
-      GIT_TIMEOUT_MS,
-    );
-    if (!removed.ok) {
-      ctx.error(`crew discard: could not prune ${archive.ref}: ${removed.err}`);
-      continue;
+    const archives = [
+      ...(record.archiveHistory ?? []),
+      ...(record.archive === undefined ? [] : [record.archive]),
+    ];
+    for (const archive of archives) {
+      if (record.archive?.ref === archive.ref && record.state !== "discarded") continue;
+      if (archive.prunedAt !== undefined) continue;
+      const age = ctx.now() - Date.parse(archive.at);
+      if (!Number.isFinite(age) || age <= CREW_DISCARD_RETENTION_MS) continue;
+      const removed = runGit(
+        repo,
+        ["update-ref", "-d", archive.ref, archive.head],
+        ctx.env,
+        GIT_TIMEOUT_MS,
+      );
+      if (!removed.ok) {
+        ctx.error(`crew discard: could not prune ${archive.ref}: ${removed.err}`);
+        continue;
+      }
+      const history = (record.archiveHistory ?? []).map((one) =>
+        one.ref === archive.ref ? { ...one, prunedAt: new Date(ctx.now()).toISOString() } : one,
+      );
+      await updateCrew(
+        ctx.paths.stateDir,
+        repo,
+        record.id,
+        {
+          ...(record.archive?.ref === archive.ref
+            ? { archive: { ...archive, prunedAt: new Date(ctx.now()).toISOString() } }
+            : { archiveHistory: history }),
+        },
+        ctx.now(),
+      );
+      lines.push(`pruned ${archive.ref} (discarded more than 30 days ago)`);
     }
-    await updateCrew(
-      ctx.paths.stateDir,
-      repo,
-      record.id,
-      { archive: { ...archive, prunedAt: new Date(ctx.now()).toISOString() } },
-      ctx.now(),
-    );
-    lines.push(`pruned ${archive.ref} (discarded more than 30 days ago)`);
   }
   return lines;
 }

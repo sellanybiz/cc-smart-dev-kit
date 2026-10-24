@@ -241,7 +241,7 @@ describe("a crew action runs the CLI's own command in a child", () => {
   });
 });
 
-function sessionCandidate(w: ReturnType<typeof world>, state = "done") {
+function sessionCandidate(w: ReturnType<typeof world>, state = "done", cwd = w.repoB) {
   const folder = tempDir("session-agent");
   const binary = join(folder, "claude");
   const now = w.action.portal.now();
@@ -251,7 +251,7 @@ function sessionCandidate(w: ReturnType<typeof world>, state = "done") {
       id: "abcd1234",
       sessionId: "finished-session",
       name: "background task",
-      cwd: w.repoB,
+      cwd,
       kind: "background",
       state,
     },
@@ -273,9 +273,11 @@ function sessionCandidate(w: ReturnType<typeof world>, state = "done") {
 }
 
 describe("finished session removal", () => {
-  test("asks first, revalidates shared eligibility, and runs the targeted CLI in the session folder", async () => {
+  test("asks first, revalidates shared eligibility, and runs the targeted CLI from home when the session folder is gone", async () => {
     const w = world();
-    sessionCandidate(w);
+    const folder = join(w.repoB, ".claude", "worktrees", "removed-session");
+    expect(existsSync(folder)).toBe(false);
+    sessionCandidate(w, "done", folder);
     expect((await runAction("sessions.rm", { id: "abcd1234" }, w.action)).ok).toBe(false);
     expect(runsOf(w.log)).toEqual([]);
     const removed = await runAction("sessions.rm", { id: "abcd1234", confirm: true }, w.action);
@@ -285,7 +287,7 @@ describe("finished session removal", () => {
         args: ["sessions", "--finished", "--remove", "--yes", "--id", "abcd1234"],
         config: w.paths.claudeConfigDir,
         crew: null,
-        cwd: w.repoB,
+        cwd: w.home,
       },
     ]);
   });

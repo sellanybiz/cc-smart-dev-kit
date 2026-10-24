@@ -16,13 +16,28 @@ export interface StoppedCrewNeed {
   line: string;
 }
 
+/** One active successor owns this phase; a failed or removed successor releases it. */
+export function activeContinuationOf(
+  record: CrewRecord,
+  records: readonly CrewRecord[],
+): CrewRecord | undefined {
+  return records.find(
+    (one) => one.continues === record.id && !["failed", "removed", "discarded"].includes(one.state),
+  );
+}
+
 /** The same old, unmerged stopped-session item for the watch and the portal. Events may be in either order. */
 export function stoppedCrewNeed(
   record: CrewRecord,
   events: readonly CrewEvent[],
   ctx: CrewContext,
+  records: readonly CrewRecord[] = [],
 ): StoppedCrewNeed | null {
-  if (!["stopped", "done", "failed"].includes(record.state)) return null;
+  if (
+    !["stopped", "done", "failed"].includes(record.state) ||
+    activeContinuationOf(record, records) !== undefined
+  )
+    return null;
   const transitions = events
     .filter(
       (event) => event.crew === record.id && ["state", "created", "report"].includes(event.type),

@@ -206,7 +206,8 @@ it would open and opens nothing.
 --finished lists this machine's background sessions done or stopped for more than one day,
 with their name, folder and age. Crew sessions and leads stay out, even when renamed.
 Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
-Claude rm can also remove each session's worktree; its own checks protect unmerged work.
+A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
+A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
 --id limits removal to that exact eligible session; repeat it to name several.
 Use --finished separately from --open and --dry-run.`;
 

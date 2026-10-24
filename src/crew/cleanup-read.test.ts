@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { boardWorld, NOW } from "../testing/board-world";
 import { git } from "../testing/temp";
 import { crewCleanupAnswer } from "./cleanup-read";
-import { crewStoreDir } from "./store";
+import { crewStoreDir, readCrew, updateCrew } from "./store";
 
 test("cleanup JSON uses the shared stopped need and never removes unmerged work", async () => {
   const w = await boardWorld();
@@ -37,6 +37,26 @@ test("cleanup JSON uses the shared stopped need and never removes unmerged work"
     git(w.repo, "show-ref", "--verify", `refs/heads/${record.branch}`).trim().split(" ")[1],
   ).toBe(`refs/heads/${record.branch}`);
 });
+
+test.each(["stopped", "done", "failed"])(
+  "cleanup Needs hides old %s work after a continuation, even under another lead",
+  async (state) => {
+    const w = await boardWorld();
+    const record = await w.addCrew({ state, atMs: NOW - 2 * 86_400_000 });
+    writeFileSync(join(record.worktree, "work.txt"), "unmerged work\n");
+    git(record.worktree, "add", ".");
+    git(record.worktree, "commit", "-m", "unmerged work");
+    expect(crewCleanupAnswer(w.ctx()).stopped.map((one) => one.crew.id)).toEqual([record.id]);
+    const next = await w.addCrew({
+      slug: "continued",
+      state: "working",
+      leadSessionId: "another-lead",
+    });
+    await updateCrew(w.paths.stateDir, w.repo, next.id, { continues: record.id }, NOW);
+    expect(crewCleanupAnswer(w.ctx())).toEqual({ stopped: [], error: null });
+    expect(readCrew(w.paths.stateDir, w.repo, record.id)?.state).toBe(state);
+  },
+);
 
 test("an unsafe ignored file disables only its discard preview, leaving the shared stopped reminder", async () => {
   const w = await boardWorld();

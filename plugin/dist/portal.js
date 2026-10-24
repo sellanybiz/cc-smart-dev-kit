@@ -21555,6 +21555,12 @@ var waitingForSchema = discriminatedUnion("kind", [
     since: text
   })
 ]);
+var discardArchiveSchema = looseObject({
+  ref: text,
+  head: sha,
+  at: text,
+  prunedAt: text.optional()
+});
 var crewFields = object({
   version: version2,
   id: string2().regex(FILE_ID, "a plain file name"),
@@ -21595,7 +21601,15 @@ var crewFields = object({
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
   mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
-  archive: looseObject({ ref: text, head: sha, at: text, prunedAt: text.optional() }).optional(),
+  archive: discardArchiveSchema.optional(),
+  archiveHistory: array(discardArchiveSchema).optional(),
+  discardPending: looseObject({
+    head: sha,
+    archivedHead: sha,
+    indexPath: text,
+    indexBackup: text,
+    indexArchived: text
+  }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -37539,7 +37553,7 @@ async function removeFinishedSession(action, body) {
       ]
     };
   const run = await runCliChild(action.portal, ["sessions", "--finished", "--remove", "--yes", "--id", session.id], {
-    cwd: session.folder,
+    cwd: action.portal.paths.home,
     onLine: (line) => action.publish?.("action", { action: "sessions.rm", line })
   });
   forgetWorktrees(action.portal);

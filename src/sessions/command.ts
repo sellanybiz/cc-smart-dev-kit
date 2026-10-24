@@ -423,7 +423,7 @@ function runFinishedSessions(
       deps.confirm ?? ((question: string) => terminalPrompts(term)?.confirm(question) ?? false);
     if (
       !confirm(
-        `Remove these ${sessions.length} finished sessions and their worktrees with claude rm (its own checks protect unmerged work)?`,
+        `Remove these ${sessions.length} finished sessions with claude rm? A registered or locked worktree must be cleared first.`,
       )
     ) {
       out.line(
@@ -434,6 +434,7 @@ function runFinishedSessions(
     }
   }
   let removed = 0;
+  let failed = false;
   for (const row of sessions) {
     // The person may resume a session or give it a crew role while the question is open.
     // Re-read agent view, role records and the terminal timestamp immediately before each rm.
@@ -446,25 +447,39 @@ function runFinishedSessions(
       out.line("info", `Kept ${row.name}: it is no longer an eligible finished session.`);
       continue;
     }
-    const code =
-      deps.runClaude?.(["rm", row.id]) ??
-      (() => {
-        const binary = findClaude(context);
-        if (binary === null) return 1;
-        const called = callClaude(context, binary, ["rm", row.id], cwd);
-        return called.ok && !called.run.timedOut ? (called.run.exitCode ?? 1) : 1;
-      })();
-    if (code !== 0) {
+    const result =
+      deps.runClaude === undefined
+        ? (() => {
+            const binary = findClaude(context);
+            if (binary === null) return { code: 1, detail: "claude is not on PATH" };
+            const called = callClaude(context, binary, ["rm", row.id], cwd);
+            if (!called.ok) return { code: 1, detail: called.why };
+            const output = [called.run.stderr.trim(), called.run.stdout.trim()]
+              .filter((line) => line !== "")
+              .join("\n");
+            return {
+              code: called.run.timedOut ? 1 : (called.run.exitCode ?? 1),
+              detail: [called.run.timedOut ? "claude rm timed out" : "", output]
+                .filter((line) => line !== "")
+                .join("\n"),
+            };
+          })()
+        : { code: deps.runClaude(["rm", row.id]), detail: "" };
+    if (result.code !== 0) {
       out.line(
         "fail",
-        `Could not remove ${row.name} (exit ${code}). Check claude agents --json --all before trying again.`,
+        `Could not remove ${row.name} (${row.id}, exit ${result.code})${result.detail === "" ? "." : `: ${result.detail}`}`,
+        {
+          fix: `Check claude agents --json --all. Clear a registered or locked worktree with ${deps.command} worktrees --clean from its repository's main checkout, or ExitWorktree, then retry ${deps.command} sessions --finished --remove.`,
+        },
       );
-      return 1;
+      failed = true;
+      continue;
     }
     removed++;
   }
   out.line("info", `Removed ${removed} finished session(s).`);
-  return 0;
+  return failed ? 1 : 0;
 }
 
 function finishedAge(ms: number): string {

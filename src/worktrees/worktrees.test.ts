@@ -879,6 +879,36 @@ describe("scanning and removing, against a real repo", () => {
     ).toThrow("origin/trunk is not known here");
   });
 
+  test.each([null, "pid:[12345]"])(
+    "a nested or unknown pid namespace %s never proves a host locker gone",
+    (pidNamespace) => {
+      const { main, worktree } = repo();
+      const reason = "claude session live-host (pid 424242 start 12345)";
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: [],
+          programs: [],
+          mounts: [],
+          sessions: [],
+          processIsGone: () => true,
+          processStartTime: () => "proc:different",
+          platform: "linux" as const,
+          pidNamespace,
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      expect(found?.state).toMatchObject({ finished: false });
+      if (found === undefined) throw new Error("missing test worktree");
+      expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
   test.each(["claude session unreadable identity", "a person's lock"])(
     "unprovable lock reason %s stays even if a PID probe would report gone",
     (reason) => {
@@ -896,6 +926,7 @@ describe("scanning and removing, against a real repo", () => {
           sessions: [],
           processIsGone: () => true,
           platform: "linux" as const,
+          pidNamespace: "pid:[4026531836]",
         },
       };
       const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
@@ -933,6 +964,7 @@ describe("scanning and removing, against a real repo", () => {
         sessions: [],
         processIsGone: () => true,
         platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
       },
     };
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
@@ -959,6 +991,7 @@ describe("scanning and removing, against a real repo", () => {
           sessions: [],
           processIsGone: () => true,
           platform: "linux" as const,
+          pidNamespace: "pid:[4026531836]",
         },
       };
       const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
@@ -997,6 +1030,7 @@ describe("scanning and removing, against a real repo", () => {
         processStartTime: () => null,
         processIsGone: () => false,
         platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
       },
     };
     const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
@@ -1042,6 +1076,7 @@ describe("scanning and removing, against a real repo", () => {
         processStartTime: () => null,
         processIsGone: () => false,
         platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
       },
     };
     expect(

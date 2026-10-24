@@ -22,7 +22,8 @@ session's and the lead's hooks (§ The crew session's and the lead's hooks).
 The watch reminds its lead once a day about stopped, done or failed unmerged work older than a
 day. The item's age starts at the latest transition into its current terminal state, not a later
 report or step. It names resume, continuation, and removal; continuation also accepts these
-terminal states while preserving the old outcome. No reminder discards or removes the work.
+terminal states while preserving the old outcome. An old record with an active continuation no
+longer gets the reminder or a Needs removal preview. No reminder discards or removes the work.
 
 `src/crew/lifecycle.ts` is the shared rule for lead absence: an explicitly ended lead, or a
 successfully observed unknown session for more than 24 hours. An unreadable agent view proves
@@ -46,7 +47,8 @@ the head, staged and disk changes, file modes and raw contents; the CLI rechecks
 and after archiving. A different staged version survives in the archive commit's parent. Ignored
 files must be regular UTF-8 text, at most 64 KiB each, 256 files and 1 MiB total; binary files,
 symlinks and unreadable files refuse, rather than disappear. The create-only ref
-`refs/crew-discarded/<branch>` holds the archive, and `crew list --discarded` prints its recovery
+`refs/crew-discarded/<crew-id>` (with an attempt suffix when needed) holds each archive, and
+`crew list --discarded` prints its recovery
 command and age. Manual and background cleans prune completed archives after the one shared
 30-day limit. A person's programs and containers still refuse; the watch never discards.
 

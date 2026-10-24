@@ -50,17 +50,26 @@ describe("crew list", () => {
       record.id,
       {
         archive: {
-          ref: "refs/crew-discarded/crew/B1-help",
+          ref: `refs/crew-discarded/${record.id}`,
           head: "a".repeat(40),
           at: new Date(NOW - 2 * 86_400_000).toISOString(),
         },
+        archiveHistory: [
+          {
+            ref: `refs/crew-discarded/${record.id}-2`,
+            head: "b".repeat(40),
+            at: new Date(NOW - 3 * 86_400_000).toISOString(),
+          },
+        ],
       },
       NOW,
     );
     expect(await runCrew(["list", "--discarded"], world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "C my-app B1 help — discarded 2 days ago — refs/crew-discarded/crew/B1-help",
-      "  recover: git branch crew/B1-help refs/crew-discarded/crew/B1-help",
+      `C my-app B1 help — discarded 3 days ago — refs/crew-discarded/${record.id}-2`,
+      `  recover: git branch ${record.branch} refs/crew-discarded/${record.id}-2`,
+      `C my-app B1 help — discarded 2 days ago — refs/crew-discarded/${record.id}`,
+      `  recover: git branch ${record.branch} refs/crew-discarded/${record.id}`,
     ]);
     await updateCrew(
       world.paths.stateDir,
@@ -68,11 +77,19 @@ describe("crew list", () => {
       record.id,
       {
         archive: {
-          ref: "refs/crew-discarded/crew/B1-help",
+          ref: `refs/crew-discarded/${record.id}`,
           head: "a".repeat(40),
           at: new Date(NOW - 2 * 86_400_000).toISOString(),
           prunedAt: new Date(NOW).toISOString(),
         },
+        archiveHistory: [
+          {
+            ref: `refs/crew-discarded/${record.id}-2`,
+            head: "b".repeat(40),
+            at: new Date(NOW - 3 * 86_400_000).toISOString(),
+            prunedAt: new Date(NOW).toISOString(),
+          },
+        ],
       },
       NOW,
     );

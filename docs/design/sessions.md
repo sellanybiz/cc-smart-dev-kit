@@ -40,13 +40,16 @@ names, unknown kinds, active states and damaged records keep a session out. `--r
 the list and asks once, or takes `--yes`; repeated `--id <short-id>` limits the selection to those
 exact eligible sessions. Each candidate is read again before `claude rm`; any requested ineligible
 id refuses the whole selection before removal. The portal action uses that same targeted CLI.
-That command can also remove a session's worktree, with Claude Code's own unmerged-work guard.
-Nothing runs this removal by itself.
+A still-registered or locked worktree refuses `claude rm`: its session uses `ExitWorktree`, or the
+project's finished-worktree clean removes it first. One refusal does not block later eligible rows;
+the final exit is nonzero if any failed. The portal child runs from the existing home folder, not
+from a possibly removed session folder. Nothing runs this removal by itself.
 
 ### Stale locks and local caches
 
 The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,
-a dead PID or a reused PID with a different `/proc` start time proves the locker gone; only
+a dead PID or a reused PID with a different `/proc` start time proves the locker gone only in the
+initial PID namespace. A nested or unreadable namespace cannot prove a host PID dead. Only
 then, and after the normal contents/program/container checks, can the clean unlock and remove
 it. A failed move or removal restores the same lock on the retained path and says when restoration
 fails. Other lock formats and platforms stay protected. A live lock whose work is on the base

@@ -673,14 +673,14 @@ export async function watchPass(
   const events = readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
   for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
-    const need = stoppedCrewNeed(record, events, ctx);
     const lastReminder = stoppedRemindedAt[record.id];
-    if (
-      need !== null &&
-      (lastReminder === undefined || ctx.now() - lastReminder >= STOPPED_REMINDER_MS)
-    ) {
-      say(need.line);
-      stoppedRemindedAt[record.id] = ctx.now();
+    // Check spacing before the shared need runs synchronous git merge proof.
+    if (lastReminder === undefined || ctx.now() - lastReminder >= STOPPED_REMINDER_MS) {
+      const need = stoppedCrewNeed(record, events, ctx, allRecords);
+      if (need !== null) {
+        say(need.line);
+        stoppedRemindedAt[record.id] = ctx.now();
+      }
     }
     const row = agents === null ? null : rowOf(agents, record);
     // Its session is in agent view and is neither stopped nor dead: it may still hold a process

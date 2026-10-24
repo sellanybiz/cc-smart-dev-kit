@@ -355,6 +355,14 @@ const waitingForSchema = z.discriminatedUnion("kind", [
 /** What a paused crew session waits for (`waitingFor` on its record). */
 export type WaitingFor = z.output<typeof waitingForSchema>;
 
+/** A retained discard attempt, including its expiry marker. */
+const discardArchiveSchema = z.looseObject({
+  ref: text,
+  head: sha,
+  at: text,
+  prunedAt: text.optional(),
+});
+
 /** The fields of a crew record. */
 const crewFields = z.object({
   /** The schema version it was written with. */
@@ -460,8 +468,20 @@ const crewFields = z.object({
   mergedWhileStopped: z.boolean().optional(),
   /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
   mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
-  /** Recovery is persisted before any removal; unfinished archives never expire. */
-  archive: z.looseObject({ ref: text, head: sha, at: text, prunedAt: text.optional() }).optional(),
+  /** Recovery is persisted before any removal; an unfinished active archive never expires. */
+  archive: discardArchiveSchema.optional(),
+  /** Failed attempts stay recoverable and expire independently after the normal retention. */
+  archiveHistory: z.array(discardArchiveSchema).optional(),
+  /** Durable rollback bytes stay until removal succeeds or the exact branch/index are restored. */
+  discardPending: z
+    .looseObject({
+      head: sha,
+      archivedHead: sha,
+      indexPath: text,
+      indexBackup: text,
+      indexArchived: text,
+    })
+    .optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,

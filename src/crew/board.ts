@@ -436,18 +436,19 @@ export async function runCrewList(
   if (isRefusal(read)) return refuse(read, ctx);
   for (const broken of read.broken) ctx.error(`crew list: ${broken.why}`);
   if (args.discarded) {
-    const archived = read.records.filter(
-      (record) =>
-        record.state === "discarded" &&
-        record.archive !== undefined &&
-        record.archive.prunedAt === undefined,
-    );
+    const archived = read.records.flatMap((record) => {
+      const attempts = [
+        ...(record.archiveHistory ?? []),
+        ...(record.archive === undefined ? [] : [record.archive]),
+      ];
+      return attempts
+        .filter((archive) => archive.prunedAt === undefined)
+        .map((archive) => ({ archive, record }));
+    });
     if (args.json) ctx.print(JSON.stringify(archived, null, 2));
     else {
       if (archived.length === 0) ctx.print("No discarded crew archives.");
-      for (const record of archived) {
-        const archive = record.archive;
-        if (archive === undefined) continue;
+      for (const { archive, record } of archived) {
         const days = Math.max(0, Math.floor((ctx.now() - Date.parse(archive.at)) / 86_400_000));
         ctx.print(
           `${record.name} — discarded ${days} day${days === 1 ? "" : "s"} ago — ${archive.ref}`,

@@ -36,7 +36,7 @@ export function crewCleanupAnswer(ctx: CrewContext): CrewCleanupAnswer {
         if (read.skipped !== 0) throw new Error("the crew events include an unreadable record");
         events.set(record.repo, read.events);
       }
-      const need = stoppedCrewNeed(record, events.get(record.repo) ?? [], ctx);
+      const need = stoppedCrewNeed(record, events.get(record.repo) ?? [], ctx, crew.records);
       if (need !== null) {
         let discard: StoppedCrewItem["discard"];
         try {
