@@ -435,9 +435,10 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   session that still has a process is not resumed — `--bg --resume` would start a copy beside it —
   and the line says it runs already. An agent view that cannot be read is a refusal, never read as
   dead — it could be either, and a copy is worse than a second try. The crew session is `working`
-  again. It is refused for one that is `removed` or `merged`, has no session yet, or has no
-  worktree or settings file any more (one line each). It does not check the caps: the person or
-  the lead asked for exactly this session.
+  again, **with the session the resume brought back** (§ The session a resume brings back). It
+  is refused for one that is `removed` or `merged`, has no session yet, or has no worktree or
+  settings file any more (one line each). It does not check the caps: the person or the lead
+  asked for exactly this session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
   crew session commits on its branch and never pushes (D24), so **only the branch the crew session
   was cut from decides** whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one
@@ -496,6 +497,34 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   its own stays — `worktrees --clean` and the background clean finish any, and the watch looks
   every five minutes (`PARKED_PASS_MS`): a folder that stays costs a scan of the whole repository.
 
+#### The session a resume brings back
+
+**Every crew resume is a copy with a new id** (WF1, 2.1.310). `claude --bg --resume <id>` on a
+session whose saved options differ from the flags it is given starts a copy, and says so on
+stderr — "background session `<old>` keeps its own saved options, so the flags you passed started
+a copy as `<new>`" — and every crew resume passes the record's own flags (`resumeArgs`: the
+settings and MCP files, the model, the effort, the permission mode), because the crew frame
+depends on them; a resume without them is not proven to keep the crew env. Seen live on
+2026-10-25: record `c7186986` was resumed by the lead at 21:07:28, Claude Code opened `d7a54fc8`
+in the same worktree, the record kept `c7186986`, and at 21:07:38 the watch read the old
+session's row as stopped and marked the record `stopped` — while the new session ran on, unseen.
+
+So **one home reads which session runs now** (`resumeSession`, `answer.ts`): the
+`backgrounded · <short id>` line on stdout (2.1.310 drops ` · <name>` when there is none), checked
+against the copy note on stderr (`parseCopyNote`, every note the binary prints). The same short
+id and no note is the record's own session, going on; any other id is read from agent view, as a
+start reads its own (`startedRow`, `claude.ts`). **The record takes the new `sessionId` and
+`shortId` in the same write that makes it `working`** — `crew answer`, `crew resume`, `crew
+resume --paused` and the watch alike — so it never names a session that is gone, and the line
+says it: `resumed C kit B6b portal-live as session d7a54fc8 (a copy of c7186986)`. The old session
+is a stopped row with no process, left to the cleanup that removes finished sessions.
+
+A resume that printed **no such line**, a note that names another id than the line, or a copy
+agent view cannot show is said with the reason, and the record keeps its state and its session —
+never `working` on a guess. Such a resume may have started a session nobody can name, so the
+watch **does not try it again by itself**: it says so once, and the lead's own `crew resume`
+brings it back (the hold goes when the record is no longer `paused`).
+
 ### The crew session's steps, its report, and the lead's watch
 
 The lead never waits on a crew session (D25). Everything a crew session says arrives by itself: **the
@@ -551,11 +580,12 @@ it with — `SendMessage {"to":"<name>","message":"<text>"}`, the tool's argumen
 quote or a line break in the answer is escaped and never changed — and records the answer, so the
 question is answered once. A **stopped** crew session (D35: the watch stops a blocked crew session that
 idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
-`claude --bg --resume <session id> "<text>"`, the form `claude --help` gives in 2.1.306 ("With
---resume <session-id>, continues that session in the background under the same ID"), run in the
-crew session's own worktree. **A crew session the answer reaches or resumes is `working` again, in the same
-hold that records the answer**: a record that kept saying `blocked` would let the watch stop a
-crew session that is busy. A stopped crew session that ended its phase (a `done`, `failed` or `handoff`
+`claude --bg --resume <session id> "<text>"`, run in the crew session's own worktree — which
+starts a copy with a new id (§ The session a resume brings back). **A crew session the answer
+reaches or resumes is `working` again, in the same hold that records the answer, with the session
+the resume brought back**: a record that kept saying `blocked` would let the watch stop a crew
+session that is busy, and one that kept the old id would read that session's stopped row as its
+own. A stopped crew session that ended its phase (a `done`, `failed` or `handoff`
 report) is not resumed by an answer, and a crew session the store does not know is never answered: the
 store, not the name, says what is a crew session.
 
@@ -654,6 +684,30 @@ show `-` (`docs/windows-setup.md` § The short version).
 turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
 `--timeout <seconds>` bounds the wait.
 
+**One acting watch per lead: the newest wins** (WF1). Seen live on 2026-10-25: 13 watches whose
+monitor had ended (parent pid 1), up to 30 hours old, up to 5 for one lead — each one starting,
+resuming and stopping crew sessions, each resume wave living in its own memory (five watches
+resumed five sessions at once), and each writing the same state file over the others. So:
+
+- **A lease per lead** in the crew store (`<store>/watch/<lead session id>.lease.json`) names
+  the watch that acts: its process, as the store's lock records a holder (`currentHolder`,
+  `holderIsGone`, `src/setup/lock.ts`: pid, start time, host, pid namespace), and a token of its
+  own. A watch takes it when it starts, whoever holds it — a monitor the lead restarts is its
+  intent — and before it reads the state, so it goes on from where the last one wrote. `--once`
+  follows the same rule. Two leads never share one.
+- **Before each pass**, again right before it starts queued crew sessions and before it resumes
+  one (each launches a Claude session), and before it writes its state, a watch checks it still
+  holds the lease (under the store's lock). A watch that lost it says one line — `crew watch: a
+  newer watch of this lead runs (pid <pid>); this one ends` — and ends with 0, before it acts. A
+  lease whose holder is gone (its pid dead or reused) is free, and the watch takes it back. So
+  only the lease holder writes `<store>/watch/<lead session id>.json`.
+- **A watch ends when nobody started or reads it**: when its parent pid changes (Claude Code ends
+  a monitor by ending its shell, and the watch is re-parented), and when a line to stdout found
+  nobody reading (EPIPE). Bun's `console.log` drops such a write without a word, so the CLI's
+  crew printer writes through `process.stdout.write` and keeps the failure its callback reports
+  (`stdoutPrinter`, `context.ts`). One exit path: the checks throw `WatchEnd`, and
+  `runCrewWatch` catches it once, says why, and ends with 0.
+
 #### Waiting out a limit
 
 A model limit ends a turn the retry watchdog did not outlast — the plan's usage limit, an
@@ -666,8 +720,16 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   `server_error` marks the record `paused` and takes `waitingFor` from the router's limit state,
   in this order: `slot` — the slot the crew session's model reaches has a current breaker record,
   with the time it opened; `claude-limit` — a current plan limit, the session's own model first,
-  else the freshest of a model whose family has a slot, with its reset time; `unknown` —
-  nothing the state file explains. One `state` event carries the line the watch shows
+  else the freshest of a model whose family has a slot, with its reset time, **but only when that
+  Claude model answers the session first** (`claudeLimitHolds`: a session on Claude itself, or a
+  slot whose chain in use, read from the gateway's config, starts with that model); `unknown` —
+  nothing the state file explains. On a slot whose chain starts with a backend, the Claude model
+  is only a fallback, and its limit holds nothing: the session waits for its slot (a `slot` wait
+  from now, resumed after the hold-off below, as a slot wait is once its breaker closed), and
+  neither the lead nor `crew list` names a reset date. Seen live on 2026-10-25: the worker slot
+  ran `omniroute:codex/gpt-6-luna → claude-sonnet-5-5`, one empty answer from Codex fell through
+  to Sonnet's weekly 429, and two crew sessions waited for Sonnet's reset days away while their
+  own model answered again within seconds. One `state` event carries the line the watch shows
   (`C kit B6b portal-live: paused — worker slot limited since 21:05; goes on by itself when it
   answers`), and `lastPause` records when the wait began and the hold-off it carries: 0 on a
   first pause, then 5, 10 and 20 minutes while pauses come within 15 minutes of each other.
@@ -676,7 +738,9 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   use is not one the record says rests) or the model's limit is current. A slot wait is over when
   the breaker record closed (the router recorded an answer — only an answer closes it) or the
   chain's first target changed; a Claude limit's when the reset time passed, plus
-  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record; an `unknown` wait's after
+  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record — a `claude-limit` wait an
+  older kit recorded on a slot whose chain starts elsewhere is judged as that slot's wait; an
+  `unknown` wait's after
   its hold-off, with no breaker or limit that would explain it now. One crew session goes first
   (the canary); the next no sooner than 30 s after it, and only once the router answered a
   request since — its health page's count grew, and the state file's closed breaker or dropped
@@ -685,7 +749,8 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   `SendMessage` line, because only a session holds that tool), `claude --bg --resume <id> "<text>"`
   **in its worktree, with the record's own `--settings` and `--strict-mcp-config --mcp-config`
   files** for one whose session has no process; the text names what changed and the phase. The
-  record is `working` with its wait cleared, in the same act. `crew resume --paused` is the
+  record is `working` with its wait cleared, in the same act, with the session the resume brought
+  back (§ The session a resume brings back). `crew resume --paused` is the
   person's way at once — after `/login` on another account — for every paused crew session of a
   lead: the same `resumeOne`, so a session whose process lives is woken with a message and one
   that has none is resumed, never copied.
