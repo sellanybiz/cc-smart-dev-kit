@@ -1,6 +1,6 @@
 // @bun
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync9 } from "fs";
+import { existsSync as existsSync10 } from "fs";
 import { join as join12 } from "path";
 
 // src/cli/paths.ts
@@ -183,7 +183,7 @@ function shellQuote(value) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8, rmSync, statSync as statSync5, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9, rmSync, statSync as statSync5, writeFileSync as writeFileSync4 } from "fs";
 import { tmpdir } from "os";
 import { basename as basename2, join as join10 } from "path";
 
@@ -7055,7 +7055,7 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync3 } from "fs";
 import { join as join9 } from "path";
 
 // src/gateway/limit-state.ts
@@ -7186,6 +7186,9 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -7948,6 +7951,7 @@ function crewIdOf(env) {
 var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/gateway/settings.ts
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -7973,6 +7977,75 @@ var RETIRED_GATEWAY_ENV_KEYS = [
 ];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
 var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
+var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readSettings(path) {
+  if (!existsSync7(path))
+    return {};
+  const text = readFileSync7(path, "utf8");
+  if (text.trim() === "")
+    return {};
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch {
+    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
+  }
+  if (!isJsonObject(parsed))
+    throw new Error(`${path} is not a JSON object; not touching it`);
+  const env = parsed.env;
+  if (env !== undefined && !isJsonObject(env))
+    throw new Error(`${path} has an "env" that is not an object`);
+  return parsed;
+}
+function maskKey(key) {
+  return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
+}
+function shownValue(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
+    return maskKey(text);
+  return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
+}
+function readGatewaySettings(settingsPath) {
+  const settings = readSettings(settingsPath);
+  const env = isJsonObject(settings.env) ? settings.env : {};
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
+  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  if (Object.hasOwn(settings, "apiKeyHelper"))
+    loginOverrides.push("apiKeyHelper");
+  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  const modelKeys = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides
+  };
+}
+function settingsReport(settingsPath) {
+  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
+  return {
+    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
+    loginOverrides,
+    subagentOverrides
+  };
+}
 
 // src/gateway/project-state.ts
 var PERSONAL_FILE = "settings.local.json";
@@ -8073,7 +8146,7 @@ var RECORD_TAIL_BYTES = 64 * 1024;
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject(value) {
+function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
@@ -8106,7 +8179,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject(entry))
+    if (isJsonObject2(entry))
       yield entry;
   }
 }
@@ -8117,7 +8190,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -8141,12 +8214,12 @@ function lastAssistantText(transcriptPath) {
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
       continue;
     const content = entry.message.content;
     if (!Array.isArray(content))
       continue;
-    return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+    return content.filter((block) => isJsonObject2(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
   }
   return null;
 }
@@ -8166,10 +8239,10 @@ function startedByPeer(transcriptPath) {
     } catch {
       continue;
     }
-    if (!isJsonObject(entry))
+    if (!isJsonObject2(entry))
       continue;
-    const attachment = isJsonObject(entry.attachment) ? entry.attachment : null;
-    const origin = isJsonObject(entry.origin) ? entry.origin : null;
+    const attachment = isJsonObject2(entry.attachment) ? entry.attachment : null;
+    const origin = isJsonObject2(entry.origin) ? entry.origin : null;
     if (attachment?.humanTurn === true)
       return false;
     if (origin !== null && origin.senderTaskId !== null && origin.senderTaskId !== undefined) {
@@ -8244,6 +8317,13 @@ function gatewayConfigOf(paths) {
     return null;
   }
 }
+function gatewayOnOf(paths) {
+  try {
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
+  } catch {
+    return false;
+  }
+}
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
   const url = raw === undefined || raw === "" ? null : raw;
@@ -8267,7 +8347,7 @@ var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in pr
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
@@ -8347,11 +8427,16 @@ function offerFor(config, slot, model, claim, profile) {
     targets
   };
 }
+function gatewayOnStep(ctx, first = "") {
+  if (!ctx.machineGatewayOn)
+    return `turn the gateway on${first} (${COMMAND} gateway on)`;
+  return `put this session on the gateway${first} (its project or its launch keeps it on Claude: run ${COMMAND} gateway project on in the project's folder, or start the session with ${COMMAND} launch --gateway)`;
+}
 function chainCommand(profile, words) {
   return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
 }
 function breakerOpening(input, ctx) {
-  if (!isJsonObject2(input) || input.error !== "rate_limit")
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   if (!ctx.gatewaySetUp || ctx.state === null)
     return null;
@@ -8368,7 +8453,7 @@ function breakerOpening(input, ctx) {
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
     return null;
-  if (!isJsonObject2(input) || input.error !== "rate_limit")
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   if (BREAKER_TEXT.test(text))
@@ -8411,7 +8496,7 @@ function planAlert(input, ctx) {
   if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
+      body: `${head} To use a more affordable model until it resets, ${gatewayOnStep(ctx)}, then: ${shown}`,
       title
     };
   }
@@ -8425,13 +8510,13 @@ function planAlert(input, ctx) {
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
-  const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const cwd = isJsonObject3(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync8(paths.gatewayConfigFile);
   const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync8(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -8442,7 +8527,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   } catch {
     watchdogOn = false;
   }
-  const transcript = isJsonObject2(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return {
     alerts: here.alerts,
@@ -8451,6 +8536,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     config,
     gatewayOn,
     gatewaySetUp,
+    machineGatewayOn: gatewayOnOf(paths),
     nowMs,
     profile,
     sessionModel,
@@ -8460,8 +8546,8 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync7(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
-    if (!isJsonObject2(raw))
+    const raw = JSON.parse(readFileSync8(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    if (!isJsonObject3(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
   } catch {
@@ -9665,7 +9751,7 @@ var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_AGENT_TITLE = "warp://cli-agent";
 var WARP_AGENT_PROTOCOL = 1;
 var WARP_TERMINAL_NAME = "warpterminal";
-function isJsonObject3(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function shown(text, fallback) {
@@ -9717,8 +9803,8 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync8(join10(claudeConfigDir, "settings.json"), "utf8"));
-    if (!isJsonObject3(settings) || !isJsonObject3(settings.enabledPlugins))
+    const settings = JSON.parse(readFileSync9(join10(claudeConfigDir, "settings.json"), "utf8"));
+    if (!isJsonObject4(settings) || !isJsonObject4(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
       return false;
@@ -9726,8 +9812,8 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync8(join10(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
-    if (!isJsonObject3(installed) || !isJsonObject3(installed.plugins))
+    const installed = JSON.parse(readFileSync9(join10(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    if (!isJsonObject4(installed) || !isJsonObject4(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
     return Array.isArray(entries) && entries.length > 0;
@@ -9794,7 +9880,7 @@ function sessionLabel(transcript, cwd) {
 function askAlert(input, ctx) {
   markWaiting(ctx.mark);
   const tool = typeof input.tool_name === "string" ? input.tool_name : "";
-  const toolInput = isJsonObject3(input.tool_input) ? input.tool_input : {};
+  const toolInput = isJsonObject4(input.tool_input) ? input.tool_input : {};
   if (tool === "ExitPlanMode") {
     return {
       body: "A plan is ready for your OK",
@@ -9805,8 +9891,8 @@ function askAlert(input, ctx) {
     };
   }
   const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-  const first = questions.find((question) => isJsonObject3(question) && question !== null);
-  const asked = (isJsonObject3(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
+  const first = questions.find((question) => isJsonObject4(question) && question !== null);
+  const asked = (isJsonObject4(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
   return {
     body: shown(asked, "Claude has a question for you"),
     critical: true,
@@ -9839,7 +9925,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync8(ctx.finished))
+      if (input.stop_hook_active === true && existsSync9(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -9894,7 +9980,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync8(file, "utf8").trim();
+    const text = readFileSync9(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -9946,11 +10032,11 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync8(file, "utf8"));
+    parsed = JSON.parse(readFileSync9(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
-  if (!isJsonObject3(parsed))
+  if (!isJsonObject4(parsed))
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
@@ -10003,7 +10089,7 @@ function playSound(alert, deps, config, alerts) {
     deps.run(argv);
 }
 function notifyHook(input, event, deps) {
-  if (!isJsonObject3(input))
+  if (!isJsonObject4(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
     return SILENT;
@@ -10184,7 +10270,7 @@ async function runNotifyEntry() {
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync9(launcher) ? launcher : null,
+      launcher: existsSync10(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,

@@ -83,7 +83,7 @@ import {
 } from "../gateway/targets";
 import { retryWatchdogState } from "../setup/retry-watchdog";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
-import { sessionGatewayOf } from "./agent-guard";
+import { gatewayOnOf, sessionGatewayOf } from "./agent-guard";
 import { inBackgroundSession } from "./background-session";
 import { hasDesktop } from "./desktop-alert";
 import type { Env } from "./run";
@@ -151,6 +151,12 @@ export interface AlertContext {
   gatewaySetUp: boolean;
   /** True when this session's own `ANTHROPIC_BASE_URL` points at the router. */
   gatewayOn: boolean;
+  /**
+   * True when the machine's own settings point at the router (`gatewayOnOf`). A session that is
+   * off while this is true is off by its own project or launch, and `gateway on` does nothing
+   * for it (`gatewayOnStep`).
+   */
+  machineGatewayOn: boolean;
   nowMs: number;
   /** The profile this session's URL names (`…/p/<name>`): its own commands change its chains. */
   profile: null | string;
@@ -329,6 +335,18 @@ function offerFor(
   };
 }
 
+/**
+ * The step before any chain command when this session is not on the gateway. A machine that is
+ * off needs `gateway on`. A machine that is on needs nothing of the kind (`gateway on` prints
+ * "Nothing to change"): this session is off by its own setting — the project's
+ * `gateway project off`, or a `launch --no-gateway` — and only the session's own switch
+ * reaches it; chains set for the machine are never read there.
+ */
+function gatewayOnStep(ctx: Pick<AlertContext, "machineGatewayOn">, first = ""): string {
+  if (!ctx.machineGatewayOn) return `turn the gateway on${first} (${COMMAND} gateway on)`;
+  return `put this session on the gateway${first} (its project or its launch keeps it on Claude: run ${COMMAND} gateway project on in the project's folder, or start the session with ${COMMAND} launch --gateway)`;
+}
+
 /** `gateway <words>`, or the profile's own `gateway profile <name> <words>` for a profile's session. */
 function chainCommand(profile: null | string, words: string[]): string[] {
   return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
@@ -452,7 +470,7 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
     return {
       alert: {
         action: null,
-        body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
+        body: `${head} To use another model, ${gatewayOnStep(ctx, " first")}, then: ${shown}. ${goOn}`,
         title,
       },
       mark,
@@ -556,7 +574,7 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
+      body: `${head} To use a more affordable model until it resets, ${gatewayOnStep(ctx)}, then: ${shown}`,
       title,
     };
   }
@@ -615,6 +633,7 @@ export function readAlertContext(
     config,
     gatewayOn,
     gatewaySetUp,
+    machineGatewayOn: gatewayOnOf(paths),
     nowMs,
     profile,
     sessionModel,

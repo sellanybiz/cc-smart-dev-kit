@@ -31663,6 +31663,11 @@ function offerFor(config, slot, model, claim, profile) {
     targets
   };
 }
+function gatewayOnStep(ctx, first = "") {
+  if (!ctx.machineGatewayOn)
+    return `turn the gateway on${first} (${COMMAND} gateway on)`;
+  return `put this session on the gateway${first} (its project or its launch keeps it on Claude: run ${COMMAND} gateway project on in the project's folder, or start the session with ${COMMAND} launch --gateway)`;
+}
 function chainCommand(profile, words) {
   return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
 }
@@ -31727,7 +31732,7 @@ function planAlert(input, ctx) {
   if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
+      body: `${head} To use a more affordable model until it resets, ${gatewayOnStep(ctx)}, then: ${shown}`,
       title
     };
   }
@@ -31767,6 +31772,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     config,
     gatewayOn,
     gatewaySetUp,
+    machineGatewayOn: gatewayOnOf(paths),
     nowMs,
     profile,
     sessionModel,

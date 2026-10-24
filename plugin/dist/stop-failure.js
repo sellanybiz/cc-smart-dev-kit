@@ -1,6 +1,6 @@
 // @bun
 // src/entries/stop-failure.ts
-import { existsSync as existsSync8 } from "fs";
+import { existsSync as existsSync9 } from "fs";
 import { join as join10 } from "path";
 
 // src/cli/paths.ts
@@ -201,7 +201,7 @@ function startDetached(platform, argv, options) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync3 } from "fs";
 import { join as join9 } from "path";
 
 // node_modules/zod/v4/core/util.js
@@ -6267,6 +6267,9 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -7745,6 +7748,7 @@ var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get
 var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/gateway/settings.ts
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -7770,6 +7774,75 @@ var RETIRED_GATEWAY_ENV_KEYS = [
 ];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
 var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
+var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readSettings(path) {
+  if (!existsSync7(path))
+    return {};
+  const text = readFileSync7(path, "utf8");
+  if (text.trim() === "")
+    return {};
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch {
+    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
+  }
+  if (!isJsonObject(parsed))
+    throw new Error(`${path} is not a JSON object; not touching it`);
+  const env = parsed.env;
+  if (env !== undefined && !isJsonObject(env))
+    throw new Error(`${path} has an "env" that is not an object`);
+  return parsed;
+}
+function maskKey(key) {
+  return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
+}
+function shownValue(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
+    return maskKey(text);
+  return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
+}
+function readGatewaySettings(settingsPath) {
+  const settings = readSettings(settingsPath);
+  const env = isJsonObject(settings.env) ? settings.env : {};
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
+  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  if (Object.hasOwn(settings, "apiKeyHelper"))
+    loginOverrides.push("apiKeyHelper");
+  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  const modelKeys = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides
+  };
+}
+function settingsReport(settingsPath) {
+  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
+  return {
+    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
+    loginOverrides,
+    subagentOverrides
+  };
+}
 
 // src/gateway/project-state.ts
 var PERSONAL_FILE = "settings.local.json";
@@ -7870,7 +7943,7 @@ var RECORD_TAIL_BYTES = 64 * 1024;
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject(value) {
+function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
@@ -7903,7 +7976,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject(entry))
+    if (isJsonObject2(entry))
       yield entry;
   }
 }
@@ -7914,7 +7987,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -7985,6 +8058,13 @@ function gatewayConfigOf(paths) {
     return loadConfigFile(paths.gatewayConfigFile);
   } catch {
     return null;
+  }
+}
+function gatewayOnOf(paths) {
+  try {
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
+  } catch {
+    return false;
   }
 }
 function sessionGatewayOf(paths, env) {
@@ -8088,7 +8168,7 @@ var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in pr
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
@@ -8168,11 +8248,16 @@ function offerFor(config, slot, model, claim, profile) {
     targets
   };
 }
+function gatewayOnStep(ctx, first = "") {
+  if (!ctx.machineGatewayOn)
+    return `turn the gateway on${first} (${COMMAND} gateway on)`;
+  return `put this session on the gateway${first} (its project or its launch keeps it on Claude: run ${COMMAND} gateway project on in the project's folder, or start the session with ${COMMAND} launch --gateway)`;
+}
 function chainCommand(profile, words) {
   return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
 }
 function breakerOpening(input, ctx) {
-  if (!isJsonObject2(input) || input.error !== "rate_limit")
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   if (!ctx.gatewaySetUp || ctx.state === null)
     return null;
@@ -8252,7 +8337,7 @@ function breakerAlert(input, ctx) {
     return {
       alert: {
         action: null,
-        body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
+        body: `${head} To use another model, ${gatewayOnStep(ctx, " first")}, then: ${shown}. ${goOn}`,
         title
       },
       mark,
@@ -8284,7 +8369,7 @@ function rememberBreakerAlert(paths, alerted, opening) {
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
     return null;
-  if (!isJsonObject2(input) || input.error !== "rate_limit")
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   if (BREAKER_TEXT.test(text))
@@ -8327,7 +8412,7 @@ function planAlert(input, ctx) {
   if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
+      body: `${head} To use a more affordable model until it resets, ${gatewayOnStep(ctx)}, then: ${shown}`,
       title
     };
   }
@@ -8341,13 +8426,13 @@ function planAlert(input, ctx) {
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
-  const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const cwd = isJsonObject3(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync8(paths.gatewayConfigFile);
   const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync8(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -8358,7 +8443,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   } catch {
     watchdogOn = false;
   }
-  const transcript = isJsonObject2(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return {
     alerts: here.alerts,
@@ -8367,6 +8452,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     config,
     gatewayOn,
     gatewaySetUp,
+    machineGatewayOn: gatewayOnOf(paths),
     nowMs,
     profile,
     sessionModel,
@@ -8376,8 +8462,8 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync7(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
-    if (!isJsonObject2(raw))
+    const raw = JSON.parse(readFileSync8(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    if (!isJsonObject3(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
   } catch {
@@ -8447,7 +8533,7 @@ async function hook() {
       detached(argv);
   }
   const launcher = join10(paths.binDir, LAUNCHER_NAME);
-  if (usesAlertWorker(process.platform, existsSync8(launcher))) {
+  if (usesAlertWorker(process.platform, existsSync9(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;
   }

@@ -143,6 +143,7 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
     config: config(),
     gatewayOn: true,
     gatewaySetUp: true,
+    machineGatewayOn: true,
     nowMs: NOW,
     profile: null,
     sessionModel: null,
@@ -294,11 +295,23 @@ describe("which stops get an alert", () => {
       ],
       ["gateway", "fallback", "opus", "on"],
     ]);
-    expect(planAlert(AT_LIMIT, ctx({ gatewayOn: false }))).toEqual({
+    expect(planAlert(AT_LIMIT, ctx({ gatewayOn: false, machineGatewayOn: false }))).toEqual({
       action: null,
       body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets, turn the gateway on (cc-smart-dev-kit gateway on), then: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash && cc-smart-dev-kit gateway fallback opus on",
       title: "Claude usage limit reached",
     });
+  });
+
+  it("RV4 finding 3: a session off by its own project while the machine is on: the session's switch, never `gateway on`", () => {
+    // `gateway on` prints "Nothing to change" on a machine that is on, and the project's file
+    // keeps this session on Anthropic: the alert names the project's own switch instead.
+    const alert = planAlert(AT_LIMIT, ctx({ gatewayOn: false, machineGatewayOn: true }));
+    expect(alert).toEqual({
+      action: null,
+      body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets, put this session on the gateway (its project or its launch keeps it on Claude: run cc-smart-dev-kit gateway project on in the project's folder, or start the session with cc-smart-dev-kit launch --gateway), then: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash && cc-smart-dev-kit gateway fallback opus on",
+      title: "Claude usage limit reached",
+    });
+    expect(alert?.body).not.toContain("gateway on");
   });
 
   it("an account-wide limit offers every affordable target of the person's chains, worker first, each once, never the judge's", () => {
@@ -419,6 +432,7 @@ describe("which stops get an alert", () => {
       config: null,
       gatewayOn: false,
       gatewaySetUp: true,
+      machineGatewayOn: false,
       nowMs: NOW,
       profile: null,
       sessionModel: "claude-fable-5-1",
@@ -459,6 +473,8 @@ describe("which stops get an alert", () => {
         ANTHROPIC_BASE_URL: "https://api.anthropic.com",
       });
       expect([read.gatewayOn, read.profile]).toEqual([false, null]);
+      // The machine's own file still points at the router: the alert tells the two apart.
+      expect(read.machineGatewayOn).toBe(true);
       // No URL at all reaches Anthropic too.
       expect(readAlertContext(machineOn(), NOW, AT_LIMIT, {}).gatewayOn).toBe(false);
     });
@@ -712,10 +728,22 @@ describe("the breaker's 429", () => {
 
   it("the gateway turned off: the commands in words, no action", () => {
     expect(
-      breakerAlert(BREAKER, ctx({ gatewayOn: false, state: breaker() }))?.alert.body,
+      breakerAlert(BREAKER, ctx({ gatewayOn: false, machineGatewayOn: false, state: breaker() }))
+        ?.alert.body,
     ).toContain(
       "To use another model, turn the gateway on first (cc-smart-dev-kit gateway on), then: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash.",
     );
+  });
+
+  it("RV4 finding 3: a session off by its own project while the machine is on: the session's switch, never `gateway on`", () => {
+    const body = breakerAlert(
+      BREAKER,
+      ctx({ gatewayOn: false, machineGatewayOn: true, state: breaker() }),
+    )?.alert.body;
+    expect(body).toContain(
+      "To use another model, put this session on the gateway first (its project or its launch keeps it on Claude: run cc-smart-dev-kit gateway project on in the project's folder, or start the session with cc-smart-dev-kit launch --gateway), then: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash.",
+    );
+    expect(body).not.toContain("gateway on");
   });
 
   it("a `failed` moment left out of alerts.events: no breaker alert", () => {
