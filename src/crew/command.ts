@@ -10,6 +10,8 @@
  * or option — one line, then where the help is.
  */
 import { COMMAND } from "../build-info/names";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
 import { ALLOWED_EFFORTS, CREW_KIND_NAMES, CREW_KINDS, isCrewKind } from "../models/launch-policy";
 import { type AnswerArgs, runCrewAnswer } from "./answer";
 import { commaList, parseOptions } from "./args";
@@ -391,6 +393,8 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     }
     return await guarded(sub, ctx, () =>
       runCrewRm(args.ref, ctx, {
+        confirm: (question) =>
+          terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false,
         discard: parsed.flags.has("--discard"),
         yes: parsed.flags.has("--yes"),
         ...(token === undefined ? {} : { expectedDiscardToken: token }),

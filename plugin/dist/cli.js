@@ -34957,7 +34957,7 @@ async function runCrewRm(ref, ctx, options = {}) {
         ctx.print(line);
       if (options.expectedDiscardToken !== undefined && options.expectedDiscardToken !== preview.token)
         return refuse2(failure2("crew rm: the work changed since the discard preview; preview and confirm it again"), ctx);
-      if (!options.yes && !(options.confirm ?? ((question) => terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false))(preview.question)) {
+      if (!options.yes && (options.confirm === undefined || !options.confirm(preview.question))) {
         ctx.print("Nothing removed. Use crew rm <name|id> --discard --yes to confirm without a terminal.");
         return 1;
       }
@@ -42752,6 +42752,7 @@ async function runCrew(argv, ctx) {
       return 2;
     }
     return await guarded(sub, ctx, () => runCrewRm(args.ref, ctx, {
+      confirm: (question) => terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false,
       discard: parsed.flags.has("--discard"),
       yes: parsed.flags.has("--yes"),
       ...token === undefined ? {} : { expectedDiscardToken: token }

@@ -32,8 +32,6 @@
  */
 import { existsSync } from "node:fs";
 import { tildify } from "../cli/paths";
-import { terminalPrompts } from "../cli/ui/prompt";
-import { currentTerminal } from "../cli/ui/terminal";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
 import { holdCleanLock } from "../worktrees/clean";
 import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
@@ -146,6 +144,7 @@ export async function runCrewRm(
     discard?: boolean;
     yes?: boolean;
     expectedDiscardToken?: string;
+    /** Called only by the interactive command; automated callers cannot prompt. */
     confirm?: (question: string) => boolean;
   } = {},
 ): Promise<number> {
@@ -302,13 +301,7 @@ export async function runCrewRm(
           ),
           ctx,
         );
-      if (
-        !options.yes &&
-        !(
-          options.confirm ??
-          ((question) => terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false)
-        )(preview.question)
-      ) {
+      if (!options.yes && (options.confirm === undefined || !options.confirm(preview.question))) {
         ctx.print(
           "Nothing removed. Use crew rm <name|id> --discard --yes to confirm without a terminal.",
         );

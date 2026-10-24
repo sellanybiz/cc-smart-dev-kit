@@ -13374,14 +13374,14 @@ function readWorkflowScript(script) {
   const launches = [];
   for (const open of callsOf(script)) {
     const call = callText(script, open);
-    const prompt2 = firstArgument(call);
+    const prompt = firstArgument(call);
     const label = stringOption(call, "label");
     launches.push({
       agentType: stringOption(call, "agentType"),
       effort: stringOption(call, "effort"),
       model: stringOption(call, "model"),
-      prompt: prompt2,
-      where: label ?? prompt2?.split(`
+      prompt,
+      where: label ?? prompt?.split(`
 `)[0]?.slice(0, 60) ?? "(unreadable)"
     });
   }
@@ -13525,9 +13525,9 @@ function allow(real, why = "") {
 function deny(real, reason, why = "") {
   return { decision: "deny", real, reason, why };
 }
-function reasonLine(prompt2, label) {
+function reasonLine(prompt, label) {
   const pattern = new RegExp(`^\\s*${label}:\\s*(\\S.*)$`, "i");
-  for (const line of prompt2.split(`
+  for (const line of prompt.split(`
 `)) {
     const found = pattern.exec(line);
     if (found?.[1] !== undefined)
@@ -13544,9 +13544,9 @@ function firstWord(text) {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
-function uiDeclaration(prompt2) {
+function uiDeclaration(prompt) {
   for (const label of ["Opus reason", "Fable reason"]) {
-    const said = reasonLine(prompt2, label);
+    const said = reasonLine(prompt, label);
     const word = firstWord(said);
     if (word !== null && UI_REASON_WORDS.includes(word)) {
       return `${label}: ${said}`;
@@ -14646,42 +14646,42 @@ var RESUME_START = "The wait is over: ";
 var RESUME_PHASE = ". Go on with phase ";
 var RESUME_END = ", then hand it back as usual.";
 var ANSWER_RESUME_MS = 60000;
-function isPersonPrompt(record, prompt2, briefFile, nowMs) {
-  if (NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix)))
+function isPersonPrompt(record, prompt, briefFile, nowMs) {
+  if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix)))
     return false;
-  if (prompt2.startsWith(reportStep()))
+  if (prompt.startsWith(reportStep()))
     return false;
-  if (isLaunchPrompt(record, prompt2, briefFile))
+  if (isLaunchPrompt(record, prompt, briefFile))
     return false;
   if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
     return false;
   }
-  if (isWaitOverResume(record, prompt2))
+  if (isWaitOverResume(record, prompt))
     return false;
-  return !isAnswerResume(record, prompt2, nowMs);
+  return !isAnswerResume(record, prompt, nowMs);
 }
 function withoutOneLineEnd(text) {
   return text.replace(/\r?\n$/, "");
 }
-function isLaunchPrompt(record, prompt2, briefFile) {
+function isLaunchPrompt(record, prompt, briefFile) {
   const launch = firstPrompt(record.name, record.leadName, briefFile);
-  return withoutOneLineEnd(prompt2) === withoutOneLineEnd(launch);
+  return withoutOneLineEnd(prompt) === withoutOneLineEnd(launch);
 }
-function isAnswerResume(record, prompt2, nowMs) {
+function isAnswerResume(record, prompt, nowMs) {
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt2))
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
   });
 }
-function isWaitOverResume(record, prompt2) {
-  return prompt2.startsWith(RESUME_START) && prompt2.endsWith(RESUME_END) && prompt2.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`);
+function isWaitOverResume(record, prompt) {
+  return prompt.startsWith(RESUME_START) && prompt.endsWith(RESUME_END) && prompt.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`);
 }
-function personLine(prompt2) {
-  const line = prompt2.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
+function personLine(prompt) {
+  const line = prompt.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
   return maskedLine(line, [], LAST_LINE_MAX, { mark: "\u2026" });
 }
 function personWroteLine() {
@@ -14813,14 +14813,14 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
     return found.result;
   const record = found.record;
   const title = titleAnswer(input, record, env);
-  const prompt2 = stringField(input.prompt);
-  if (prompt2 === null)
+  const prompt = stringField(input.prompt);
+  if (prompt === null)
     return titleOnly(title);
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
-  if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs))
     return titleOnly(title);
-  const line = personLine(prompt2);
+  const line = personLine(prompt);
   if (line === "")
     return titleOnly(title);
   try {
