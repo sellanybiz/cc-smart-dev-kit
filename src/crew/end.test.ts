@@ -5,14 +5,16 @@
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
-import { git } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
+import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
+import { procEnviron, stopLeftoverProcesses } from "./end";
 import {
   appendCrewEvent,
   crewMcpFile,
@@ -83,10 +85,33 @@ function leadMerges(repo: string, branch: string): void {
 
 /**
  * A real background program in `cwd`, as a crew session's own check outlives its turn: the
- * removal signals this test's own child, never a process the test did not start.
+ * removal signals this test's own child, never a process the test did not start. `crew` is the
+ * crew id its environment carries (`CC_SMART_DEV_KIT_CREW`, which every program a crew session
+ * starts inherits, whoever it is reparented to); null starts one that carries none, as a
+ * person's terminal or dev server does. The environment is built here, not inherited, so the
+ * session that runs the suite cannot leak its own marker in.
  */
-function startProgram(cwd: string): Bun.Subprocess {
-  return Bun.spawn(["sh", "-c", "sleep 60"], { cwd, stderr: "ignore", stdout: "ignore" });
+async function startProgram(cwd: string, crew: null | string): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", "sleep 60"], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(crew === null ? {} : { CC_SMART_DEV_KIT_CREW: crew }),
+    },
+    stderr: "ignore",
+    stdout: "ignore",
+  });
+  // Until the child has run `sleep`, /proc shows the environment it was forked with — the
+  // suite's own — and a removal that read it then would judge the wrong program.
+  for (let tries = 0; tries < 400; tries += 1) {
+    try {
+      if (readFileSync(`/proc/${String(child.pid)}/cmdline`, "utf8").includes("sleep")) break;
+    } catch {
+      break;
+    }
+    await Bun.sleep(5);
+  }
+  return child;
 }
 
 /** True when `child` ended within two seconds (the removal's SIGTERM and SIGKILL are instant here). */
@@ -587,7 +612,8 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     const record = await world.addCrew({ state: "done" });
     const { branch, worktree } = places(world.repo);
     leadMerges(world.repo, branch);
-    const check = startProgram(worktree);
+    // It carries the session's marker, as everything the session's Bash started does.
+    const check = await startProgram(worktree, record.id);
     try {
       expect(
         await runCrew(
@@ -595,15 +621,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
           world.ctx({
             scanFacts: {
               ...QUIET_MACHINE,
-              programs: [
-                {
-                  parentPid: 1,
-                  path: join(worktree, "check.sh"),
-                  pid: check.pid,
-                  // Started before the turn ended (the record's own time): this session left it.
-                  startedAt: NOW - 13 * MINUTE,
-                },
-              ],
+              programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
             },
           }),
         ),
@@ -619,30 +637,15 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     }
   });
 
-  test("D62: a session an answer brought back ends again: what it started in between is its own", async () => {
+  test("D62: a program that is not the session's is never stopped, however long it has run", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "done" });
     const { branch, worktree } = places(world.repo);
     leadMerges(world.repo, branch);
-    const events = (state: string, atMs: number, type: "report" | "state") =>
-      appendCrewEvent(
-        world.paths.stateDir,
-        world.repo,
-        {
-          crew: record.id,
-          lead: LEAD_SESSION,
-          name: record.name,
-          state,
-          text: state,
-          type,
-        },
-        atMs,
-      );
-    // It reported done, was answered back to work, and reported done again.
-    await events("done", NOW - 30 * MINUTE, "report");
-    await events("working", NOW - 20 * MINUTE, "state");
-    await events("done", NOW - 10 * MINUTE, "report");
-    const check = startProgram(worktree);
+    // A person's shell or dev server, started before the session's turn ended and still there:
+    // it has no marker, so it is not the session's. Another crew session's has someone else's.
+    const server = await startProgram(worktree, null);
+    const sibling = await startProgram(worktree, "B2-other-9f8e7d");
     try {
       expect(
         await runCrew(
@@ -652,30 +655,77 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
               ...QUIET_MACHINE,
               programs: [
                 {
-                  parentPid: 1,
-                  path: join(worktree, "check.sh"),
-                  pid: check.pid,
-                  // Started in its second run, before that one ended: its own.
-                  startedAt: NOW - 15 * MINUTE,
+                  cwd: worktree,
+                  path: "/usr/bin/bun dev",
+                  pid: server.pid,
+                  startedAt: NOW - 13 * MINUTE,
+                },
+                {
+                  cwd: worktree,
+                  path: "/usr/bin/bun test",
+                  pid: sibling.pid,
+                  startedAt: NOW - 13 * MINUTE,
                 },
               ],
             },
           }),
         ),
-      ).toBe(0);
-      expect(world.out).toContain("C my-app B1 help: stopped its own leftover programs (check.sh)");
-      expect(await ended(check)).toBe(true);
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: bun",
+      );
+      expect(world.out.some((line) => line.includes("stopped its own leftover programs"))).toBe(
+        false,
+      );
+      expect(existsSync(worktree)).toBe(true);
+      expect(server.exitCode).toBeNull();
+      expect(sibling.exitCode).toBeNull();
+      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+        state: "done",
+      });
     } finally {
-      if (check.exitCode === null) check.kill("SIGKILL");
+      server.kill("SIGKILL");
+      sibling.kill("SIGKILL");
     }
   });
 
-  test("D62: a live session's children are never stopped, whoever they look like", async () => {
+  test("D62: one program that is not the session's keeps all of them", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "done" });
     const { branch, worktree } = places(world.repo);
     leadMerges(world.repo, branch);
-    const check = startProgram(worktree);
+    const mine = await startProgram(worktree, record.id);
+    const theirs = await startProgram(worktree, null);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                { parentPid: 1, path: join(worktree, "check.sh"), pid: mine.pid },
+                { cwd: worktree, path: "/usr/bin/bun dev", pid: theirs.pid },
+              ],
+            },
+          }),
+        ),
+      ).toBe(1);
+      // Nothing is stopped when something there is somebody else's: half a stop helps nobody.
+      expect(mine.exitCode).toBeNull();
+      expect(theirs.exitCode).toBeNull();
+    } finally {
+      mine.kill("SIGKILL");
+      theirs.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a live session's children are never stopped, marker or not", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const check = await startProgram(worktree, record.id);
     try {
       // Agent view lists the session with a process: it is not finished, its children are its work.
       const live = JSON.stringify([
@@ -693,14 +743,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
             {
               scanFacts: {
                 ...QUIET_MACHINE,
-                programs: [
-                  {
-                    parentPid: 4242,
-                    path: join(worktree, "check.sh"),
-                    pid: check.pid,
-                    startedAt: NOW - 13 * MINUTE,
-                  },
-                ],
+                programs: [{ parentPid: 4242, path: join(worktree, "check.sh"), pid: check.pid }],
               },
             },
             { FAKE_AGENTS_JSON: live },
@@ -716,44 +759,143 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     }
   });
 
-  test("D62: a program someone else started there is not stopped, and keeps the worktree", async () => {
-    const world = await boardWorld();
-    const record = await world.addCrew({ state: "done" });
-    const { branch, worktree } = places(world.repo);
-    leadMerges(world.repo, branch);
-    const server = startProgram(worktree);
-    try {
-      expect(
-        await runCrew(
-          ["rm", record.id],
-          world.ctx({
+  describe("where a program's environment cannot be read (not Linux, or not this user's)", () => {
+    /** The record, its worktree and the context a direct call needs, with `programs` running. */
+    async function direct(programs: RunningProgram[]) {
+      const world = await boardWorld();
+      // Recorded an hour before NOW: the session's lifetime starts there.
+      const record = await world.addCrew({ atMs: NOW - 60 * MINUTE, state: "done" });
+      const ctx = world.ctx({ scanFacts: { ...QUIET_MACHINE, programs } });
+      return { ctx, record, world, worktree: places(world.repo).worktree };
+    }
+    const unreadable = () => null;
+
+    test("the session's lifetime decides: a program started while it ran is its own", async () => {
+      const worktree = tempDir("leftover-lifetime");
+      const own = await startProgram(worktree, null);
+      try {
+        const { ctx, record, world } = await direct([]);
+        // Its turn ended at NOW; it was recorded an hour before.
+        await appendCrewEvent(
+          world.paths.stateDir,
+          world.repo,
+          {
+            crew: record.id,
+            lead: LEAD_SESSION,
+            name: record.name,
+            state: "done",
+            text: "done",
+            type: "report",
+          },
+          NOW,
+        );
+        const run = (startedAt: number) =>
+          stopLeftoverProcesses(
+            { ...record, worktree },
+            {
+              ...ctx,
+              scanFacts: {
+                ...QUIET_MACHINE,
+                programs: [
+                  { cwd: worktree, path: join(worktree, "check.sh"), pid: own.pid, startedAt },
+                ],
+              },
+            },
+            unreadable,
+          );
+        // Before the session began: a terminal that was already open, not its child.
+        expect((await run(NOW - 90 * MINUTE)).line).toBeNull();
+        // After its turn ended: started since, by somebody else.
+        expect((await run(NOW + 5 * MINUTE)).line).toBeNull();
+        expect(own.exitCode).toBeNull();
+        // While it ran.
+        expect((await run(NOW - 5 * MINUTE)).line).toBe(
+          "C my-app B1 help: stopped its own leftover programs (check.sh)",
+        );
+        expect(await ended(own)).toBe(true);
+      } finally {
+        if (own.exitCode === null) own.kill("SIGKILL");
+      }
+    });
+
+    test("a session an answer brought back ends again: what it started in between is its own", async () => {
+      const worktree = tempDir("leftover-resumed");
+      const own = await startProgram(worktree, null);
+      try {
+        const { ctx, record, world } = await direct([]);
+        const note = (state: string, atMs: number, type: "report" | "state") =>
+          appendCrewEvent(
+            world.paths.stateDir,
+            world.repo,
+            { crew: record.id, lead: LEAD_SESSION, name: record.name, state, text: state, type },
+            atMs,
+          );
+        // It reported done, was answered back to work, and reported done again.
+        await note("done", NOW - 30 * MINUTE, "report");
+        await note("working", NOW - 20 * MINUTE, "state");
+        await note("done", NOW - 10 * MINUTE, "report");
+        const resumed = {
+          ...ctx,
+          scanFacts: {
+            ...QUIET_MACHINE,
+            programs: [
+              {
+                cwd: worktree,
+                path: join(worktree, "check.sh"),
+                pid: own.pid,
+                // Started in its second run, before that one ended.
+                startedAt: NOW - 15 * MINUTE,
+              },
+            ],
+          },
+        };
+        const stopped = await stopLeftoverProcesses({ ...record, worktree }, resumed, unreadable);
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(await ended(own)).toBe(true);
+      } finally {
+        if (own.exitCode === null) own.kill("SIGKILL");
+      }
+    });
+
+    test("a program whose start is unknown is never stopped", async () => {
+      const worktree = tempDir("leftover-unknown");
+      const own = await startProgram(worktree, null);
+      try {
+        const { ctx, record } = await direct([]);
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          {
+            ...ctx,
             scanFacts: {
               ...QUIET_MACHINE,
-              programs: [
-                {
-                  cwd: worktree,
-                  path: "/usr/bin/bun dev",
-                  pid: server.pid,
-                  // Started after the turn ended: the person's dev server, not the session's.
-                  startedAt: NOW + MINUTE,
-                },
-              ],
+              // A pid no `ps` knows would have a start; this one is a real pid with none given
+              // and the reader below cannot find one either.
+              programs: [{ cwd: worktree, path: join(worktree, "check.sh"), pid: own.pid }],
             },
-          }),
-        ),
-      ).toBe(1);
-      expect(world.err).toContain(
-        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: bun",
-      );
-      expect(existsSync(worktree)).toBe(true);
-      expect(server.exitCode).toBeNull();
-      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
-        state: "done",
-      });
-    } finally {
-      server.kill("SIGKILL");
-    }
+          },
+          unreadable,
+          () => new Map(),
+        );
+        expect(stopped.line).toBeNull();
+        expect(own.exitCode).toBeNull();
+      } finally {
+        own.kill("SIGKILL");
+      }
+    });
   });
+
+  test.skipIf(process.platform !== "linux")(
+    "D62: a program's environment is read from /proc, and a pid nobody has reads as unreadable",
+    async () => {
+      const child = await startProgram(tempDir("environ"), "B1-help-1a2b3c");
+      try {
+        expect(procEnviron(child.pid)?.CC_SMART_DEV_KIT_CREW).toBe("B1-help-1a2b3c");
+        expect(procEnviron(999_999_999)).toBeNull();
+      } finally {
+        child.kill("SIGKILL");
+      }
+    },
+  );
 
   test("a file git does not keep would be lost with the worktree, so it stays", async () => {
     const world = await boardWorld();

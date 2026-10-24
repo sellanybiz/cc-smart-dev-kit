@@ -210,9 +210,9 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
 
   // 5b. A finished crew session's own leftover programs are not a reason to keep it (D62):
   // the check, the test run its turn left going. Only when every program there is its own —
-  // the session is gone or stopped, and each descends from it or started before its turn
-  // ended; one line says what went. A program that is not the session's stays, and the verdict
-  // below keeps the worktree with its reason, as before.
+  // the session is gone or stopped, and each descends from it or carries its crew id (or, where
+  // that cannot be read, started while it lived); one line says what went. A program that is
+  // not the session's stays, and the verdict below keeps the worktree with its reason, as before.
   const leftovers = await stopLeftoverProcesses(record, ctx);
   if (leftovers.line !== null) ctx.print(leftovers.line);
   // The verdict judges the worktree by the programs left after the stop. A test hands in its

@@ -125,8 +125,10 @@ repository, under the state folder:
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
   of the old crew session, set by a hand-off and by nothing else), whether the lead had merged its
   work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
-  `removed`, from the state the record was in — the fact a phase that waits for it starts on), and when it was recorded and
-  changed. The states are `queued`, `starting`,
+  `removed`, from the state the record was in — the fact a phase that waits for it starts on),
+  whether it was merged while it was `stopped` (`mergedWhileStopped`, optional: set by the store
+  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62),
+  and when it was recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
   id, name, repository, plan, the tag its crew sessions' names carry, and folder, and may hold
@@ -138,7 +140,11 @@ repository, under the state folder:
   at the end of its `questions` with a `question` event (`addCrewQuestion`), and the crew session goes
   on with what the question does not block; the lead's answer is recorded once, with its time
   (`answerCrewQuestion`). A recommendation that is not one of the options, or an answer without
-  its time, is refused.
+  its time, is refused. **A question of a crew session whose phase is over is closed**
+  (`openQuestionIndex`, one rule every reader shares): `done`, `failed`, `handoff`, `merged` and
+  `removed` need no answer, so the Needs page, `crew list`, `crew status` and `crew answer` agree.
+  A `stopped` crew session's question stays open — D35's answer resumes it with the question still
+  waiting.
 - **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
@@ -399,7 +405,16 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released, and **locked again with the same
   reason if a later step refuses**, because the lock is what keeps `worktrees --clean` and the
-  background clean off the worktree); the session is stopped; the kit's
+  background clean off the worktree); the session is stopped; **the programs its own finished turn
+  left running are stopped too** — SIGTERM, a 3 s grace, then SIGKILL, one line said — when the
+  session is gone or stopped and every program there is the session's own (`stopLeftoverProcesses`,
+  the one function `crew rm` and the watch's removal share). A program is its own when it
+  descends from the session, or when its environment carries the session's crew id —
+  everything its Bash started inherits `CC_SMART_DEV_KIT_CREW`, and keeps it when init adopts it
+  after the session ends (`/proc/<pid>/environ`, Linux) — and, where the environment cannot be
+  read, when it started while the session lived. A program that is not — a shell or a dev
+  server the person started there, however long it has run, another crew session's program, a
+  container — keeps the worktree, as before, and one such program keeps them all; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
   the worktree **against the branch the crew session was cut from rather than `origin/<base>`** (`ScanOptions.against`)
   and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
@@ -411,6 +426,28 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   of the crew session is refused, with the count. **A queued crew session is removed at once**,
   and so is one whose launch left nothing behind: the removal records whether the lead had merged
   first (`mergedBeforeRemoval`), so the phases that wait for it start on that fact alone.
+  **A removal that stopped halfway is finished** (D62, `src/worktrees/scan-parked.ts`). The kit
+  moves a worktree it judged finished to `<path>-removing-<time>` before asking git to remove it;
+  when git then fails, the folder stays in one of two states, and both were seen on a real
+  machine (3 of the 8 left there were the first, 5 the second):
+  - **git still lists it.** It is judged again by the same verdict as any worktree — nothing runs
+    from it, no session or container uses it, nothing in it is uncommitted beyond tracked files
+    the removal itself deleted — and, because its branch holds the commits and the move was the
+    removal's own touch, it asks for neither the commits on the base nor the idle hour
+    (`WorktreeFacts.parked`; a detached folder, whose commits no branch holds, keeps the commit
+    rule). It is removed where it stands, never moved aside a second time.
+  - **git no longer lists it.** `git worktree remove` deleted the registration and the `.git`
+    file, then failed on a file it could not delete: half a folder nobody tracks. Git cannot judge
+    it, so the folder's name does: it carries the time of the move, the verdict that allowed the
+    move said everything in the folder was disposable, and a file written after that time is not.
+    So it is removed (`rmSync`, links as links, nothing outside it) only when nothing runs from
+    it, it is no repository and has no registration of its own, it crosses no mount, and no file
+    in it is newer than its move (a directory's own time is not read: it moves when git deletes an
+    entry). Anything else stays, with the reason.
+
+  `crew rm` finishes both kinds in the repository — its own record's first, and it refuses while
+  its own stays — `worktrees --clean` and the background clean finish any, and the watch looks
+  every five minutes (`PARKED_PASS_MS`): a folder that stays costs a scan of the whole repository.
 
 ### The crew session's steps, its report, and the lead's watch
 
@@ -529,19 +566,35 @@ the store records — a session the kit does not know is the person's own:
   current (§ Waiting out a limit);
 - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
-  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record
-  becomes `stopped`; a `failed` one **stays `failed`** (the board must show why it ended), and its
-  one line says so. A stop that fails is said once, not on every pass;
+  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record and a
+  `failed` one **keep their outcome** — the board must show how it ended, and `stopped` means
+  something else (D62: a phase something stopped before it was over) — and each line says so.
+  A stop that fails is said once, not on every pass;
 - it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
-  and the line says `crew rm` removes it. The branch must hold a commit of its own (its tip is not
+  and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy). A
+  queued or starting continuation of it holds the removal back until it starts (it is cut from the
+  branch then), and the line says so once; a refusal — a program runs from its worktree, or work
+  nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged
+  too, because what waits for its phase starts on the merge, but **never removed by the watch**:
+  stopping it was the lead's call, and so is its removal (the store keeps the fact from the state
+  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). The branch must hold a commit of its own (its tip is not
   the base it was cut from — a crew session that failed before it committed is an ancestor of the
   base for that reason alone), and its work must be on the commit **the branch it was cut from**
   (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record
   holds it; the main checkout when that is gone): `workOnRef`, the answer `crew rm` gives too —
   its tip is an ancestor, or merging it changes nothing, which is how a squash merge shows. When
   git cannot say, it is not marked. The merge is looked for on every
-  crew session whose work is over (`done`, `failed`, `handoff`, `stopped`): a crew session stopped after its
-  turn ended is merged later, when the lead merges the branch.
+  crew session whose work is over (`done`, `failed`, `handoff`, `stopped`), and on a `merged` one
+  again (the continuation that held it back may have started). A handed-off record goes the same
+  way once its work is merged — through its continuation's merge too, since the continuation is
+  cut from its branch.
+- **it also finishes a removal that stopped halfway** (D62), every `PARKED_PASS_MS` (five
+  minutes): a folder a removal moved aside (`<path>-removing-<time>`) and could not remove,
+  whether or not the store still knows its crew session — judged against the record's own
+  branch when it does, `origin/<base>` (else the local branch of that name) when it does not,
+  and by what the folder holds when git no longer lists it (§ `rm`). A folder that stays is not
+  news; a later look judges it again. It runs after the merges are marked, so a crew session whose
+  branch that removal deletes was marked first.
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew

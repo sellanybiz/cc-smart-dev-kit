@@ -4,7 +4,7 @@
  * outlives its work).
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -126,10 +126,33 @@ function agentsJson(rows: Array<Record<string, unknown>>): string {
 
 /**
  * A real background program in `cwd`, as a crew session's own check outlives its turn: the
- * removal signals this test's own child, never a process the test did not start.
+ * removal signals this test's own child, never a process the test did not start. `crew` is the
+ * crew id its environment carries (`CC_SMART_DEV_KIT_CREW`, which everything a crew session
+ * starts inherits); null starts one that carries none, as a person's dev server does. The
+ * environment is built here, not inherited, so the session that runs the suite cannot leak its
+ * own marker in.
  */
-function startProgram(cwd: string): Bun.Subprocess {
-  return Bun.spawn(["sh", "-c", "sleep 60"], { cwd, stderr: "ignore", stdout: "ignore" });
+async function startProgram(cwd: string, crew: null | string): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", "sleep 60"], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(crew === null ? {} : { CC_SMART_DEV_KIT_CREW: crew }),
+    },
+    stderr: "ignore",
+    stdout: "ignore",
+  });
+  // Until the child has run `sleep`, /proc shows the environment it was forked with — the
+  // suite's own — and a removal that read it then would judge the wrong program.
+  for (let tries = 0; tries < 400; tries += 1) {
+    try {
+      if (readFileSync(`/proc/${String(child.pid)}/cmdline`, "utf8").includes("sleep")) break;
+    } catch {
+      break;
+    }
+    await Bun.sleep(5);
+  }
+  return child;
 }
 
 /** One row for the crew session of the world. */
@@ -867,20 +890,13 @@ describe("crew watch", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-q", "-m", "the phase");
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
-    const check = startProgram(worktree);
+    // It carries the session's marker, as everything the session's Bash started does.
+    const check = await startProgram(worktree, ID);
     try {
       const ctx = world.ctx({
         scanFacts: {
           containers: [],
-          programs: [
-            {
-              parentPid: 1,
-              path: join(worktree, "check.sh"),
-              pid: check.pid,
-              // Started before the turn ended (the record's own time): this session left it.
-              startedAt: T0 - 60_000,
-            },
-          ],
+          programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
           sessions: [],
         },
       });
@@ -905,7 +921,9 @@ describe("crew watch", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-q", "-m", "the phase");
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
-    const server = startProgram(worktree);
+    // The person's dev server: it carries no marker, however long it has been there — this one
+    // started before the session's turn ended.
+    const server = await startProgram(worktree, null);
     try {
       const ctx = world.ctx({
         scanFacts: {
@@ -915,8 +933,7 @@ describe("crew watch", () => {
               cwd: worktree,
               path: "/usr/bin/bun dev",
               pid: server.pid,
-              // Started after the turn ended: the person's dev server, not the session's.
-              startedAt: T0 + 60_000,
+              startedAt: T0 - 60_000,
             },
           ],
           sessions: [],

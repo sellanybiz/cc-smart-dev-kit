@@ -23,7 +23,7 @@
  *   the person's way out after `/login` on another account (D42), through the watch's own
  *   `resumeOne`. A record whose worktree or settings file is gone is refused with one line.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { IGNORE_CASE, isInside, runGit } from "../hooks/git";
 import {
@@ -247,24 +247,77 @@ export function sessionEndedAt(record: CrewRecord, ctx: CrewContext): null | num
 }
 
 /**
+ * A process's environment from `/proc/<pid>/environ`: null when it cannot be read — not Linux,
+ * a process of another user, or one that is gone. Every program a crew session starts inherits
+ * `CC_SMART_DEV_KIT_CREW` (its settings set it for its Bash, `session.ts`), and keeps it when
+ * its parent is gone and init adopts it: that is how a leftover is told from a person's shell.
+ */
+export function procEnviron(pid: number): null | Record<string, string> {
+  try {
+    const environment: Record<string, string> = {};
+    for (const entry of readFileSync(`/proc/${String(pid)}/environ`, "utf8").split("\0")) {
+      const at = entry.indexOf("=");
+      if (at > 0) environment[entry.slice(0, at)] = entry.slice(at + 1);
+    }
+    return environment;
+  } catch {
+    // Not there, or not ours to read.
+    return null;
+  }
+}
+
+/**
+ * Whether `program`, which runs from the worktree of a finished crew session, is the session's own
+ * (D62). In this order:
+ *
+ * 1. it descends from the session's process, as far as the listing says;
+ * 2. its environment can be read: it is the session's own when it carries the session's crew id
+ *    — and a person's shell or dev server, another crew session's program, or anything else
+ *    that carries none, is not, however long it has run;
+ * 3. its environment cannot be read (not Linux, or not this user's): it started while the
+ *    session lived — after the record was made, and before the session last ended.
+ */
+function isTheSessionsOwn(
+  record: CrewRecord,
+  program: RunningProgram,
+  programs: RunningProgram[],
+  sessionPid: null | number,
+  lifetime: { from: null | number; to: null | number },
+  environOf: (pid: number) => null | Record<string, string>,
+  startedAt: (program: RunningProgram) => number | undefined,
+): boolean {
+  if (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) return true;
+  const environment = environOf(program.pid);
+  if (environment !== null) return crewIdOf(environment) === record.id;
+  const started = startedAt(program);
+  const { from, to } = lifetime;
+  return started !== undefined && from !== null && to !== null && started >= from && started <= to;
+}
+
+/**
  * Stops the programs a finished crew session's own turn left running (D62): a `bun run check` or
  * its `sh` and `bash`, still working in the worktree after the turn ended. It stops only when
  * **every** program there belongs to the session:
  *
  * - the session's Claude process is gone or stopped (agent view, read the way `crew rm` reads
  *   it) — a live one starts its own children, and stopping them would break it;
- * - each program either descends from that session or started before its turn ended
- *   (`sessionEndedAt`).
+ * - each program is the session's own (`isTheSessionsOwn`: it descends from the session, or its
+ *   environment carries the session's crew id, or — where that cannot be read — it started
+ *   while the session lived).
  *
- * A program that does not belong — a dev server or a container the person started there — is
- * left alone, and the caller keeps refusing as before. SIGTERM first, `LEFTOVER_GRACE_MS`, then
+ * A program that does not belong — a dev server or a shell the person started there, a container,
+ * another crew session's program — is left alone, and the caller keeps refusing as before. One
+ * such program keeps them all: half a stop helps nobody. SIGTERM first, `LEFTOVER_GRACE_MS`, then
  * SIGKILL for what is still there: one line says what was stopped. A test hands in the programs
  * (`ctx.scanFacts.programs`), and the pids are its own child processes, so no test signals a
- * process it did not start.
+ * process it did not start. `environOf` and `startTimesOf` are the machine's readers, replaced
+ * only by a test.
  */
 export async function stopLeftoverProcesses(
   record: CrewRecord,
   ctx: CrewContext,
+  environOf: (pid: number) => null | Record<string, string> = procEnviron,
+  startTimesOf: typeof startTimes = startTimes,
 ): Promise<LeftoversStopped> {
   const programs = ctx.scanFacts?.programs ?? runningPrograms();
   if (programs === "unknown") return { line: null, programs };
@@ -275,20 +328,25 @@ export async function stopLeftoverProcesses(
   if (rows === null) return { line: null, programs };
   const row = rowOf(rows, record);
   if (isLiveRow(row)) return { line: null, programs };
-  const endedAt = sessionEndedAt(record, ctx);
   const sessionPid = row?.pid ?? null;
-  // When each started: a test gives it; on the machine it is read for exactly these programs.
-  const read = startTimes(
-    inside.filter((one) => one.startedAt === undefined).map((one) => one.pid),
+  // The session lived from when it started (else when it was recorded) to when it last ended.
+  const began = Date.parse(record.startedAt ?? record.createdAt);
+  const lifetime = {
+    from: Number.isFinite(began) ? began : null,
+    to: sessionEndedAt(record, ctx),
+  };
+  // When each started, asked only for the programs whose environment cannot be read and whose
+  // start nobody gave: a test gives it, and on the machine it is read for exactly these.
+  const unread = inside.filter((one) => one.startedAt === undefined && environOf(one.pid) === null);
+  const read = startTimesOf(
+    unread.map((one) => one.pid),
     ctx.now(),
   );
   const startedAt = (program: RunningProgram): number | undefined =>
     program.startedAt ?? read.get(program.pid);
-  const theirs = inside.every((program) => {
-    if (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) return true;
-    const started = startedAt(program);
-    return started !== undefined && endedAt !== null && started <= endedAt;
-  });
+  const theirs = inside.every((program) =>
+    isTheSessionsOwn(record, program, programs, sessionPid, lifetime, environOf, startedAt),
+  );
   if (!theirs) return { line: null, programs };
   const pids = [...new Set(inside.map((one) => one.pid))].filter((pid) => pid !== process.pid);
   const signalled = new Set(pids.filter((pid) => signal(pid, "SIGTERM")));
