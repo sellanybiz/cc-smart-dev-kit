@@ -673,6 +673,11 @@ export function bgMode(): "run" | "dry-run" {
 
 export type BgStart = RunResult & { id: string | undefined; command: string };
 
+/** One word for a POSIX shell, in single quotes. */
+function shellWord(word: string): string {
+  return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
 /** `claude --bg …` in `cwd`; `id` is read from its `backgrounded · <id>` line. */
 export async function bgStart(
   mode: "run" | "dry-run",
@@ -680,10 +685,12 @@ export async function bgStart(
   env: Record<string, string>,
   args: string[],
 ): Promise<BgStart> {
-  const command = `cd ${cwd} && ${Object.entries(env)
+  // The line a person could paste, the same as the run: an empty environment but these
+  // values (every one quoted) and their own shell's PATH.
+  const assignments = Object.entries(env)
     .filter(([k]) => k !== "PATH")
-    .map(([k, v]) => `${k}=${v}`)
-    .join(" ")} claude --bg ${args.map((a) => (/\s/.test(a) ? `'${a}'` : a)).join(" ")}`;
+    .map(([k, v]) => `${k}=${shellWord(v)}`);
+  const command = `cd ${shellWord(cwd)} && env -i PATH="$PATH" ${assignments.join(" ")} claude --bg ${args.map(shellWord).join(" ")}`;
   if (mode === "dry-run") {
     return {
       exitCode: null,
