@@ -380,7 +380,8 @@ red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR
 | AN1 `crew answer` reaches a running crew session itself | build | Research and prove a way (a Claude Code command, or the kit's own hook in the crew session), ask the lead, build it; "recorded" vs "delivered" on the record; a corrected second answer. Brief `briefs/an1.md`. |
 | NM1 a continuation keeps its base; a name means the live record | build | `crew rm` deleted the branch a queued `--continue` started from (PW1a 2); a name shared with removed records picked a removed one, and the continuation's number counted them (CL1 6). Brief `briefs/nm1.md`. |
 | WN1 the lead hears each thing once | build | "quiet" once per stretch; each clash pair once, a warning on a very broad `--files` glob; the after-merge note never names the merging lead. Brief `briefs/wn1.md`. |
-| LH1 load | build | `crew.loadPerCore`: a start waits while the 1-minute load is past it; the crew frame says "install your own dependencies"; three tests that fail only under load. Brief `briefs/lh1.md`. |
+| LH1 load and the hand-off | build | `crew.loadPerCore`: a start waits while the 1-minute load is past it; `crew.handoffTokens`: a token cap beside `crew.handoffPercent`, whichever comes first (the owner, 2026-10-25: 40 % of a 200k window is 80k, barely past a crew session's start; the owner sets 400k once); the crew frame says "install your own dependencies". Brief `briefs/lh1.md`. |
+| LT1 three tests that fail only under load | tests | The portal's key test, `spawnAndWait`'s process count, `crew resume --paused`'s setup: each cause found, a limit that fits, never a skipped test. Brief `briefs/lt1.md`. |
 | AR1 a finished crew session leaves `/resume` (the owner's ask; from `crew/CL2B-hook-boundary`, started at once) | build | On removal the conversation (its `.jsonl`, its subagent folder, the empty project folder) moves to `<state>/crew-archive/<repo>/<crew id>/`, compressed, beside the report; pruned after `crew.archiveDays` (7); unmerged work only on removal; leads never; a one-time sweep in `sessions --finished`; the transcript readers decide; a contract row, and the owner's `/resume` check. Brief `briefs/ar1.md`. |
 | JW1 `workflow set` keeps the project file's layout | build | `workflow set\|unset --project` rewrote `.claude/cc-smart-dev-kit.json` in a layout Biome refuses (a one-line array became three), so a project's `bun run check` fails; one edit that keeps untouched lines byte for byte, for every writer of that file and the personal one; a new dependency only with the owner's yes. Brief `briefs/jw1.md`. |
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
@@ -584,6 +585,16 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   WF1) through one `crew watch --lead b8efb3b3`. **The owner picked all twelve open follow-ups for
   1.2.1**; they are six phases with briefs (§ Release 1.2.1: RG1, AN1, NM1, WN1, LH1, SC1), started
   once `release-1.2.1` is cut.
+
+- 2026-10-25: **RF2 merged** into `release-1.2.0` (`7f3625e`): the release review's six findings,
+  each with a test seen red first; its full check 6,509 pass, 0 fail (the log read, written after
+  its head); both validates; `router.js` unchanged; own review only, as `briefs/rf1.md` says (the
+  split review covers it). Its record, worktree and branch removed. Its report's structured
+  fields (tests, checks, review) were empty, its prose full: RG1 reads the fields, so the crew
+  frame must make a crew session fill them. **The owner, through the old lead:**
+  `crew.handoffPercent` is 40 in the owner's own file (the project value was removed, `ea8cbc1`);
+  AR1 (the archive, started at once from CL2B), JW1 (the project file's layout) and LH1's
+  `crew.handoffTokens` were added to 1.2.1; LH1's three load-only tests became LT1.
 
 ### For the owner in the morning
 

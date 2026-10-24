@@ -1,12 +1,12 @@
-# LH1 — load: a start waits for the CPU, a crew session installs its own dependencies, three tests hold under load (1.2.1)
+# LH1 — a start waits for the CPU, a hand-off at a token cap, a crew session installs its own dependencies (1.2.1)
 
 ## Goal, and why
 
 Your branch starts from `release-1.2.1` (main after 1.2.0, with 1.1.3, CL2, CL2B, EF2 and WF1
 merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
 
-Three things go wrong when the machine is busy. Fix each at its cause, each with a test seen
-failing first.
+Three changes to how a crew session starts and hands off. Fix each at its cause, each with a test
+seen failing first.
 
 ## 1. A crew start waits while the CPU is far past its cores
 
@@ -37,25 +37,29 @@ failing first.
   frame works for any project.
 - **Tests:** the frame holds the step; with a project's install command, it names it.
 
-## 3. Three tests fail only under load
+## 3. A hand-off at a token cap, beside the percent
 
-Each passes alone and fails in a full check on a busy machine:
-
-- `src/portal/server.test.ts` › every answer › "a key is never sent to a page" (~725): past 5 s.
-- `src/jobs/launch.test.ts` › spawnAndWait: real children › "a job that died of the signal it was
-  sent, and left a process behind: both facts" (~395): counted one process more under load ~85.
-- `src/crew/end.test.ts` › "D42: crew resume --paused" (~1631, two tests): `git add`/`commit` in the
-  setup failed and the test timed out at 5 s.
-
-Find each cause. A limit that fits the work (a test's own timeout, with a comment saying why) is
-fine; a wait that dodges a race is not (find the race). The process count must count only the
-test's own children. Never skip or weaken a test (`.claude/rules/testing.md`).
+- **The owner's concern (2026-10-25):** the owner set `crew.handoffPercent` to 40 in the personal
+  file, so a crew session on Opus's 1M window hands off near 400k tokens (it matches the owner's
+  own `/autocompact 400000`). But the hand-off is a percent of the window: 40 % of a 200k-window
+  model is 80k, barely past a crew session's start-up reading.
+- **Where:** `src/crew/self-watch.ts` computes `contextPercent` against the window that
+  `context-window.ts` gives (find it); `crew.handoffPercent` in `src/workflow/schema.ts` and
+  `resolve.ts`.
+- **Fix:** an optional `crew.handoffTokens` (a whole number above zero, unset by default): a crew
+  session hands off at whichever comes first, the percent or the token count. Measured where the
+  percent is measured, never a second reader of the context. Where the frame or the crew skill
+  tells a crew session when to hand off, it names both (find each place). `README.md` (the
+  workflow fields) and `workflow show`.
+- **Tests:** the cap reached before the percent (hand-off), the percent before the cap, the cap
+  unset (today's behaviour), a 200k and a 1M window.
 
 ## Files (change nothing else)
 
 `src/crew/places.ts`, `src/crew/start.ts` (the start gate only), `src/crew/brief.ts`,
-`src/workflow/schema.ts`, `src/workflow/resolve.ts`, `src/machine/` (the load reading only), the
-three test files above, their own tests, `README.md` (the new field), `docs/design/crew.md`,
+`src/crew/self-watch.ts`, `src/workflow/schema.ts`, `src/workflow/resolve.ts`, `src/machine/` (the
+load reading only), the crew skill's hand-off line if it names the percent
+(`plugin/skills/crew/SKILL.md`), their tests, `README.md` (the new fields), `docs/design/crew.md`,
 `plugin/dist/*.js`. **`plugin.json` stays as it is.** Other 1.2.1 phases change `start.ts` (NM1:
 the continuation; WN1: the clash line): keep your change to the gate.
 
@@ -66,8 +70,7 @@ or run git in another worktree.
 
 ## Done-check
 
-1. Each fix has a test, seen failing first (for the three tests: say how you reproduced each
-   failure, for example under a CPU load you made in your worktree, and stop that load after).
+1. Each fix has a test, seen failing first.
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
 3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `opus` at
    `xhigh`.

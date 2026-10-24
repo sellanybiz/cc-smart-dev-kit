@@ -23,6 +23,13 @@ line, so a crew session cannot hand back `done` with red work. Two bugs, both se
   2. the review is missing or empty: no reviewer recorded, or no finding list at all (an empty
      list of findings with a reviewer recorded is fine: a clean review);
   3. Decide, with a reason in your report, whether "the full suite never ran" is refused too.
+- **Seen the other way too (2026-10-25):** RF2's `done` report had empty structured fields
+  (`tests: {targeted: [], full: null}`, `checks: []`, `review: null`) while its prose summary said
+  6,509 pass, 0 fail, both validates green, and an own review (its brief asked for no second
+  opinion). Find why the fields were empty (the report's JSON part, its schema, the crew skill's
+  words, `plugin/skills/crew/SKILL.md`) and fix that cause, so a green phase fills them and the
+  gate above refuses only red or missing work. An own review counts as the review when the brief
+  says no second opinion is needed; find how the report can say so.
   The refusal follows the existing `refusal(…)` shape: what is wrong, then the step. `blocked`,
   `failed` and `handoff` are never held (they carry red work on purpose).
 - **Tests:** each refusal (failed suite, failed check, no review), a green done report passes,
@@ -46,7 +53,7 @@ line, so a crew session cannot hand back `done` with red work. Two bugs, both se
 
 ## Files (change nothing else)
 
-`src/crew/report.ts`, `src/crew/store.ts` (the question fields and their readers), `src/crew/answer.ts`
+`src/crew/report.ts`, `plugin/skills/crew/SKILL.md` (the report's words, if that is the cause), `src/crew/store.ts` (the question fields and their readers), `src/crew/answer.ts`
 (only the superseded refusal), the readers of the question list you find (name each in your
 report), their tests, `docs/design/crew.md`, `plugin/dist/*.js`. **`plugin.json` stays as it is.**
 Other 1.2.1 phases change `answer.ts` (AN1) and `watch.ts` (WN1): keep your change in `answer.ts`
