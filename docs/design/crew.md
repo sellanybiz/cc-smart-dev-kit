@@ -17,6 +17,26 @@ answer, the lead's watch, the hand-off, its own time line, and a note to another
 (§ The crew session's steps, its report, and the lead's watch, § The crew talks), and the crew
 session's and the lead's hooks (§ The crew session's and the lead's hooks).
 
+### Cleanup continuation (CL2 checkpoint)
+
+The watch reminds its lead once a day about stopped, done or failed unmerged work older than a
+day. The item's age starts at the latest transition into its current terminal state, not a later
+report or step. It names resume, continuation, and removal; continuation also accepts these
+terminal states while preserving the old outcome. No reminder discards or removes the work.
+
+`src/crew/lifecycle.ts` is the shared rule for lead absence: an explicitly ended lead, or a
+successfully observed unknown session for more than 24 hours. An unreadable agent view proves
+nothing, and a returning lead clears its unknown clock. `crew list --all` marks that condition.
+The portal consumer and orphan removal through the clean are not integrated in this checkpoint.
+
+When the watch first proves a merge, it stores the crew head, lead ref and immutable lead commit.
+`crew rm` can use that proof only while the crew head is unchanged, and uses the recorded lead
+commit throughout the verdict and branch deletion. A later crew commit requires today's merge
+check. Older merged records have no proof and retain that check; no override flag is added.
+
+Explicit recoverable discard, archive listing/pruning, portal actions and remaining CL1F
+verification are still owed by CL2; this checkpoint is not a finished cleanup release.
+
 **The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
 the procedures: `lead` (register, split, start, hear the news, route the questions, the merge

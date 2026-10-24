@@ -502,6 +502,9 @@ describe("the hook", () => {
         'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
       ].join("\n"),
     );
+    expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "fix/a", true)).toBe(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action "remove").',
+    );
     // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
     // discard_changes is needed.
     expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "worktree-fix-a")).toBe(

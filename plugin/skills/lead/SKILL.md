@@ -210,6 +210,8 @@ session, which it marks merged but never removes (stopping one was your call, an
 removal). Crew worktrees are never cleared with `worktrees --clean`, only with `crew rm` or the
 watch.
 
+A crew worktree is removed only by `crew rm` or the watch, and anything else the kit keeps is named with its step by `worktrees --clean`; never give the person a removal loop.
+
 ## 7. Caps and the queue
 
 `workflow show` prints the caps. **Yours:** `crew.perLead` crew sessions at once (4 by default)
@@ -250,6 +252,7 @@ Each crew session's phase carries its own review. Your own integration commits g
 before the push (`/cc-smart-dev-kit:review` § Second opinion). Then the push, the pull request
 and the merge go as the workflow says (`/cc-smart-dev-kit:commit`). The plan's last wave, the
 heavy cleanup, starts only once everything is verified live (`/cc-smart-dev-kit:plan-task` § 5).
+After the pull request merges and no work remains here, leave and remove your own lead worktree with `ExitWorktree` (action `remove`).
 
 ## Never
 

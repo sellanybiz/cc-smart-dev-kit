@@ -46,11 +46,22 @@ import {
 import { platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
+import { createOut } from "../cli/ui/out";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
+import { callClaude, findClaude } from "../crew/claude";
 import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
 import { locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
 import { repoKey } from "../workflow/reviews";
+import {
+  FINISHED_SESSION_AGE_MS,
+  readFinishedSessions,
+  readSessionAgents,
+  type SessionAgentRow,
+  sessionsClaudeDeps,
+} from "./finished";
 import {
   belongsToRepo,
   closedWithWindow,
@@ -308,6 +319,9 @@ export function markOpened(stateDir: string, id: string, now: number): void {
 }
 
 export interface SessionsDeps {
+  agents?: () => null | SessionAgentRow[];
+  confirm?: (question: string) => boolean;
+  runClaude?: (args: string[]) => number;
   /** Runs a command and says whether it worked; the opener never reads a terminal. */
   spawnDetached: (argv: string[]) => { exited: Promise<number> };
   which: (command: string) => null | string;
@@ -357,10 +371,93 @@ function clock(time: number): string {
 }
 
 export interface SessionsOptions {
-  /** `--open`: reopen the sessions a restart or a closed window stopped. */
+  /** `--open`: reopen sessions stopped by restart/window close. */
   open: boolean;
   /** `--dry-run`: with `--open`, says what it would open and opens nothing. */
   dryRun: boolean;
+  finished?: boolean;
+  remove?: boolean;
+  yes?: boolean;
+}
+
+function runFinishedSessions(
+  paths: CliPaths,
+  options: SessionsOptions,
+  deps: SessionsDeps,
+  cwd: string,
+): number {
+  const term = currentTerminal(process.env);
+  const out = createOut(term);
+  const context = sessionsClaudeDeps(paths, deps.platform, deps.which);
+  const agents = deps.agents ?? (() => readSessionAgents(context, cwd));
+  const read = () => readFinishedSessions(paths, { agents, now: deps.now });
+  const initial = read();
+  if (initial.error !== null) {
+    out.line("fail", initial.error);
+    return 1;
+  }
+  const sessions = initial.sessions;
+  if (sessions.length === 0) {
+    out.line("info", "No finished background sessions older than one day.");
+    return 0;
+  }
+  out.heading("Finished background sessions older than one day");
+  for (const row of sessions)
+    out.line("info", `${row.name} — ${row.folder} — ${finishedAge(row.ageMs)}`);
+  if (!options.remove) return 0;
+  if (!options.yes) {
+    const confirm =
+      deps.confirm ?? ((question: string) => terminalPrompts(term)?.confirm(question) ?? false);
+    if (
+      !confirm(
+        `Remove these ${sessions.length} finished sessions and their worktrees with claude rm (its own checks protect unmerged work)?`,
+      )
+    ) {
+      out.line(
+        "info",
+        `Nothing removed. Use ${deps.command} sessions --finished --remove --yes to confirm without a terminal.`,
+      );
+      return 0;
+    }
+  }
+  let removed = 0;
+  for (const row of sessions) {
+    // The person may resume a session or give it a crew role while the question is open.
+    // Re-read agent view, role records and the terminal timestamp immediately before each rm.
+    const current = read();
+    if (current.error !== null) {
+      out.line("fail", current.error);
+      return 1;
+    }
+    if (!current.sessions.some((one) => one.id === row.id && one.sessionId === row.sessionId)) {
+      out.line("info", `Kept ${row.name}: it is no longer an eligible finished session.`);
+      continue;
+    }
+    const code =
+      deps.runClaude?.(["rm", row.id]) ??
+      (() => {
+        const binary = findClaude(context);
+        if (binary === null) return 1;
+        const called = callClaude(context, binary, ["rm", row.id], cwd);
+        return called.ok && !called.run.timedOut ? (called.run.exitCode ?? 1) : 1;
+      })();
+    if (code !== 0) {
+      out.line(
+        "fail",
+        `Could not remove ${row.name} (exit ${code}). Check claude agents --json --all before trying again.`,
+      );
+      return 1;
+    }
+    removed++;
+  }
+  out.line("info", `Removed ${removed} finished session(s).`);
+  return 0;
+}
+
+function finishedAge(ms: number): string {
+  const days = Math.floor(ms / FINISHED_SESSION_AGE_MS);
+  const hours = Math.floor((ms % FINISHED_SESSION_AGE_MS) / 3_600_000);
+  return `${days}d ${hours}h ago`;
 }
 
 /**
@@ -373,6 +470,17 @@ export async function runSessions(
   deps: SessionsDeps,
   cwd: string = process.cwd(),
 ): Promise<number> {
+  if (
+    (options.remove && !options.finished) ||
+    (options.yes && !options.remove) ||
+    (options.finished && (options.open || options.dryRun))
+  ) {
+    console.error(
+      "Use sessions --finished [--remove [--yes]] separately from --open and --dry-run.",
+    );
+    return 2;
+  }
+  if (options.finished) return runFinishedSessions(paths, options, deps, resolve(cwd));
   // The main checkout, so a run inside a worktree still lists every session of the project.
   let mainCheckout = resolve(cwd);
   try {

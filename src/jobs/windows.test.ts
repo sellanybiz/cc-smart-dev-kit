@@ -5,7 +5,7 @@
  * `taskkill`. No test starts PowerShell, `taskkill` or a real Windows process: the facts
  * are fakes, and the only real children are `sleep`s on this machine.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { hostname } from "node:os";
 import { processStartTime } from "../setup/lock";
 import {
@@ -203,6 +203,23 @@ describe("ending a job's process tree", () => {
 });
 
 describe("whether a process is gone", () => {
+  test("only ESRCH proves absence; permission and unknown errors keep the process", () => {
+    const kill = spyOn(process, "kill");
+    try {
+      for (const code of ["EPERM", "EACCES", "EINVAL"]) {
+        kill.mockImplementation(() => {
+          throw Object.assign(new Error("unreadable"), { code });
+        });
+        expect(processIsGone(42)).toBe(false);
+      }
+      kill.mockImplementation(() => {
+        throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      });
+      expect(processIsGone(42)).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
   test("a live process is there; the same pid after it ended is gone", async () => {
     const child = liveChild();
     expect(processIsGone(child.pid)).toBe(false);

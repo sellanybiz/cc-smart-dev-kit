@@ -27,8 +27,10 @@ import { tildify } from "../cli/paths";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
+import { agentRows } from "./agents";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
+import { leadGone, observeLeadPresence } from "./lifecycle";
 import { withoutListRef } from "./names";
 import { OPUS_TIER, PLACE_FREE, placeFor, runningCrew, runningForLead, unmetWaits } from "./places";
 import {
@@ -37,6 +39,7 @@ import {
   crewBriefFile,
   type Listed,
   listAllCrew,
+  listAllLeads,
   listCrew,
   openQuestionIndex,
   readCrewEvents,
@@ -336,7 +339,13 @@ export function heldBy(
 export function boardLines(
   record: CrewRecord,
   events: readonly CrewEvent[],
-  options: { held: null | string; home: string; now: number; showRepo: boolean },
+  options: {
+    held: null | string;
+    home: string;
+    now: number;
+    showRepo: boolean;
+    leadGone?: boolean;
+  },
 ): string[] {
   const lines = [
     `${record.name} — ${record.state}, ${agoText(stateSince(record, events), options.now)}`,
@@ -345,6 +354,11 @@ export function boardLines(
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
+  if (options.leadGone === true && record.state !== "removed") {
+    lines.push(
+      `  its lead is gone: remove it with crew rm "${record.name}", or continue it with crew start ${record.phase} --continue "${record.name}"`,
+    );
+  }
   const said = lastSaid(record, events);
   if (record.files.length > 0) lines.push(`  files: ${record.files.join(", ")}`);
   const last =
@@ -443,8 +457,24 @@ export async function runCrewList(
       caps === null ? null : heldBy(record, read.machine(), caps),
     ]),
   );
+  const rows = args.all ? agentRows(ctx) : null;
+  const leads = args.all
+    ? await observeLeadPresence(
+        ctx.paths.stateDir,
+        listAllLeads(ctx.paths.stateDir).records,
+        rows,
+        ctx.now(),
+      )
+    : [];
   const blocks = read.records.map((record) =>
     boardLines(record, eventsAbout(record), {
+      leadGone: leadGone(
+        leads.find(
+          (lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId,
+        ) ?? null,
+        rows,
+        ctx.now(),
+      ),
       held: held.get(record.id) ?? null,
       home: ctx.paths.home,
       now: ctx.now(),

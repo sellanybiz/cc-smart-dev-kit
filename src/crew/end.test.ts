@@ -1005,7 +1005,8 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     // What `removeWorktree` leaves when git could not remove the folder it moved aside.
     const parked = `${worktree}-removing-1761300000000`;
     git(world.repo, "worktree", "move", worktree, parked);
-    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    const code = await runCrew(["rm", record.id], world.ctx());
+    expect({ code, err: world.err }).toEqual({ code: 0, err: [] });
     expect(existsSync(parked)).toBe(false);
     expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({

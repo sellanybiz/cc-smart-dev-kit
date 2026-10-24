@@ -796,6 +796,11 @@ describe("crew watch", () => {
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
     expect(record?.mergedWhileStopped).toBe(true);
+    expect(record?.mergeProof).toEqual({
+      head: git(world.repo, "rev-parse", "main^2").trim(),
+      leadRef: "main",
+      leadCommit: git(world.repo, "rev-parse", "main").trim(),
+    });
   });
 
   test("D62: the watch finishes a removal that stopped halfway with no record at all", async () => {
@@ -1620,6 +1625,45 @@ describe("crew watch", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
     expect(world.out).toEqual([`${NAME}: committed`]);
+  });
+
+  test("reminds once a day about stopped unmerged sessions without removing them", async () => {
+    const world = await leadWorld();
+    const stopped = await addCrew(world, "working");
+    git(world.repo, "worktree", "add", "-b", stopped.branch, stopped.worktree);
+    writeFileSync(join(stopped.worktree, "unmerged.txt"), "unmerged work\n");
+    git(stopped.worktree, "add", ".");
+    git(stopped.worktree, "commit", "-m", "unmerged work");
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      stopped.id,
+      { state: "stopped" },
+      T0 - 2 * 86_400_000,
+    );
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const first = await watchPass(
+      { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {}, noted: true },
+      world.ctx({ now: () => T0 }),
+      scope,
+    );
+    expect(world.out).toEqual([
+      `${NAME}: stopped 2 days ago; 1 unmerged commit — crew resume "${NAME}", crew start B6b --continue "${NAME}", or crew rm "${NAME}"`,
+    ]);
+    expect(first.state.stoppedRemindedAt?.[stopped.id]).toBe(T0);
+    world.out.length = 0;
+    const second = await watchPass(first.state, world.ctx({ now: () => T0 + 60_000 }), scope);
+    expect(world.out).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, stopped.id)?.state).toBe("stopped");
+    expect(existsSync(stopped.worktree)).toBe(true);
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([]);
+    await watchPass(second.state, world.ctx({ now: () => T0 + 86_400_000 }), scope);
+    expect(world.out.join("\n")).toContain("crew resume");
   });
 
   test("D60: the person's own switch, turned off mid-run, starts nothing", async () => {

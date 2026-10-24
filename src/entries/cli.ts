@@ -712,14 +712,37 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     case "sessions": {
-      const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
+      const unknown = rest.filter(
+        (arg) => !["--open", "--dry-run", "--finished", "--remove", "--yes"].includes(arg),
+      );
+      if (rest.includes("--finished") && (rest.includes("--open") || rest.includes("--dry-run"))) {
+        console.error(
+          usageError("--finished cannot be combined with --open or --dry-run", "sessions"),
+        );
+        return 2;
+      }
+      if (
+        (rest.includes("--remove") && !rest.includes("--finished")) ||
+        (rest.includes("--yes") && !rest.includes("--remove"))
+      ) {
+        console.error(
+          usageError("--remove requires --finished, and --yes requires --remove", "sessions"),
+        );
+        return 2;
+      }
       if (unknown.length > 0) {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "sessions"));
         return 2;
       }
       return await runSessions(
         paths,
-        { dryRun: rest.includes("--dry-run"), open: rest.includes("--open") },
+        {
+          dryRun: rest.includes("--dry-run"),
+          open: rest.includes("--open"),
+          finished: rest.includes("--finished"),
+          remove: rest.includes("--remove"),
+          yes: rest.includes("--yes"),
+        },
         {
           command: COMMAND,
           now: Date.now(),

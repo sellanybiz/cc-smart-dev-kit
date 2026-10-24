@@ -1,4 +1,32 @@
 // @bun
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
+
+// node_modules/zod/v4/classic/iso.js
+var exports_iso = {};
+__export(exports_iso, {
+  ZodISODate: () => ZodISODate,
+  ZodISODateTime: () => ZodISODateTime,
+  ZodISODuration: () => ZodISODuration,
+  ZodISOTime: () => ZodISOTime,
+  date: () => date2,
+  datetime: () => datetime2,
+  duration: () => duration2,
+  time: () => time2
+});
+
 // src/entries/portal.ts
 import { join as join71 } from "path";
 
@@ -6975,6 +7003,19 @@ function refine(fn, _params = {}) {
 }
 function superRefine(fn, params) {
   return _superRefine(fn, params);
+}
+// node_modules/zod/v4/classic/iso.js
+function datetime2(params) {
+  return _isoDateTime(ZodISODateTime, params);
+}
+function date2(params) {
+  return _isoDate(ZodISODate, params);
+}
+function time2(params) {
+  return _isoTime(ZodISOTime, params);
+}
+function duration2(params) {
+  return _isoDuration(ZodISODuration, params);
 }
 // src/gateway/history.ts
 import { Database } from "bun:sqlite";
@@ -21543,6 +21584,7 @@ var crewFields = object({
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -21555,6 +21597,8 @@ var leadFields = object({
   plan: text,
   tag: text,
   cwd: text,
+  endedAt: text.nullable().optional(),
+  sessionUnknownSince: text.nullable().optional(),
   pausedAgents: array(text).optional(),
   createdAt: text,
   updatedAt: text
@@ -21837,7 +21881,8 @@ var watchStateFields = object({
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional()
+  routerRequests: number2().int().min(0).nullable().optional(),
+  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
 function eventsEndOffset(stateDir, repo) {
   try {
@@ -23473,7 +23518,10 @@ function quotableTitle(title) {
 function insideClaudeWorktrees(path) {
   return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
 }
-function clearWorktreeNote(path, branch) {
+function clearWorktreeNote(path, branch, lead = false) {
+  if (lead) {
+    return `The work of ${branch} is in the base; once nothing remains to do here, leave and remove this lead's worktree with ExitWorktree (action "remove").`;
+  }
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
@@ -23599,8 +23647,13 @@ async function afterMerge(context) {
     worktree
   });
   const notes = [];
-  if (outcome.clear !== null)
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  if (outcome.clear !== null) {
+    let lead = false;
+    try {
+      lead = listLeads(context.paths.stateDir, repo).records.some((one) => one.sessionId === input.session_id);
+    } catch {}
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, lead));
+  }
   if (outcome.announce !== null && record !== null) {
     const pr = outcome.announce;
     const mergedBy = isSessionId(input.session_id) ? input.session_id : null;
@@ -27916,6 +27969,7 @@ import { join as join49 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
   /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
@@ -27960,7 +28014,38 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+  const safe = (entry) => {
+    if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+      if (!entry.endsWith("/cli-latest"))
+        return true;
+      try {
+        if (lstatSync3(join49(worktree, entry)).isFile())
+          return true;
+      } catch {
+        return false;
+      }
+    }
+    return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+  };
+  const supabaseCacheOnly = (entry) => {
+    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
+      return false;
+    let budget = MAX_COMPARED;
+    const visit = (path) => {
+      if (--budget < 0)
+        return false;
+      if (safe(path))
+        return true;
+      try {
+        const stat = lstatSync3(join49(worktree, path));
+        return stat.isDirectory() && readdirSync16(join49(worktree, path)).every((name) => visit(`${path.replace(/\/$/, "")}/${name}`));
+      } catch {
+        return false;
+      }
+    };
+    return visit(entry);
+  };
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
 }
 
 // src/hooks/worktree-leftovers.ts
@@ -28405,6 +28490,9 @@ function crewRecordsOf(paths, repo) {
     return [];
   }
 }
+
+// src/crew/lifecycle.ts
+var STOPPED_REMINDER_MS = 24 * 60 * 60000;
 
 // src/crew/board.ts
 function findNamed(records, ref, look) {
@@ -32915,6 +33003,27 @@ import {
   writeFileSync as writeFileSync9
 } from "fs";
 import { dirname as dirname21, join as join59, resolve as resolve10 } from "path";
+
+// src/sessions/finished.ts
+var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+var agentSchema = object({
+  id: string2().regex(/^[0-9a-f]{8}$/),
+  sessionId: string2().min(1),
+  name: string2().nullable().optional(),
+  cwd: string2().min(1),
+  kind: string2(),
+  state: string2(),
+  status: string2().nullable().optional(),
+  waitingFor: string2().nullable().optional()
+});
+var terminalSchema = object({
+  sessionId: string2(),
+  state: _enum(["done", "stopped"]),
+  updatedAt: exports_iso.datetime(),
+  lastTerminalAt: exports_iso.datetime()
+});
+
+// src/sessions/command.ts
 var TAIL_BYTES2 = 512 * 1024;
 function readTail(path, size) {
   const start = Math.max(0, size - TAIL_BYTES2);

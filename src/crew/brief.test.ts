@@ -27,6 +27,7 @@ describe("the brief", () => {
         "- Your worktree is `/home/user/kit/.claude/worktrees/crew-B6b-portal-live`, on the branch `crew/B6b-portal-live`, cut from `release-1.0.0`. Work only there. Anything slow it needs first (a dependency install) is your first step.",
         "- The files this phase owns: `src/portal/server.ts`, `src/portal/views.ts`. Say in your report why you changed any other file.",
         "- Work by `/cc-smart-dev-kit:crew`: it says how to build the phase, how to mark each step, and how to hand it back.",
+        "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
         "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
         "- When the phase is ready, hand it back with `cc-smart-dev-kit crew report --status done`; when it cannot be done, with `--status failed` and why.",
         "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.",

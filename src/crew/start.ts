@@ -513,10 +513,10 @@ async function planContinuation(
       `crew start ${old.phase} --continue "${old.name}"`,
     );
   }
-  if (old.state !== "handoff") {
+  if (!["handoff", "stopped", "done", "failed"].includes(old.state)) {
     throw refusal(
-      `${old.name} is ${old.state}, and only a crew session that handed off can be continued`,
-      `the crew session hands off with \`${REPORT_COMMAND} --status handoff\``,
+      `${old.name} is ${old.state}, and only a crew session that handed off or stopped can be continued`,
+      `stop its work first, or let the crew session hand off with \`${REPORT_COMMAND} --status handoff\``,
     );
   }
   // One next crew session per hand-off: a second `--continue` of the same crew session would put two

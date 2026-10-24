@@ -5,6 +5,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.1.3
 
+- **CL2 cleanup checkpoint (not complete):** daily reminders keep stopped unmerged crew work visible; the board marks a lead proved gone; exact-head merge proofs survive lead rewrites; stopped outcomes can be continued; finished non-crew background sessions have an explicit, confirmed removal view; Linux stale Claude locks can be cleaned only with process proof and the normal safety checks; Supabase's `cli-latest` cache alone no longer keeps a worktree. Orphan clean integration, recoverable discard, portal consumers and the remaining CL1F verification still need the continuation phase before shipping this work.
+
 **Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
 this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
 Claude Code leaves the task tools out until a session looks them up and the crew skill only

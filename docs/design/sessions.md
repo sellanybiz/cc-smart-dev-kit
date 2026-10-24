@@ -32,6 +32,30 @@ asked for (`src/sessions/`, `src/worktrees/`):
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.
 
+### Finished background sessions
+
+`sessions --finished` uses `src/sessions/finished.ts` for both the command and a later portal
+consumer. It accepts only `background` jobs in `done` or `stopped`, older than a day by their
+matched job-state end timestamps. Stored crew and lead identities (full and short ids), role
+names, unknown kinds, active states and damaged records keep a session out. `--remove` shows
+the list and asks once, or takes `--yes`; each candidate is read again before `claude rm`.
+That command can also remove a session's worktree, with Claude Code's own unmerged-work guard.
+Nothing runs this removal by itself.
+
+### Stale locks and local caches
+
+The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,
+a dead PID or a reused PID with a different `/proc` start time proves the locker gone; only
+then, and after the normal contents/program/container checks, can the clean unlock and remove
+it. Other lock formats and platforms stay protected. A live lock whose work is on the base
+names `ExitWorktree` (remove), or closing the session, as its next step.
+
+The Supabase CLI's `supabase/.temp/cli-latest` version-check cache is disposable. Its parent
+folder is not: different project-link or pooler state stays protected. An unchanged copy in
+the main checkout remains safe by the existing byte-for-byte comparison. A bounded directory
+walk allows that one cache without hiding other local files. A project-declared safe-path
+field remains deferred.
+
 ### The flow report
 
 `cc-smart-dev-kit report` answers what a week of sessions cost in a person's time, from the

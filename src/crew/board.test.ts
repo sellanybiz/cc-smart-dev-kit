@@ -37,6 +37,16 @@ const OPUS_CHAIN = {
 };
 
 describe("crew list", () => {
+  test("list --all marks a crew session after its lead has been unknown for more than a day", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["list", "--all"], world.ctx())).toBe(0);
+    expect(world.out.join("\n")).not.toContain("its lead is gone");
+    world.out.length = 0;
+    expect(await runCrew(["list", "--all"], world.ctx({ now: () => NOW + 86_400_001 }))).toBe(0);
+    expect(world.out.join("\n")).toContain("its lead is gone");
+  });
+
   test("newest first; the state is since its last change, not since the last write to the record", async () => {
     const world = await boardWorld();
     const stateDir = world.paths.stateDir;

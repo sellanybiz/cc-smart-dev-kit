@@ -53,6 +53,7 @@ import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
+import { mergeProof, observeLeadPresence, STOPPED_REMINDER_MS, stoppedCrewNeed } from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
@@ -576,6 +577,7 @@ export async function watchPass(
   const { repo, resolved } = scope;
   const said = { ...state.said };
   const removals = { ...state.removals };
+  const stoppedRemindedAt = { ...state.stoppedRemindedAt };
   let noted = state.noted;
   let lines = 0;
   const say = (line: string): void => {
@@ -598,6 +600,12 @@ export async function watchPass(
 
   // What the sessions are doing now.
   const agents = agentRows(ctx);
+  await observeLeadPresence(
+    ctx.paths.stateDir,
+    listLeads(ctx.paths.stateDir, repo).records,
+    agents,
+    ctx.now(),
+  );
   const mine = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId,
   );
@@ -649,8 +657,18 @@ export async function watchPass(
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
   const allRecords = listCrew(ctx.paths.stateDir, repo).records;
+  const events = readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
   for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
+    const need = stoppedCrewNeed(record, events, ctx);
+    const lastReminder = stoppedRemindedAt[record.id];
+    if (
+      need !== null &&
+      (lastReminder === undefined || ctx.now() - lastReminder >= STOPPED_REMINDER_MS)
+    ) {
+      say(need.line);
+      stoppedRemindedAt[record.id] = ctx.now();
+    }
     const row = agents === null ? null : rowOf(agents, record);
     // Its session is in agent view and is neither stopped nor dead: it may still hold a process
     // (a session whose turn ended keeps one, D35). A session that crashed has nothing to stop.
@@ -666,11 +684,13 @@ export async function watchPass(
       const wasStopped = record.state === "stopped";
       // Marked once: a record that is merged already is not written again on every pass.
       if (record.state !== "merged") {
+        const proof = mergeProof(record, ctx);
+        if (proof === undefined) continue;
         await updateCrew(
           ctx.paths.stateDir,
           record.repo,
           record.id,
-          { state: "merged" },
+          { state: "merged", mergeProof: proof },
           ctx.now(),
           wasStopped
             ? "the lead merged its branch; it was stopped, so `crew rm` removes it"
@@ -879,6 +899,7 @@ export async function watchPass(
     state: {
       noted,
       removals,
+      stoppedRemindedAt,
       offset,
       said,
       ...(resumedAt === undefined ? {} : { resumedAt }),

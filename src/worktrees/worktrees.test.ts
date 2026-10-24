@@ -881,6 +881,88 @@ describe("scanning and removing, against a real repo", () => {
     ).toThrow("origin/trunk is not known here");
   });
 
+  test("a stale Claude lock is unlocked only when process identity is proven gone", () => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session old-session (pid 424242 start 12345)",
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: join(tempDir("claude"), ".claude"),
+      env: cleanGitEnv(),
+      now: Date.now() + 60 * 60 * 1000,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processStartTime: () => null,
+        processIsGone: () => false,
+        platform: "linux" as const,
+      },
+    };
+    const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    expect(listed?.state).toMatchObject({
+      finished: false,
+      why: expect.stringContaining("locked"),
+    });
+    expect(existsSync(worktree)).toBe(true);
+
+    const gone = {
+      ...options,
+      facts: { ...options.facts, processStartTime: () => "proc:different" },
+    };
+    const result = scanWorktrees(main, gone).find((one) => one.listed.path === worktree);
+    expect(result?.state).toMatchObject({ finished: true });
+    if (result === undefined) throw new Error("missing test worktree");
+    const removed = removeWorktree(main, result.listed, gone);
+    expect(removed.status).toBe("removed");
+    expect(removed.said[0]).toBe(`unlocked stale Claude lock and removed ${worktree}`);
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("a dead PID's numeric Claude lock can be removed, but an unreadable live PID stays", () => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session old-session (pid 424242 start 12345)",
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: join(tempDir("claude"), ".claude"),
+      env: cleanGitEnv(),
+      now: Date.now() + 60 * 60 * 1000,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processStartTime: () => null,
+        processIsGone: () => false,
+        platform: "linux" as const,
+      },
+    };
+    expect(
+      scanWorktrees(main, options).find((one) => one.listed.path === worktree)?.state,
+    ).toMatchObject({ finished: false });
+    const dead = { ...options, facts: { ...options.facts, processIsGone: () => true } };
+    const found = scanWorktrees(main, dead).find((one) => one.listed.path === worktree);
+    expect(found?.state).toMatchObject({ finished: true });
+    expect(found === undefined ? null : removeWorktree(main, found.listed, dead).status).toBe(
+      "removed",
+    );
+    expect(existsSync(worktree)).toBe(false);
+  });
+
   test("a branch git still has checked out is kept, and the reason is git's own", () => {
     const { main, worktree } = repo();
     // git refuses while the worktree holds it: the removal deletes the branch afterwards.

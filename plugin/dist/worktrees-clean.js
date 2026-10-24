@@ -6672,14 +6672,26 @@ function loadProjectConfig(checkout, pluginVersion) {
 import {
   appendFileSync,
   existsSync as existsSync5,
-  mkdirSync as mkdirSync2,
+  mkdirSync as mkdirSync3,
   readdirSync as readdirSync3,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   rmSync,
-  statSync as statSync4,
+  statSync as statSync5,
   writeFileSync as writeFileSync2
 } from "fs";
 import { join as join7 } from "path";
+
+// src/setup/lock.ts
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync as readFileSync3,
+  readlinkSync,
+  statSync as statSync3,
+  unlinkSync,
+  writeSync
+} from "fs";
 
 // src/setup/file-mode.ts
 import { chmodSync, fchmodSync } from "fs";
@@ -6700,41 +6712,77 @@ function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
 
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
 
 // src/setup/write.ts
 import {
-  closeSync,
+  closeSync as closeSync2,
   existsSync as existsSync4,
   fsyncSync,
   lstatSync,
-  mkdirSync,
-  openSync,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync3,
-  readlinkSync,
+  readFileSync as readFileSync4,
+  readlinkSync as readlinkSync2,
   realpathSync as realpathSync3,
   renameSync,
-  statSync as statSync3,
-  unlinkSync,
+  statSync as statSync4,
+  unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
 import { basename as basename2, dirname as dirname2, join as join6, resolve as resolve3 } from "path";
 function writeTemp(file, content, mode) {
   const dir = dirname2(file);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync2(dir, { recursive: true });
   const temp = join6(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
-    const fd = openSync(temp, "wx", mode);
+    const fd = openSync2(temp, "wx", mode);
     try {
       writeFileSync(fd, content);
       fsyncSync(fd);
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
     setFileMode(temp, mode);
   } catch (error) {
     if (existsSync4(temp))
-      unlinkSync(temp);
+      unlinkSync2(temp);
     throw error;
   }
   return temp;
@@ -6746,7 +6794,7 @@ function atomicWrite(file, content, mode, beforeRename) {
     renameSync(temp, file);
   } catch (error) {
     if (existsSync4(temp))
-      unlinkSync(temp);
+      unlinkSync2(temp);
     throw error;
   }
 }
@@ -6757,7 +6805,7 @@ var LOG_MAX_BYTES = 256 * 1024;
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function ensureDir(dir) {
-  mkdirSync2(dir, { recursive: true, mode: 448 });
+  mkdirSync3(dir, { recursive: true, mode: 448 });
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
@@ -6765,8 +6813,8 @@ function isoSeconds(ms) {
 function appendLogLine(logFile, line, nowMs) {
   ensureDir(join7(logFile, ".."));
   try {
-    if (statSync4(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync4(logFile, "utf8");
+    if (statSync5(logFile).size > LOG_MAX_BYTES) {
+      const text = readFileSync5(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -6778,7 +6826,7 @@ function appendLogLine(logFile, line, nowMs) {
 
 // src/worktrees/auto-state.ts
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync5 } from "fs";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6 } from "fs";
 import { dirname as dirname3, join as join8 } from "path";
 var AUTO_CLEAN_TRIGGERS = ["merge", "session"];
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -6812,14 +6860,14 @@ function autoCleanFiles(stateDir, repo) {
 }
 function readJson(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync5(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync6(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
 }
 function writeJson(file, value) {
-  mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
+  mkdirSync4(dirname3(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -6887,16 +6935,17 @@ var LOCK_PORTS = {
 };
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync9, mkdtempSync, readdirSync as readdirSync8, rmSync as rmSync3, statSync as statSync7 } from "fs";
+import { existsSync as existsSync9, mkdtempSync, readdirSync as readdirSync8, rmSync as rmSync3, statSync as statSync8 } from "fs";
 import { tmpdir } from "os";
 import { join as join13 } from "path";
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync6, readlinkSync as readlinkSync2 } from "fs";
+import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync3 } from "fs";
 import { join as join9 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
   /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
@@ -6918,12 +6967,12 @@ function sameAsMain(worktree, mainCheckout, path) {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
       if (a.isSymbolicLink() || b.isSymbolicLink()) {
-        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync4(here).every((entry) => same(join9(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync6(here).equals(readFileSync6(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync7(here).equals(readFileSync7(there));
     } catch {
       return false;
     }
@@ -6941,25 +6990,56 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+  const safe = (entry) => {
+    if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+      if (!entry.endsWith("/cli-latest"))
+        return true;
+      try {
+        if (lstatSync2(join9(worktree, entry)).isFile())
+          return true;
+      } catch {
+        return false;
+      }
+    }
+    return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+  };
+  const supabaseCacheOnly = (entry) => {
+    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
+      return false;
+    let budget = MAX_COMPARED;
+    const visit = (path) => {
+      if (--budget < 0)
+        return false;
+      if (safe(path))
+        return true;
+      try {
+        const stat = lstatSync2(join9(worktree, path));
+        return stat.isDirectory() && readdirSync4(join9(worktree, path)).every((name) => visit(`${path.replace(/\/$/, "")}/${name}`));
+      } catch {
+        return false;
+      }
+    };
+    return visit(entry);
+  };
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync8, readFileSync as readFileSync10, statSync as statSync6 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync11, statSync as statSync7 } from "fs";
 import { basename as basename3, isAbsolute, join as join12, resolve as resolve4 } from "path";
 
 // src/crew/store.ts
 import {
   appendFileSync as appendFileSync2,
-  closeSync as closeSync2,
+  closeSync as closeSync3,
   existsSync as existsSync6,
   fstatSync,
-  mkdirSync as mkdirSync4,
-  openSync as openSync2,
+  mkdirSync as mkdirSync5,
+  openSync as openSync3,
   readdirSync as readdirSync5,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   readSync,
-  statSync as statSync5
+  statSync as statSync6
 } from "fs";
 import { dirname as dirname4, join as join10 } from "path";
 
@@ -7084,6 +7164,7 @@ var crewFields = object({
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -7096,6 +7177,8 @@ var leadFields = object({
   plan: text,
   tag: text,
   cwd: text,
+  endedAt: text.nullable().optional(),
+  sessionUnknownSince: text.nullable().optional(),
   pausedAgents: array(text).optional(),
   createdAt: text,
   updatedAt: text
@@ -7166,7 +7249,7 @@ function checked(schema, value, file) {
 function readRecord(schema, file) {
   let raw;
   try {
-    raw = readFileSync7(file, "utf8");
+    raw = readFileSync8(file, "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -7211,7 +7294,8 @@ var watchStateFields = object({
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional()
+  routerRequests: number2().int().min(0).nullable().optional(),
+  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
@@ -7221,11 +7305,11 @@ var stopStateFields = object({
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync7, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync9, rmSync as rmSync2 } from "fs";
+import { existsSync as existsSync7, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync10, rmSync as rmSync2 } from "fs";
 import { dirname as dirname5, join as join11, relative } from "path";
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync6, readFileSync as readFileSync8, readlinkSync as readlinkSync3 } from "fs";
+import { readdirSync as readdirSync6, readFileSync as readFileSync9, readlinkSync as readlinkSync4 } from "fs";
 import { platform } from "os";
 var DOCKER_TIMEOUT_MS = 5000;
 var PROGRAMS_TIMEOUT_MS = 15000;
@@ -7413,7 +7497,7 @@ function dockerMounts() {
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 function cwdOf(pid) {
   try {
-    return readlinkSync3(`/proc/${String(pid)}/cwd`);
+    return readlinkSync4(`/proc/${String(pid)}/cwd`);
   } catch {
     return;
   }
@@ -7486,7 +7570,7 @@ function mountPoints(on = platform()) {
   if (on !== "linux")
     return "unknown";
   try {
-    return parseMountPoints(readFileSync8("/proc/self/mountinfo", "utf8")) ?? "unknown";
+    return parseMountPoints(readFileSync9("/proc/self/mountinfo", "utf8")) ?? "unknown";
   } catch {
     return "unknown";
   }
@@ -7690,7 +7774,7 @@ function gitEntryWhy(folder) {
   if (!stat.isFile())
     return "its .git entry is neither a file nor a folder";
   try {
-    const target = readFileSync9(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
+    const target = readFileSync10(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
     return target !== "" && existsSync7(target) ? `git still has an administrative folder for it: ${target}` : null;
   } catch {
     return "its .git file cannot be read";
@@ -7791,7 +7875,7 @@ function isCrewWorktree(worktree, records) {
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync10(join12(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync11(join12(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
@@ -7800,10 +7884,20 @@ function idleMinutesOrNull(worktree, now) {
   let last = 0;
   for (const file of ["index", "HEAD", join12("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
+      last = Math.max(last, statSync7(join12(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
+}
+
+// src/jobs/windows.ts
+function processIsGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
 }
 
 // src/workflow/review-cover.ts
@@ -7841,7 +7935,7 @@ function innerWorktreeOf(worktree, all) {
   for (const entry of entries) {
     const folder = join13(claudeOwn, entry);
     try {
-      if (statSync7(folder).isDirectory() && readdirSync8(folder).length > 0)
+      if (statSync8(folder).isDirectory() && readdirSync8(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -7958,6 +8052,32 @@ function workOnBase(repo, baseRef, head, branch, env, replayer) {
     return "pull request";
   return null;
 }
+function workOnRef(repo, ref, head, env, replayer = replayerFor(repo, env)) {
+  const ancestor = runGit(repo, ["merge-base", "--is-ancestor", head, ref], env);
+  if (ancestor.ok)
+    return "ancestor";
+  if (ancestor.code !== 1)
+    return "unknown";
+  const replay = replayer.replay(ref, head);
+  if (replay === "nothing")
+    return "replay";
+  return replay === "changes" ? "missing" : "unknown";
+}
+function staleClaudeLock(listed, look) {
+  if (!listed.locked || listed.lockReason === undefined)
+    return false;
+  const match = /^claude session .+ \(pid (\d+) start (\d+)\)$/.exec(listed.lockReason);
+  if (match === null || look.platform !== "linux")
+    return false;
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0)
+    return false;
+  if (look.processIsGone(pid))
+    return true;
+  const expected = `proc:${match[2]}`;
+  const actual = look.processStartTime(pid, expected);
+  return actual !== null && actual !== expected;
+}
 function judgeOne(repo, listed, all, look, idle) {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
@@ -7989,7 +8109,7 @@ function judgeOne(repo, listed, all, look, idle) {
     gitTooOld: look.replayer.tooOld,
     idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
-    locked: listed.locked,
+    locked: listed.locked && !staleClaudeLock(listed, look),
     mergedBy: aheadOfBase > 0 ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer) : null,
     parked,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
@@ -8002,7 +8122,10 @@ function machineFactsOf(options) {
     containers: options.facts?.containers ?? dockerMounts(),
     mounts: options.facts?.mounts ?? mountPoints(),
     programs: options.facts?.programs ?? runningPrograms(),
-    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir)
+    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
+    processStartTime: options.facts?.processStartTime ?? processStartTime,
+    processIsGone: options.facts?.processIsGone ?? processIsGone,
+    platform: options.facts?.platform ?? process.platform
   };
 }
 function lookAt(repo, options) {
@@ -8016,6 +8139,16 @@ function lookAt(repo, options) {
     replayer: replayerFor(repo, options.env)
   };
 }
+function lockLine(listed, onBase = false) {
+  const reason = listed.lockReason;
+  if (reason === undefined)
+    return "locked with `git worktree lock` (locker cannot be proved gone)";
+  const match = /^claude session (.+) \(pid (\d+) start (\S+)\)$/.exec(reason);
+  if (match === null)
+    return `locked: ${reason} (locker cannot be proved gone)`;
+  const session = match[1];
+  return `locked by live or unprovable Claude session ${session}${onBase ? "; its work is on the base \u2014 leave it with Claude Code's ExitWorktree (remove), or close that session" : "; its locker is not proved gone"}`;
+}
 function scanWorktrees(repo, options) {
   const { env } = options;
   const againstRef = options.against?.ref ?? `refs/remotes/origin/${options.base}`;
@@ -8028,11 +8161,12 @@ function scanWorktrees(repo, options) {
   const [main, ...others] = all;
   const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
-    if (listed.locked) {
+    if (listed.locked && (!existsSync9(listed.path) || !staleClaudeLock(listed, look))) {
+      const onBase = (listed.lockReason ?? "").startsWith("claude session ") && ["ancestor", "replay"].includes(workOnRef(repo, look.ref, listed.head, env, look.replayer));
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
-        state: { finished: false, held: false, why: "locked with `git worktree lock`" }
+        state: { finished: false, held: false, why: lockLine(listed, onBase) }
       });
       continue;
     }
@@ -8060,12 +8194,28 @@ function removeWorktree(repo, listed, options) {
     };
   }
   const look = lookAt(repo, options);
+  if (current.locked && !staleClaudeLock(current, look)) {
+    return { said: [`kept ${current.path}: ${lockLine(current)}`], status: "kept" };
+  }
   const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],
       status: fresh.held ? "held" : "kept"
     };
+  }
+  if (current.locked) {
+    const check = listWorktrees(repo, options.env).find((one) => samePath(one.path, current.path));
+    if (check === undefined || check.head !== current.head || check.branch !== current.branch || check.lockReason !== current.lockReason || !staleClaudeLock(check, look)) {
+      return { said: [`kept ${listed.path}: lock state changed during removal`], status: "kept" };
+    }
+    const unlocked = runGit(repo, ["worktree", "unlock", current.path], options.env);
+    if (!unlocked.ok) {
+      return {
+        said: [`kept ${current.path}: stale lock could not be unlocked (${unlocked.err})`],
+        status: "kept"
+      };
+    }
   }
   const alreadyParked = isParkedWorktree(listed.path);
   const parked = alreadyParked ? listed.path : `${listed.path}-removing-${String(Date.now())}`;
@@ -8098,7 +8248,9 @@ function removeWorktree(repo, listed, options) {
     };
   }
   const deleteBranch = options.deleteBranch ?? ((repo_, branch) => deleteBranchOnRef(repo_, options.against?.ref ?? `refs/remotes/origin/${options.base}`, options.against?.label ?? options.base, branch, options.env));
-  const said = [`removed ${listed.path}`];
+  const said = [
+    current.locked ? `unlocked stale Claude lock and removed ${listed.path}` : `removed ${listed.path}`
+  ];
   if (listed.branch !== null)
     said.push(deleteBranch(repo, listed.branch));
   return { said, status: "removed" };

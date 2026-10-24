@@ -65,6 +65,7 @@ import {
   stopOwnLeftovers,
   stopSession,
 } from "./end";
+import { validMergeProof } from "./lifecycle";
 import { appendCrewEvent, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
@@ -92,9 +93,15 @@ export async function runCrewRm(
     return stored ? 0 : 1;
   }
 
-  // 2. The lead's branch decides whether the work is kept (D24).
-  const lead = leadRef(record, ctx);
+  // 2. The lead's branch decides whether the work is kept (D24). A durable proof holds
+  // the immutable lead commit that received exactly this head, even if that branch is gone.
+  const proof = validMergeProof(record, ctx) ? record.mergeProof : undefined;
+  const lead =
+    proof === undefined
+      ? leadRef(record, ctx)
+      : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
   if ("why" in lead) return refuse(failure(`crew rm: ${lead.why}`), ctx);
+  const removalBase = { label: lead.label, ref: lead.sha };
   const mergeStep =
     lead.folder === null
       ? `merge ${record.branch} into ${lead.label}`
@@ -105,7 +112,7 @@ export async function runCrewRm(
     ctx.env,
     GIT_TIMEOUT_MS,
   ).ok;
-  if (branchThere) {
+  if (branchThere && proof === undefined) {
     const merged = mergedIntoBase(record, ctx);
     if (merged === "unknown") {
       return refuse(
@@ -237,13 +244,7 @@ export async function runCrewRm(
   // to say removed, and nothing would come back for the folder.
   const finished = options.skipParked
     ? { kept: [], removed: [] }
-    : await finishParkedWorktrees(
-        repo,
-        ctx,
-        { label: lead.label, ref: lead.sha },
-        (line) => ctx.print(line),
-        facts,
-      );
+    : await finishParkedWorktrees(repo, ctx, removalBase, (line) => ctx.print(line), facts);
   const stuck = finished.kept.find((one) => {
     const original = parkedOriginal(one.path);
     return samePath(one.path, repo) || (original !== null && samePath(original, record.worktree));
@@ -262,7 +263,7 @@ export async function runCrewRm(
     let judged: ReturnType<typeof scanWorktrees>[number] | undefined;
     try {
       judged = scanWorktrees(repo, {
-        against: { label: lead.label, ref: lead.sha },
+        against: removalBase,
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         env: ctx.env,
@@ -291,11 +292,11 @@ export async function runCrewRm(
       const stopped = await stopOwnLeftovers(record, leftovers, ctx);
       if (stopped.line !== null) ctx.print(stopped.line);
       const removal = removeWorktree(repo, judged.listed, {
-        against: { label: lead.label, ref: lead.sha },
+        against: removalBase,
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         deleteBranch: (_repo, branch) =>
-          deleteBranchOnRef(repo, lead.sha, lead.label, branch, ctx.env),
+          deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
         env: ctx.env,
         ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
@@ -331,7 +332,7 @@ export async function runCrewRm(
       GIT_TIMEOUT_MS,
     ).ok;
   if (branchLeft()) {
-    ctx.print(deleteBranchOnRef(repo, lead.sha, lead.label, record.branch, ctx.env));
+    ctx.print(deleteBranchOnRef(repo, removalBase.ref, removalBase.label, record.branch, ctx.env));
   }
 
   // 8. Last, `claude rm`: it refuses a worktree that is still there.
@@ -431,7 +432,10 @@ export async function finishParkedWorktrees(
         let chosen: null | { label: string; ref: string } = null;
         if (record !== undefined) {
           const lead = leadRef(record, ctx);
-          if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+          if (!("why" in lead)) {
+            const proof = validMergeProof(record, ctx) ? record.mergeProof : undefined;
+            chosen = { label: lead.label, ref: proof?.leadCommit ?? lead.sha };
+          }
         }
         chosen = chosen ?? base;
         if (chosen === null) continue;

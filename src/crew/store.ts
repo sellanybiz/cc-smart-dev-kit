@@ -450,6 +450,8 @@ const crewFields = z.object({
    * (`changeCrew`), from the state the record was in; absent on any other record.
    */
   mergedWhileStopped: z.boolean().optional(),
+  /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
+  mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -480,6 +482,10 @@ const leadFields = z.object({
   tag: text,
   /** The folder the lead works in. */
   cwd: text,
+  /** The plan ended; absent on leads recorded before this field existed. */
+  endedAt: text.nullable().optional(),
+  /** First successful agent-view read that did not know this lead; cleared when it returns. */
+  sessionUnknownSince: text.nullable().optional(),
   /**
    * The lead's own subagents that stopped on an API error and wait to be woken again
    * (session ids, oldest first); absent on a record an older kit wrote. The lead's notes
@@ -1001,6 +1007,29 @@ export async function writeLead(
   });
 }
 
+/**
+ * Records one successful agent-view observation without changing the lead's activity time.
+ * The lock keeps an ended plan or a concurrently refreshed lead intact.
+ */
+export async function setLeadPresence(
+  stateDir: string,
+  repo: string,
+  sessionId: string,
+  known: boolean,
+  atMs: number,
+): Promise<LeadRecord | null> {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null) return null;
+    const since = known ? null : (before.sessionUnknownSince ?? iso(atMs));
+    if (before.sessionUnknownSince === since) return before;
+    const after = checked(leadRecordSchema, { ...before, sessionUnknownSince: since }, file);
+    writeRecord(file, after);
+    return after;
+  });
+}
+
 /** Appends one line to the events log of `repo` (a step, a report), under the store's lock. */
 export async function appendCrewEvent(
   stateDir: string,
@@ -1205,6 +1234,8 @@ export interface WatchState {
    */
   parkedAt?: number | undefined;
   removals?: Record<string, { at: number; signature: string }> | undefined;
+  /** The last daily stopped-session reminder per crew id. */
+  stoppedRemindedAt?: Record<string, number> | undefined;
 }
 
 const watchStateFields = z.object({
@@ -1215,6 +1246,7 @@ const watchStateFields = z.object({
   said: z.record(z.string(), z.string()),
   resumedAt: z.number().int().min(0).optional(),
   routerRequests: z.number().int().min(0).nullable().optional(),
+  stoppedRemindedAt: z.record(z.string(), z.number().int().min(0)).optional(),
 });
 
 /**
