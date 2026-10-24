@@ -1,4 +1,4 @@
-# SL1 — the status line always shows the session's context use (1.2.1)
+# SL1 — the status line always shows the session's context use and its reasoning effort (1.2.1)
 
 ## Goal, and why
 
@@ -38,7 +38,16 @@ searched the 2.1.310 binary and found none).
      suffix or an alias must not miss the entry (find how Claude Code itself keys it).
 3. **The warn colour** follows `alerts.usagePercent`, as the 5h and 7d segments do.
 4. **No segment** when the input has no context data.
-5. **Cheap:** the status line runs on every refresh. Read each file once per refresh, and nothing
+5. **The reasoning effort beside the tokens (the owner, 2026-10-25: "on the status line in the
+   footer, please show the current reasoning effort also with the tokens").** For example
+   `ctx 312k · 78% of 400k · xhigh`. The effort is the one this session runs at now, so a
+   `/effort` change shows at the next refresh. Find where Claude Code gives it (the status line
+   input on the tested version; else the settings' `effortLevel` and the environment, in Claude
+   Code's own order) and record the source as a row in `docs/claude-code-contract.md`. When no
+   source says it, show nothing for it, never a guess. When the session runs on the gateway and
+   its slot's backend target has a pinned effort (D64, `gateway effort`), say the pinned one, the
+   one that really answers, read through the router's config reader, never a second one.
+6. **Cheap:** the status line runs on every refresh. Read each file once per refresh, and nothing
    more (no git, no network, no second parse of one file).
 
 ## Docs
@@ -52,9 +61,8 @@ how.
 `src/cli/statusline.ts`, `src/cli/usage-window.ts` (only if the segment's colour shares its
 helper), `src/crew/context-window.ts` (only if a reader is shared: one home), a reader of Claude
 Code's `autoCompactWindow` (one home; name where it lives), their tests, `README.md`,
-`docs/claude-code-contract.md`, `plugin/dist/*.js`. **`plugin.json` stays as it is.** LH1 changes
-`src/crew/self-watch.ts` (the hand-off's token cap, against the same window): if it should measure
-against the auto-compact window too, say so in your report; do not change it.
+`docs/claude-code-contract.md`, `plugin/dist/*.js`. **`plugin.json` stays as it is.** 1.2.0's HO1 already
+added the read-only reader of `autoCompactWindow` for the crew hand-off: reuse it.
 
 ## Setup in your worktree
 
@@ -68,6 +76,8 @@ every settings file comes from the test's temporary folder.
    against it); a top-level one, if that is the fallback; `"auto"` and none (against the model's
    window); a model id with a suffix; past `alerts.usagePercent` (the warn colour); no context data
    (no segment); a settings file that is not valid JSON (no crash, the model's window).
+   The effort: from its source; changed mid-session (the next refresh shows it); no source (nothing
+   shown); a pinned backend effort on the session's slot (the pinned one).
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
 3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
    `high`.
