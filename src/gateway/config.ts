@@ -28,7 +28,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   claudeFamily,
-  FALLBACK_OFF_BY_DEFAULT,
   FAMILY_SLOTS,
   isBackendName,
   isProfileName,
@@ -456,18 +455,18 @@ export function modelSlotError(
 }
 
 /**
- * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
- * one. Otherwise the slot's default: off for the model slots (`FALLBACK_OFF_BY_DEFAULT`),
- * on for every other slot, the judge included (D44: while Claude cannot judge, the worker's
- * tested targets do; `gateway fallback judge off` keeps Claude alone). A 0.4.x opus or fable
- * chain gets that default too: it moved on only at the plan's usage limit, and "on" now
- * moves on at any 408, 429, 5xx, 529 or network error, so turning it on is the person's
- * choice (`gateway fallback <slot> on`).
+ * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is one,
+ * else off, for every slot (D66, the owner): a chain answers with its first target alone until
+ * the person turns the switch on (`gateway fallback <slot> on`). That holds for the judge too:
+ * with no judge chain of the person's own, Claude judges alone, and the worker's tested targets
+ * stand in while Claude is limited or down (D44) only after `gateway fallback judge on`. A
+ * 0.4.x opus or fable chain, and every other chain, starts off the same way: "on" moves on at
+ * any 408, 429, 5xx, 529 or network error, so turning it on is the person's choice.
  */
 export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 
 /**

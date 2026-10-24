@@ -451,15 +451,6 @@ export function familySlotFor(model: unknown): null | { model: string; slot: str
 }
 
 /**
- * The slots whose fallback switch is off until the person turns it on: the model slots,
- * whose next targets stand in for a premium model. Every other slot (scout, worker, the
- * judge, a machine's own) starts with it on. The judge is on so that, with no judge chain of
- * the person's own, the worker's tested targets answer while Claude cannot (D44); `gateway
- * fallback judge off` keeps Claude alone.
- */
-export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS)];
-
-/**
  * The targets a slot's request may use: the whole chain while its fallback switch is on, its
  * first target alone while it is off. The rest stay saved, unused.
  */
