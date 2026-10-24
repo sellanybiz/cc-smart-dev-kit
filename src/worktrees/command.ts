@@ -32,7 +32,7 @@
 import { basename, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { type CrewRecord, listCrew } from "../crew/store";
+import { type CrewRecord, crewOfWorktree, listCrew } from "../crew/store";
 import { runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -92,11 +92,6 @@ export function crewRecordsOf(paths: CliPaths, repo: string): CrewRecord[] {
   }
 }
 
-/** The crew session whose worktree is `path`, in any state and of any lead, or null. */
-export function crewOfWorktree(records: readonly CrewRecord[], path: string): null | CrewRecord {
-  return records.find((one) => samePath(one.worktree, path)) ?? null;
-}
-
 /**
  * True for a worktree the crew store names: the clean leaves it to its lead (D62). The main
  * checkout is none, and neither is a folder that is gone — there is nothing of it to remove, and
@@ -119,15 +114,13 @@ export function crewWorktreeStep(record: CrewRecord): string {
     case "done":
       return `done, waiting for its lead's merge; then \`${COMMAND} crew rm\` or the watch removes it`;
     case "handoff":
-      return `handed off; it goes once its continuation and the lead's merge are past`;
+      return `handed off; \`${COMMAND} crew rm\` or the watch removes it once its work is merged`;
     case "failed":
-      return `failed; its lead removes it with \`${COMMAND} crew rm\` once its work is merged`;
+      return `failed; \`${COMMAND} crew rm\` or the watch removes it once its work is merged`;
     case "stopped":
       return `stopped; its removal is its lead's call (\`${COMMAND} crew rm\`)`;
     case "queued":
       return "queued; it has not started";
-    case "removed":
-      return `removed already; a folder it left behind is finished by \`${COMMAND} worktrees --clean\``;
     default:
       return `still running (${record.state}); its lead's watch ends it, and removes it once merged`;
   }

@@ -54,10 +54,11 @@ export interface RunningProgram {
    */
   parentPid?: number;
   /**
-   * When it was started (epoch ms), when known: the removal tells a program a finished crew
-   * session left behind (started before its turn ended) from one the person started there later
-   * (`crew rm`, D62). The listing does not carry it; `startTimes` reads it for the few programs
-   * a removal is about to stop, and a test gives it. Absent when unknown.
+   * When it was started (epoch ms), when known: where a program's environment cannot be read,
+   * the removal of a finished crew session tells a program it left behind (started while the
+   * session lived) from one started since (`stopLeftoverProcesses`, D62). The listing does not
+   * carry it; `startTimes` reads it for the few programs a removal is about to stop, and a test
+   * gives it. Absent when unknown.
    */
   startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
@@ -221,7 +222,7 @@ export function mentions(line: string, folder: string): boolean {
  * says — the chain one command runs in. A pid that appears twice ends the walk (a reused pid
  * is no descent), and a process the listing does not hold contributes nothing.
  */
-export function lineage(programs: RunningProgram[], pid: number): Set<number> {
+function lineage(programs: RunningProgram[], pid: number): Set<number> {
   const parents = new Map<number, number>();
   for (const program of programs) {
     if (program.parentPid !== undefined) parents.set(program.pid, program.parentPid);
@@ -241,8 +242,8 @@ export function lineage(programs: RunningProgram[], pid: number): Set<number> {
 /**
  * True when `pid` is `ancestor` or was started by it, as far as the listing says: the chain a
  * session's shell and the program it ran form. A dead session's orphans are reparented, so a
- * listing read after the end often cannot prove this — a program's start time is the other
- * witness (`crew rm`, D62).
+ * listing read after the end often cannot prove this — the crew id in a program's environment is
+ * the other witness (`stopLeftoverProcesses`, `src/crew/end.ts`, D62).
  */
 export function descendsFrom(programs: RunningProgram[], pid: number, ancestor: number): boolean {
   return lineage(programs, pid).has(ancestor);

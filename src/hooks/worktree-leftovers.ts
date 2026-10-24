@@ -39,7 +39,7 @@
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { listCrew } from "../crew/store";
+import { type CrewRecord, crewOfWorktree, listCrew } from "../crew/store";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
@@ -50,7 +50,6 @@ import {
   type ListedWorktree,
   listWorktrees,
   runGit,
-  samePath,
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
@@ -307,16 +306,16 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   // The crew store's worktrees are their leads' to remove (`crew rm`, or the watch once the
   // branch is merged): `--clean` keeps them, so naming one sends the person to a command that
   // does nothing (D62). A store that cannot be read names none, and every other rule stands.
-  let crewWorktrees: string[] = [];
+  let crewRecords: CrewRecord[] = [];
   try {
-    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+    crewRecords = listCrew(paths.stateDir, repo).records;
   } catch {
-    crewWorktrees = [];
+    crewRecords = [];
   }
   const finished: ListedWorktree[] = [];
   const gone: ListedWorktree[] = [];
   for (const listed of linked) {
-    if (crewWorktrees.some((path) => samePath(path, listed.path))) continue;
+    if (crewOfWorktree(crewRecords, listed.path) !== null) continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished") finished.push(listed);
     if (verdict === "gone") gone.push(listed);

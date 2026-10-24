@@ -68,14 +68,6 @@ function isReachable(state: string): boolean {
 }
 
 /**
- * The index of the question the answer goes to: the newest one that has no answer yet, while the
- * crew session's phase is not over. Null when every question has its answer, or when the phase
- * ended and the question it left needs no answer (`openQuestionIndex`, `store.ts`: one home for
- * the rule every reader shares).
- */
-export { openQuestionIndex } from "./store";
-
-/**
  * The line the lead sends the answer with: the arguments of the `SendMessage` tool, as JSON, so
  * a quote or a line break in the answer is escaped and never changed.
  */

@@ -35,7 +35,9 @@
  *   (D62): the same steps `crew rm` runs (`runCrewRm`), never a second copy. A queued or starting
  *   continuation that still needs the branch holds the removal back until it starts; a refusal —
  *   a program still runs from the worktree, or work nobody committed — is said once and left for
- *   the lead. A **stopped** record is never marked or removed: that is the lead's call (D62).
+ *   the lead. A **stopped** record is marked merged too, so what waits for its phase starts, but
+ *   never removed: that is the lead's call (D62);
+ * - every few minutes it finishes a removal that stopped halfway (`<path>-removing-<time>`).
  *
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
@@ -107,6 +109,9 @@ const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "
  * for ever; a few minutes is soon enough for something that is not urgent.
  */
 export const PARKED_PASS_MS = 5 * 60_000;
+
+/** The key under which the watch remembers it said a look for moved-aside folders failed. */
+const PARKED_SAID_KEY = "watch:parked";
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -327,9 +332,10 @@ export interface WatchScope {
   repo: string;
   resolved: ResolvedWorkflow;
   /**
-   * The base a removal that stopped halfway is judged against when the store no longer knows
-   * its crew session: `origin/<base>`. Null when this repository has no such ref, and then such
-   * a folder is left alone rather than judged against a guess.
+   * The ref a removal that stopped halfway is judged against when the store no longer knows its
+   * crew session: `origin/<base>`, else the local branch of that name (`watchBase`). Null when
+   * the repository has neither, and then such a folder is left alone rather than judged against
+   * a guess.
    */
   base?: null | { label: string; ref: string };
   /**
@@ -770,9 +776,9 @@ export async function watchPass(
     } catch (error) {
       // A look that fails never ends the watch: it is said once, and tried again later.
       const line = `crew watch: could not look for folders a removal left half done: ${reasonOf(error)}`;
-      if (said.parked !== line) {
+      if (said[PARKED_SAID_KEY] !== line) {
         ctx.error(line);
-        said.parked = line;
+        said[PARKED_SAID_KEY] = line;
       }
     }
   }

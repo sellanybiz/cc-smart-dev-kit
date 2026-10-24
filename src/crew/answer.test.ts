@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
-import { openQuestionIndex, runCrewAnswer } from "./answer";
+import { runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
@@ -18,6 +18,7 @@ import {
   crewReportFile,
   crewSettingsFile,
   listCrew,
+  openQuestionIndex,
   readCrewEvents,
   updateCrew,
   writeLead,

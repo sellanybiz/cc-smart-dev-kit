@@ -1101,6 +1101,31 @@ describe("the worktrees command", () => {
     expect(text).not.toContain("FINISHED");
   });
 
+  test("D62: a removed crew session names nothing: a worktree at its path is judged as any other", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, { ...crewAt(main, worktree), state: "removed" }, Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    // `crew rm` refuses a removed record, so the clean is the only thing that can take it.
+    expect(existsSync(worktree)).toBe(false);
+    expect(out.join("\n")).not.toContain("crew session");
+  });
+
   test("D62: --clean leaves a crew session's worktree alone, though every commit is on the base", async () => {
     const { main, worktree } = repo();
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });

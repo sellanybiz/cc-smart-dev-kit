@@ -22,6 +22,7 @@ import {
   crewEventsFile,
   crewFile,
   crewFilesDir,
+  crewOfWorktree,
   crewReportFile,
   crewSettingsFile,
   crewStoreDir,
@@ -356,6 +357,22 @@ describe("the crew record", () => {
     expect(readCrewEvents(state, REPO).events.filter((one) => one.state === "failed")).toHaveLength(
       0,
     );
+  });
+
+  test("D62: the crew session a worktree belongs to: a removed record names nothing, the newest live one wins", async () => {
+    const state = tempDir("state");
+    const path = `${REPO}/.claude/worktrees/crew-K-contracts`;
+    await createCrew(state, { ...queued("crew-K-1"), state: "removed", worktree: path }, T0);
+    const list = () => listCrew(state, REPO).records;
+    // Only a removed record is at that path: its worktree is gone, so a folder there is not its own.
+    expect(crewOfWorktree(list(), path)).toBeNull();
+    // The phase was started again in the same folder: the live one is the owner.
+    await createCrew(state, { ...queued("crew-K-2"), state: "working", worktree: path }, T1);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-2");
+    await createCrew(state, { ...queued("crew-K-3"), state: "done", worktree: path }, T1 + 1000);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-3");
+    // Any other folder has none.
+    expect(crewOfWorktree(list(), `${REPO}/.claude/worktrees/crew-other`)).toBeNull();
   });
 
   test("D62: a crew session the lead merged after it was stopped is the lead's to remove", async () => {

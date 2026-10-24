@@ -51,6 +51,7 @@ import {
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { CrewKind } from "../models/launch-policy";
+import { samePath } from "../path-compare";
 import { withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
@@ -78,7 +79,8 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  *   watch stops its session afterwards (D62: `stopped` means something else);
  * - `stopped` — a crew session its phase was not over for was stopped (`claude stop`, by the
  *   lead, or by the watch's idle stop); the conversation stays on disk, and **its removal is
- *   the lead's call** — the watch neither marks it merged nor removes it (D62);
+ *   the lead's call** — the watch marks it merged when the lead merged its branch, and never
+ *   removes it (D62);
  * - `handoff` — it handed off to a next crew session, and ended;
  * - `merged` — the lead merged its branch; the watch then removes it, unless a refusal was said;
  * - `removed` — its session, worktree and branch are gone.
@@ -268,6 +270,23 @@ export type CrewQuestion = z.infer<typeof crewQuestionFields>;
 
 /** What a crew session gives when it asks: the store adds when, and the answer comes later. */
 export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recommended">;
+
+/**
+ * The crew session a worktree belongs to: the record whose `worktree` is `path`, of any lead of
+ * the repository and in any state but `removed`, the newest when a phase was started again in the
+ * same folder. A `removed` record names nothing: its worktree, branch and session are gone, so a
+ * folder at its path is not its own, and `crew rm` refuses it. One home for the Worktrees list,
+ * the clean and the SessionStart note, so none of them names a crew session another does not.
+ */
+export function crewOfWorktree(records: readonly CrewRecord[], path: string): CrewRecord | null {
+  let found: CrewRecord | null = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath(one.worktree, path)) continue;
+    // `records` are oldest first: the last match is the newest.
+    found = one;
+  }
+  return found;
+}
 
 /**
  * The states a crew session's phase is over in, so a question it left needs no answer: it handed
