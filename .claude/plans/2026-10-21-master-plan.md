@@ -376,7 +376,7 @@ each on its kind's own model (Claude Sonnet through the worker slot for `build`,
 `security`), reviewers on `sonnet` `high`, SC1's on `opus` `xhigh` (the router). The owner,
 2026-10-25: Sonnet answers again (the "until Oct 29" limit had cleared), so the "opus `xhigh` for
 every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all twelve follow-ups
-(2026-10-25); JW1, SL1 and MC1 came later the same night.
+(2026-10-25); JW1, SL1, MC1 and TV1 came later the same night.
 
 | Phase | Kind | What |
 |---|---|---|
@@ -390,6 +390,7 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | JW1 `workflow set` keeps the project file's layout | build | `workflow set\|unset --project` rewrote `.claude/cc-smart-dev-kit.json` in a layout Biome refuses (a one-line array became three), so a project's `bun run check` fails; one edit that keeps untouched lines byte for byte, for every writer of that file and the personal one; a new dependency only with the owner's yes. Brief `briefs/jw1.md`. |
 | SL1 the status line always shows the context use (the owner's ask) | build | One segment (`ctx 312k · 78% of 400k`), measured against Claude Code's `modelSettings.<model>.autoCompactWindow` when set (the owner's `/autocompact 400000`), else the model's window; read-only, once per refresh; the warn colour from `alerts.usagePercent`; none without context data; the contract row extended. Brief `briefs/sl1.md`. |
 | MC1 the lead changes a crew session's model or effort (the owner's ask) | build | Today only `crew start` sets them, and a person's `/model` in an attached session leaves the record wrong. One command: the launch policy's checks, the caps re-checked on a tier change, a running session stopped and resumed with the new flags through WF1's one resume path, the record updated in the same write; proved first (`--resume` with `--model`/`--effort`, and the crew `--settings` file). Brief `briefs/mc1.md`. |
+| TV1 every session knows what each tier runs (the owner's ask) | build | A note to Claude at each session start, and once when a slot changes mid-session: per tier, what really runs for this session (the agent guard's reading, the session's own gateway) and the effort rule (Claude: by the task; a backend: `max`); `core.md`'s effort line rewritten in place (it is at 130 lines), the subagent-decision skill's "affordable while the gateway is on" fixed. Brief `briefs/tv1.md`. |
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
