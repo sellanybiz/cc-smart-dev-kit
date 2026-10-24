@@ -15,7 +15,16 @@
  *
  * Run a probe from the repo root: `R6_TMP=<a temp folder> bun .claude/research/r6-recheck/<p>.ts`.
  */
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server, Subprocess } from "bun";
@@ -339,13 +348,15 @@ export type RunOptions = {
   args: string[];
   env: Record<string, string>;
   timeoutMs?: number;
+  /** A command `claude` runs under, such as `["timeout", "120"]`. */
+  wrap?: string[];
   /** Called once the process is running, with it. */
   onStart?: (proc: Subprocess<"ignore", "pipe", "pipe">) => void | Promise<void>;
 };
 
 export async function runClaude(options: RunOptions): Promise<RunResult> {
   const started = Date.now();
-  const proc = Bun.spawn(["claude", ...options.args], {
+  const proc = Bun.spawn([...(options.wrap ?? []), "claude", ...options.args], {
     cwd: options.cwd,
     env: options.env,
     stdin: "ignore",
@@ -644,6 +655,88 @@ export async function runSourcesCase(
     stdout: run.stdout.trim(),
     stderr: run.stderr.trim(),
   };
+}
+
+/**
+ * The `--bg` probes are the lead's: a crew session may not start `claude --bg`, and a script
+ * must not be a way round that rule. `--dry-run` sets the world up and prints the commands.
+ */
+export function bgMode(): "run" | "dry-run" {
+  if (process.argv.includes("--dry-run")) return "dry-run";
+  if (process.env.CC_SMART_DEV_KIT_CREW) {
+    console.error("A crew session may not start `claude --bg`: the lead runs this probe.");
+    console.error("Use --dry-run to see the commands.");
+    process.exit(2);
+  }
+  return "run";
+}
+
+export type BgStart = RunResult & { id: string | undefined; command: string };
+
+/** `claude --bg …` in `cwd`; `id` is read from its `backgrounded · <id>` line. */
+export async function bgStart(
+  mode: "run" | "dry-run",
+  cwd: string,
+  env: Record<string, string>,
+  args: string[],
+): Promise<BgStart> {
+  const command = `cd ${cwd} && ${Object.entries(env)
+    .filter(([k]) => k !== "PATH")
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ")} claude --bg ${args.map((a) => (/\s/.test(a) ? `'${a}'` : a)).join(" ")}`;
+  if (mode === "dry-run") {
+    return {
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      ms: 0,
+      timedOut: false,
+      id: undefined,
+      command,
+    };
+  }
+  const run = await runClaude({ cwd, args: ["--bg", ...args], env, timeoutMs: 60_000 });
+  const id = /backgrounded · (\S+)/.exec(run.stdout)?.[1];
+  return { ...run, id, command };
+}
+
+/** `claude logs`, then `stop` and `rm` of one background session, with the same config. */
+export async function bgEnd(
+  cwd: string,
+  env: Record<string, string>,
+  id: string,
+): Promise<{ logs: string; stop: string; rm: string }> {
+  const logs = await runClaude({ cwd, args: ["logs", id], env, timeoutMs: 30_000 });
+  const stop = await runClaude({ cwd, args: ["stop", id], env, timeoutMs: 30_000 });
+  const rm = await runClaude({ cwd, args: ["rm", id], env, timeoutMs: 30_000 });
+  return {
+    logs: logs.stdout.trim().slice(-2000),
+    stop: `${stop.exitCode} ${stop.stdout.trim()} ${stop.stderr.trim()}`.trim(),
+    rm: `${rm.exitCode} ${rm.stdout.trim()} ${rm.stderr.trim()}`.trim(),
+  };
+}
+
+/**
+ * Every process still running with this world's config folder in its environment (a
+ * background session or its supervisor): listed, then sent SIGTERM. Linux only (`/proc`).
+ */
+export function endLeftovers(world: World): string[] {
+  const found: string[] = [];
+  if (!existsSync("/proc")) return found;
+  for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+    if (Number(pid) === process.pid) continue;
+    try {
+      const environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+      if (!environ.includes(`CLAUDE_CONFIG_DIR=${world.configDir}`)) continue;
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim();
+      found.push(`${pid} ${cmdline.slice(0, 120)}`);
+      process.kill(Number(pid), "SIGTERM");
+    } catch {
+      // Another user's process, or one that ended while we looked: not ours to judge.
+    }
+  }
+  return found;
 }
 
 /** Write the probe's result beside its world, and print it. */
