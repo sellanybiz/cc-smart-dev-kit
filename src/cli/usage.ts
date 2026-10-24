@@ -38,11 +38,11 @@ import { basename, join, resolve } from "node:path";
 import {
   type CheckTokens,
   localDay,
-  parseSafetyCheckState,
   recentCheckDays,
   SAFETY_CHECK_WINDOW_DAYS,
   type SafetyCheckState,
 } from "../gateway/safety-checks";
+import { readSafetyChecks } from "../gateway/safety-checks-read";
 import {
   type AgentLaunch,
   agentLaunchesFile,
@@ -474,17 +474,6 @@ export function formatSafetyChecks(
     "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
   );
   return lines;
-}
-
-/** The safety-check counts the router wrote; null when there are none to read. */
-function readSafetyChecks(file: string): null | SafetyCheckState {
-  try {
-    return parseSafetyCheckState(readFileSync(file, "utf8"));
-  } catch {
-    // Not there (the router counted none yet, or the gateway is not set up), or not
-    // readable: the report says none, and no count is invented.
-    return null;
-  }
 }
 
 /**

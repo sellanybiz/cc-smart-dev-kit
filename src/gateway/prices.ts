@@ -15,10 +15,9 @@
  * Claude Code's prompt cache is the 5-minute one unless a request asks for the 1-hour cache.
  * So a 1-hour write is estimated a little low; the row says "estimated" either way.
  *
- * A backend's price comes from its `/v1/models` answer (the OpenRouter shape: `pricing` with
- * per-token strings such as `prompt`, `completion`, `input_cache_read`), read only when the
- * list gives one. The router asks for it in the background, never on an answer's path
- * (`router.ts`).
+ * A backend's price comes from its `/v1/models` answer, read only when the list gives one;
+ * `listedPrice` names the two shapes it reads and their units. The router asks for it in the
+ * background, never on an answer's path (`router.ts`).
  *
  * No model id here is a default, a target or a fallback: the table prices a model that
  * already answered.
@@ -56,9 +55,14 @@ interface ClaudePriceRow {
 
 /**
  * Anthropic's list prices, USD per million tokens: input, output, cache read, 5-minute
- * cache write. Read from the pricing page on 2026-10-22.
+ * cache write. Read from the pricing page on 2026-10-22, and the cache reads of the rows
+ * below on 2026-10-24 (`claude-api` › `shared/models.md`): a cache read costs a tenth of a
+ * new token, except Claude Opus 5.5's (a twentieth) and Claude Fable 5.1's (a fortieth).
+ *
+ * Exported so a test walks every row (`prices.test.ts` › "every row's cache read is its
+ * family's published share of its input rate").
  */
-const CLAUDE_PRICES: readonly ClaudePriceRow[] = [
+export const CLAUDE_PRICES: readonly ClaudePriceRow[] = [
   {
     family: "fable",
     major: 5,
@@ -123,7 +127,7 @@ const CLAUDE_PRICES: readonly ClaudePriceRow[] = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 },
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 },
   },
   {
     family: "sonnet",
@@ -242,8 +246,12 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A per-token price from a list, as a number; null when it is absent or not a number. */
-function perToken(value: unknown): number | null {
+/**
+ * One price field of a list entry, as a number; null when it is absent, or not a number, or
+ * negative. **The shape decides its unit**: OpenRouter's fields are USD per token, OmniRoute's
+ * USD per million, and this reads either without knowing which.
+ */
+function priceNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
@@ -258,30 +266,49 @@ function perMillion(value: number): number {
 }
 
 /**
- * The price one model list entry gives, in USD per million tokens, or null when it gives
- * none. The shape is OpenRouter's (`pricing: {prompt, completion}` per token, as strings),
- * which affordable backends serve; the older field names of the same shape are read too
- * (`input`/`output`, `input_cache_read`/`input_cache_write`). A model whose list gives no
- * cache price is priced at its input rate for cache tokens: never an underestimate.
+ * The price one model list entry gives, in USD per million tokens, or null when it gives none.
+ * Two shapes are read, **each in its own unit**:
+ *
+ *   - **OpenRouter's**: `pricing: {prompt, completion, input_cache_read, input_cache_write}`,
+ *     USD **per token**, as strings or numbers (`"0.0000005"` is $0.50 a million).
+ *   - **OmniRoute's**: `pricing: {input, output, cached, cache_creation}`, USD **per million
+ *     tokens**, as numbers. That is the unit its own catalog is built in and the one its
+ *     `/v1/models` serves: its `dva/claude-opus-5-max` answers `{input: 5, cached: 0.5,
+ *     output: 25}`, the list price of $5 / $25 a million. `cached` is the cache-read price and
+ *     `cache_creation` the cache-write one.
+ *
+ * Which shape it is comes from the keys, never from a guess: `prompt` and `completion` are
+ * OpenRouter's, `input` and `output` OmniRoute's. An entry that gives only half of one shape,
+ * or neither, has no price rather than a guessed one. A model whose list gives no cache price
+ * is priced at its input rate for cache tokens: never an underestimate.
  */
 export function listedPrice(entry: unknown): ModelPrice | null {
   if (!isJsonObject(entry)) return null;
   const pricing = entry.pricing;
-  if (isJsonObject(pricing)) {
-    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
-    const output = perToken(pricing.completion) ?? perToken(pricing.output);
-    if (input === null || output === null) return null;
-    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
-    const cacheWrite =
-      perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
+  if (!isJsonObject(pricing)) return null;
+  const field = (name: string): number | null => priceNumber(pricing[name]);
+
+  const prompt = field("prompt");
+  const completion = field("completion");
+  if (prompt !== null || completion !== null) {
+    if (prompt === null || completion === null) return null;
     return {
-      cacheRead: perMillion(cacheRead),
-      cacheWrite: perMillion(cacheWrite),
-      input: perMillion(input),
-      output: perMillion(output),
+      cacheRead: perMillion(field("input_cache_read") ?? prompt),
+      cacheWrite: perMillion(field("input_cache_write") ?? prompt),
+      input: perMillion(prompt),
+      output: perMillion(completion),
     };
   }
-  return null;
+
+  const input = field("input");
+  const output = field("output");
+  if (input === null || output === null) return null;
+  return {
+    cacheRead: field("cached") ?? input,
+    cacheWrite: field("cache_creation") ?? input,
+    input,
+    output,
+  };
 }
 
 /** One model's price from a backend's model list; null when the list gives none. */

@@ -4879,6 +4879,7 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
         p95Ms: number;
         requests: number;
         t: number;
+        unpriced: number;
       }
       const history = JSON.parse((await world.call("/api/history?range=1h&by=target")).body) as {
         available: boolean;
@@ -4913,6 +4914,8 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
         p95Ms: 300,
         requests: 2,
         t: NOW - 10 * MIN,
+        // Both rows were priced: nothing of the bucket is missing from its sum.
+        unpriced: 0,
       });
       expect(glm?.points.find((point) => point.t === NOW - 5 * MIN)).toMatchObject({
         cacheReadTokens: 0,

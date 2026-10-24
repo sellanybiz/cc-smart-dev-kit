@@ -205,6 +205,14 @@ export interface OverviewData {
   crewRunning: number;
   /** The heavy-job queue in one line: GB held of the budget, and jobs waiting. */
   jobs: { heldGb: number; budgetGb: number; waiting: number };
+  /** The history's model requests: the rate, and the count since the router started (F4, F5). */
+  requests: OverviewRequests;
+}
+
+/** `src/portal/views.ts` › `OverviewRequests`. */
+export interface OverviewRequests {
+  perMinute: null | number;
+  sinceRouterStart: null | number;
 }
 
 // ── Work: the crew store ───────────────────────────────────────────────────────────────

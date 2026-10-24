@@ -12,6 +12,7 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew, updateCrew } from "../../crew/store";
+import { createHistoryWriter } from "../../gateway/history";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
@@ -201,6 +202,113 @@ describe("the plan's 5-hour window", () => {
     const answer = await overviewAnswer(depsOf(ctx));
     expect(answer.configured).toBe(false);
     expect(answer.fiveHour).toEqual({ percent: 12, resetsAt: null });
+  });
+});
+
+describe("the Overview's request numbers (F4, F5)", () => {
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  /** A gateway config on a port no real router holds: the port guard's own rule. */
+  const config = {
+    aliases: {},
+    anthropicBaseUrl: "https://api.anthropic.com" as const,
+    backends: {},
+    port: 20_197,
+    slots: {},
+    timeouts: { firstByteMs: 60_000 },
+    version: 1 as const,
+  };
+
+  /** A router that answers its health page, up for `uptimeSec` and having taken `requests`. */
+  function answeringRouter(uptimeSec: number, requests: number): Partial<PortalContext> {
+    return {
+      probe: {
+        fetch: async () =>
+          new Response(JSON.stringify({ ok: true, requests, uptimeSec }), {
+            headers: { "content-type": "application/json" },
+          }),
+        now: () => NOW,
+        sleep: async () => undefined,
+      },
+    };
+  }
+
+  /** `count` model requests written at `at`, through the history's own writer. */
+  function seedHistory(paths: CliPaths, at: number, count: number): void {
+    const writer = createHistoryWriter({
+      file: paths.historyDbFile,
+      flushAfterMs: 60_000,
+      log: () => {},
+      now: () => NOW,
+      retentionDays: () => 90,
+    });
+    for (let index = 0; index < count; index += 1) {
+      writer.record({
+        at,
+        breaker: null,
+        cost: null,
+        model: "claude-sonnet-5-5",
+        ms: 100,
+        nextTarget: null,
+        session: "session-1",
+        slot: null,
+        status: 200,
+        target: "claude-sonnet-5-5",
+        tokens: null,
+      });
+    }
+    writer.flush();
+    writer.close();
+  }
+
+  test("the rate is the history's model requests, past what the router's capped list could give", async () => {
+    const { ctx, paths } = world({}, answeringRouter(3600, 1550));
+    seedHistory(paths, NOW - MINUTE, 600);
+    seedHistory(paths, NOW - 2 * HOUR, 100);
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    // 600 requests in the last five minutes is 120 a minute. The router's own list is capped
+    // at 200 entries and could never read past 40.0, so this number can only be the history's.
+    expect(answer.requests.perMinute).toBe(120);
+    // Since the router started an hour ago: the 600 of the last minute, not the 100 at 2 hours.
+    expect(answer.requests.sinceRouterStart).toBe(600);
+    // The router's own counter still travels, and counts more than the history does.
+    expect(answer.router.requests).toBe(1550);
+  });
+
+  test("no history file: the rate is unknown, never 0 as if nothing were being logged", async () => {
+    const { ctx } = world({}, answeringRouter(3600, 1550));
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    expect(answer.requests).toEqual({ perMinute: null, sinceRouterStart: null });
+  });
+
+  test("a history file that cannot be read: the numbers are unknown, and the page still answers", async () => {
+    const { ctx, paths } = world({}, answeringRouter(3600, 1550));
+    mkdirSync(dirname(paths.historyDbFile), { recursive: true });
+    writeFileSync(paths.historyDbFile, "this is not a database");
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    // The history's own routes answer a 500 for this file; the Overview is not lost over it,
+    // and its card says it has no number rather than a zero.
+    expect(answer.requests).toEqual({ perMinute: null, sinceRouterStart: null });
+    expect(answer.router.requests).toBe(1550);
+  });
+
+  test("a router that does not answer: the count since its start is unknown, the rate still reads", async () => {
+    const { ctx, paths } = world(
+      {},
+      {
+        probe: {
+          fetch: async () => {
+            throw Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" });
+          },
+          now: () => NOW,
+          sleep: async () => undefined,
+        },
+      },
+    );
+    seedHistory(paths, NOW - MINUTE, 60);
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    expect(answer.router.up).toBe(false);
+    expect(answer.requests).toEqual({ perMinute: 12, sinceRouterStart: null });
   });
 });
 

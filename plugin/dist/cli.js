@@ -9183,7 +9183,7 @@ var CLAUDE_PRICES = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
   },
   {
     family: "sonnet",
@@ -9263,7 +9263,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -9280,21 +9280,31 @@ function listedPrice(entry) {
   if (!isJsonObject(entry))
     return null;
   const pricing = entry.pricing;
-  if (isJsonObject(pricing)) {
-    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
-    const output = perToken(pricing.completion) ?? perToken(pricing.output);
-    if (input === null || output === null)
+  if (!isJsonObject(pricing))
+    return null;
+  const field = (name) => priceNumber(pricing[name]);
+  const prompt2 = field("prompt");
+  const completion = field("completion");
+  if (prompt2 !== null || completion !== null) {
+    if (prompt2 === null || completion === null)
       return null;
-    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
-    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
     return {
-      cacheRead: perMillion(cacheRead),
-      cacheWrite: perMillion(cacheWrite),
-      input: perMillion(input),
-      output: perMillion(output)
+      cacheRead: perMillion(field("input_cache_read") ?? prompt2),
+      cacheWrite: perMillion(field("input_cache_write") ?? prompt2),
+      input: perMillion(prompt2),
+      output: perMillion(completion)
     };
   }
-  return null;
+  const input = field("input");
+  const output = field("output");
+  if (input === null || output === null)
+    return null;
+  return {
+    cacheRead: field("cached") ?? input,
+    cacheWrite: field("cache_creation") ?? input,
+    input,
+    output
+  };
 }
 function priceFromModels(models, model) {
   const entry = models.find((candidate) => candidate.id === model);
@@ -10860,7 +10870,7 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
-  output = null;
+  delta = {};
   constructor(streaming) {
     this.streaming = streaming;
   }
@@ -10896,11 +10906,14 @@ class AnswerUsageReader {
     if (this.partial.trim() !== "")
       this.readEvent(this.partial);
     this.partial = "";
-    if (this.start === null && this.output === null)
+    if (this.start === null && Object.keys(this.delta).length === 0)
       return null;
+    const start = this.start ?? EMPTY_TOKENS;
     return {
-      ...this.start ?? EMPTY_TOKENS,
-      output: this.output ?? this.start?.output ?? 0
+      cacheRead: this.delta.cacheRead ?? start.cacheRead,
+      cacheWrite: this.delta.cacheWrite ?? start.cacheWrite,
+      input: this.delta.input ?? start.input,
+      output: this.delta.output ?? start.output
     };
   }
   scan() {
@@ -10914,6 +10927,21 @@ class AnswerUsageReader {
     }
     if (this.partial.length > EVENT_MAX_CHARS)
       this.partial = "";
+  }
+  mergeDelta(usage) {
+    if (!isJsonObject4(usage))
+      return;
+    const named = [
+      ["cacheRead", usage.cache_read_input_tokens],
+      ["cacheWrite", usage.cache_creation_input_tokens],
+      ["input", usage.input_tokens],
+      ["output", usage.output_tokens]
+    ];
+    for (const [field, value] of named) {
+      const count = tokenCount(value);
+      if (count !== null)
+        this.delta[field] = count;
+    }
   }
   readEvent(block) {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
@@ -10931,9 +10959,8 @@ class AnswerUsageReader {
     if (event.type === "message_start" && isJsonObject4(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
-    if (event.type === "message_delta") {
-      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
-    }
+    if (event.type === "message_delta")
+      this.mergeDelta(event.usage);
   }
 }
 
@@ -13022,8 +13049,12 @@ function emptyBucket() {
     errors: 0,
     input: 0,
     output: 0,
-    requests: 0
+    requests: 0,
+    unpriced: 0
   };
+}
+function reportedTokens(row) {
+  return row.input_tokens !== null || row.output_tokens !== null || row.cache_read_tokens !== null || row.cache_write_tokens !== null;
 }
 function historySeries(file, options) {
   const now = options.now ?? Date.now();
@@ -13051,7 +13082,12 @@ function historySeries(file, options) {
       bucket.output += row.output_tokens ?? 0;
       bucket.cacheRead += row.cache_read_tokens ?? 0;
       bucket.cacheWrite += row.cache_write_tokens ?? 0;
-      bucket.cost += row.cost_usd ?? 0;
+      if (row.cost_usd === null) {
+        if (reportedTokens(row))
+          bucket.unpriced += 1;
+      } else {
+        bucket.cost += row.cost_usd;
+      }
     }
     const series = [...buckets.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, byBucket]) => ({
       key,
@@ -13090,7 +13126,8 @@ function pointsOf(buckets, first, last, bucketMs) {
         p50Ms: 0,
         p95Ms: 0,
         requests: 0,
-        t
+        t,
+        unpriced: 0
       });
       continue;
     }
@@ -13105,7 +13142,8 @@ function pointsOf(buckets, first, last, bucketMs) {
       p50Ms: p50,
       p95Ms: p95,
       requests: bucket.requests,
-      t
+      t,
+      unpriced: bucket.unpriced
     });
   }
   return points;
@@ -15272,7 +15310,7 @@ async function commandHistory(ctx, args) {
     return 0;
   }
   out.heading(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}`);
-  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives.");
+  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives. A request with no price is counted in the last column and adds nothing to cost.");
   const header = [
     options.by,
     "requests",
@@ -15282,6 +15320,7 @@ async function commandHistory(ctx, args) {
     "cache read",
     "cache write",
     "cost",
+    "no price",
     "peak p95"
   ];
   const rows = answer.series.map((series) => {
@@ -15292,7 +15331,8 @@ async function commandHistory(ctx, args) {
       errors: 0,
       input: 0,
       output: 0,
-      requests: 0
+      requests: 0,
+      unpriced: 0
     };
     let peakP95 = 0;
     for (const point of series.points) {
@@ -15303,6 +15343,7 @@ async function commandHistory(ctx, args) {
       total.cacheRead += point.cacheReadTokens;
       total.cacheWrite += point.cacheWriteTokens;
       total.cost += point.costUsd;
+      total.unpriced += point.unpriced;
       peakP95 = Math.max(peakP95, point.p95Ms);
     }
     const count = (value) => value.toLocaleString("en-US");
@@ -15315,6 +15356,7 @@ async function commandHistory(ctx, args) {
       count(total.cacheRead),
       count(total.cacheWrite),
       formatUsd(total.cost),
+      count(total.unpriced),
       `${count(peakP95)} ms`
     ];
   });
@@ -43015,12 +43057,24 @@ ${WORKFLOW_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync9, mkdirSync as mkdirSync27, openSync as openSync9, readFileSync as readFileSync74, readSync as readSync5, statSync as statSync23 } from "fs";
+import { closeSync as closeSync9, mkdirSync as mkdirSync27, openSync as openSync9, readFileSync as readFileSync75, readSync as readSync5, statSync as statSync23 } from "fs";
 import { dirname as dirname24, join as join74 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync65, readdirSync as readdirSync24, readFileSync as readFileSync73, statSync as statSync22 } from "fs";
+import { existsSync as existsSync65, readdirSync as readdirSync24, readFileSync as readFileSync74, statSync as statSync22 } from "fs";
 import { basename as basename11, join as join73, resolve as resolve11 } from "path";
+
+// src/gateway/safety-checks-read.ts
+import { readFileSync as readFileSync73 } from "fs";
+function readSafetyChecks(file) {
+  try {
+    return parseSafetyCheckState(readFileSync73(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// src/cli/usage.ts
 function isJsonObject18(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -43044,7 +43098,7 @@ function changedAt2(path) {
 }
 function readJson3(path) {
   try {
-    return JSON.parse(readFileSync73(path, "utf8"));
+    return JSON.parse(readFileSync74(path, "utf8"));
   } catch {
     return null;
   }
@@ -43056,7 +43110,7 @@ function readTranscript(path, sinceMs, sidechains) {
     return { cwd, replies };
   let text;
   try {
-    text = readFileSync73(path, "utf8");
+    text = readFileSync74(path, "utf8");
   } catch {
     return { cwd, replies };
   }
@@ -43291,13 +43345,6 @@ function formatSafetyChecks(state, nowMs, timeZone) {
   }
   lines.push("  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).");
   return lines;
-}
-function readSafetyChecks(file) {
-  try {
-    return parseSafetyCheckState(readFileSync73(file, "utf8"));
-  } catch {
-    return null;
-  }
 }
 function formatUsage(sessions, hours, projectsDir, home, launches = [], agents = []) {
   const lines = [
@@ -43629,7 +43676,7 @@ function readAskLog(file) {
   let skipped = 0;
   let text;
   try {
-    text = readFileSync74(file, "utf8");
+    text = readFileSync75(file, "utf8");
   } catch {
     return { asks, skipped };
   }
@@ -44327,7 +44374,7 @@ function readFlow(paths, options) {
     const cacheFile = join74(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
-      cache = parseCache(readFileSync74(cacheFile, "utf8"), project);
+      cache = parseCache(readFileSync75(cacheFile, "utf8"), project);
     } catch {}
     let dirty = false;
     const listed = entries(folder);
@@ -44646,7 +44693,7 @@ ${REPORT_USAGE}`);
 }
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync67, readFileSync as readFileSync76 } from "fs";
+import { existsSync as existsSync67, readFileSync as readFileSync77 } from "fs";
 import { join as join76, relative as relative6 } from "path";
 
 // src/sessions/command.ts
@@ -44656,7 +44703,7 @@ import {
   mkdirSync as mkdirSync28,
   openSync as openSync10,
   readdirSync as readdirSync25,
-  readFileSync as readFileSync75,
+  readFileSync as readFileSync76,
   readSync as readSync6,
   rmSync as rmSync16,
   statSync as statSync24,
@@ -44767,7 +44814,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
     const path = join75(dir, name);
     let text;
     try {
-      text = readFileSync75(path, "utf8");
+      text = readFileSync76(path, "utf8");
     } catch {
       continue;
     }
@@ -44804,7 +44851,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
     return false;
   let text;
   try {
-    text = readFileSync75(file, "utf8").trim();
+    text = readFileSync76(file, "utf8").trim();
   } catch {
     return false;
   }
@@ -44976,7 +45023,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
   let error = null;
   if (existsSync67(config)) {
     try {
-      fields = retiredFieldsOf(parseUserJson(readFileSync76(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync77(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
       error = messageOf4(cause);
     }
@@ -45496,7 +45543,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync68, readdirSync as readdirSync26, readFileSync as readFileSync77, renameSync as renameSync5, rmSync as rmSync17, statSync as statSync25 } from "fs";
+import { existsSync as existsSync68, readdirSync as readdirSync26, readFileSync as readFileSync78, renameSync as renameSync5, rmSync as rmSync17, statSync as statSync25 } from "fs";
 import { basename as basename12, dirname as dirname26, join as join77 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -45632,7 +45679,7 @@ function progressFile(stateDir) {
 }
 function readProgress(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync77(progressFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync78(progressFile(stateDir), "utf8"));
     if (!isObject(parsed) || !Array.isArray(parsed.steps))
       return null;
     const steps = parsed.steps.filter((step) => MIGRATE_STEPS.includes(String(step)));
@@ -45685,7 +45732,7 @@ function oldStateFolder(old) {
 }
 function readText3(file) {
   try {
-    return readFileSync77(file, "utf8");
+    return readFileSync78(file, "utf8");
   } catch {
     return null;
   }
@@ -45786,7 +45833,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     const file = join77(stateDir, name);
     if (!existsSync68(file))
       return;
-    const text = readFileSync77(file, "utf8");
+    const text = readFileSync78(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
 `;
     if (next === text)
@@ -45851,7 +45898,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const kept = [];
   if (!existsSync68(settingsFile))
     return { set, remove, kept };
-  const parsed = JSON.parse(readFileSync77(settingsFile, "utf8"));
+  const parsed = JSON.parse(readFileSync78(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -45881,7 +45928,7 @@ function readOldConfig(file, platform = hostPlatform()) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
   try {
-    const parsed = JSON.parse(readFileSync77(file, "utf8"));
+    const parsed = JSON.parse(readFileSync78(file, "utf8"));
     if (!isObject(parsed))
       throw new Error("not an object");
     return parsed;
@@ -45927,7 +45974,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
     return 0;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync77(file, "utf8"));
+    parsed = JSON.parse(readFileSync78(file, "utf8"));
   } catch {
     return 0;
   }
@@ -45962,7 +46009,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync68(claudeMd) ? readFileSync77(claudeMd, "utf8") : null;
+  const text = existsSync68(claudeMd) ? readFileSync78(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -46028,7 +46075,7 @@ ${parsed.error}` };
   const stateDir = oldStateFolder(old);
   if (existsSync68(paths.settingsFile)) {
     try {
-      const parsed = JSON.parse(readFileSync77(paths.settingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync78(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`
@@ -47317,7 +47364,7 @@ function setupVerdict(counts, run) {
 }
 
 // src/cli/statusline.ts
-import { readFileSync as readFileSync78 } from "fs";
+import { readFileSync as readFileSync79 } from "fs";
 function isJsonObject20(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -47378,7 +47425,7 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync78(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync79(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -47502,7 +47549,7 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync71, readFileSync as readFileSync79, rmSync as rmSync20, statSync as statSync26, writeFileSync as writeFileSync14 } from "fs";
+import { existsSync as existsSync71, readFileSync as readFileSync80, rmSync as rmSync20, statSync as statSync26, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir10 } from "os";
 import { basename as basename14, join as join82 } from "path";
 
@@ -47604,7 +47651,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync79(join82(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync80(join82(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject21(settings) || !isJsonObject21(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -47613,7 +47660,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync79(join82(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync80(join82(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject21(installed) || !isJsonObject21(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -47781,7 +47828,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync79(file, "utf8").trim();
+    const text = readFileSync80(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -47833,7 +47880,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync79(file, "utf8"));
+    parsed = JSON.parse(readFileSync80(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -48098,14 +48145,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync73, readFileSync as readFileSync80 } from "fs";
+import { existsSync as existsSync73, readFileSync as readFileSync81 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
     exists: (path) => existsSync73(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync73("/etc/os-release") ? readFileSync80("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync73("/etc/os-release") ? readFileSync81("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];

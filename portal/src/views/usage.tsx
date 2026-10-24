@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { compact, count, percent, usd } from "@/lib/format";
+import { compact, costWords, count, percent } from "@/lib/format";
 import { HISTORY_BYS, rangeOf } from "@/lib/history";
 
 interface Totals {
@@ -27,7 +27,10 @@ interface Totals {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** The priced rows' sum: a row with no price adds nothing, and is counted in `unpriced`. */
   cost: number;
+  /** Requests that reported tokens and no price (F1). */
+  unpriced: number;
 }
 
 function totalsOf(history: History | null): Totals[] {
@@ -41,6 +44,7 @@ function totalsOf(history: History | null): Totals[] {
         cacheRead: 0,
         cacheWrite: 0,
         cost: 0,
+        unpriced: 0,
       };
       for (const point of series.points) {
         total.requests += point.requests;
@@ -49,6 +53,7 @@ function totalsOf(history: History | null): Totals[] {
         total.cacheRead += point.cacheReadTokens;
         total.cacheWrite += point.cacheWriteTokens;
         total.cost += point.costUsd;
+        total.unpriced += point.unpriced;
       }
       return total;
     })
@@ -64,8 +69,9 @@ function sum(rows: Totals[]): Omit<Totals, "key"> {
       cacheRead: all.cacheRead + row.cacheRead,
       cacheWrite: all.cacheWrite + row.cacheWrite,
       cost: all.cost + row.cost,
+      unpriced: all.unpriced + row.unpriced,
     }),
-    { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 },
   );
 }
 
@@ -120,7 +126,9 @@ const SESSION_COLUMNS = sessionColumn.columns([
   sessionColumn.accessor("cost", {
     header: "Est. USD",
     cell: ({ row }) => (
-      <span className="block text-right font-medium tabular-nums">{usd(row.original.cost)}</span>
+      <span className="block text-right font-medium tabular-nums">
+        {costWords(row.original.cost, row.original.unpriced, row.original.requests)}
+      </span>
     ),
   }),
 ]);
@@ -165,7 +173,7 @@ function Breakdown({
                       key: row.key,
                       label: seriesLabel(row.key, by.value, names),
                       value: row.cost,
-                      shown: usd(row.cost),
+                      shown: costWords(row.cost, row.unpriced, row.requests),
                       note: `${compact(row.input + row.cacheRead + row.cacheWrite + row.output)} tokens`,
                     }))}
                   />
@@ -189,6 +197,24 @@ function sessionRows(history: History | null, keys: HistoryKeys | null): Session
       project: session?.project ?? "unknown",
     };
   });
+}
+
+/**
+ * What the page says about auto mode's safety checks. The router counts them by local day and
+ * keeps them out of the history on purpose, so they are in none of the numbers above; a machine
+ * whose file is not there has counted none (F6).
+ */
+function checksWords(safety: History["safetyChecks"]): string {
+  if (safety.checks === null) {
+    return "Auto mode's safety checks are counted apart from this history, by local day, and none is recorded yet. The gateway must be set up, and a session must have run with auto mode on.";
+  }
+  // The file holds days, but none the range covers (a short range, and an older file): the
+  // count is a real zero, and "0 over the 0 days" would be a sentence nobody wrote.
+  if (safety.days === 0) {
+    return "Auto mode's safety checks are counted apart from this history, by local day, and none falls in the days this range covers.";
+  }
+  const days = safety.days === 1 ? "1 day" : `${count(safety.days)} days`;
+  return `Auto mode's safety checks are counted apart from this history, by local day: ${count(safety.checks)} over the ${days} the router counted. Their tokens are in none of the numbers above.`;
 }
 
 /** Usage: tokens and estimated cost, by slot, target, model and session, over time. */
@@ -223,7 +249,7 @@ export function UsageView() {
       <SectionCards columns={4}>
         <StatCard
           label="Estimated cost"
-          value={value(usd(all.cost))}
+          value={value(costWords(all.cost, all.unpriced, all.requests))}
           badge={<TonePill tone="info">estimated</TonePill>}
           headline={`In ${words}`}
           detail="From list prices: never a bill"
@@ -255,11 +281,14 @@ export function UsageView() {
             )
           }
           headline="Of the tokens sent, read from the cache"
-          detail="A cache read costs a tenth of a new token"
+          detail="A cache read costs less than a new token"
         />
       </SectionCards>
       <FilterBar state={state} />
       <PagePad className="flex flex-col gap-4 md:gap-6">
+        {ready && (
+          <p className="text-sm text-muted-foreground">{checksWords(byTarget.data.safetyChecks)}</p>
+        )}
         <HistoryChart
           title={metric === "cost" ? "Estimated cost over time" : "Tokens over time"}
           description={`By target, in ${words}${metric === "cost" ? ", from list prices" : ""}`}
@@ -294,7 +323,7 @@ export function UsageView() {
               <CardDescription>
                 {topSession === undefined
                   ? `No session sent a request in ${words}.`
-                  : `${names.get(topSession.key) ?? topSession.key.slice(0, 8)} cost the most: ${usd(topSession.cost)} (estimated).`}
+                  : `${names.get(topSession.key) ?? topSession.key.slice(0, 8)} cost the most: ${costWords(topSession.cost, topSession.unpriced, topSession.requests)}${topSession.cost === 0 ? "" : " (estimated)"}.`}
               </CardDescription>
             </CardHeader>
             <CardContent>

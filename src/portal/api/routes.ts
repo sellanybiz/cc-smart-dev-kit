@@ -15,6 +15,7 @@ import {
   machineAnswer,
   overviewAnswer,
   projectsAnswer,
+  rateAnswer,
   settingsAnswer,
   slotsAnswer,
   updateAnswer,
@@ -111,6 +112,9 @@ export const API_READS: Readonly<
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),
+  // The Overview's rate, on its own: the card reads again with each routed request, and the
+  // whole Overview answer is too heavy to ask at that cadence (`src/portal/api/data.ts`).
+  "/api/history/rate": async (deps) => ok(await rateAnswer(deps)),
   "/api/history/keys": (deps, query) => {
     const range = rangeOf(query.get("range"));
     if (range === null) return badRange();
@@ -155,12 +159,14 @@ export const API_READS: Readonly<
     }
   },
   "/api/requests": (deps, query) => {
+    const range = rangeOf(query.get("range"));
     const status = query.get("status");
     const cursor = cursorOf(query.get("cursor"));
+    if (range === null) return badRange();
     if ((status !== null && status !== "error") || cursor === "bad") {
       return {
         body: {
-          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
+          error: `requests takes range=${Object.keys(HISTORY_RANGES).join("|")}, cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
         },
         status: 400,
       };
@@ -169,6 +175,8 @@ export const API_READS: Readonly<
       return ok(
         requestsAnswer(deps, {
           filters: historyFilters(query),
+          // The range bounds the rows, as it does the charts: the page's switch changes both.
+          from: deps.action.portal.now() - HISTORY_RANGES[range],
           limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
           ...(cursor === null ? {} : { cursor }),
         }),

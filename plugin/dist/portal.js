@@ -7863,7 +7863,7 @@ var CLAUDE_PRICES = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
   },
   {
     family: "sonnet",
@@ -7943,7 +7943,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -7960,21 +7960,31 @@ function listedPrice(entry) {
   if (!isJsonObject(entry))
     return null;
   const pricing = entry.pricing;
-  if (isJsonObject(pricing)) {
-    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
-    const output = perToken(pricing.completion) ?? perToken(pricing.output);
-    if (input === null || output === null)
+  if (!isJsonObject(pricing))
+    return null;
+  const field = (name) => priceNumber(pricing[name]);
+  const prompt2 = field("prompt");
+  const completion = field("completion");
+  if (prompt2 !== null || completion !== null) {
+    if (prompt2 === null || completion === null)
       return null;
-    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
-    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
     return {
-      cacheRead: perMillion(cacheRead),
-      cacheWrite: perMillion(cacheWrite),
-      input: perMillion(input),
-      output: perMillion(output)
+      cacheRead: perMillion(field("input_cache_read") ?? prompt2),
+      cacheWrite: perMillion(field("input_cache_write") ?? prompt2),
+      input: perMillion(prompt2),
+      output: perMillion(completion)
     };
   }
-  return null;
+  const input = field("input");
+  const output = field("output");
+  if (input === null || output === null)
+    return null;
+  return {
+    cacheRead: field("cached") ?? input,
+    cacheWrite: field("cache_creation") ?? input,
+    input,
+    output
+  };
 }
 function priceFromModels(models, model) {
   const entry = models.find((candidate) => candidate.id === model);
@@ -8850,6 +8860,15 @@ function localDay(ms, timeZone) {
     year: "numeric"
   }).format(new Date(ms));
 }
+function dayBefore(day, days) {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(Date.UTC(year ?? 0, (month ?? 1) - 1, date ?? 1) - days * 86400000).toISOString().slice(0, 10);
+}
+function recentCheckDays(state, nowMs, count, timeZone) {
+  const today = localDay(nowMs, timeZone);
+  const wanted = new Set(Array.from({ length: count }, (_, back) => dayBefore(today, back)));
+  return Object.entries(state.days).filter(([day]) => wanted.has(day)).sort(([a], [b]) => a < b ? 1 : -1);
+}
 function dayRecord(state, day) {
   const existing = state.days[day];
   if (existing !== undefined)
@@ -8929,7 +8948,7 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
-  output = null;
+  delta = {};
   constructor(streaming) {
     this.streaming = streaming;
   }
@@ -8965,11 +8984,14 @@ class AnswerUsageReader {
     if (this.partial.trim() !== "")
       this.readEvent(this.partial);
     this.partial = "";
-    if (this.start === null && this.output === null)
+    if (this.start === null && Object.keys(this.delta).length === 0)
       return null;
+    const start = this.start ?? EMPTY_TOKENS;
     return {
-      ...this.start ?? EMPTY_TOKENS,
-      output: this.output ?? this.start?.output ?? 0
+      cacheRead: this.delta.cacheRead ?? start.cacheRead,
+      cacheWrite: this.delta.cacheWrite ?? start.cacheWrite,
+      input: this.delta.input ?? start.input,
+      output: this.delta.output ?? start.output
     };
   }
   scan() {
@@ -8983,6 +9005,21 @@ class AnswerUsageReader {
     }
     if (this.partial.length > EVENT_MAX_CHARS)
       this.partial = "";
+  }
+  mergeDelta(usage) {
+    if (!isJsonObject4(usage))
+      return;
+    const named = [
+      ["cacheRead", usage.cache_read_input_tokens],
+      ["cacheWrite", usage.cache_creation_input_tokens],
+      ["input", usage.input_tokens],
+      ["output", usage.output_tokens]
+    ];
+    for (const [field, value] of named) {
+      const count = tokenCount(value);
+      if (count !== null)
+        this.delta[field] = count;
+    }
   }
   readEvent(block) {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
@@ -9000,9 +9037,8 @@ class AnswerUsageReader {
     if (event.type === "message_start" && isJsonObject4(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
-    if (event.type === "message_delta") {
-      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
-    }
+    if (event.type === "message_delta")
+      this.mergeDelta(event.usage);
   }
 }
 
@@ -13711,8 +13747,12 @@ function emptyBucket() {
     errors: 0,
     input: 0,
     output: 0,
-    requests: 0
+    requests: 0,
+    unpriced: 0
   };
+}
+function reportedTokens(row) {
+  return row.input_tokens !== null || row.output_tokens !== null || row.cache_read_tokens !== null || row.cache_write_tokens !== null;
 }
 function historySeries(file, options) {
   const now = options.now ?? Date.now();
@@ -13740,7 +13780,12 @@ function historySeries(file, options) {
       bucket.output += row.output_tokens ?? 0;
       bucket.cacheRead += row.cache_read_tokens ?? 0;
       bucket.cacheWrite += row.cache_write_tokens ?? 0;
-      bucket.cost += row.cost_usd ?? 0;
+      if (row.cost_usd === null) {
+        if (reportedTokens(row))
+          bucket.unpriced += 1;
+      } else {
+        bucket.cost += row.cost_usd;
+      }
     }
     const series = [...buckets.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, byBucket]) => ({
       key,
@@ -13779,7 +13824,8 @@ function pointsOf(buckets, first, last, bucketMs) {
         p50Ms: 0,
         p95Ms: 0,
         requests: 0,
-        t
+        t,
+        unpriced: 0
       });
       continue;
     }
@@ -13794,10 +13840,22 @@ function pointsOf(buckets, first, last, bucketMs) {
       p50Ms: p50,
       p95Ms: p95,
       requests: bucket.requests,
-      t
+      t,
+      unpriced: bucket.unpriced
     });
   }
   return points;
+}
+function requestsSince(file, options) {
+  const db = openReadonly(file);
+  if (db === null)
+    return 0;
+  try {
+    const row = db.query("SELECT count(*) AS n FROM requests WHERE at >= ?").get(options.from);
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
 }
 function recentRequests(file, options = {}) {
   const limit = Math.min(RECENT_PAGE_MAX, Math.max(1, Math.trunc(options.limit ?? RECENT_PAGE_DEFAULT)));
@@ -13806,9 +13864,14 @@ function recentRequests(file, options = {}) {
     return { nextCursor: null, rows: [] };
   try {
     const filter = filterClause(options.filters ?? {});
-    const conditions = [...options.cursor === undefined ? [] : ["id < ?"], ...filter.sql];
+    const conditions = [
+      ...options.cursor === undefined ? [] : ["id < ?"],
+      ...options.from === undefined ? [] : ["at >= ?"],
+      ...filter.sql
+    ];
     const values = [
       ...options.cursor === undefined ? [] : [options.cursor],
+      ...options.from === undefined ? [] : [options.from],
       ...filter.values
     ];
     const sql = `SELECT ${HISTORY_COLUMNS} FROM requests WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")} ORDER BY id DESC LIMIT ?`;
@@ -16021,7 +16084,7 @@ async function commandHistory(ctx, args) {
     return 0;
   }
   out.heading(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}`);
-  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives.");
+  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives. A request with no price is counted in the last column and adds nothing to cost.");
   const header = [
     options.by,
     "requests",
@@ -16031,6 +16094,7 @@ async function commandHistory(ctx, args) {
     "cache read",
     "cache write",
     "cost",
+    "no price",
     "peak p95"
   ];
   const rows = answer.series.map((series) => {
@@ -16041,7 +16105,8 @@ async function commandHistory(ctx, args) {
       errors: 0,
       input: 0,
       output: 0,
-      requests: 0
+      requests: 0,
+      unpriced: 0
     };
     let peakP95 = 0;
     for (const point of series.points) {
@@ -16052,6 +16117,7 @@ async function commandHistory(ctx, args) {
       total.cacheRead += point.cacheReadTokens;
       total.cacheWrite += point.cacheWriteTokens;
       total.cost += point.costUsd;
+      total.unpriced += point.unpriced;
       peakP95 = Math.max(peakP95, point.p95Ms);
     }
     const count = (value) => value.toLocaleString("en-US");
@@ -16064,6 +16130,7 @@ async function commandHistory(ctx, args) {
       count(total.cacheRead),
       count(total.cacheWrite),
       formatUsd(total.cost),
+      count(total.unpriced),
       `${count(peakP95)} ms`
     ];
   });
@@ -33576,7 +33643,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync64 } from "fs";
+import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync65 } from "fs";
 import { basename as basename10, dirname as dirname23, relative as relative6 } from "path";
 
 // src/portal/facts.ts
@@ -34698,8 +34765,31 @@ function planWindow(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync63 } from "fs";
+import { readFileSync as readFileSync64 } from "fs";
 import { join as join66 } from "path";
+
+// src/gateway/safety-checks-read.ts
+import { readFileSync as readFileSync63 } from "fs";
+var DAY_MS = 86400000;
+function readSafetyChecks(file) {
+  try {
+    return parseSafetyCheckState(readFileSync63(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function windowDays(nowMs, windowMs, timeZone) {
+  const first = Date.parse(localDay(nowMs - windowMs, timeZone));
+  const last = Date.parse(localDay(nowMs, timeZone));
+  return Math.max(1, Math.round((last - first) / DAY_MS) + 1);
+}
+function safetyCheckWindow(state, options) {
+  const days = state === null ? [] : recentCheckDays(state, options.nowMs, windowDays(options.nowMs, options.windowMs, options.timeZone), options.timeZone);
+  return {
+    checks: days.reduce((sum, [, day]) => sum + day.checks, 0),
+    days
+  };
+}
 
 // src/sessions/flow.ts
 var FLOW_DAYS_KEPT = 8;
@@ -34881,6 +34971,20 @@ async function machineData(deps) {
     warp: warpRow(deps.action.portal)
   };
 }
+var OVERVIEW_RATE_WINDOW_MS = 5 * 60000;
+function overviewRequests(deps, router, now) {
+  const file = deps.action.portal.paths.historyDbFile;
+  if (!historyDbExists(file))
+    return { perMinute: null, sinceRouterStart: null };
+  try {
+    return {
+      perMinute: requestsSince(file, { from: now - OVERVIEW_RATE_WINDOW_MS }) / (OVERVIEW_RATE_WINDOW_MS / 60000),
+      sinceRouterStart: router.up ? requestsSince(file, { from: now - router.uptimeSec * 1000 }) : null
+    };
+  } catch {
+    return { perMinute: null, sinceRouterStart: null };
+  }
+}
 async function overviewData(deps, config) {
   const ctx = deps.action.portal;
   const router = await routerFacts(ctx, config.port);
@@ -34893,6 +34997,7 @@ async function overviewData(deps, config) {
     fallbacks: limits.fallbacks,
     limits: limits.limits,
     limitsRead: limits.read,
+    requests: overviewRequests(deps, router, ctx.now()),
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),
@@ -35259,7 +35364,7 @@ async function crewAnswerFor(deps, ref) {
   }));
   let brief = null;
   try {
-    brief = readFileSync63(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
+    brief = readFileSync64(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
     byFile: [],
@@ -35418,7 +35523,7 @@ async function needsAnswer(deps) {
 async function breakersOf2(deps, now) {
   let text;
   try {
-    text = readFileSync63(deps.action.portal.paths.gatewayStateFile, "utf8");
+    text = readFileSync64(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -35463,7 +35568,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync63(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync64(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -35586,6 +35691,8 @@ function historyAnswer(deps, range, by, filters = {}) {
   const now = deps.action.portal.now();
   const file = deps.action.portal.paths.historyDbFile;
   const answer = historySeries(file, { by, filters, now, range });
+  const state = readSafetyChecks(deps.action.portal.paths.safetyChecksFile);
+  const checks = safetyCheckWindow(state, { nowMs: now, windowMs: HISTORY_RANGE_MS[range] });
   return {
     available: true,
     by,
@@ -35593,6 +35700,10 @@ function historyAnswer(deps, range, by, filters = {}) {
     from: now - HISTORY_RANGE_MS[range],
     note: historyDbExists(file) ? null : NO_HISTORY_YET,
     range,
+    safetyChecks: {
+      checks: state === null ? null : checks.checks,
+      days: checks.days.length
+    },
     series: answer.series,
     to: now
   };
@@ -35668,7 +35779,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync64(paths.portalProjectsFile, "utf8");
+    text = readFileSync65(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -37203,6 +37314,7 @@ async function overviewAnswer(deps) {
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
+      requests: { perMinute: null, sinceRouterStart: null },
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,
@@ -37216,6 +37328,10 @@ async function overviewAnswer(deps) {
     fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps)
   };
+}
+async function rateAnswer(deps) {
+  const router = "config" in deps.found ? await routerFacts(deps.action.portal, deps.found.config.port) : NO_ROUTER;
+  return overviewRequests(deps, router, deps.action.portal.now());
 }
 async function slotsAnswer(deps) {
   if ("error" in deps.found) {
@@ -37355,6 +37471,7 @@ var API_READS = {
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),
+  "/api/history/rate": async (deps) => ok(await rateAnswer(deps)),
   "/api/history/keys": (deps, query) => {
     const range = rangeOf(query.get("range"));
     if (range === null)
@@ -37394,12 +37511,15 @@ var API_READS = {
     }
   },
   "/api/requests": (deps, query) => {
+    const range = rangeOf(query.get("range"));
     const status = query.get("status");
     const cursor = cursorOf(query.get("cursor"));
+    if (range === null)
+      return badRange();
     if (status !== null && status !== "error" || cursor === "bad") {
       return {
         body: {
-          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`
+          error: `requests takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`
         },
         status: 400
       };
@@ -37407,6 +37527,7 @@ var API_READS = {
     try {
       return ok(requestsAnswer(deps, {
         filters: historyFilters(query),
+        from: deps.action.portal.now() - HISTORY_RANGE_MS[range],
         limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
         ...cursor === null ? {} : { cursor }
       }));
@@ -38809,7 +38930,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync65 } from "fs";
+import { readFileSync as readFileSync66 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -38849,7 +38970,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync65(file, "utf8");
+      return readFileSync66(file, "utf8");
     } catch {
       return null;
     }
@@ -38928,7 +39049,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync65(file);
+      bytes = readFileSync66(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -39011,7 +39132,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync55, readFileSync as readFileSync66, statSync as statSync19 } from "fs";
+import { existsSync as existsSync55, readFileSync as readFileSync67, statSync as statSync19 } from "fs";
 import { extname, join as join69, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -39063,7 +39184,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync66(join69(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync67(join69(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -39110,7 +39231,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync66(file);
+        const bytes = readFileSync67(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);

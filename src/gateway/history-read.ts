@@ -8,11 +8,12 @@
  *
  * Two queries:
  *   - `historySeries` groups the rows of a range into buckets, by target, slot, model or
- *     session: requests, errors, p50 and p95 latency, the four token sums and the estimated
- *     USD. Every bucket of the window is there, empty ones as zeros, so a chart needs no
- *     filling in.
+ *     session: requests, errors, p50 and p95 latency, the four token sums, the estimated USD
+ *     and the count of rows it could not price. Every bucket of the window is there, empty
+ *     ones as zeros, so a chart needs no filling in.
  *   - `recentRequests` pages the newest rows first, by id (`cursor` is the last id of the
  *     page before), with the same filters.
+ *   - `requestsSince` counts the rows of a window that a caller names.
  *
  * Filters: `slot`, `target`, `model`, `session` (exact), and `status: "error"` (an HTTP status
  * of 400 or more). A row with no slot or no session is grouped under `(no slot)` /
@@ -76,6 +77,10 @@ export interface HistoryFilters {
 export interface HistoryPoint {
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * The sum of the bucket's **priced** rows. A row with no price adds nothing to it: its count
+   * is `unpriced`, so a page never shows a sum as if every row were in it.
+   */
   costUsd: number;
   /** Rows whose status was 400 or more. */
   errors: number;
@@ -87,6 +92,12 @@ export interface HistoryPoint {
   requests: number;
   /** The bucket's start, milliseconds since the epoch. */
   t: number;
+  /**
+   * Rows that reported tokens and no price: the backend's model list gave none for its model,
+   * or the row was written before the price was known. They are in `requests`, and in every
+   * token count, but in `costUsd` they are not — so a sum holding them must say so.
+   */
+  unpriced: number;
 }
 
 /** One line of the chart: a target, slot, model or session. */
@@ -256,6 +267,7 @@ interface Bucket {
   input: number;
   output: number;
   requests: number;
+  unpriced: number;
 }
 
 function emptyBucket(): Bucket {
@@ -268,7 +280,27 @@ function emptyBucket(): Bucket {
     input: 0,
     output: 0,
     requests: 0,
+    unpriced: 0,
   };
+}
+
+/**
+ * Whether a row reported tokens at all. A row whose answer gave no `usage` has all four counts
+ * null (`history.ts` › `HistoryRow.tokens`): it has nothing to price, so it is never counted
+ * as unpriced — there is no price it is missing.
+ */
+function reportedTokens(row: {
+  cache_read_tokens: null | number;
+  cache_write_tokens: null | number;
+  input_tokens: null | number;
+  output_tokens: null | number;
+}): boolean {
+  return (
+    row.input_tokens !== null ||
+    row.output_tokens !== null ||
+    row.cache_read_tokens !== null ||
+    row.cache_write_tokens !== null
+  );
 }
 
 /**
@@ -314,7 +346,12 @@ export function historySeries(
       bucket.output += row.output_tokens ?? 0;
       bucket.cacheRead += row.cache_read_tokens ?? 0;
       bucket.cacheWrite += row.cache_write_tokens ?? 0;
-      bucket.cost += row.cost_usd ?? 0;
+      // A row with no price is counted, never added as $0: the page says how many there are.
+      if (row.cost_usd === null) {
+        if (reportedTokens(row)) bucket.unpriced += 1;
+      } else {
+        bucket.cost += row.cost_usd;
+      }
     }
     const series: HistorySeries[] = [...buckets.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -365,6 +402,7 @@ function pointsOf(
         p95Ms: 0,
         requests: 0,
         t,
+        unpriced: 0,
       });
       continue;
     }
@@ -380,19 +418,46 @@ function pointsOf(
       p95Ms: p95,
       requests: bucket.requests,
       t,
+      unpriced: bucket.unpriced,
     });
   }
   return points;
 }
 
 /**
+ * How many requests the history holds at or after `from`. **Model** requests by construction:
+ * the history is the model calls, never auto mode's safety checks (counted apart in
+ * `safety-checks.ts`) and never Claude Code's own pings to the router — which is why the
+ * Overview's rate is a model-request rate and not the router's own counter (F4, F5).
+ *
+ * One query, read-only; a missing file is none. The caller names the window's start, so a rate
+ * over the last few minutes and a count since the router started are the same reader.
+ */
+export function requestsSince(file: string, options: { from: number }): number {
+  const db = openReadonly(file);
+  if (db === null) return 0;
+  try {
+    const row = db.query("SELECT count(*) AS n FROM requests WHERE at >= ?").get(options.from) as {
+      n: number;
+    } | null;
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * The newest requests first, one page at a time. `cursor` is the `nextCursor` of the page
  * before (its last id); no cursor starts at the newest. `limit` is clamped to 1..200, and a
  * missing one is 50.
+ *
+ * `from` bounds the window, as `historySeries`' small range does: a row older than it is not
+ * on any page, and a page after the first carries `from` again — a cursor alone would walk
+ * past the window the page shows. Absent, every row the file holds is in the window.
  */
 export function recentRequests(
   file: string,
-  options: { cursor?: number; filters?: HistoryFilters; limit?: number } = {},
+  options: { cursor?: number; filters?: HistoryFilters; from?: number; limit?: number } = {},
 ): RecentPage {
   const limit = Math.min(
     RECENT_PAGE_MAX,
@@ -402,9 +467,14 @@ export function recentRequests(
   if (db === null) return { nextCursor: null, rows: [] };
   try {
     const filter = filterClause(options.filters ?? {});
-    const conditions = [...(options.cursor === undefined ? [] : ["id < ?"]), ...filter.sql];
+    const conditions = [
+      ...(options.cursor === undefined ? [] : ["id < ?"]),
+      ...(options.from === undefined ? [] : ["at >= ?"]),
+      ...filter.sql,
+    ];
     const values: (number | string)[] = [
       ...(options.cursor === undefined ? [] : [options.cursor]),
+      ...(options.from === undefined ? [] : [options.from]),
       ...filter.values,
     ];
     const sql = `SELECT ${HISTORY_COLUMNS} FROM requests WHERE ${

@@ -204,6 +204,8 @@ export function historyFor(now: number, query: HistoryQuery, empty: boolean): Hi
           cacheWriteTokens: 0,
           costUsd: 0,
           msWeight: 0,
+          // The mock prices every unit: nothing here is unpriced.
+          unpriced: 0,
         };
         // The bucket's times, weighted by requests: a fair stand-in for the real percentiles.
         point.p50Ms = Math.round(
@@ -229,6 +231,11 @@ export function historyFor(now: number, query: HistoryQuery, empty: boolean): Hi
     from: now - rangeOf(query.range).spanMs,
     note: null,
     range: query.range,
+    // Auto mode's safety checks: they are the router's own count, so the mock stands in with a
+    // plausible one (the real one is a file the dev server does not have).
+    safetyChecks: empty
+      ? { checks: null, days: 0 }
+      : { checks: 412, days: Math.min(30, Math.ceil(rangeOf(query.range).spanMs / DAY)) },
     to: now,
     bucketMs,
     series: [...byKey.entries()].map(([key, points]) => ({

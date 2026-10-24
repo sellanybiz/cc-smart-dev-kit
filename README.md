@@ -1193,12 +1193,16 @@ keeps the server-rendered pages, which answer exactly as before.
 
 **The history pages read the router's own request log** (never a prompt or an answer: the
 time, the session id, the model, the slot, the target, the status, the latency, the token
-counts and an estimated cost). `GET /api/history?range=1h|4h|1d|7d|14d|30d|90d&by=target|slot|model|session`
+counts and an estimated cost; a request whose model the list gives no price for is counted
+apart, never added as $0). `GET /api/history?range=1h|4h|1d|7d|14d|30d|90d&by=target|slot|model|session`
 answers one series per key, every bucket of the window included, and `GET /api/requests`
-pages the newest rows first; both take `slot`, `target`, `model`, `session` and
-`status=error`, and both answer empty — not an error — on a machine that has logged no
-request yet. `GET /api/history/keys?range=…` lists the slots, targets, models and sessions the
-range holds, for the filter menus.
+pages the newest rows first, within the same `range` (`1d` when it names none); both take
+`slot`, `target`, `model`, `session` and `status=error`, and both answer empty — not an
+error — on a machine that has logged no request yet. `GET /api/history/keys?range=…` lists
+the slots, targets, models and sessions the range holds, for the filter menus, and
+`GET /api/history/rate` answers the model requests of the last five minutes and since the
+router started, for the Overview's card — the router's own counter counts Claude Code's
+health pings too, and these do not.
 
 **The guard log pages on the server too.** `GET /api/guard-asks?range=…&cursor=…&limit=…`
 answers one page of the guards' questions, newest first, with a cursor for the page after it,

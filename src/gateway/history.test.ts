@@ -388,8 +388,8 @@ describe("the router's request history", () => {
       {
         at: START,
         breaker: null,
-        // Sonnet 5.5 list price: (1000×2 + 500×10 + 2000×0.1 + 100×2.5) / 1,000,000.
-        cost: { estimated: true, usd: 0.00745 },
+        // Sonnet 5.5 list price: (1000×2 + 500×10 + 2000×0.2 + 100×2.5) / 1,000,000.
+        cost: { estimated: true, usd: 0.00765 },
         model: "claude-sonnet-5-5",
         ms: 42,
         nextTarget: null,
@@ -402,7 +402,7 @@ describe("the router's request history", () => {
     ]);
   });
 
-  it("a streamed answer: the tokens come from message_start and the last message_delta", async () => {
+  it("a streamed answer: the start's counts stand, and the last message_delta's output wins", async () => {
     const history = collector();
     const sse = [
       "event: message_start",
@@ -445,8 +445,8 @@ describe("the router's request history", () => {
     });
     expect(history.rows[0]?.cost).toEqual({
       estimated: true,
-      // (1234×2 + 7×10 + 500×0.1) / 1,000,000 = 0.002588
-      usd: 0.002588,
+      // (1234×2 + 7×10 + 500×0.2) / 1,000,000 = 0.002638: Sonnet 5.5's cache read is $0.20.
+      usd: 0.002638,
     });
   });
 

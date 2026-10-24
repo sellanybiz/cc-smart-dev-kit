@@ -6787,7 +6787,7 @@ var CLAUDE_PRICES = [
     family: "sonnet",
     major: 5,
     minor: 5,
-    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
   },
   {
     family: "sonnet",
@@ -6867,7 +6867,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -6884,21 +6884,31 @@ function listedPrice(entry) {
   if (!isJsonObject(entry))
     return null;
   const pricing = entry.pricing;
-  if (isJsonObject(pricing)) {
-    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
-    const output = perToken(pricing.completion) ?? perToken(pricing.output);
-    if (input === null || output === null)
+  if (!isJsonObject(pricing))
+    return null;
+  const field = (name) => priceNumber(pricing[name]);
+  const prompt = field("prompt");
+  const completion = field("completion");
+  if (prompt !== null || completion !== null) {
+    if (prompt === null || completion === null)
       return null;
-    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
-    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
     return {
-      cacheRead: perMillion(cacheRead),
-      cacheWrite: perMillion(cacheWrite),
-      input: perMillion(input),
-      output: perMillion(output)
+      cacheRead: perMillion(field("input_cache_read") ?? prompt),
+      cacheWrite: perMillion(field("input_cache_write") ?? prompt),
+      input: perMillion(prompt),
+      output: perMillion(completion)
     };
   }
-  return null;
+  const input = field("input");
+  const output = field("output");
+  if (input === null || output === null)
+    return null;
+  return {
+    cacheRead: field("cached") ?? input,
+    cacheWrite: field("cache_creation") ?? input,
+    input,
+    output
+  };
 }
 function priceFromModels(models, model) {
   const entry = models.find((candidate) => candidate.id === model);
@@ -7730,7 +7740,7 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
-  output = null;
+  delta = {};
   constructor(streaming) {
     this.streaming = streaming;
   }
@@ -7766,11 +7776,14 @@ class AnswerUsageReader {
     if (this.partial.trim() !== "")
       this.readEvent(this.partial);
     this.partial = "";
-    if (this.start === null && this.output === null)
+    if (this.start === null && Object.keys(this.delta).length === 0)
       return null;
+    const start = this.start ?? EMPTY_TOKENS;
     return {
-      ...this.start ?? EMPTY_TOKENS,
-      output: this.output ?? this.start?.output ?? 0
+      cacheRead: this.delta.cacheRead ?? start.cacheRead,
+      cacheWrite: this.delta.cacheWrite ?? start.cacheWrite,
+      input: this.delta.input ?? start.input,
+      output: this.delta.output ?? start.output
     };
   }
   scan() {
@@ -7784,6 +7797,21 @@ class AnswerUsageReader {
     }
     if (this.partial.length > EVENT_MAX_CHARS)
       this.partial = "";
+  }
+  mergeDelta(usage) {
+    if (!isJsonObject4(usage))
+      return;
+    const named = [
+      ["cacheRead", usage.cache_read_input_tokens],
+      ["cacheWrite", usage.cache_creation_input_tokens],
+      ["input", usage.input_tokens],
+      ["output", usage.output_tokens]
+    ];
+    for (const [field, value] of named) {
+      const count = tokenCount(value);
+      if (count !== null)
+        this.delta[field] = count;
+    }
   }
   readEvent(block) {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
@@ -7801,9 +7829,8 @@ class AnswerUsageReader {
     if (event.type === "message_start" && isJsonObject4(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
-    if (event.type === "message_delta") {
-      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
-    }
+    if (event.type === "message_delta")
+      this.mergeDelta(event.usage);
   }
 }
 

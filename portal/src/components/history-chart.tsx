@@ -51,6 +51,27 @@ export interface Metric {
   mode: "sum" | "each";
   /** A count of whole things: the axis shows no fractions. */
   whole?: boolean;
+  /**
+   * What the chart says when every row of the window measures zero — a measure that is zero
+   * for a reason other than "no request". Null (the default) keeps "Nothing … matches".
+   */
+  whenZero?: (totals: { range: HistoryRange; requests: number; unpriced: number }) => null | string;
+}
+
+/**
+ * What the window holds overall: its requests, and how many of them no price could be given
+ * (`HistoryPoint.unpriced`). From the same points the chart draws, so the two never disagree.
+ */
+function totalsOf(history: ChartHistory): { requests: number; unpriced: number } {
+  let requests = 0;
+  let unpriced = 0;
+  for (const series of history.series) {
+    for (const point of series.points) {
+      requests += point.requests;
+      unpriced += point.unpriced;
+    }
+  }
+  return { requests, unpriced };
 }
 
 type Row = { t: number } & Partial<Record<SeriesColour, number>>;
@@ -128,6 +149,7 @@ export function HistoryChart({
     () => (data === null ? [] : rowsOf(data, colours, metric)),
     [data, colours, metric],
   );
+  const totals = useMemo(() => (data === null ? null : totalsOf(data)), [data]);
   const legend = useMemo(() => {
     const out: { colour: SeriesColour; label: string }[] = [];
     for (const [key, colour] of colours) {
@@ -171,9 +193,13 @@ export function HistoryChart({
   } else if (!mounted || data === null) {
     body = <Skeleton className="h-full w-full rounded-lg" />;
   } else if (empty) {
+    // A window whose rows are all zero for a reason of its own (only cost can be): the measure
+    // says so rather than "nothing matches", which would be wrong while requests are there.
+    const zero =
+      totals === null ? null : (metric.whenZero?.({ ...totals, range: data.range }) ?? null);
     body = (
       <div className="flex h-full items-center justify-center rounded-lg border border-dashed px-6 text-center text-sm text-muted-foreground">
-        Nothing in {rangeOf(data.range).words} matches.
+        {zero ?? `Nothing in ${rangeOf(data.range).words} matches.`}
       </div>
     );
   } else {
