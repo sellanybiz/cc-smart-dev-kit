@@ -377,7 +377,7 @@ each on its kind's own model (Claude Sonnet through the worker slot for `build`,
 `security`), reviewers on `sonnet` `high`, SC1's on `opus` `xhigh` (the router). The owner,
 2026-10-25: Sonnet answers again (the "until Oct 29" limit had cleared), so the "opus `xhigh` for
 every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all twelve follow-ups
-(2026-10-25); JW1, SL1, MC1 and TV1 came later the same night.
+(2026-10-25); JW1, SL1, MC1, TV1, RS1 and SW1 came later the same night.
 
 | Phase | Kind | What |
 |---|---|---|
@@ -393,18 +393,15 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | MC1 the lead changes a crew session's model or effort (the owner's ask) | build | Today only `crew start` sets them, and a person's `/model` in an attached session leaves the record wrong. One command: the launch policy's checks, the caps re-checked on a tier change, a running session stopped and resumed with the new flags through WF1's one resume path, the record updated in the same write; proved first (`--resume` with `--model`/`--effort`, and the crew `--settings` file). Brief `briefs/mc1.md`. |
 | TV1 every session knows what each tier runs (the owner's ask) | build | A note to Claude at each session start, and once when a slot changes mid-session: per tier, what really runs for this session (the agent guard's reading, the session's own gateway) and the effort rule (Claude: by the task; a backend: `max`); `core.md`'s effort line rewritten in place (it is at 130 lines), the subagent-decision skill's "affordable while the gateway is on" fixed. Brief `briefs/tv1.md`. |
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
+| RS1 the shipped workflows never drop a finding (the owner's pick) | build | `review-split` and `audit-run` rank by severity before the budget cut and return the rest as unchecked; a string or a bad argument object is refused at the start; the `review` and `audit` skills show the object. Brief `briefs/rs1.md`. |
+| SW1 a research sweep workflow (D28's third; the owner's pick) | build | `research-sweep`: one read-only researcher per angle, one refuter per claim with its quote, the unchecked past the budget, the open questions; it joins the guard's `READ_ONLY_WORKFLOWS`; the `research-first` skill says when. Ultracode stays off by default (the 2026-10-17 audit: "not adopt: ultracode default"). Brief `briefs/sw1.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
 both validates, `check:portal`, the release skill, the owner's yes. After the merge: WF1's live
 copy-resume case (its contract row says it is owed). Not briefed (notes only): the poll guard
-blocks a command that has both `sleep` and `claude agents`; **the split review workflow**
-(`plugin/workflows/`, the `review-split` skill) drops every finding past its `budget` without a
-word, and cuts in track order, not by severity, so one busy track can take every refuter; the
-skill does not say the workflow takes its arguments as an object (`base`, `head`, `folder`,
-`tracks`, `risky`, `budget`), so a string runs one track on the ordinary tier (seen 2026-10-25:
-the lead's first launch; stopped and relaunched). Fix: rank before the cut, report the findings
-past the budget as unchecked, and the skill shows the object.
+blocks a command that has both `sleep` and `claude agents`. (The split review workflow's budget
+cut and argument shape, seen 2026-10-25, are RS1.)
 
 ## The last stage — heavy cleanup (D30), after 1.0.0–1.2.0 are verified live on this machine
 
