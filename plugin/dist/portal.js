@@ -19151,6 +19151,7 @@ var NUMBER_RULES = {
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
+  "crew.archiveDays": AT_LEAST_ONE,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -19206,6 +19207,7 @@ var workflowSchema = strictObject({
     handoffPercent: numberField("crew.handoffPercent"),
     softHours: numberField("crew.softHours"),
     maxHours: numberField("crew.maxHours"),
+    archiveDays: numberField("crew.archiveDays"),
     tag: tagSchema.optional()
   }).optional()
 });
@@ -19243,6 +19245,7 @@ var workflowDefaults = {
     handoffPercent: 70,
     softHours: 2,
     maxHours: 4,
+    archiveDays: 7,
     tag: null
   }
 };
@@ -19276,6 +19279,7 @@ var POLICY_KEYS = [
   "crew.handoffPercent",
   "crew.softHours",
   "crew.maxHours",
+  "crew.archiveDays",
   "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -24572,6 +24576,7 @@ var RESOLVED = {
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
+  "crew.archiveDays": (r) => r.crew.archiveDays,
   "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
@@ -24621,6 +24626,7 @@ function resolveWorkflow(paths, projectConfig) {
       handoffPercent: of("crew.handoffPercent", crew.handoffPercent ?? workflowDefaults.crew.handoffPercent),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag)
     },
     switches: {
@@ -28645,81 +28651,6 @@ var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
 var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
 var DISCARD_IGNORED_MAX_FILES = 256;
 var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
-// src/worktrees/command.ts
-function crewRecordsOf(paths, repo) {
-  try {
-    return listCrew(paths.stateDir, repo).records;
-  } catch {
-    return [];
-  }
-}
-
-// src/crew/diff.ts
-var GIT_TIMEOUT_MS3 = 20000;
-
-class DiffError extends Error {
-  name = "DiffError";
-}
-function numstatRecord(record) {
-  const found = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/.exec(record);
-  if (found?.[1] === undefined || found[2] === undefined || found[3] === undefined)
-    return null;
-  return {
-    added: found[1] === "-" ? null : Number(found[1]),
-    deleted: found[2] === "-" ? null : Number(found[2]),
-    path: found[3]
-  };
-}
-function diffAgainstBase(folder, baseSha, env) {
-  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS3);
-  if (!run.ok) {
-    throw new DiffError(`git diff ${baseSha.slice(0, 7)}..HEAD failed in ${folder}: ${run.err === "" ? "no reason given" : run.err}`);
-  }
-  let insertions = 0;
-  let deletions = 0;
-  const byFile = [];
-  for (const record of run.out.split("\x00")) {
-    if (record === "")
-      continue;
-    const one = numstatRecord(record);
-    if (one === null) {
-      throw new DiffError(`git diff printed a record this reader cannot read: ${record}`);
-    }
-    insertions += one.added ?? 0;
-    deletions += one.deleted ?? 0;
-    byFile.push(one);
-  }
-  return {
-    byFile,
-    deletions,
-    files: byFile.length,
-    insertions,
-    paths: byFile.map((one) => one.path)
-  };
-}
-function outsideBrief(paths, patterns) {
-  if (patterns.length === 0)
-    return [];
-  const globs = patterns.map(filePattern);
-  return paths.filter((path) => !globs.some((one) => matchesFilePattern(path, one.pattern, one.glob)));
-}
-function filePattern(pattern) {
-  const named = pattern.startsWith("./") ? pattern.slice(2) : pattern;
-  return { glob: new Bun.Glob(named), pattern: named };
-}
-function matchesFilePattern(path, pattern, glob) {
-  if (path === pattern)
-    return true;
-  if (pattern.endsWith("/"))
-    return path.startsWith(pattern);
-  if (!/[*?[\]{}]/.test(pattern))
-    return path.startsWith(`${pattern}/`);
-  return glob.match(path);
-}
-
-// src/crew/start.ts
-var CLASH_STATES = [...RUNNING_STATES, "queued"];
-
 // src/sessions/saved-sessions.ts
 import { join as join53 } from "path";
 function projectFolderName(path) {
@@ -28797,6 +28728,93 @@ function isSessionId2(id) {
 
 // src/crew/transcript.ts
 var TAIL_BYTES = 256 * 1024;
+
+// src/crew/archive.ts
+var DAY_MS = 24 * 60 * 60 * 1000;
+var manifestSchema = looseObject({
+  version: number2().int().min(1),
+  crew: string2().min(1),
+  name: string2().min(1),
+  repo: string2().min(1),
+  sessionId: string2().min(1),
+  projectFolder: string2().min(1),
+  archivedAt: exports_iso.datetime()
+});
+
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
+
+// src/crew/diff.ts
+var GIT_TIMEOUT_MS3 = 20000;
+
+class DiffError extends Error {
+  name = "DiffError";
+}
+function numstatRecord(record) {
+  const found = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/.exec(record);
+  if (found?.[1] === undefined || found[2] === undefined || found[3] === undefined)
+    return null;
+  return {
+    added: found[1] === "-" ? null : Number(found[1]),
+    deleted: found[2] === "-" ? null : Number(found[2]),
+    path: found[3]
+  };
+}
+function diffAgainstBase(folder, baseSha, env) {
+  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS3);
+  if (!run.ok) {
+    throw new DiffError(`git diff ${baseSha.slice(0, 7)}..HEAD failed in ${folder}: ${run.err === "" ? "no reason given" : run.err}`);
+  }
+  let insertions = 0;
+  let deletions = 0;
+  const byFile = [];
+  for (const record of run.out.split("\x00")) {
+    if (record === "")
+      continue;
+    const one = numstatRecord(record);
+    if (one === null) {
+      throw new DiffError(`git diff printed a record this reader cannot read: ${record}`);
+    }
+    insertions += one.added ?? 0;
+    deletions += one.deleted ?? 0;
+    byFile.push(one);
+  }
+  return {
+    byFile,
+    deletions,
+    files: byFile.length,
+    insertions,
+    paths: byFile.map((one) => one.path)
+  };
+}
+function outsideBrief(paths, patterns) {
+  if (patterns.length === 0)
+    return [];
+  const globs = patterns.map(filePattern);
+  return paths.filter((path) => !globs.some((one) => matchesFilePattern(path, one.pattern, one.glob)));
+}
+function filePattern(pattern) {
+  const named = pattern.startsWith("./") ? pattern.slice(2) : pattern;
+  return { glob: new Bun.Glob(named), pattern: named };
+}
+function matchesFilePattern(path, pattern, glob) {
+  if (path === pattern)
+    return true;
+  if (pattern.endsWith("/"))
+    return path.startsWith(pattern);
+  if (!/[*?[\]{}]/.test(pattern))
+    return path.startsWith(`${pattern}/`);
+  return glob.match(path);
+}
+
+// src/crew/start.ts
+var CLASH_STATES = [...RUNNING_STATES, "queued"];
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;
@@ -35276,7 +35294,7 @@ import { join as join69 } from "path";
 
 // src/gateway/safety-checks-read.ts
 import { readFileSync as readFileSync65 } from "fs";
-var DAY_MS = 86400000;
+var DAY_MS2 = 86400000;
 function readSafetyChecks(file) {
   try {
     return parseSafetyCheckState(readFileSync65(file, "utf8"));
@@ -35287,7 +35305,7 @@ function readSafetyChecks(file) {
 function windowDays(nowMs, windowMs, timeZone) {
   const first = Date.parse(localDay(nowMs - windowMs, timeZone));
   const last = Date.parse(localDay(nowMs, timeZone));
-  return Math.max(1, Math.round((last - first) / DAY_MS) + 1);
+  return Math.max(1, Math.round((last - first) / DAY_MS2) + 1);
 }
 function safetyCheckWindow(state, options) {
   const days = state === null ? [] : recentCheckDays(state, options.nowMs, windowDays(options.nowMs, options.windowMs, options.timeZone), options.timeZone);

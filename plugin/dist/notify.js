@@ -6264,6 +6264,7 @@ var NUMBER_RULES = {
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
+  "crew.archiveDays": AT_LEAST_ONE,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -6319,6 +6320,7 @@ var workflowSchema = strictObject({
     handoffPercent: numberField("crew.handoffPercent"),
     softHours: numberField("crew.softHours"),
     maxHours: numberField("crew.maxHours"),
+    archiveDays: numberField("crew.archiveDays"),
     tag: tagSchema.optional()
   }).optional()
 });
@@ -6356,6 +6358,7 @@ var workflowDefaults = {
     handoffPercent: 70,
     softHours: 2,
     maxHours: 4,
+    archiveDays: 7,
     tag: null
   }
 };
@@ -6389,6 +6392,7 @@ var POLICY_KEYS = [
   "crew.handoffPercent",
   "crew.softHours",
   "crew.maxHours",
+  "crew.archiveDays",
   "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);

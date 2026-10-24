@@ -50,6 +50,7 @@ export function defaultResolved(): ResolvedWorkflow {
       updateHold: at(false),
     },
     crew: {
+      archiveDays: at(7),
       enabled: at(false),
       handoffPercent: at(70),
       idleStopMinutes: at(10),

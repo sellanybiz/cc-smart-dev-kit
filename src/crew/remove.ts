@@ -24,15 +24,20 @@
  *      verdict's reason;
  *   7. the worktree is removed, and its branch by the same rule (only when the lead's ref holds
  *      all of it);
- *   8. last, `claude rm <short id>` — which refuses a worktree that is still there. If it fails,
- *      the record says what is left, and a second run goes straight to this step.
+ *   8. then `claude rm <short id>` — which refuses a worktree that is still there. If it fails,
+ *      the record says what is left, and a second run goes straight to this step;
+ *   9. last, once `claude rm` let the session go, its conversation leaves Claude Code's `/resume`
+ *      list for the kit's archive, and the archives past `crew.archiveDays` are deleted
+ *      (`archive.ts`, AR1). A conversation that stays says why, and never fails the removal.
  *
  * A folder git does not list as a worktree is not ours to delete: it is said, and the command
  * stops there. Nothing is called gone that is not.
  */
 import { existsSync } from "node:fs";
+import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
+import { liveSessions } from "../hooks/sessions";
 import { holdCleanLock } from "../worktrees/clean";
 import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
 import {
@@ -48,6 +53,14 @@ import {
 import { finishParked, finishStrays } from "../worktrees/scan-parked";
 import { containersWhy, programsWhy } from "../worktrees/verdict";
 import { agentRows, rowOf } from "./agents";
+import {
+  type ArchiveOutcome,
+  archiveConversation,
+  archiveDaysOf,
+  DAY_MS,
+  pruneCrewArchives,
+  sessionsNeverTaken,
+} from "./archive";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
 import {
@@ -79,7 +92,7 @@ import {
   stopSession,
 } from "./end";
 import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, listCrew } from "./store";
+import { appendCrewEvent, type CrewRecord, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -87,7 +100,7 @@ function commits(count: number): string {
 }
 
 /** Discard preflight is repeated after confirmation; unknown machine facts always keep the work. */
-function discardBlocker(record: import("./store").CrewRecord, ctx: CrewContext): string | null {
+function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
   try {
     const all = listWorktrees(record.repo, ctx.env);
     const listed = all.find((one) => samePath(one.path, record.worktree));
@@ -600,6 +613,8 @@ export async function runCrewRm(
         ? `session ${record.shortId} was gone already`
         : `removed session ${record.shortId}`,
     );
+    // 9. Its conversation leaves `/resume` (AR1): only now that Claude Code has let the session go.
+    await archiveAfterRemoval(record, ctx);
   }
   if (discard) record = await completeCrewDiscard(record, ctx);
   const state = discard ? "discarded" : "removed";
@@ -611,6 +626,56 @@ export async function runCrewRm(
   );
   ctx.print(`${state} ${record.name}`);
   return stored ? 0 : 1;
+}
+
+/**
+ * After `claude rm` (AR1): the crew session's conversation moves out of Claude Code's projects
+ * folder into the kit's archive (`archive.ts`), and every archive past its `crew.archiveDays`
+ * goes. Nothing here fails the removal: a conversation that stays says why, and
+ * `sessions --finished --remove` moves it later.
+ */
+async function archiveAfterRemoval(record: CrewRecord, ctx: CrewContext): Promise<void> {
+  const home = ctx.paths.home;
+  const daysOf = archiveDaysOf(ctx.paths, ctx.env);
+  const session = `session ${record.shortId ?? record.sessionId ?? record.name}`;
+  let outcome: ArchiveOutcome;
+  try {
+    const running = ctx.scanFacts?.sessions ?? liveSessions(ctx.paths.claudeConfigDir);
+    outcome = await archiveConversation({
+      neverTaken: sessionsNeverTaken(ctx.paths.stateDir, record.id),
+      nowMs: ctx.now(),
+      paths: ctx.paths,
+      record,
+      running: new Set(running.map((one) => one.sessionId)),
+    });
+  } catch (error) {
+    outcome = { kind: "failed", moved: 0, why: reasonOf(error) };
+  }
+  if (outcome.kind === "archived") {
+    const days = daysOf(record.repo);
+    const until =
+      days === null
+        ? "is kept until its repository's settings can be read"
+        : `is deleted after ${String(days)} day${days === 1 ? "" : "s"}`;
+    ctx.print(
+      `archived the conversation of ${session} (${String(outcome.files)} file${outcome.files === 1 ? "" : "s"}) in ${tildify(outcome.dir, home)}: it leaves /resume, and ${until}`,
+    );
+  } else if (outcome.kind === "kept") {
+    ctx.error(`note: the conversation of ${session} stays where it is: ${outcome.why}`);
+  } else if (outcome.kind === "failed") {
+    const moved =
+      outcome.moved === 0 ? "" : ` (${String(outcome.moved)} of its files moved before it stopped)`;
+    ctx.error(
+      `note: the conversation of ${session} stays in /resume${moved}: ${outcome.why}; ${COMMAND} sessions --finished --remove moves it later`,
+    );
+  }
+  const pruned = pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now());
+  for (const one of pruned.pruned) {
+    ctx.print(
+      `deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`,
+    );
+  }
+  for (const one of pruned.kept) ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
 }
 
 /** What a pass over a repository's moved-aside folders came to: the ones that stayed, and why. */

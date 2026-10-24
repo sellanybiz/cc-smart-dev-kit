@@ -68,6 +68,7 @@ describe("the workflow schema", () => {
   test("D34: workflow.crew takes the switch, the limits, the tag and what to keep, and nothing else", () => {
     const every = {
       crew: {
+        archiveDays: 3,
         enabled: true,
         handoffPercent: 70,
         idleStopMinutes: 10,
@@ -111,6 +112,8 @@ describe("the workflow schema", () => {
       ["handoffPercent", 101],
       ["softHours", 0],
       ["maxHours", -2],
+      ["archiveDays", 0],
+      ["archiveDays", 1.5],
       ["memoryGb", 0],
       ["tag", "My App"],
       ["tag", "a-very-long-tag"],
@@ -344,6 +347,7 @@ describe("resolveWorkflow: the order", () => {
   test("D34, D35, D37: crew sessions are off by default, with the lead's limits; D17's limits 200/10/20", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
     expect(resolved.crew).toEqual({
+      archiveDays: { value: 7, source: "default" },
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
@@ -375,10 +379,11 @@ describe("resolveWorkflow: the order", () => {
     const config = ccSmartDevKitConfigSchema.parse({
       workflow: {
         fixesAfterReview: { files: 0 },
-        crew: { keep: ["plugin:acme-tools@acme"], max: 3 },
+        crew: { archiveDays: 14, keep: ["plugin:acme-tools@acme"], max: 3 },
       },
     });
     const resolved = resolveWorkflow(pathsFor(env), config);
+    expect(resolved.crew.archiveDays).toEqual({ value: 14, source: "project" });
     expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
     expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
     // A list is one value: the project's list wins whole, never merged entry by entry.
