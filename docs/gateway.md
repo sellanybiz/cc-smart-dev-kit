@@ -988,7 +988,13 @@ fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose bre
 `currentBreakers`, so only while the router keeps the record fresh; a profile's reads
 `worker slot in profile <name>: … → gateway profile <name> slot worker <targets>`, the command
 that works whether the profile names the slot or uses the machine's chain), and the plan usage
-`5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
+`5h 23% · 7d 41%`, which warns from 85 %. **A fallback or breaker line shows only in a session on
+its chain**: the status line command's environment carries the session's own
+`ANTHROPIC_BASE_URL` (`docs/claude-code-contract.md`), so a session on the machine's address sees
+the machine's records, one on `…/p/<name>` sees that profile's, and one off the gateway sees
+neither (an environment with no address says nothing, so the machine's records show); a plan limit
+shows in every session, because the login is one. Run by hand with no input from Claude Code, it
+shows every record. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on
 unchanged; the router records no percentage. After a refused request Claude Code has no

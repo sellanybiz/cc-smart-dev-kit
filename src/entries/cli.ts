@@ -374,6 +374,7 @@ async function main(argv: string[]): Promise<number> {
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
         alertsAt(paths, process.cwd(), process.env),
+        process.env,
       );
     case "usage":
       return runUsage(paths, rest, Date.now());

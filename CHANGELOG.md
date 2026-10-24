@@ -24,6 +24,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   `gateway.json`. `gateway profile <name> slot judge off` no longer says Claude judges alone: the
   profile's tested worker targets still judge while Claude cannot, unless its judge fallback is off.
   A crew session in a profile project now waits on its profile's breaker, not the machine's.
+  The status line shows a fallback or breaker only in a session on that chain: a profile's
+  record no longer appears in every session on the machine, and a session off the gateway shows
+  none.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and
