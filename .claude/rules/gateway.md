@@ -125,7 +125,14 @@ safety checks), their ids in § Names. One rule set for all of them:
   one is a backend, the request is held and then answered with the breaker's 429
   (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged**, its quota
   429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
-  real headers. A last target that is Anthropic is never held.
+  real headers. A last target that is Anthropic is never held. **The one exception (the
+  owner's D65):** a Claude target behind the first, at a plan limit the router already knows
+  (`knownLimit`: in `limits`, its reset still ahead) is skipped while it rests, the last one
+  included, so the target before it is the last asked, by its own rules; after its rest
+  (the same cooldown, `COOLDOWN_MAX_SEC`, never a second timer) it is asked again, and a
+  capacity failure of that ask counts for the breaker. A chain that starts with that model,
+  a limit with no reset, the judge's hold (none) and server tools are untouched. Its tests:
+  `gateway.test.ts` › "the breaker" › "D65: …".
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
   Default on for scout, worker, the judge and a machine's own slots; off for opus and fable

@@ -560,6 +560,19 @@ switches `--fallback-model` (a 529 does after three).
   StopFailure alert need the real headers. A refused key (401, 403), a refusal (400, 422) and
   an error inside a 200 stream are not capacity failures: the person must fix them, and they
   are never held.
+- **The one exception (the owner's D65): a Claude target behind the first, at a plan limit the
+  router already knows** (a reset still ahead). Before D65 one hiccup of a backend first in the
+  chain became that model's plan-limit 429, and Claude Code ended the turn on it, for days,
+  while the backend answered again within seconds. Now, while that Claude target rests, it is
+  skipped as the last target too (§ Fallback rules, the cooldown), so the backend before it is
+  the last one asked and its capacity failure is held like any other; the breaker's answer
+  names the skipped target (`claude-sonnet-5-5: at its plan usage limit (seven_day), until
+  21:10`, the end of its rest). Once its rest is over it is asked again, and a capacity failure
+  of that ask is held too, as a backend's is. With the breaker off, the last target asked
+  answers as before: the backend's own answer, or Claude's when it was asked. A chain whose
+  first target is that Claude model, a slot with no chain, a limit with no reset time, the
+  judge and a server-tool request are unchanged: Claude's 429 passes as it came. The first
+  time the router learns the limit, Claude was asked, so that 429 passes unchanged too.
 
 **What it does** (the first request that sees it opens the breaker):
 
@@ -1183,7 +1196,9 @@ reaches Claude Code**.
   none answered at all. No request goes to Anthropic that the chain does not name. **With the
   slot's breaker on** (§ The breaker), a last answer that is a backend's capacity failure,
   when every other target failed that way too, becomes the breaker's 429 after a hold.
-  Anthropic's own answers always pass unchanged.
+  Anthropic's own answers always pass unchanged. The one exception (D65): a Claude target
+  behind the first, resting at a plan limit the router knows, is not tried as the last target
+  (the cooldown, below).
 - **Two exceptions: a backend refusing its key, or the request.** When the answer that goes
   back is a backend's 401 or 403, Claude Code gets a 424 `invalid_request_error` instead, with
   `x-should-retry: false`, whose message names the backend and says to run
@@ -1209,7 +1224,16 @@ reaches Claude Code**.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last (and, with an open breaker, a
-  resting last backend is skipped too: § The breaker). A target that gives no headers or no
+  resting last backend is skipped too: § The breaker). **A Claude target at its known plan
+  limit is skipped as the last target too (the owner's D65)**: when it is not the chain's
+  first, rests, and the router holds its limit with a reset still ahead (`limits` in the
+  state file), the target before it is the last one asked, and that target's own rules
+  decide (§ The breaker). A `WARN <slot>: <model> skipped: at its plan usage limit (<claim>,
+  resets <time>); asked again from <time>` line says so, once per request (while the breaker
+  holds, its own lines name it instead). Its rest is the same cooldown as any target's, so
+  after it, at most 600 s on, the next request whose earlier targets fail asks it again: a 200
+  ends the limit at once (an early reset), and another 429 starts the rest again. A limit with
+  no reset time, or one whose reset has passed, is never skipped this way. A target that gives no headers or no
   real event by its deadline rests like any failure, 30 s: a second request skips it at once. The router does not wait for the stalled stream to close (`holdFirstEvent` cancels it in the background): an upstream whose cancel never settled used to hold the request, and so the rest, for ever.
   Requests that were already waiting on it when it failed each wait their own deadline.
   Only a `/v1/messages` answer starts or ends a rest: a `count_tokens` answer says nothing

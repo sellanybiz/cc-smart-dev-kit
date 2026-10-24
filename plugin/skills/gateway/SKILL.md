@@ -109,6 +109,10 @@ A slot whose every target fails for want of capacity (a 429, a 5xx, a timeout) n
 the request at once. The router holds it, watches the config, and asks one target at a time.
 It then answers a 429 that Claude Code retries by itself, and fakes no usage headers.
 Anthropic's own answers always pass unchanged, and a refused key is never held.
+- A Claude target after a backend, at a plan limit the router already knows, is skipped while
+  it rests, the last one too, so the backend's hiccup is held, not ended on Claude's limit; it
+  is asked again after its rest (10 minutes at most) to see an early reset. A chain that starts
+  with Claude still gets Claude's real 429.
 
 - The hold lasts up to `timeouts.breakerHoldMs` (240000 ms; 60000 for a request that does not
   stream; `0` holds none). The default is the ceiling; a bigger value is refused.

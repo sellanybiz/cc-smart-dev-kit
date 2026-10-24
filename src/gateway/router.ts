@@ -38,7 +38,9 @@
  *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
  *     exception: when every target failed for want of capacity and the last one is a
  *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
- *     429 that Claude Code retries by itself; Anthropic's own answers always pass.
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass. A Claude
+ *     target behind the first, resting at a plan limit the router knows, is not tried as the
+ *     last target (the owner's D65, `chain`).
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → the `cc-smart-dev-kit-judge` slot's tested targets when
