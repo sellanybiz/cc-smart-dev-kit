@@ -33,6 +33,7 @@ import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
 import {
+  type ClaudeDeps,
   callClaude,
   findClaude,
   parseBackgrounded,
@@ -399,7 +400,7 @@ export async function resumeSession(
 function resumedSession(
   record: CrewRecord,
   run: { stderr: string; stdout: string },
-  deps: ReturnType<typeof claudeDeps>,
+  deps: ClaudeDeps,
   claude: string,
   folder: string,
   command: string,
