@@ -395,10 +395,16 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
-findings to opus `xhigh` crew phases, the full check, both validates, `check:portal`, the release
-skill, the owner's yes. After the merge: WF1's live copy-resume case (its contract row says it is
-owed). Not briefed (note only): the poll guard blocks a command that has both `sleep` and
-`claude agents`.
+findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
+both validates, `check:portal`, the release skill, the owner's yes. After the merge: WF1's live
+copy-resume case (its contract row says it is owed). Not briefed (notes only): the poll guard
+blocks a command that has both `sleep` and `claude agents`; **the split review workflow**
+(`plugin/workflows/`, the `review-split` skill) drops every finding past its `budget` without a
+word, and cuts in track order, not by severity, so one busy track can take every refuter; the
+skill does not say the workflow takes its arguments as an object (`base`, `head`, `folder`,
+`tracks`, `risky`, `budget`), so a string runs one track on the ordinary tier (seen 2026-10-25:
+the lead's first launch; stopped and relaunched). Fix: rank before the cut, report the findings
+past the budget as unchecked, and the skill shows the object.
 
 ## The last stage — heavy cleanup (D30), after 1.0.0–1.2.0 are verified live on this machine
 
