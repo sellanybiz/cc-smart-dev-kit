@@ -38,10 +38,19 @@ thought to be at its limit; when it answered again, the lead could not move them
      writers), so `crew list`, the caps and the portal read the truth;
    - prints one line: the crew session, old → new, and what happened (resumed, stored for the next
      resume, queued, refused).
-3. **The lead's words:** `plugin/skills/lead/SKILL.md` (§ 2's "Override `--model` or `--effort`
-   only when the person asks" gains: and change a running one with this command, only when the
-   person asks), `docs/design/crew.md`, `README.md` (the command list). A `--continue` start keeps
-   taking `--model` and `--effort` (check it does, and say so).
+3. **The lead picks a phase's effort by its task (the owner, 2026-10-25).** On a Claude model,
+   the kind's effort (`crew kinds`: `high` for the `sonnet` kinds) is the default, not a rule: the
+   lead sets `--effort` per phase from its brief — `medium` for mechanical work, `high` by
+   default, `xhigh` or `max` for a hard or risky phase — and writes the reason in the plan's row.
+   On an affordable backend the effort stays `max` (the launch policy). `--model` still changes
+   only when the person asks. A `ui` phase keeps `UI_POLICY`'s floor. Find whether `crew start`
+   or the agent guard refuses an effort override today without the person (`src/models/launch-policy.ts`,
+   `src/crew/start.ts`, the guard's crew rules) and change only what this needs.
+4. **The lead's words:** `plugin/skills/lead/SKILL.md` § 2 ("Override `--model` or `--effort` only
+   when the person asks" becomes: the effort by the task, as in 3; the model only when the person
+   asks; a running one changed with this command), § 3's start line, `docs/design/crew.md`,
+   `README.md` (the command list). A `--continue` start keeps taking `--model` and `--effort`
+   (check it does, and say so).
 
 ## Files (change nothing else)
 
