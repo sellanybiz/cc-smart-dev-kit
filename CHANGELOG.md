@@ -42,6 +42,15 @@ you open it.
   claude-code-guide and statusline-setup, and the kit's read-only Workflows — a project's own
   read-only agent is exempt only when its `cc-smart-dev-kit.json` lists it. An ordinary session
   or a crew session is judged exactly as before.
+- **A heavy job that waited says when it started and how it ended.** A job whose output went
+  down a pipe (`bun run tsc --noEmit | tail -20`) reported the pipe's own status, so a session
+  that queued one saw the waiting lines, then nothing: a passing type check prints nothing of
+  its own, and a failed test run read as exit 0. A job that waited now says `Heavy job starts
+  after 18 min: tsgo --noEmit (8 GB)` as it starts, and `Heavy job ended: tsgo --noEmit, exit 0
+  after 3 min` when it ends — with the signal that stopped it, `(sent on by job run)` when
+  `job run` sent that one on, and its leftover processes when they had to be stopped. The first
+  waiting line carries one hint about the pipe, once per job. A job that never waited prints
+  neither line: no noise on a free machine.
 
 **Three more fixes, found by 1.1.2's own review.**
 

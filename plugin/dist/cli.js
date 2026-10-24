@@ -26792,6 +26792,17 @@ function formatSince(since, now) {
 function oneDecimal(gb) {
   return String(Math.round(gb * 10) / 10);
 }
+function durationText(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60)
+    return `${String(seconds)} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60)
+    return `${String(minutes)} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${String(hours)} h` : `${String(hours)} h ${String(rest)} min`;
+}
 function reasonText(reason, store) {
   switch (reason.kind) {
     case "alone":
@@ -26822,6 +26833,10 @@ function holderLines(held, store, now) {
 }
 var POLL_MS = 500;
 var WAITING_LINE_EVERY_MS = 60000;
+var ENDED_LINE_LEAD = "Heavy job ended";
+function pipeHint() {
+  return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
+}
 
 class WaitStoppedError extends Error {
   name = "WaitStoppedError";
@@ -26870,9 +26885,11 @@ async function acquireFrom(stores, job, options) {
     const at = now();
     if (at - lastLineAt < lineEveryMs)
       return;
+    const first = waitStartedAt === null;
     waitStartedAt ??= at;
     lastLineAt = at;
-    const waited = Math.round((at - waitStartedAt) / 60000);
+    const waitedMs = at - waitStartedAt;
+    const waited = first ? "" : ` (waiting ${durationText(waitedMs)})`;
     const budgets = [];
     const holders = [];
     for (const each of stores) {
@@ -26889,7 +26906,9 @@ async function acquireFrom(stores, job, options) {
         budgets.push(`${each.label}: cannot be read`);
       }
     }
-    options.onWaiting(`Heavy job waits for memory: ${job.what} ${wants}${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`);
+    options.onWaiting(`Heavy job waits for memory: ${job.what} ${wants}${waited}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`);
+    if (first)
+      options.onWaiting(pipeHint());
     for (const line of holders)
       options.onWaiting(line);
   };
@@ -26961,7 +26980,7 @@ async function acquireFrom(stores, job, options) {
     release();
     throw error;
   }
-  return { gb: job.gb, release };
+  return { gb: job.gb, release, waitedSince: waitStartedAt };
 }
 async function pidsHolding(stores, person, exclusive) {
   const pids = new Set;
@@ -41395,6 +41414,7 @@ function spawnAndWait(argv, signals = process, say = () => {
   return new Promise((resolve) => {
     const child = spawn2(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
+    const sentSignals = new Set;
     const sendAll = (signal) => {
       if (pgid !== undefined) {
         if (windows)
@@ -41415,16 +41435,25 @@ function spawnAndWait(argv, signals = process, say = () => {
         await Bun.sleep(pollMs);
       }
     };
-    const listeners = FORWARDED.map((signal) => [signal, () => sendAll(signal)]);
+    let finished = false;
+    const listeners = FORWARDED.map((signal) => [
+      signal,
+      () => {
+        if (!finished)
+          sentSignals.add(signal);
+        sendAll(signal);
+      }
+    ]);
     for (const [signal, listener] of listeners)
       signals.on(signal, listener);
-    let finished = false;
-    const done = async (code) => {
+    const done = async (end) => {
       if (finished)
         return;
       finished = true;
+      let leftovers = false;
       if (!await emptyWithin(options.leftoverGraceMs ?? LEFTOVER_GRACE_MS)) {
         const killWaitMs = options.killWaitMs ?? KILL_WAIT_MS;
+        leftovers = true;
         say("the job left processes running: stopping them, so its memory is free");
         sendAll("SIGTERM");
         if (!await emptyWithin(killWaitMs)) {
@@ -41436,14 +41465,15 @@ function spawnAndWait(argv, signals = process, say = () => {
       }
       for (const [signal, listener] of listeners)
         signals.off(signal, listener);
-      resolve(code);
+      const sentOn = end.signal !== null && sentSignals.has(end.signal);
+      resolve({ ...end, sentOn, leftovers });
     };
     child.once("error", (error) => {
       say(`could not start ${program}: ${error.code ?? error.message}`);
-      done(127);
+      done({ code: 127, leftovers: false, sentOn: false, signal: null });
     });
     child.once("exit", (code, signal) => {
-      done(exitCodeOf(code, signal));
+      done({ code: exitCodeOf(code, signal), leftovers: false, sentOn: false, signal });
     });
   });
 }
@@ -41508,14 +41538,39 @@ function describeCommand(command) {
   const what = command.join(" ");
   return what.length > 80 ? `${what.slice(0, 77)}...` : what;
 }
+function startedLine(what, gb, waitedMs) {
+  const size = gb > 0 ? ` (${String(gb)} GB)` : "";
+  return `Heavy job starts after ${durationText(waitedMs)}: ${what}${size}`;
+}
+function endedLine(what, end, ranMs) {
+  const how = end.signal === null ? `exit ${String(end.code)}` : `stopped by ${end.signal}`;
+  const sent = end.sentOn ? " (sent on by job run)" : "";
+  const leftovers = end.leftovers ? " (its leftover processes were stopped)" : "";
+  return `${ENDED_LINE_LEAD}: ${what}, ${how}${sent} after ${durationText(ranMs)}${leftovers}`;
+}
 function takesOptions(command) {
   const invocation = invocationOf([...command]);
   return invocation === undefined || nestedCommand(invocation.program, invocation.args) === undefined;
 }
+async function runTimed(running, deps) {
+  const { waitedSince } = running;
+  if (waitedSince !== null) {
+    deps.say(startedLine(running.what, running.gb, deps.now() - waitedSince));
+  }
+  const beganAt = deps.now();
+  const end = await deps.run(running.argv, running.scopeUnit);
+  return { end, ranMs: deps.now() - beganAt };
+}
+function sayEnded(running, ran, deps) {
+  if (running.waitedSince === null)
+    return;
+  deps.say(endedLine(running.what, ran.end, ran.ranMs));
+}
 async function runNested(request, deps) {
   const { exclusive } = request;
+  const what = describeCommand(request.command);
   if (exclusive === undefined || await deps.ancestorHoldsName(exclusive)) {
-    return deps.run(request.command, null);
+    return (await deps.run(request.command, null)).code;
   }
   const reservation = await deps.acquire({
     checkout: request.checkout,
@@ -41524,12 +41579,21 @@ async function runNested(request, deps) {
     kind: request.kind,
     nested: true,
     pid: request.pid,
-    what: describeCommand(request.command)
+    what
   }, deps.say);
   try {
     if (deps.stopped?.() === true)
       return 1;
-    return await deps.run(request.command, null);
+    const running = {
+      argv: request.command,
+      gb: reservation.gb,
+      scopeUnit: null,
+      waitedSince: reservation.waitedSince,
+      what
+    };
+    const ran = await runTimed(running, deps);
+    sayEnded(running, ran, deps);
+    return ran.end.code;
   } finally {
     reservation.release();
   }
@@ -41585,11 +41649,25 @@ async function runJob(request, deps) {
       scopeUnit = unitName(request.slice, kind, pid, request.startedAt);
     }
     const before = eventsPath === null ? null : deps.slice.readFile(eventsPath);
-    const code = await deps.run(launchArgv(launch, sized, { kind, pid, slice: request.slice, startedAt: request.startedAt }), scopeUnit);
+    const running = {
+      argv: launchArgv(launch, sized, {
+        kind,
+        pid,
+        slice: request.slice,
+        startedAt: request.startedAt
+      }),
+      gb: reservation.gb,
+      scopeUnit,
+      waitedSince: reservation.waitedSince,
+      what: describeCommand(command)
+    };
+    const ran = await runTimed(running, deps);
+    const code = ran.end.code;
     const after = eventsPath === null ? null : deps.slice.readFile(eventsPath);
     const killer = code === 0 ? null : oomKiller(before, after);
     if (killer !== null)
       deps.say(killedForMemoryLine(killer, request.slice, code));
+    sayEnded(running, ran, deps);
     return code;
   } finally {
     reservation.release();
@@ -41924,7 +42002,7 @@ ${USAGE3}`);
         if (job.gb <= 0 && job.exclusive === undefined) {
           return { gb: 0, release: () => {
             return;
-          } };
+          }, waitedSince: null };
         }
         const reservation = await acquireFrom(stores, job, {
           onWaiting,
@@ -41938,6 +42016,7 @@ ${USAGE3}`);
       workersFor: (size, gbEach) => workerCount(size, gbEach, availableParallelism()),
       memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
       launchFacts: () => config.launch === "plain" ? null : realLaunchFacts(slice),
+      now,
       slice: realSliceControl(ctx.memory.read),
       run: (argv, scopeUnit) => {
         started = true;
