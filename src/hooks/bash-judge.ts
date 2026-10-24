@@ -71,7 +71,7 @@ import {
 } from "../crew/brief";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { loadProjectConfig, locateCheckout, type TimeFor } from "../project/resolve";
 import {
   CHANGE_DIR,
   type Dialect,
@@ -88,6 +88,7 @@ import {
 import { resolveGate, sourceLabel } from "../workflow/resolve";
 import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
+import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
 import { kitArguments, namesKit } from "./kit-invocation";
@@ -654,6 +655,18 @@ function proposeActs(base: null | string): string {
 /** Said after every question about a proposal: the person decides. */
 const APPROVE_IF_MEANT = "Approve it if you meant it.";
 
+/**
+ * The reason the project cannot be named when git used up the hook's time. `job-route` has 10 s
+ * in `hooks.json` and Claude Code kills a hook that overruns, so the question's git calls share
+ * one budget (`budget.ts`) and, with none left, the judge asks instead of waiting.
+ */
+const GIT_TOO_SLOW = "git did not answer within the hook's own time budget";
+
+/** True when the budget has no time left for one more git call. */
+function outOfTime(timeFor: TimeFor): boolean {
+  return timeFor(GUARD_GIT_TIMEOUT_MS) <= 0;
+}
+
 /** The question when the judge cannot name the project a proposal goes into, with why. */
 function cannotTellProject(why: string): string {
   return `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
@@ -667,24 +680,35 @@ function cannotTellProject(why: string): string {
  * person's own file, and the project's file as committed on `origin/<worktrees.base>`, never a
  * checkout's working copy. Anything it cannot read is a question with its reason, never a guess.
  */
-function proposeQuestion(folder: string, context: JudgeContext): string | null {
+function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor): string | null {
   let checkout: ReturnType<typeof locateCheckout>;
   let base: null | string;
   try {
-    checkout = locateCheckout(folder, { env: context.env });
-    if (checkout === null) return cannotTellProject(`${folder} is not in a git project`);
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
+    if (checkout === null) {
+      return cannotTellProject(
+        outOfTime(timeFor) ? GIT_TOO_SLOW : `${folder} is not in a git project`,
+      );
+    }
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    return cannotTellProject(
+      outOfTime(timeFor) ? GIT_TOO_SLOW : error instanceof Error ? error.message : String(error),
+    );
   }
   const acts = proposeActs(base);
   try {
     const read = resolveGate(context.paths, checkout, base, {
       env: context.env,
+      timeFor,
       timeoutMs: GUARD_GIT_TIMEOUT_MS,
     });
     if (!read.ok) {
-      return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
+      // A call that spent its whole slice is a git that hung, not a ref that is missing.
+      const why = outOfTime(timeFor)
+        ? `reading the workflow committed on ${base} would have taken longer than the hook's own time budget allows`
+        : `the workflow committed on ${base} cannot be read (${read.why})`;
+      return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: ${why}. ${APPROVE_IF_MEANT}`;
     }
     const { autoPush, openPr } = read.gate.resolved;
     const off: string[] = [];
@@ -708,6 +732,8 @@ function proposeQuestion(folder: string, context: JudgeContext): string | null {
  */
 function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): BashVerdict | null {
   const cwd = stringField(context.input.cwd);
+  // One deadline for every git call the questions make, whatever the number of proposals.
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS);
   let question: null | string = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -719,6 +745,7 @@ function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): 
       question = proposeQuestion(
         proposal.folder === null ? cwd : resolve(cwd, proposal.folder),
         context,
+        timeFor,
       );
     }
     if (question !== null) break;

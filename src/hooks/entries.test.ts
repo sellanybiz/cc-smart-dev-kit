@@ -19,6 +19,7 @@ import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
+import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
 import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
@@ -286,6 +287,17 @@ esac
     expect(timeout("session-escape-guard")).toBe(10);
     // The crew session's ask is denied by a guard too, on the two tools that ask the person.
     expect(timeout("crew-role")).toBe(10);
+    expect(timeout("job-route")).toBe(10);
+  });
+
+  test("a hook's budget is shorter than the hook's own timeout, the room to answer in between", () => {
+    const timeoutMs = (bundle: string) =>
+      (wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout ?? 0) * 1000;
+    // The merge guard and `after-merge` share `GUARD_BUDGET_MS`; `job-route`'s question about
+    // `workflow propose` shares the short one (`budget.ts`).
+    expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("merge-guard"));
+    expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("after-merge"));
+    expect(SHORT_GUARD_BUDGET_MS).toBeLessThan(timeoutMs("job-route"));
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {

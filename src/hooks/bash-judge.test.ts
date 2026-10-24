@@ -15,7 +15,7 @@
  *   heavy job gets both in one rewrite.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
@@ -29,7 +29,8 @@ import {
   writePersonalWorkflow,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { readBash } from "./bash-judge";
+import { judgeBash, readBash } from "./bash-judge";
+import { GUARD_BUDGET_ENV } from "./budget";
 import type { HookResult } from "./io";
 import { jobRouteHook } from "./specs";
 
@@ -556,6 +557,86 @@ describe("RF1-4: a session that is not a crew session proposing a workflow chang
       (await judge(closed.repo, `${PROPOSE} --folder ${open.repo}`, closed.env)).decision,
     ).toBeUndefined();
   });
+
+  /**
+   * `env` with a `git` first on PATH that waits on the calls whose arguments start with `on` (an
+   * empty string: every call) and runs the real git for the rest. `wait` is the shell line it
+   * runs first: `exec sleep 30` hangs for good (`exec` replaces the shell, so the hook's timeout
+   * kills the sleep itself), `sleep 0.7` is slow and then answers.
+   */
+  function slowGit(env: Record<string, string>, on: string, wait: string): Record<string, string> {
+    const real = Bun.which("git");
+    if (real === null) throw new Error("this test needs git");
+    const bin = tempDir("slow-git");
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\ncase "$*" in\n  "${on}"*) ${wait} ;;\nesac\nexec '${real}' "$@"\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    return { ...env, PATH: `${bin}:${env.PATH ?? ""}` };
+  }
+  const hangingGit = (env: Record<string, string>, on: string) => slowGit(env, on, "exec sleep 30");
+
+  // job-route has 10 s in hooks.json, and a hook Claude Code kills answers nothing: the git calls
+  // the question makes (the project's folder, then the committed file) share one budget, and a
+  // call with no time left is not made (`budget.ts`). The test's budget is a few seconds so the
+  // proof does not wait: the budget variable can only shorten it, as in the merge guard's test.
+  test("a git that hangs on every call: asks inside the budget, saying git did not answer in time", () => {
+    // The judge alone: the frame's own project lookup (`run.ts`) comes before it and is not part
+    // of this budget.
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    const started = Date.now();
+    const verdict = judgeBash(readBash(PROPOSE), {
+      env: { ...hangingGit(env, ""), [GUARD_BUDGET_ENV]: "3000" },
+      input: call(repo, PROPOSE),
+      paths: cliPaths(env),
+    });
+    expect(verdict).toEqual({
+      decision: "ask",
+      reason: `${ACTS.replace("into `dev`", "into the project's integration base (worktrees.base)")}\ncc-smart-dev-kit cannot tell which project's workflow this line proposes into (git did not answer within the hook's own time budget), so it cannot read the gate. Approve it if you meant it.`,
+      why: "propose",
+    });
+    // One call may take the budget less the margin (1 s here), and none is made after it.
+    expect(Date.now() - started).toBeLessThan(2_500);
+  }, 20_000);
+
+  test("a git that hangs on the committed file only: the gate read asks inside the budget, saying so", async () => {
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    const started = Date.now();
+    const answer = await judge(repo, PROPOSE, {
+      ...hangingGit(env, "rev-parse --verify"),
+      [GUARD_BUDGET_ENV]: "4000",
+    });
+    expect(answer).toEqual({
+      decision: "ask",
+      reason: `${ACTS}\ncc-smart-dev-kit cannot tell whether the push and the pull request are allowed: reading the workflow committed on dev would have taken longer than the hook's own time budget allows. Approve it if you meant it.`,
+    });
+    expect(Date.now() - started).toBeLessThan(3_500);
+  }, 20_000);
+
+  test("two proposals on one line share the budget: the second asks when the first spent it", async () => {
+    // Each `rev-parse --verify` takes 0.7 s and answers, so the first proposal reads its gate in
+    // 1.4 s and is allowed. With the budget's 4 s less its 2 s margin, the second finds under a
+    // second left for its first call: the call is cut, and the line asks. Own budgets would
+    // read both gates and stay silent.
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    const started = Date.now();
+    const answer = await judge(repo, `${PROPOSE} && ${PROPOSE}`, {
+      ...slowGit(env, "rev-parse --verify", "sleep 0.7"),
+      [GUARD_BUDGET_ENV]: "4000",
+    });
+    expect(answer.decision).toBe("ask");
+    expect(answer.reason).toContain(
+      "reading the workflow committed on dev would have taken longer than the hook's own time budget allows",
+    );
+    expect(Date.now() - started).toBeLessThan(3_500);
+  }, 20_000);
+
+  test("a slow git inside the budget changes nothing: the gate is read and the proposal allowed", async () => {
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    const answer = await judge(repo, PROPOSE, slowGit(env, "rev-parse --verify", "sleep 0.2"));
+    expect(answer.decision).toBeUndefined();
+  }, 20_000);
 
   test("a gate it cannot read, or a project it cannot name, asks with the reason", async () => {
     const lost = gated();

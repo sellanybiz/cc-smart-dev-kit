@@ -14359,8 +14359,15 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+var NO_TIME_LEFT = { ok: false, stdout: "", stderr: "no time left in the hook's budget" };
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -14368,7 +14375,7 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       return {
@@ -14381,8 +14388,11 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
     }
   };
 }
-function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const child = Bun.spawn(["git", ...args], {
         cwd,
@@ -14390,7 +14400,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       const [stdout, stderr, code] = await Promise.all([
@@ -14462,7 +14472,7 @@ function locateCheckout(cwd, options = {}) {
   if (!existsSync14(cwd) || !statSync9(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -14490,7 +14500,7 @@ async function locateCheckoutAsync(cwd, options = {}) {
   if (!existsSync14(cwd) || !statSync9(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = await git([
     "rev-parse",
     "--path-format=absolute",
@@ -14550,7 +14560,7 @@ function committedOf(text, where, options) {
 function readCommittedConfig(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
     return refNotKnown(where, ref);
@@ -14565,7 +14575,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
     return refNotKnown(where, ref);
@@ -29802,14 +29812,15 @@ function takeToldLine(context, repo) {
 
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
 var BUDGET_MARGIN_MS = 2000;
 var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env) {
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
   const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, GUARD_BUDGET_MS) : GUARD_BUDGET_MS;
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
 }
-function startBudget(env, now = Date.now) {
-  const budgetAt = now() + budgetMs(env);
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS) {
+  const budgetAt = now() + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
@@ -32620,30 +32631,37 @@ function proposeActs(base) {
   return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
 }
 var APPROVE_IF_MEANT = "Approve it if you meant it.";
+var GIT_TOO_SLOW = "git did not answer within the hook's own time budget";
+function outOfTime(timeFor) {
+  return timeFor(GUARD_GIT_TIMEOUT_MS) <= 0;
+}
 function cannotTellProject(why) {
   return `${proposeActs(null)}
 ${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
 }
-function proposeQuestion(folder, context) {
+function proposeQuestion(folder, context, timeFor) {
   let checkout;
   let base;
   try {
-    checkout = locateCheckout(folder, { env: context.env });
-    if (checkout === null)
-      return cannotTellProject(`${folder} is not in a git project`);
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
+    if (checkout === null) {
+      return cannotTellProject(outOfTime(timeFor) ? GIT_TOO_SLOW : `${folder} is not in a git project`);
+    }
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    return cannotTellProject(outOfTime(timeFor) ? GIT_TOO_SLOW : error instanceof Error ? error.message : String(error));
   }
   const acts = proposeActs(base);
   try {
     const read = resolveGate(context.paths, checkout, base, {
       env: context.env,
+      timeFor,
       timeoutMs: GUARD_GIT_TIMEOUT_MS
     });
     if (!read.ok) {
+      const why = outOfTime(timeFor) ? `reading the workflow committed on ${base} would have taken longer than the hook's own time budget allows` : `the workflow committed on ${base} cannot be read (${read.why})`;
       return `${acts}
-${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
+${COMMAND} cannot tell whether the push and the pull request are allowed: ${why}. ${APPROVE_IF_MEANT}`;
     }
     const { autoPush, openPr } = read.gate.resolved;
     const off = [];
@@ -32664,6 +32682,7 @@ ${COMMAND} cannot tell whether the push and the pull request are allowed: the wo
 }
 function judgeProposals(proposals, context) {
   const cwd = stringField(context.input.cwd);
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS);
   let question = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -32671,7 +32690,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve10(cwd, proposal.folder), context);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve10(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;

@@ -424,6 +424,30 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
     });
   });
 
+  test("a hook's shared budget: each git call asks `timeFor`, and a call with no time left is not made", () => {
+    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+    // The calls each read ask for their own limit: one `rev-parse` to find the checkout, then
+    // the three reads of the committed file (`rev-parse`, `rev-parse`, `cat-file`).
+    const limits: number[] = [];
+    const timeFor = (limitMs: number): number => {
+      limits.push(limitMs);
+      return limitMs;
+    };
+    const checkout = locateCheckout(repo, { timeFor });
+    if (checkout === null) throw new Error("the repo is in git");
+    expect(limits).toEqual([5_000]);
+    expect(readCommittedConfig(checkout, "dev", { timeFor, timeoutMs: 2_000 }).found).toBe(true);
+    expect(limits).toEqual([5_000, 2_000, 2_000, 2_000]);
+    // Nothing is left: no git runs, so a repo that is there is not found, and the committed
+    // file is not known (the callers read the budget to tell it from a missing ref).
+    const spent = (): number => 0;
+    expect(locateCheckout(repo, { timeFor: spent })).toBeNull();
+    expect(readCommittedConfig(checkout, "dev", { timeFor: spent })).toMatchObject({
+      found: false,
+      where: "origin/dev:.claude/cc-smart-dev-kit.json",
+    });
+  });
+
   test("CM-1: a worktree reads the same ref, whatever its own copy says", () => {
     const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
     const worktree = join(repo, "..", "wt");

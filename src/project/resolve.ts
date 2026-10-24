@@ -23,11 +23,22 @@ export interface Project {
   configFile: string | null;
 }
 
+/**
+ * What a shared budget gives one call (`Budget.timeFor`, `src/hooks/budget.ts`): the call's own
+ * limit, or the time that is left if that is less. Zero or less: no time is left.
+ */
+export type TimeFor = (limitMs: number) => number;
+
 export interface ResolveOptions {
   /** The plugin version to check `requires` against. Default: this build's version. */
   pluginVersion?: string;
   /** The environment git runs with (PATH finds git). Default: process.env. */
   env?: Record<string, string | undefined>;
+  /**
+   * A hook's shared budget: each git call takes `timeFor(RESOLVE_GIT_TIMEOUT_MS)`, and a call
+   * with no time left is not made (it answers as a failed one). Default: no shared budget.
+   */
+  timeFor?: TimeFor;
 }
 
 /** `rev-parse --path-format` came in git 2.31. */
@@ -58,12 +69,26 @@ function gitNotFound(error: unknown): unknown {
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 
+/** What a call answers when its shared budget has no time left: it was never made. */
+const NO_TIME_LEFT = { ok: false, stdout: "", stderr: "no time left in the hook's budget" };
+
+/**
+ * How long one call may take: `timeoutMs`, or what the shared budget leaves if that is less;
+ * zero or less means the call is not made (`Bun.spawn` reads a timeout of 0 as no limit at all).
+ */
+function callLimit(timeoutMs: number, timeFor: TimeFor | undefined): number {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+
 function gitIn(
   cwd: string,
   env: Record<string, string>,
   timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+  timeFor?: TimeFor,
 ): Git {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0) return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -71,7 +96,7 @@ function gitIn(
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         // A hook or a crew command may run with no console of its own on Windows.
         windowsHide: true,
       });
@@ -95,8 +120,11 @@ function gitInAsync(
   cwd: string,
   env: Record<string, string>,
   timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+  timeFor?: TimeFor,
 ): GitAsync {
   return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0) return NO_TIME_LEFT;
     try {
       const child = Bun.spawn(["git", ...args], {
         cwd,
@@ -104,7 +132,7 @@ function gitInAsync(
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true,
       });
       const [stdout, stderr, code] = await Promise.all([
@@ -213,7 +241,7 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -252,7 +280,7 @@ export async function locateCheckoutAsync(
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = await git([
     "rev-parse",
     "--path-format=absolute",
@@ -323,6 +351,11 @@ export interface CommittedOptions {
   env?: Record<string, string | undefined>;
   /** How long each git call may take. Default: `RESOLVE_GIT_TIMEOUT_MS`. */
   timeoutMs?: number;
+  /**
+   * A hook's shared budget: each git call takes `timeFor(timeoutMs)`, and a call with no time
+   * left is not made (it answers as a failed one). Default: no shared budget.
+   */
+  timeFor?: TimeFor;
   /** The plugin version to check `requires` against. Default: this build's version. */
   pluginVersion?: string;
 }
@@ -377,7 +410,12 @@ export function readCommittedConfig(
 ): CommittedConfig {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitIn(
+    checkout.root,
+    gitEnv(options.env ?? process.env),
+    options.timeoutMs,
+    options.timeFor,
+  );
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok) return refNotKnown(where, ref);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -399,7 +437,12 @@ export async function readCommittedConfigAsync(
 ): Promise<CommittedConfig> {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitInAsync(
+    checkout.root,
+    gitEnv(options.env ?? process.env),
+    options.timeoutMs,
+    options.timeFor,
+  );
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok) return refNotKnown(where, ref);
   const blob = await git([

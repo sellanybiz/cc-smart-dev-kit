@@ -862,6 +862,13 @@ with the one shell reader and answers five things:
   before a folder that is not absolute) is a question with its reason, never silence. Where
   nobody answers (`claude -p`) the question is a denial, as for a raw `--bg`. The portal's
   Workflow card asks on its page and runs the CLI in a child no hook sees, so it is unchanged.
+  **Its git calls share one budget** (`SHORT_GUARD_BUDGET_MS`, 8 s of `job-route`'s 10 s;
+  `src/hooks/budget.ts`): finding the project takes up to two calls and reading the committed
+  file three, each up to 5 s, so on a git that hangs they would add up past the hook, and a hook
+  Claude Code kills answers nothing. Each call gets the smaller of its own limit and the time
+  left, a call with none left is not made, and the question then says that git did not answer
+  in time. Every proposal on a line draws on the same budget. The frame's own project lookup
+  runs before the judge and is not counted.
 - **polling**: a `crew list` / `crew status` read or a `claude agents --json` read that repeats
   over time — inside a `while` / `until` / `do` loop (bash, the condition included) or a
   PowerShell `while` / `do`, or a `watch` — or beside a `sleep` or `Start-Sleep`, is denied — a
