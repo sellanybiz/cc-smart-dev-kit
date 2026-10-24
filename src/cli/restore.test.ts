@@ -312,6 +312,76 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     expect(readFileSync(copy, "utf8")).toBe(copyText);
   });
 
+  test("stage 1 writes no address into a project's team file: `--team` holds Anthropic's own address only", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    const root = project("rv6-restore-team");
+    // The personal file points at the router, so stage 1 runs. The team file is what
+    // `gateway project off --team` wrote (`--team` refuses `on`: a teammate's 127.0.0.1 is their
+    // own machine), so its address is Anthropic's already: there is nothing to switch in a
+    // file that is committed to the team's repository.
+    const personal = join(root, ".claude", "settings.local.json");
+    const team = join(root, ".claude", "settings.json");
+    setGatewayBaseUrl({
+      file: personal,
+      stateDir: paths.stateDir,
+      value: "http://127.0.0.1:20999",
+    });
+    setGatewayBaseUrl({ file: team, stateDir: paths.stateDir, value: DEFAULT_ANTHROPIC_BASE_URL });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    const out = printed.join("\n");
+    // The personal file got Anthropic's address, as always; the team file got no "set" line.
+    expect(out).toContain("Every running Claude session switches to Anthropic");
+    expect(JSON.parse(readFileSync(personal, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    expect(out).not.toMatch(/settings\.json: set env\.ANTHROPIC_BASE_URL/);
+    // The kit created that file, and its one key is the kit's: it goes like any owned key, and
+    // at no point did the file hold any address but Anthropic's.
+    expect(out).toContain(
+      `- ${team.replace(paths.home, "~")}: removed (cc-smart-dev-kit had created it)`,
+    );
+    expect(existsSync(team)).toBe(false);
+  });
+
+  test("a file whose address the person removed still keeps the router up, and the line says what happened to the address", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    // `gateway on` wrote both keys; the person then removed the address by hand. A running
+    // session keeps the address it last had (P7: a removed key reaches it only when another file
+    // sets it), so the router must stay up for it, and nothing can be written into a key that is
+    // not there.
+    applyManagedJson({
+      file: paths.settingsFile,
+      stateDir: paths.stateDir,
+      set: [
+        [["env", "ENABLE_TOOL_SEARCH"], "true"],
+        [["env", "ANTHROPIC_BASE_URL"], "http://127.0.0.1:20999"],
+      ],
+    });
+    writeFileSync(
+      paths.settingsFile,
+      `${JSON.stringify({ env: { ENABLE_TOOL_SEARCH: "true" } }, null, 2)}\n`,
+    );
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(paths.routerCopy)).toBe(true);
+    const out = printed.join("\n");
+    // The address key is not in the file, so it is not "yours" in the sense of a value you set:
+    // the line names the cause that is true, and the way out.
+    expect(out).toContain(
+      "Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it.",
+    );
+    expect(out).not.toContain("the settings file's address is yours");
+  });
+
   test("a project set to off does not keep the router up: one pass, and no restart line", async () => {
     const { options, paths } = machine();
     writeManagedFile(paths.routerCopy, "// the router\n", {

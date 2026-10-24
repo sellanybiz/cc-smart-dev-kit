@@ -49997,7 +49997,7 @@ var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 function stageOneDone(paths, cliBundle, wrote = false, bunPath = process.execPath) {
-  const switched = wrote ? "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run." : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
+  const switched = wrote ? "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run." : "Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it.";
   const launcher = join81(paths.binDir, LAUNCHER_NAME);
   if (existsSync74(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;

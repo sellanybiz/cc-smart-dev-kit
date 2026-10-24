@@ -105,11 +105,12 @@ export function stageOneDone(
   wrote = false,
   bunPath: string = process.execPath,
 ): string {
-  // The switch sentence only when an address was really written: a file whose address is the
-  // person's keeps its value, so its running sessions still use the router until they restart.
+  // The switch sentence only when an address was really written: an address the person set,
+  // changed or removed is theirs and stays as it is (`offAddressOf`), so its running sessions
+  // still use the router until they restart.
   const switched = wrote
     ? "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run."
-    : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
+    : "Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it.";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (existsSync(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -292,11 +293,12 @@ async function takeOverBack(paths: CliPaths): Promise<void> {
 /**
  * Does this settings file mean some session reading it still sends its requests to the router
  * (GP4a)? A gateway key of ours that still holds our value says so — **unless the file's own
- * address is Anthropic's or absent**: `gateway project off` writes exactly that address (P1),
- * the session goes to Anthropic on the person's own login, and no key beside it brings the
- * router back. A file with no address sends its sessions to the next file of the chain, which
- * this same stage takes back. A file that cannot be read answers yes: a key that is there but
- * unreadable must keep every session working (`ownedGatewayEnvKeys`' own rule).
+ * address is Anthropic's**: `gateway project off` writes exactly that address (P1), the session
+ * goes to Anthropic on the person's own login, and no key beside it brings the router back. A
+ * file with **no address** but another key of ours still answers yes: a session that started
+ * while the address was there keeps it after the key is removed, unless another file sets one
+ * (P7). A file that cannot be read answers yes too: a key that is there but unreadable must keep
+ * every session working (`ownedGatewayEnvKeys`' own rule).
  */
 function fileUsesRouter(file: string, stateDir: string): boolean {
   if (ownedGatewayEnvKeys(file, stateDir).length === 0) return false;
