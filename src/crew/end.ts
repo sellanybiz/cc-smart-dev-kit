@@ -26,6 +26,7 @@
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { isInside, runGit } from "../hooks/git";
+import { type WorkOnRef, workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps } from "./agents";
 import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
@@ -361,11 +362,18 @@ export interface LeadRef {
 }
 
 /**
- * The branch the lead merges crew branches into (D24): the one checked out in the lead's own
- * folder (its record names it), else the ref the crew session was cut from. A reason when neither is
- * there — nothing is judged against a guess.
+ * The branch the crew session's work is merged into (D24): the ref it was cut from
+ * (`record.baseRef`), else the branch checked out in the lead's own folder. A reason when neither
+ * is there — nothing is judged against a guess.
  */
 export function leadRef(record: CrewRecord, ctx: CrewContext): LeadRef | { why: string } {
+  const base = runGit(
+    record.repo,
+    ["rev-parse", "--verify", "--quiet", `${record.baseRef}^{commit}`],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (base.ok) return { folder: record.repo, label: record.baseRef, sha: base.out };
   let lead: LeadRecord | null;
   try {
     lead = readLead(ctx.paths.stateDir, record.repo, record.leadSessionId);
@@ -390,16 +398,30 @@ export function leadRef(record: CrewRecord, ctx: CrewContext): LeadRef | { why: 
       return { folder: lead.cwd, label, sha: sha.out };
     }
   }
-  const base = runGit(
-    record.repo,
-    ["rev-parse", "--verify", "--quiet", `${record.baseRef}^{commit}`],
-    ctx.env,
-    GIT_TIMEOUT_MS,
-  );
-  if (base.ok) return { folder: record.repo, label: record.baseRef, sha: base.out };
   return {
     why: `${record.leadName} has no folder here any more, and ${record.baseRef} is no commit: there is no branch to merge into`,
   };
+}
+
+/**
+ * Is the work of `record`'s branch on the branch it was cut from (`record.baseRef`)?
+ * One home for the merged check: the watch's merged mark and `crew rm` both use it. An ancestor, or
+ * a merge that changes nothing (a squash merge). Anything git cannot say counts as not merged, and a
+ * branch with no commit of its own is not merged either: its base is its tip.
+ */
+export function mergedIntoBase(record: CrewRecord, ctx: CrewContext): WorkOnRef {
+  if (record.base === null) return "unknown";
+  const tip = runGit(
+    record.repo,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}^{commit}`],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (!tip.ok || tip.out === "") return "unknown";
+  if (tip.out === record.base.sha) return "missing";
+  const base = leadRef(record, ctx);
+  if ("why" in base) return "unknown";
+  return workOnRef(record.repo, base.sha, tip.out, ctx.env);
 }
 
 /** How many commits `branch` has that the lead's ref does not; null when git cannot say. */

@@ -38,15 +38,14 @@
  * the background and its end starts the lead's next turn.
  */
 import { COMMAND } from "../build-info/names";
-import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
-import { workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
+import { mergedIntoBase } from "./end";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
 import { startQueued } from "./start";
@@ -93,9 +92,6 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
  * because the merge can come after the crew session was stopped.
  */
 const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "stopped"];
-
-/** How long one git call may take (a `rev-parse`, a `merge-base`). */
-const GIT_TIMEOUT_MS = 15_000;
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -296,25 +292,14 @@ export function crewAlert(
 }
 
 /**
- * True when the lead merged the branch of `record`: the branch holds a commit of its own, and
- * its work is on the commit `mergeInto` (the lead's folder) is on — `workOnRef`, the answer
- * `crew rm` gives too: its tip is an ancestor (a merge commit), or merging it changes nothing
- * (a squash merge). When git cannot say, the branch is not reported merged.
- *
- * A branch with no commit of its own — a crew session that failed or was stopped before it committed —
- * has its base as its tip, and the base is an ancestor of the lead's branch for that reason alone:
- * it was never merged, and is not reported as merged.
+ * True when the lead merged the branch of `record` into the branch it was cut from
+ * (`record.baseRef`): the branch holds a commit of its own, and its work is on the base —
+ * `mergedIntoBase`, the answer `crew rm` gives too: its tip is an ancestor (a merge commit), or
+ * merging it changes nothing (a squash merge). When git cannot say, the branch is not reported
+ * merged. A branch with no commit of its own has its base as its tip and is not reported merged.
  */
-export function branchMerged(record: CrewRecord, mergeInto: string, ctx: CrewContext): boolean {
-  if (record.base === null) return false;
-  const tip = runGit(
-    mergeInto,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}^{commit}`],
-    ctx.env,
-    GIT_TIMEOUT_MS,
-  );
-  if (!tip.ok || tip.out === "" || tip.out === record.base.sha) return false;
-  const found = workOnRef(mergeInto, "HEAD", tip.out, ctx.env);
+export function branchMerged(record: CrewRecord, ctx: CrewContext): boolean {
+  const found = mergedIntoBase(record, ctx);
   return found === "ancestor" || found === "replay";
 }
 
@@ -635,7 +620,7 @@ export async function watchPass(
     let refusal: null | string = null;
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
-    if (OVER_STATES.includes(record.state) && branchMerged(record, scope.mergeInto, ctx)) {
+    if (OVER_STATES.includes(record.state) && branchMerged(record, ctx)) {
       const reason = "the lead merged its branch; `crew rm` removes it";
       if (listed) {
         refusal = await stopCrew(record, "merged", reason, ctx, row);

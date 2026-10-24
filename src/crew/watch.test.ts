@@ -722,7 +722,7 @@ describe("crew watch", () => {
     expect(record?.state).toBe("failed");
   });
 
-  test("D35: the merge is looked for in the lead's own folder, where it merges", async () => {
+  test("D35: the merge is looked for on the record's own base, not the lead's folder", async () => {
     const world = await leadWorld();
     // The lead works in a linked worktree on its own branch; the main checkout stays on main.
     const leadFolder = join(world.repo, ".claude", "worktrees", "lead-folder");
@@ -747,11 +747,8 @@ describe("crew watch", () => {
       T0,
     );
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: merged — the lead merged its branch; `crew rm` removes it",
-    ]);
-    // The main checkout is still on main, which does not hold the branch: it is the lead's
-    // folder that was asked.
+    // The base is main, which does not hold the branch: the lead's folder is not the judge.
+    expect(world.out).toEqual([]);
     expect(git(world.repo, "branch", "--merged", "main")).not.toContain("crew/B6b-portal-live");
   });
 

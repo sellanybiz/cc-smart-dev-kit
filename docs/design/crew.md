@@ -387,20 +387,21 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   worktree or settings file any more (one line each). It does not check the caps: the person or
   the lead asked for exactly this session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
-  crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
-  whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and
-  the lead's watch share) asks it of the crew session's branch against the commit checked out in the
-  lead's own folder (its lead record's `cwd`; the ref the crew session was cut from when that folder is
-  gone). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
+  crew session commits on its branch and never pushes (D24), so **only the branch the crew session
+  was cut from decides** whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one
+  answer `crew rm` and the lead's watch share) asks it of the crew session's branch against the
+  commit the branch it was cut from (`record.baseRef`) is on, else the commit checked out in the
+  lead's own folder (its lead record's `cwd`). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
   when merging it into that commit changes nothing (`git merge-tree --write-tree`, the replay
   `worktrees --clean` uses: it sees a squash merge). A conflict, an error or a git older than 2.38
-  is not certain, and the crew session is kept. Then: uncommitted work in the worktree refuses it (before any
+  is not certain, and the crew session is kept. A branch with no commit of its own has nothing to
+  lose, so the removal goes on. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released, and **locked again with the same
   reason if a later step refuses**, because the lock is what keeps `worktrees --clean` and the
   background clean off the worktree); the session is stopped; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
-  the worktree **against the lead's branch rather than `origin/<base>`** (`ScanOptions.against`)
+  the worktree **against the branch the crew session was cut from rather than `origin/<base>`** (`ScanOptions.against`)
   and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
   `claude rm <short id>`, which refuses a worktree that is still there (proved live, L1a.1). A
   `claude rm` that fails leaves the crew session `stopped` with a `step` event saying what is left, and
@@ -531,10 +532,11 @@ the store records — a session the kit does not know is the person's own:
   has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record
   becomes `stopped`; a `failed` one **stays `failed`** (the board must show why it ended), and its
   one line says so. A stop that fails is said once, not on every pass;
-- it **marks a crew session `merged`** when the lead merged its branch, and the line says `crew rm`
-  removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
-  a crew session that failed before it committed is an ancestor of the lead's branch for that reason
-  alone), and its work must be on the commit **the lead's own folder** is on (the lead's record
+- it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
+  and the line says `crew rm` removes it. The branch must hold a commit of its own (its tip is not
+  the base it was cut from — a crew session that failed before it committed is an ancestor of the
+  base for that reason alone), and its work must be on the commit **the branch it was cut from**
+  (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record
   holds it; the main checkout when that is gone): `workOnRef`, the answer `crew rm` gives too —
   its tip is an ancestor, or merging it changes nothing, which is how a squash merge shows. When
   git cannot say, it is not marked. The merge is looked for on every

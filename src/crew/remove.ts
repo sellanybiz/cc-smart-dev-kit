@@ -38,8 +38,6 @@ import {
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
-  type WorkOnRef,
-  workOnRef,
 } from "../worktrees/scan";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
@@ -51,9 +49,9 @@ import {
   commitsNotOn,
   failure,
   GIT_TIMEOUT_MS,
-  type LeadRef,
   leadRef,
   markState,
+  mergedIntoBase,
   reasonOf,
   refuse,
   relative,
@@ -61,20 +59,6 @@ import {
   stopSession,
 } from "./end";
 import { appendCrewEvent } from "./store";
-
-/**
- * Is the work of `branch` on the lead's ref? One answer for the removal and the watch
- * (`workOnRef`): an ancestor, or a merge that changes nothing (a squash merge). Anything git
- * cannot say counts as not merged, and the crew session is kept.
- */
-function mergedInto(
-  repo: string,
-  lead: LeadRef,
-  branch: string,
-  env: CrewContext["env"],
-): WorkOnRef {
-  return workOnRef(repo, lead.sha, `refs/heads/${branch}`, env);
-}
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -107,7 +91,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
     GIT_TIMEOUT_MS,
   ).ok;
   if (branchThere) {
-    const merged = mergedInto(repo, lead, record.branch, ctx.env);
+    const merged = mergedIntoBase(record, ctx);
     if (merged === "unknown") {
       return refuse(
         failure(
@@ -119,14 +103,17 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
     }
     if (merged === "missing") {
       const count = commitsNotOn(repo, lead, record.branch, ctx.env);
-      const missing = count === null ? "some commits" : commits(count);
-      return refuse(
-        failure(
-          `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
-          `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`,
-        ),
-        ctx,
-      );
+      // 0 commits of its own: the branch is its base, and has nothing to lose. The removal goes on.
+      if (count !== 0) {
+        const missing = count === null ? "some commits" : commits(count);
+        return refuse(
+          failure(
+            `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
+            `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`,
+          ),
+          ctx,
+        );
+      }
     }
   }
 

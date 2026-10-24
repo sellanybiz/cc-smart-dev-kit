@@ -15774,6 +15774,9 @@ function routeFacts(input, context) {
   return facts;
 }
 
+// src/crew/board.ts
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync2, readdirSync as readdirSync8, readFileSync as readFileSync26, readlinkSync as readlinkSync3 } from "fs";
 import { join as join28 } from "path";
@@ -16258,9 +16261,6 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
-
-// src/crew/board.ts
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [

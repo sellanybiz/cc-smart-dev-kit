@@ -68,6 +68,13 @@ function commitWork(worktree: string): void {
   git(worktree, "commit", "-m", "work");
 }
 
+/** One commit of a second crew session's own, in its worktree: different work, so a replay sees a change. */
+function commitOtherWork(worktree: string): void {
+  writeFileSync(join(worktree, "other.ts"), "export const y = 2;\n");
+  git(worktree, "add", ".");
+  git(worktree, "commit", "-m", "other work");
+}
+
 /** The lead merges the crew session's branch into its own, as D24 has it. */
 function leadMerges(repo: string, branch: string): void {
   git(repo, "merge", "--no-ff", "-m", "merge the crew session", branch);
@@ -297,7 +304,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
-  test("the lead's own folder is the branch it merges into, wherever the main checkout is", async () => {
+  test("the crew session's own base is the branch it merges into, wherever the lead's folder is", async () => {
     const world = await boardWorld();
     // A lead that works in a worktree of its own, on its own branch.
     const leadFolder = join(world.repo, ".claude", "worktrees", "lead");
@@ -317,14 +324,13 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     const record = await world.addCrew({ leadSessionId: "f00dfeed-0000-1111-2222-333333333333" });
     const { branch, worktree } = places(world.repo);
     commitWork(worktree);
-    // Merged into the main checkout's branch: the lead's folder is on another branch.
+    // Merged into the branch it was cut from (main), though the lead's folder is on another branch.
     leadMerges(world.repo, branch);
 
-    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
-    expect(world.err).toEqual([
-      `crew rm: ${branch} has 1 commit that lead-work does not have`,
-      `Fix: the lead merges it first (git merge ${branch}, in ${leadFolder}), then run crew rm again`,
-    ]);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", branch)).toBe("");
   });
 
   test("a lead whose folder is gone: the ref the crew session was cut from stands in", async () => {
@@ -348,6 +354,52 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       "crew rm: crew/B1-help has 1 commit that main does not have",
       `Fix: the lead merges it first (git merge crew/B1-help, in ${world.repo}), then run crew rm again`,
     ]);
+  });
+
+  test("two crew sessions of one lead, on two bases, each merged into its own base and each removed", async () => {
+    const world = await boardWorld();
+    const { repo } = world;
+    // A second base, cut from main: the lead runs two release branches.
+    git(repo, "branch", "release-1.1.3", "main");
+    const mainSha = git(repo, "rev-parse", "main").trim();
+    const releaseSha = git(repo, "rev-parse", "release-1.1.3").trim();
+    // One crew session on each base. The lead's own folder stays on main, which holds only the first.
+    const first = await world.addCrew({ base: { ref: "main", sha: mainSha }, baseRef: "main" });
+    const second = await world.addCrew({
+      base: { ref: "release-1.1.3", sha: releaseSha },
+      baseRef: "release-1.1.3",
+      phase: "B2",
+      slug: "api",
+      suffix: "2b3c4d",
+    });
+    const firstPlaces = places(repo);
+    const secondPlaces = {
+      branch: "crew/B2-api",
+      worktree: join(repo, ".claude", "worktrees", "crew-B2-api"),
+    };
+    commitWork(firstPlaces.worktree);
+    commitOtherWork(secondPlaces.worktree);
+    leadMerges(repo, firstPlaces.branch);
+    git(repo, "checkout", "release-1.1.3");
+    git(repo, "merge", "--no-ff", "-m", "merge the crew session", secondPlaces.branch);
+    git(repo, "checkout", "main");
+
+    expect(
+      await runCrew(["rm", first.id], world.ctx({}, { FAKE_WORKTREE: firstPlaces.worktree })),
+    ).toBe(0);
+    expect(
+      await runCrew(["rm", second.id], world.ctx({}, { FAKE_WORKTREE: secondPlaces.worktree })),
+    ).toBe(0);
+    expect(existsSync(firstPlaces.worktree)).toBe(false);
+    expect(existsSync(secondPlaces.worktree)).toBe(false);
+    expect(git(repo, "branch", "--list", firstPlaces.branch)).toBe("");
+    expect(git(repo, "branch", "--list", secondPlaces.branch)).toBe("");
+    expect(await readCrew(world.paths.stateDir, repo, first.id)).toMatchObject({
+      state: "removed",
+    });
+    expect(await readCrew(world.paths.stateDir, repo, second.id)).toMatchObject({
+      state: "removed",
+    });
   });
 
   test("after the merge: stop, unlock, remove the worktree and branch, and only then claude rm", async () => {
