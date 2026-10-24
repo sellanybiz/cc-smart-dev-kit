@@ -5,6 +5,7 @@
  */
 
 import { rangeOf } from "@/lib/history";
+import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
 import type {
   History,
   HistoryFilter,
@@ -102,9 +103,14 @@ export const TRAFFIC: {
 
 /** The sessions the traffic comes from, and the share each one sends. */
 export const SESSIONS: { id: string; name: null | string; project: string; share: number }[] = [
-  { id: "9c3a7e5d-lead", name: "LEAD my-app release-1.1.0", project: "my-app", share: 0.34 },
-  { id: "a1f04c2e", name: "C my-app B6b live-stream", project: "my-app", share: 0.27 },
-  { id: "d9e2f7a4", name: "C my-app C2 skills-agents", project: "my-app", share: 0.18 },
+  {
+    id: "9c3a7e5d-lead",
+    name: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    project: "my-app",
+    share: 0.34,
+  },
+  { id: "a1f04c2e", name: mockCrewName("B6b", "live-stream"), project: "my-app", share: 0.27 },
+  { id: "d9e2f7a4", name: mockCrewName("C2", "skills-agents"), project: "my-app", share: 0.18 },
   { id: "e51a9b30", name: "docs-site: fix the nav", project: "docs-site", share: 0.13 },
   { id: "f07c3d12", name: null, project: "api-service", share: 0.08 },
 ];

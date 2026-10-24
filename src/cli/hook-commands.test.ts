@@ -381,17 +381,17 @@ describe("cc-smart-dev-kit session-name", () => {
     expect(empty.stderr).toStartWith("the name is empty");
   });
 
-  test("in a crew session: refused, exit 2, and nothing recorded", () => {
+  test("in a crew session: refused, exit 1, one line, and nothing recorded", () => {
     // A crew session's name is its address, given by `crew start --name`: renaming it would
-    // lose it for its lead, `crew answer` and the message guard.
+    // lose it for its lead, `crew answer` and the message guard. Nothing here is a wrong
+    // command or option — the arguments are well formed and the state refuses them — so this is
+    // a failed command (exit 1) with one line, never the usage exit 2 and its help pointer.
     const run = cli(["session-name", SESSION, "Fix", "login"], {
       env: { [CREW_ENV]: "W2-x-1a2b3c" },
     });
-    expect(run.exitCode).toBe(2);
+    expect(run.exitCode).toBe(1);
     expect(run.stdout).toBe("");
-    expect(run.stderr).toBe(
-      "a crew session keeps the name its lead gave it\nSee: cc-smart-dev-kit session-name --help\n",
-    );
+    expect(run.stderr).toBe("a crew session keeps the name its lead gave it\n");
     expect(existsSync(join(run.home, "cc-smart-dev-kit-session-names", `${SESSION}.name`))).toBe(
       false,
     );

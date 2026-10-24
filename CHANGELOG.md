@@ -43,6 +43,23 @@ you open it.
   read-only agent is exempt only when its `cc-smart-dev-kit.json` lists it. An ordinary session
   or a crew session is judged exactly as before.
 
+**Three more fixes, found by 1.1.2's own review.**
+
+- **Two crew sessions can no longer take one name.** A long tag, plan and phase leave only
+  17–19 characters of the slug, so two slugs of one phase that share a longer prefix made the
+  **same** name on two different branches — and the name is how `crew answer`, `crew tell` and
+  the message guard reach a session. `crew start` now refuses the second one and says to pick a
+  shorter `--slug`.
+- **A crew session renamed in 1.1.1 gets its name back.** 1.1.2 stopped new renames but nothing
+  set the title back, so such a session kept a task name while its lead, `crew answer` and the
+  message guard went on addressing it by its record's name. Its next turn puts the record's name
+  back — on the lead's turns too, not only the person's.
+- **A cap you change now reaches a running lead's watch.** `crew watch` read the workflow once
+  and kept that value for its whole run: `crew.max 16` set while it ran never reached it, and a
+  lead's watch went on starting queued phases up to the old 24 (seen live on 2026-10-23, with
+  the machine five times overloaded). Each pass reads the workflow again, and a pass that cannot
+  read it — a broken file, or crew sessions turned off — starts nothing and says so once.
+
 **What to run:** nothing. The hooks come with the plugin update. A session that is already
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
 started after the update are held to the list or reminded.
