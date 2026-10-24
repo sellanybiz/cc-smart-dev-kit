@@ -11838,6 +11838,7 @@ function isSlotKey(name) {
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
 }
+var PROFILE_PATH_PREFIX = "/p/";
 var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function isProfileName(name) {
   return PROFILE_NAME.test(name);
@@ -12148,6 +12149,39 @@ function aliasError(name, to, config) {
 function slotMode(config, slot) {
   return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
 }
+function profileView(config, name) {
+  if (!isProfileName(name))
+    return null;
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (profile === undefined)
+    return null;
+  const slots = { ...config.slots };
+  for (const slot of Object.keys(profile.slots ?? {})) {
+    const chain = profileSlotChain(config, profile, slot);
+    if (chain === null)
+      delete slots[slot];
+    else
+      slots[slot] = chain;
+  }
+  const view = { ...config, slots };
+  const fallback = { ...config.fallback, ...profile.fallback };
+  if (Object.keys(fallback).length === 0)
+    delete view.fallback;
+  else
+    view.fallback = fallback;
+  const breaker = { ...config.breaker, ...profile.breaker };
+  if (Object.keys(breaker).length === 0)
+    delete view.breaker;
+  else
+    view.breaker = breaker;
+  return view;
+}
+function plainClaudeView(config) {
+  const view = { ...config, aliases: {}, slots: {} };
+  delete view.breaker;
+  delete view.fallback;
+  return view;
+}
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -12443,6 +12477,29 @@ function settingsReport(settingsPath) {
     loginOverrides,
     subagentOverrides
   };
+}
+
+// src/gateway/project-state.ts
+var PERSONAL_FILE = "settings.local.json";
+var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
+function profileUrlOf(routerUrl, name) {
+  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
+}
+function urlMeaning(url, routerUrl) {
+  if (url === null)
+    return { profile: null, state: "default" };
+  if (!baseUrlPointsAtGateway(url))
+    return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
+  if (clean === routerUrl)
+    return { profile: null, state: "on" };
+  const prefix = profileUrlOf(routerUrl, "");
+  if (clean.startsWith(prefix)) {
+    const name = clean.slice(prefix.length);
+    if (isProfileName(name))
+      return { profile: name, state: "on" };
+  }
+  return { profile: null, state: "other" };
 }
 
 // src/models/launch-policy.ts
@@ -13926,9 +13983,26 @@ function gatewayOnOf(paths) {
 function gatewayFactsOf(paths) {
   return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
 }
-function readGuardContext(paths, input, env) {
+function sessionGatewayOf(paths, env) {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url))
+    return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null)
+    return { config, gatewayOn: true, profile: null };
   return {
-    ...gatewayFactsOf(paths),
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile
+  };
+}
+function readGuardContext(paths, input, env) {
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  return {
+    config,
+    gatewayOn,
     sessionModel: sessionModelOf(input, env)
   };
 }
@@ -15433,6 +15507,9 @@ function packageScripts(folder) {
   return new Set(Object.keys(scripts));
 }
 
+// src/hooks/bash-judge.ts
+import { isAbsolute as isAbsolute5, resolve as resolve6 } from "path";
+
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
   "[",
@@ -15610,6 +15687,26 @@ function isWorkflowPropose(step) {
   const sub = words[at + 1];
   return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
+function proposalOf(step, moved) {
+  if (step.computed)
+    return { unread: "the program is worked out when the line runs" };
+  const words = kitWordsOf(step) ?? [];
+  const at = kitWordAt(words, step, "workflow");
+  const sub = words[at + 1];
+  if (sub === undefined)
+    return { unread: "the line names no subcommand" };
+  if (sub !== "propose")
+    return { unread: "the subcommand is worked out when the line runs" };
+  const flag = words.indexOf("--folder", at + 2);
+  const folder = flag === -1 ? null : words[flag + 1] ?? "";
+  if (folder !== null && (folder === "" || isComputedWord(folder))) {
+    return { unread: "its --folder is worked out when the line runs" };
+  }
+  if (moved && (folder === null || !isAbsolute5(folder))) {
+    return { unread: "the line changes its folder before it" };
+  }
+  return { folder };
+}
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
     return args[1] === "list" || args[1] === "status";
@@ -15715,13 +15812,17 @@ function readBash(command, dialect = "bash") {
   let statusReadsInLoop = 0;
   let waits = state.loops;
   let workflowPropose = false;
+  const proposals = [];
+  const moved = steps.some((step) => CHANGE_DIR.has(step.program));
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
-    if (isWorkflowPropose(step))
+    if (isWorkflowPropose(step)) {
       workflowPropose = true;
+      proposals.push(proposalOf(step, moved));
+    }
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -15743,7 +15844,17 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits, workflowPropose };
+  return {
+    crewNeverRuns,
+    launches,
+    poll,
+    proposals,
+    statusReads,
+    steps,
+    top,
+    waits,
+    workflowPropose
+  };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -15783,6 +15894,79 @@ function crewProposeAnswer(crewId) {
     CREW_QUESTION_STEP
   ].join(`
 `);
+}
+function proposeActs(base) {
+  const into = base === null ? "the project's integration base (worktrees.base)" : `\`${base}\``;
+  return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
+}
+var APPROVE_IF_MEANT = "Approve it if you meant it.";
+function cannotTellProject(why) {
+  return `${proposeActs(null)}
+${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+}
+function proposeQuestion(folder, context) {
+  let checkout;
+  let base;
+  try {
+    checkout = locateCheckout(folder, { env: context.env });
+    if (checkout === null)
+      return cannotTellProject(`${folder} is not in a git project`);
+    base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
+  } catch (error) {
+    return cannotTellProject(error instanceof Error ? error.message : String(error));
+  }
+  const acts = proposeActs(base);
+  try {
+    const read = resolveGate(context.paths, checkout, base, {
+      env: context.env,
+      timeoutMs: GUARD_GIT_TIMEOUT_MS
+    });
+    if (!read.ok) {
+      return `${acts}
+${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
+    }
+    const { autoPush, openPr } = read.gate.resolved;
+    const off = [];
+    if (!autoPush.value)
+      off.push(`autoPush is off (${sourceLabel(autoPush, base)})`);
+    if (openPr.value !== "ready") {
+      off.push(`openPr is ${openPr.value} (${sourceLabel(openPr, base)})`);
+    }
+    if (off.length === 0)
+      return null;
+    return `${acts}
+${off.join(", and ")}, so the push and the pull request are yours to approve. ${APPROVE_IF_MEANT}`;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return `${acts}
+${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow settings cannot be read (${why}). ${APPROVE_IF_MEANT}`;
+  }
+}
+function judgeProposals(proposals, context) {
+  const cwd = stringField(context.input.cwd);
+  let question = null;
+  for (const proposal of proposals) {
+    if ("unread" in proposal) {
+      question = cannotTellProject(proposal.unread);
+    } else if (cwd === null) {
+      question = cannotTellProject("the call names no folder");
+    } else {
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve6(cwd, proposal.folder), context);
+    }
+    if (question !== null)
+      break;
+  }
+  if (question === null)
+    return null;
+  if (!isAttended(context.env)) {
+    return {
+      decision: "deny",
+      reason: `${question}
+Nobody answers a question in \`claude -p\`, so the proposal is refused.`,
+      why: "propose"
+    };
+  }
+  return { decision: "ask", reason: question, why: "propose" };
 }
 function pollReason() {
   return [
@@ -15832,6 +16016,12 @@ function judgeBash(reading, context) {
     return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
   }
   let ask = null;
+  if (reading.proposals.length > 0) {
+    const proposed = judgeProposals(reading.proposals, context);
+    if (proposed?.decision === "deny")
+      return proposed;
+    ask = proposed;
+  }
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
     if (verdict === null)
@@ -16086,7 +16276,7 @@ function localFiles(worktree, mainCheckout, env) {
 
 // src/hooks/worktree-leftovers.ts
 import { existsSync as existsSync17, readFileSync as readFileSync27, statSync as statSync11 } from "fs";
-import { basename as basename5, isAbsolute as isAbsolute5, join as join29, resolve as resolve6 } from "path";
+import { basename as basename5, isAbsolute as isAbsolute6, join as join29, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
@@ -16095,8 +16285,8 @@ function idleMinutesOrNull(worktree, now) {
   } catch {
     return null;
   }
-  if (!isAbsolute5(admin))
-    admin = resolve6(worktree, admin);
+  if (!isAbsolute6(admin))
+    admin = resolve7(worktree, admin);
   let last = 0;
   for (const file of ["index", "HEAD", join29("logs", "HEAD")]) {
     try {
@@ -16160,7 +16350,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync17(resolve6(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync17(resolve7(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -16717,13 +16907,13 @@ function leadNotesAnswer(input, event, paths, repo, env) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute6, resolve as resolve7 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve8 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute6(path) ? resolve7(path) : resolve7(cwd, path));
+  return realPath(isAbsolute7(path) ? resolve8(path) : resolve8(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -17557,7 +17747,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname10, isAbsolute as isAbsolute7, posix as posix2, relative, resolve as resolve8, win32 as win322 } from "path";
+import { dirname as dirname10, isAbsolute as isAbsolute8, posix as posix2, relative, resolve as resolve9, win32 as win322 } from "path";
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -17778,7 +17968,7 @@ function protectedNeedles(paths) {
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative(paths.home, folder);
-    if (!underHome.startsWith("..") && !isAbsolute7(underHome))
+    if (!underHome.startsWith("..") && !isAbsolute8(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
   }
@@ -17955,7 +18145,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute7(path) ? resolve8(path) : resolve8(cwd ?? "/", path);
+  const written = isAbsolute8(path) ? resolve9(path) : resolve9(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths, crew) {

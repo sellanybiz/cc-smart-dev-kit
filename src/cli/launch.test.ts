@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
+import type { HealthFetch } from "../gateway/health";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   type LaunchContext,
@@ -94,6 +95,16 @@ function gatewayConfig(world: World, profiles: string[]): void {
   writeFileSync(world.configPath, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
 }
 
+/** A router's health answer: this version's lists `profiles`; a 1.1.x copy's has no `features`. */
+function healthOf(router: "current" | "old"): HealthFetch {
+  return async () =>
+    Response.json({
+      ...(router === "current" ? { features: ["profiles"] } : {}),
+      ok: true,
+      port: TEST_PORT,
+    });
+}
+
 /** The command's context, with its output recorded and its session run faked by default. */
 function context(
   world: World,
@@ -107,6 +118,7 @@ function context(
     env: world.env,
     error: (line) => errors.push(line),
     errors,
+    fetch: healthOf("current"),
     home: world.home,
     platform: "linux",
     print: (line) => printed.push(line),
@@ -257,6 +269,54 @@ describe("launch", () => {
       `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `${ROUTER_URL}/p/fast` } }, null, 2)}\n`,
     );
     expect(ctx.printed[0]).toBe(`launch: the gateway, profile "fast" · ${ROUTER_URL}/p/fast`);
+  });
+
+  test("--profile on an older router (no profiles in its features) runs nothing, and names gateway setup", async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    const asked: string[] = [];
+    const old = healthOf("old");
+    const ctx = context(home, {
+      fetch: (url, init) => {
+        asked.push(url);
+        return old(url, init);
+      },
+    });
+    expect(await runLaunch(["--profile", "fast"], ctx)).toBe(1);
+    expect(asked).toEqual([`${ROUTER_URL}/__cc-smart-dev-kit/health`]);
+    expect(ctx.errors).toEqual([
+      `launch: the router running on 127.0.0.1:${TEST_PORT} is an older copy that does not know profiles, so every request through a profile's address would fail.`,
+      "Fix: cc-smart-dev-kit gateway setup puts this version's router in place.",
+    ]);
+    expect(runLog(home)).toEqual([]);
+    expect(existsSync(join(home.stateDir, "launch"))).toBe(false);
+  });
+
+  test("--profile on a router that does not answer runs nothing either", async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    const ctx = context(home, {
+      fetch: async () => {
+        throw new TypeError("Unable to connect");
+      },
+    });
+    expect(await runLaunch(["--profile", "fast"], ctx)).toBe(1);
+    expect(ctx.errors).toEqual([
+      `launch: the router does not answer on 127.0.0.1:${TEST_PORT} (Unable to connect), so it cannot say it knows profiles.`,
+      "Fix: cc-smart-dev-kit gateway setup",
+    ]);
+    expect(runLog(home)).toEqual([]);
+  });
+
+  test("--gateway asks no router: a plain gateway URL needs no feature", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const ctx = context(home, {
+      fetch: async () => {
+        throw new Error("launch --gateway must not ask the router");
+      },
+    });
+    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
   });
 
   test("the settings file's name carries the process and the mode: two launches never clash", () => {

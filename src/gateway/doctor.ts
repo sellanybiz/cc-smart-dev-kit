@@ -28,7 +28,7 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
-import { type HealthFetch, routerHealth } from "./health";
+import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
 import { decisionWords, readGatewayConfig, type SettingsFileState } from "./project-state";
@@ -323,8 +323,14 @@ export async function gatewayChecks(options: {
     });
   }
   // The projects, last: each one's own state (the same reader `gateway project status` uses),
-  // and a warning for a Claude Code model key that would bypass the slots (GP4a).
-  checks.push(...(await projectChecks(options, config)));
+  // and a warning for a Claude Code model key that would bypass the slots (GP4a). A router that
+  // answered says whether it knows profiles; one that did not is its own ✗ above, so nothing is
+  // guessed about it here.
+  const router =
+    "error" in health
+      ? null
+      : { port: config.port, profiles: healthHasFeature(health.body, "profiles") };
+  checks.push(...(await projectChecks(options, config, router)));
   return checks;
 }
 
@@ -399,7 +405,9 @@ function fileProblemWords(file: SettingsFileState, home: string): string {
  * it, in `gateway projects`' words. A project whose file cannot be read is a ✗ (Claude Code's
  * own answer past it is not known), with the file and its error named; another gateway's
  * address is a `!`. A caller with no project list prints nothing. `config`: this machine's
- * gateway config — only its backend names are read, for `modelKeyWarnings`.
+ * gateway config — only its backend names are read, for `modelKeyWarnings`. `router`: what the
+ * running router's health answer said (null: no answer, or not asked) — a project whose address
+ * names a profile fails every request while that router does not know profiles, a ✗.
  */
 async function projectChecks(
   options: {
@@ -408,6 +416,7 @@ async function projectChecks(
     projects?: (folder: string) => Promise<KnownProjects>;
   },
   config: GatewayConfig | null,
+  router: { port: number; profiles: boolean } | null = null,
 ): Promise<DoctorCheck[]> {
   if (options.projects === undefined) return [];
   const { paths } = options;
@@ -449,6 +458,20 @@ async function projectChecks(
       checks.push({ ok: true, warn: true, text });
     } else {
       checks.push({ ok: true, info: true, text });
+    }
+    // A profile's address on an older router copy (the CLI updated itself, `gateway setup` has
+    // not run): that router sends `…/p/<name>/v1/messages` to Anthropic as it is.
+    if (
+      view.choice.state === "on" &&
+      view.choice.profile !== null &&
+      router !== null &&
+      !router.profiles
+    ) {
+      checks.push({
+        ok: false,
+        text: `${where}: its address names the profile "${view.choice.profile}", and ${routerLacksProfiles(router.port)}`,
+        fix: SETUP,
+      });
     }
     // Only the project's own files: the machine's settings are `gateway status`' business.
     for (const file of view.files) {

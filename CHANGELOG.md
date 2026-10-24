@@ -14,13 +14,19 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   every session there follows it: a personal file by default, or the team file with `--team`.
   `gateway project status` says what a project uses and which file says so, and `gateway projects`
   lists them all. A **profile** is a set of chains a project can use instead of the machine's
-  (`gateway profile <name> slot …`). Projects you never set keep the machine's gateway.
+  (`gateway profile <name> slot …`). Projects you never set keep the machine's gateway. A profile
+  needs this version's router: until `gateway setup` puts it in place, `--profile` (here and in
+  `launch`) is refused and `doctor` fails a project whose address names one.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
-  so no session needs a restart. A second `restore` takes the key out.
+  so no session needs a restart. A second `restore` takes the key out. One exception: on a
+  machine that still has 0.4.3's retired model keys (`ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` and their names), the first `restore` removes them, and a
+  removal reaches a session only at its next start. Until you restart it, such a session sends a
+  slot name to Anthropic and fails; `restore` says so when it removes them.
 - **`doctor` shows each project's gateway state and its source,** and warns about a project file
   that names a slot or a backend model as Claude Code's model. `restore` also covers the keys the
   kit wrote into project files. `gateway off` lists the projects still switched on.
@@ -28,12 +34,18 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   - **Gateway** shows that project's state, where it comes from, and the switch;
   - **Workflow** shows each workflow setting, its value and source. A change you make there
     becomes a pull request into the project's base branch (`workflow propose`), and its link
-    shows in place. A crew session cannot propose one.
+    shows in place. A crew session cannot propose one, and any other Claude Code session that
+    runs `workflow propose` asks you first while `autoPush` is off or `openPr` is short of
+    `ready`: it pushes and opens a pull request where the git and merge guards cannot see.
 - **The portal never waits on a slow command.** Its doctor pass and its project reads run off the
   server's loop, one CLI child serves every action, and its state folder follows
   `CLAUDE_CONFIG_DIR`.
 - **Two guard fixes:** a crew session's text that starts with `-` is passed safely, and the
   escape guard no longer flags a computed command because its path holds the kit's name.
+- **The Agent guard and the usage-limit alert judge your session's own gateway** — the address
+  the session really runs with, so a project turned off or on, a profile and `launch` each count —
+  never the machine's settings file alone. A session on a profile is offered that profile's own
+  commands.
 
 - **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when

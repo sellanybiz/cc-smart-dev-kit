@@ -147,7 +147,13 @@ http://127.0.0.1:20100/p/my-project
   (`HistoryFilters.profile`).
 - **The health page names what this router knows**: `features: ["profiles"]`, and `profiles`
   lists the configured names. A command or the portal reads it to tell a running router that
-  knows profiles from an older one, which carries no version.
+  knows profiles from an older one, which carries no version. One reader asks it
+  (`routerFeature`, `src/gateway/health.ts`): after the background self-update the CLI is new
+  while the router that runs stays the old copy until `gateway setup`, and a 1.1.x router sends
+  `…/p/<name>/v1/messages` to Anthropic as it is, so every request of that project fails. So
+  `gateway project on --profile` (and the portal's Gateway card, which runs it) and `launch
+  --profile` refuse while the router lists no `profiles`, and `doctor` fails a project whose
+  address names a profile; each names `gateway setup` as the fix.
 - **A project reaches its profile by its URL**: `ANTHROPIC_BASE_URL` with `/p/<name>` on the
   end, in that project's own settings file (or passed to one session with `--settings`). It is
   the only place a profile's name comes from; no request header names a project.
@@ -274,7 +280,7 @@ cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claud
 |---|---|---|
 | `--no-gateway` | `https://api.anthropic.com`: Anthropic, on the person's own claude.ai login (P1) | `launch: plain Claude (no gateway) · …` |
 | `--gateway` | the machine's router, `http://127.0.0.1:<port>` from `gateway.json` | `launch: the gateway · …` |
-| `--profile <name>` | the router with the profile, `…/p/<name>` | `launch: the gateway, profile "<name>" · …` |
+| `--profile <name>` | the router with the profile, `…/p/<name>`, once its health page lists `profiles` (§ Profiles) | `launch: the gateway, profile "<name>" · …` |
 | none | no file and no `--settings`: the machine's and the project's settings decide, as for `claude` | `launch: this machine's settings · no --settings file` |
 
 Everything after `--` goes to Claude Code itself (`--model`, `-p`, `--resume`, `--help`). The
@@ -967,6 +973,14 @@ of a Claude model whose family has a slot (`familySlotFor`). The hook starts a d
 worker through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, so the half hour
 it may wait runs from the installed version, never from the hook's version folder) and exits
 at once; with no launcher, a plain notification with no action.
+
+**Which gateway it judges** is the session's own (RF1-2, `sessionGatewayOf`, shared with the
+Agent guard): the session's effective `ANTHROPIC_BASE_URL`, which Claude Code hands the hook in
+its environment (`docs/claude-code-contract.md` § Hooks). No URL or Anthropic's own address is
+off (the action becomes words: turn the gateway on first); `…/p/<name>` reads that profile's
+chains (`profileView`, or `plainClaudeView` for a name the config lacks), and its commands are
+the profile's own — `gateway profile <name> slot <slot> <targets>` and `gateway profile <name>
+fallback <slot> on` — since a machine `gateway slot` would not reach a session on a profile.
 
 - **What it offers** is that family's slot with its fallback switch on, from the person's
   own config only (`offerFor`, `src/hooks/stop-failure.ts`); the plugin names no model:

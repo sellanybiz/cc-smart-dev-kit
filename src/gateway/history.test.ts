@@ -17,7 +17,7 @@ import {
   type HistoryRow,
   historyDbExists,
 } from "./history";
-import { recentRequests } from "./history-read";
+import { historyKeys, historySeries, recentRequests, requestsSince } from "./history-read";
 import { createRouter, type FetchLike, type RouterDeps, type UpstreamInit } from "./router";
 import { GUARD_PROMPT } from "./targets";
 
@@ -46,6 +46,80 @@ function row(overrides: Partial<HistoryRow> = {}): HistoryRow {
     tokens: null,
     ...overrides,
   };
+}
+
+/**
+ * The version-1 table, exactly as 1.1.0 made it, with two rows already in it: what a 1.1.x
+ * router keeps writing until `gateway setup` restarts it on the 1.2.0 copy.
+ */
+function schemaOneDatabase(file: string): void {
+  const old = new Database(file, { create: true });
+  old.run(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    session TEXT,
+    model TEXT NOT NULL,
+    slot TEXT,
+    target TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    next_target TEXT,
+    breaker TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cost_usd REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0
+  )`);
+  old.run("CREATE INDEX requests_at ON requests(at)");
+  old.run("CREATE INDEX requests_session_at ON requests(session, at)");
+  old.run(
+    `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      START - 2000,
+      "s-1",
+      "old-one",
+      "cc-smart-dev-kit-worker",
+      "claude-sonnet-5-5",
+      200,
+      12,
+      null,
+      null,
+      10,
+      20,
+      0,
+      0,
+      0.1,
+      1,
+    ],
+  );
+  old.run(
+    `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      START - 1000,
+      null,
+      "old-two",
+      null,
+      "anthropic",
+      500,
+      30,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      0,
+    ],
+  );
+  old.run("PRAGMA user_version = 1");
+  old.close();
 }
 
 describe("the history writer", () => {
@@ -187,74 +261,7 @@ describe("the history writer", () => {
 
   it("a database from schema 1 keeps every row: the profile column is added beside them", () => {
     const file = historyFile();
-    // The version-1 table, exactly as 1.1.0 made it, with two rows already in it.
-    const old = new Database(file, { create: true });
-    old.run(`CREATE TABLE requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      at INTEGER NOT NULL,
-      session TEXT,
-      model TEXT NOT NULL,
-      slot TEXT,
-      target TEXT NOT NULL,
-      status INTEGER NOT NULL,
-      ms INTEGER NOT NULL,
-      next_target TEXT,
-      breaker TEXT,
-      input_tokens INTEGER,
-      output_tokens INTEGER,
-      cache_read_tokens INTEGER,
-      cache_write_tokens INTEGER,
-      cost_usd REAL,
-      cost_estimated INTEGER NOT NULL DEFAULT 0
-    )`);
-    old.run("CREATE INDEX requests_at ON requests(at)");
-    old.run("CREATE INDEX requests_session_at ON requests(session, at)");
-    old.run(
-      `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        START - 2000,
-        "s-1",
-        "old-one",
-        "cc-smart-dev-kit-worker",
-        "claude-sonnet-5-5",
-        200,
-        12,
-        null,
-        null,
-        10,
-        20,
-        0,
-        0,
-        0.1,
-        1,
-      ],
-    );
-    old.run(
-      `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        START - 1000,
-        null,
-        "old-two",
-        null,
-        "anthropic",
-        500,
-        30,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        0,
-      ],
-    );
-    old.run("PRAGMA user_version = 1");
-    old.close();
+    schemaOneDatabase(file);
 
     // The writer opens it: the column is added, the two rows stay, and they read as the
     // machine's default (no profile).
@@ -769,5 +776,77 @@ describe("the request history never holds the conversation", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toStartWith("ERROR cannot write the request history:");
     writer.close();
+  });
+});
+
+describe("the readers on a schema-1 database (a 1.1.x router still writes it)", () => {
+  // After the background self-update the portal and the CLI are 1.2.0, while the running router
+  // stays 1.1.x until `gateway setup`: it keeps the file at schema 1, and the readers open it
+  // read-only, so they cannot add the column. They read its rows as the machine's default.
+
+  it("recentRequests reads every row with no profile, and a profile filter matches none", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    const page = recentRequests(file, { limit: 10 });
+    expect(page.rows.map((entry) => [entry.model, entry.profile])).toEqual([
+      ["old-two", null],
+      ["old-one", null],
+    ]);
+    expect(recentRequests(file, { filters: { profile: "proj" }, limit: 10 })).toEqual({
+      nextCursor: null,
+      rows: [],
+    });
+    const worker = recentRequests(file, {
+      filters: { slot: "cc-smart-dev-kit-worker" },
+      limit: 10,
+    });
+    expect(worker.rows.map((entry) => entry.model)).toEqual(["old-one"]);
+  });
+
+  it("historySeries groups the rows, and a profile filter matches none", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    const answer = historySeries(file, { by: "target", now: START, range: "1h" });
+    expect(
+      answer.series.map((series) => [
+        series.key,
+        series.points.reduce((sum, point) => sum + point.requests, 0),
+        series.points.reduce((sum, point) => sum + point.errors, 0),
+      ]),
+    ).toEqual([
+      ["anthropic", 1, 1],
+      ["claude-sonnet-5-5", 1, 0],
+    ]);
+    const filtered = historySeries(file, {
+      by: "target",
+      filters: { profile: "proj" },
+      now: START,
+      range: "1h",
+    });
+    expect(filtered.series).toEqual([]);
+  });
+
+  it("historyKeys and requestsSince read it as they read schema 2", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    expect(historyKeys(file, { now: START, range: "1h" })).toEqual({
+      models: ["old-one", "old-two"],
+      sessions: ["s-1"],
+      slots: ["cc-smart-dev-kit-worker"],
+      targets: ["anthropic", "claude-sonnet-5-5"],
+    });
+    expect(requestsSince(file, { from: START - 1500 })).toBe(1);
+  });
+
+  it("a read never migrates the file: it stays at schema 1, with no profile column", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    recentRequests(file, { filters: { profile: "proj" }, limit: 10 });
+    historySeries(file, { by: "slot", filters: { profile: "proj" }, now: START, range: "1h" });
+    const db = new Database(file, { readonly: true });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+    expect(columns.map((column) => column.name)).not.toContain("profile");
+    db.close();
   });
 });

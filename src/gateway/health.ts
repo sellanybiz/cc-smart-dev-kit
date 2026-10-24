@@ -8,7 +8,10 @@
  */
 
 import { messageOf } from "./config";
-import { HEALTH_PATH } from "./router";
+import { HEALTH_PATH, type ROUTER_FEATURES } from "./router";
+
+/** A feature a reader may rely on from a running router (`ROUTER_FEATURES`). */
+export type RouterFeature = (typeof ROUTER_FEATURES)[number];
 
 /**
  * The part of `fetch` every injectable check takes — the health page, a backend's model list,
@@ -57,6 +60,42 @@ export async function routerHealth(
   } catch (error) {
     return { error: messageOf(error) };
   }
+}
+
+/**
+ * Whether a health answer lists `feature` in its `features`. A router from before the list
+ * (1.1.x) answers with no `features`, so it has none of them; an answer of another shape lists
+ * nothing either.
+ */
+export function healthHasFeature(body: unknown, feature: RouterFeature): boolean {
+  return isJsonObject(body) && Array.isArray(body.features) && body.features.includes(feature);
+}
+
+/**
+ * Does the router running on `port` have `feature`? The one reader every command asks before it
+ * writes or starts something that needs one (a profile's `…/p/<name>` URL: `gateway project on
+ * --profile`, the portal's Gateway card through it, `launch --profile`, `doctor`). The router
+ * carries no version, so its health answer's `features` is the only way to tell: after the
+ * background self-update the CLI is new while the router that runs stays the old copy until
+ * `gateway setup` puts the new one in place. No answer is said in words, never guessed.
+ */
+export async function routerFeature(
+  port: number,
+  feature: RouterFeature,
+  fetchImpl: HealthFetch,
+): Promise<{ has: boolean } | { error: string }> {
+  const health = await routerHealth(port, fetchImpl);
+  return "error" in health ? health : { has: healthHasFeature(health.body, feature) };
+}
+
+/**
+ * Why a profile's URL would fail on the router running on `port`: it answers, but from before
+ * profiles. A 1.1.x router sends every path but `/v1/messages` to Anthropic unchanged, so each
+ * request to `…/p/<name>/v1/messages` fails. One text for every command that refuses it; each
+ * adds `gateway setup` as its fix, in its own form.
+ */
+export function routerLacksProfiles(port: number): string {
+  return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
 }
 
 /**

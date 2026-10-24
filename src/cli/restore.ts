@@ -266,7 +266,8 @@ function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string
  *
  * A value cc-smart-dev-kit never wrote is not its to remove: without this, a restore would take
  * away the values the person had before the take-over. A key is the one exception — its value is
- * never written down, so `restore` removes it as any other key of ours.
+ * never written down, so there is nothing to put back: `restore` drops the claim and leaves the
+ * key exactly as it is (`TAKEN_SECRET_LEFT`).
  *
  * A failure here is one line, never a stop: the restore itself still runs, and says what it did.
  */

@@ -1411,35 +1411,60 @@ describe("the hook's answer, and the record", () => {
   });
 });
 
+/** The router's port in the session-gateway tests: only a URL names it, nothing connects. */
+const SESSION_ROUTER = "http://127.0.0.1:39999";
+
+/** A machine for the gateway tests: its paths, and the hook's environment for one session. */
+type GuardMachine = CliPaths & { env: Record<string, string> };
+
+/**
+ * A machine whose `gateway.json` has `slots` (and `profiles`) on port 39999, and the environment
+ * of a session whose effective `ANTHROPIC_BASE_URL` is `sessionUrl` (null: none). A hook process
+ * gets the session's effective value in its own environment (proved live on 2.1.310), so that is
+ * what the guard reads. `userFileUrl`: what the user's own settings file says, which the guard no
+ * longer reads (RF1-2): a project or a `--settings` file decides over it.
+ */
+function guardMachine(
+  slots: Record<string, string[]>,
+  sessionUrl: null | string,
+  options: { profiles?: Record<string, unknown>; userFileUrl?: string } = {},
+): GuardMachine {
+  const home = tempDir("guard-family");
+  const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  mkdirSync(join(where.gatewayConfigFile, ".."), { recursive: true });
+  writeFileSync(
+    where.gatewayConfigFile,
+    JSON.stringify({
+      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
+      port: 39_999,
+      ...(options.profiles === undefined ? {} : { profiles: options.profiles }),
+      slots,
+      version: 1,
+    }),
+    { mode: 0o600 },
+  );
+  mkdirSync(join(where.settingsFile, ".."), { recursive: true });
+  writeFileSync(
+    where.settingsFile,
+    JSON.stringify(
+      options.userFileUrl === undefined ? {} : { env: { ANTHROPIC_BASE_URL: options.userFileUrl } },
+    ),
+  );
+  mkdirSync(where.stateDir, { recursive: true });
+  return { ...where, env: sessionUrl === null ? {} : { ANTHROPIC_BASE_URL: sessionUrl } };
+}
+
 describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's settings)", () => {
-  // The machine as the hook reads it: `gateway.json` through the gateway's own reader, and
-  // Claude Code's settings for `ANTHROPIC_BASE_URL`. No `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and
-  // no `modelSlots` anywhere: the router sends a Claude model to its family's slot by itself.
-  function machine(slots: Record<string, string[]>, gatewayOn: boolean): CliPaths {
-    const home = tempDir("guard-family");
-    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
-    mkdirSync(join(where.gatewayConfigFile, ".."), { recursive: true });
-    writeFileSync(
-      where.gatewayConfigFile,
-      JSON.stringify({
-        backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-        slots,
-        version: 1,
-      }),
-      { mode: 0o600 },
-    );
-    mkdirSync(join(where.settingsFile, ".."), { recursive: true });
-    writeFileSync(
-      where.settingsFile,
-      JSON.stringify(gatewayOn ? { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:39999" } } : {}),
-    );
-    mkdirSync(where.stateDir, { recursive: true });
-    return where;
+  // The machine as the hook reads it: `gateway.json` through the gateway's own reader, and the
+  // session's own `ANTHROPIC_BASE_URL`. No `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and no
+  // `modelSlots` anywhere: the router sends a Claude model to its family's slot by itself.
+  function machine(slots: Record<string, string[]>, gatewayOn: boolean): GuardMachine {
+    return guardMachine(slots, gatewayOn ? SESSION_ROUTER : null);
   }
 
   /** The hook's PreToolUse answer for one Agent call; null when it stays silent (allowed). */
-  async function answer(where: CliPaths, fields: Record<string, unknown>) {
-    const result = await agentGuard(agentCall(fields), NO_ENV, where, "/tmp/app");
+  async function answer(where: GuardMachine, fields: Record<string, unknown>) {
+    const result = await agentGuard(agentCall(fields), where.env, where, "/tmp/app");
     if (result.stdout === undefined || result.stdout === "") return null;
     const output = JSON.parse(result.stdout).hookSpecificOutput;
     return {
@@ -1530,6 +1555,76 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     const [record] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(record?.family).toBe("opus");
     expect(record?.model).toBe("omniroute:glm-x");
+  });
+});
+
+describe("RF1-2: the guard judges the session's own gateway, not the machine's file", () => {
+  const WORKER_ON_BACKEND = { "cc-smart-dev-kit-worker": ["omniroute:glm-x"] };
+  const OPUS_ON_BACKEND = { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] };
+
+  async function answer(where: GuardMachine, fields: Record<string, unknown>) {
+    const result = await agentGuard(agentCall(fields), where.env, where, "/tmp/app");
+    if (result.stdout === undefined || result.stdout === "") return null;
+    const output = JSON.parse(result.stdout).hookSpecificOutput;
+    return {
+      decision: output.permissionDecision as string,
+      reason: output.permissionDecisionReason as string,
+    };
+  }
+
+  it("the machine is on with a backend worker chain, the project is off: a sonnet launch runs on Claude", async () => {
+    // `gateway project off` writes Anthropic's own address into the project's file, which the
+    // session's environment carries over the user file's router address.
+    const where = guardMachine(WORKER_ON_BACKEND, "https://api.anthropic.com", {
+      userFileUrl: SESSION_ROUTER,
+    });
+    expect(await answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+    // A launch started with no URL anywhere goes to Anthropic too.
+    const bare = guardMachine(WORKER_ON_BACKEND, null, { userFileUrl: SESSION_ROUTER });
+    expect(await answer(bare, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+  });
+
+  it("the machine is off, the project is on: the backend worker chain answers, so effort max", async () => {
+    const where = guardMachine(WORKER_ON_BACKEND, SESSION_ROUTER);
+    expect(
+      (await answer(where, { effort: "high", model: "sonnet", prompt: "build it" }))?.reason,
+    ).toStartWith("This launch runs on omniroute:glm-x, an affordable gateway slot.");
+  });
+
+  it("an opus launch at max: the premium ask names what really answers it", async () => {
+    // The machine's file says on with an opus chain on a backend; the session is off, so Claude
+    // Opus answers, and the ask names Claude Opus rather than the backend.
+    const off = guardMachine(OPUS_ON_BACKEND, "https://api.anthropic.com", {
+      userFileUrl: SESSION_ROUTER,
+    });
+    const offAsk = await answer(off, { effort: "max", model: "opus", prompt: "do it" });
+    expect(offAsk?.decision).toBe("ask");
+    expect(offAsk?.reason).toContain("Claude Opus launch at effort `max`");
+    // The reverse: the session is on while the machine's file says nothing.
+    const on = guardMachine(OPUS_ON_BACKEND, SESSION_ROUTER);
+    expect((await answer(on, { effort: "max", model: "opus", prompt: "do it" }))?.reason).toContain(
+      "`opus` (answered by omniroute:glm-x) launch at effort `max`",
+    );
+  });
+
+  it("a profile's URL: that profile's chains decide, and a name the config lacks is plain Claude", async () => {
+    const profiles = {
+      cheap: { slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-x"] } },
+      plain: { slots: { "cc-smart-dev-kit-worker": "claude" } },
+    };
+    // The machine's worker answers on Claude; the profile `cheap` puts it on a backend.
+    const cheap = guardMachine({}, `${SESSION_ROUTER}/p/cheap`, { profiles });
+    expect(
+      (await answer(cheap, { effort: "high", model: "sonnet", prompt: "build it" }))?.reason,
+    ).toStartWith("This launch runs on omniroute:glm-x, an affordable gateway slot.");
+    // The machine's worker is on a backend; the profile `plain` turns it off there.
+    const plain = guardMachine(WORKER_ON_BACKEND, `${SESSION_ROUTER}/p/plain`, { profiles });
+    expect(await answer(plain, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+    // A name the config does not hold answers as plain Claude, as the router does.
+    const unknown = guardMachine(WORKER_ON_BACKEND, `${SESSION_ROUTER}/p/nope`, { profiles });
+    expect(
+      await answer(unknown, { effort: "high", model: "sonnet", prompt: "build it" }),
+    ).toBeNull();
   });
 });
 

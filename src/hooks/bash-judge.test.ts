@@ -20,8 +20,15 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
-import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import {
+  commitConfig,
+  hookEnv,
+  makeRepo,
+  runHook,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import type { HookResult } from "./io";
 import { jobRouteHook } from "./specs";
 
@@ -446,12 +453,118 @@ describe("a crew session proposing a workflow change", () => {
       expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
     }
   });
+});
 
-  test("the same line in a plain session is the command's own check to make: silent", async () => {
-    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+describe("RF1-4: a session that is not a crew session proposing a workflow change", () => {
+  // `workflow propose` pushes a branch and opens a pull request that is ready for review, in
+  // children no hook sees: the git and merge guards never ask about them. So the judge asks first
+  // whenever the gate those guards read says either is the person's to approve.
+  const BASE = { requires: ">=0.4", worktrees: { base: "dev" } };
+  const PROPOSE = "cc-smart-dev-kit workflow propose autoCommit true";
+  const ACTS =
+    "This runs `cc-smart-dev-kit workflow propose`: it pushes a new branch to origin and opens a pull request into `dev` that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.";
+
+  /** A repo whose `origin/dev` holds the project's file with `workflow`, and the hook's env. */
+  function gated(workflow: unknown = {}): { env: Record<string, string>; repo: string } {
+    const repo = makeRepo();
+    commitConfig(repo, { ...BASE, workflow }, ["dev"]);
+    return { env: hookEnv(), repo };
+  }
+
+  test("the default gate (autoPush off, openPr off) asks, naming both switches, the push and the pull request", async () => {
+    const { env, repo } = gated();
+    expect(await judge(repo, PROPOSE, env)).toEqual({
+      decision: "ask",
+      reason: `${ACTS}\nautoPush is off (default), and openPr is off (default), so the push and the pull request are yours to approve. Approve it if you meant it.`,
+    });
+  });
+
+  test("each gate value short of both: an ask that names the switch that says no", async () => {
+    for (const [workflow, says] of [
+      [{ autoPush: true }, "openPr is off (default)"],
+      [{ autoPush: true, openPr: "off" }, "openPr is off (project, committed on origin/dev)"],
+      [{ autoPush: true, openPr: "draft" }, "openPr is draft (project, committed on origin/dev)"],
+      [{ openPr: "ready" }, "autoPush is off (default)"],
+    ] as const) {
+      const { env, repo } = gated(workflow);
+      expect({ workflow, answer: await judge(repo, PROPOSE, env) }).toEqual({
+        workflow,
+        answer: {
+          decision: "ask",
+          reason: `${ACTS}\n${says}, so the push and the pull request are yours to approve. Approve it if you meant it.`,
+        },
+      });
+    }
+  });
+
+  test("autoPush on and openPr ready, committed on the base: silent", async () => {
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    expect((await judge(repo, PROPOSE, env)).decision).toBeUndefined();
+  });
+
+  test("the person's own workflow file counts as the guards read it; a worktree's own file never does", async () => {
+    const own = gated();
+    writePersonalWorkflow(own.env, { autoPush: true, openPr: "ready" });
+    expect((await judge(own.repo, PROPOSE, own.env)).decision).toBeUndefined();
+    const edited = gated();
+    writeClaudeFile(edited.repo, "cc-smart-dev-kit.json", {
+      ...BASE,
+      workflow: { autoPush: true, openPr: "ready" },
+    });
+    expect((await judge(edited.repo, PROPOSE, edited.env)).decision).toBe("ask");
+  });
+
+  test("--folder names the project whose gate counts", async () => {
+    const open = gated({ autoPush: true, openPr: "ready" });
+    const closed = gated();
+    expect((await judge(open.repo, `${PROPOSE} --folder ${closed.repo}`, open.env)).decision).toBe(
+      "ask",
+    );
     expect(
-      (await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", env)).decision,
+      (await judge(closed.repo, `${PROPOSE} --folder ${open.repo}`, closed.env)).decision,
     ).toBeUndefined();
+  });
+
+  test("a gate it cannot read, or a project it cannot name, asks with the reason", async () => {
+    const lost = gated();
+    git(lost.repo, "update-ref", "-d", "refs/remotes/origin/dev");
+    expect((await judge(lost.repo, PROPOSE, lost.env)).reason).toStartWith(
+      `${ACTS}\ncc-smart-dev-kit cannot tell whether the push and the pull request are allowed: the workflow committed on dev cannot be read`,
+    );
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    for (const command of [
+      "$KIT workflow propose autoCommit true",
+      "P=propose; cc-smart-dev-kit workflow $P autoCommit true",
+      `${PROPOSE} --folder $HOME/app`,
+      `cd ../other && ${PROPOSE}`,
+    ]) {
+      const answer = await judge(repo, command, env);
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "ask" });
+      expect(answer.reason).toContain(
+        "cc-smart-dev-kit cannot tell which project's workflow this line proposes into",
+      );
+    }
+  });
+
+  test("nobody answers in `claude -p`: where it would ask, it is refused", async () => {
+    const { env, repo } = gated();
+    const answer = await judge(repo, PROPOSE, { ...env, CLAUDE_CODE_SESSION_ATTENDED: "0" });
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toEndWith(
+      "Nobody answers a question in `claude -p`, so the proposal is refused.",
+    );
+    const open = gated({ autoPush: true, openPr: "ready" });
+    expect(
+      (await judge(open.repo, PROPOSE, { ...open.env, CLAUDE_CODE_SESSION_ATTENDED: "0" }))
+        .decision,
+    ).toBeUndefined();
+  });
+
+  test("reading its help asks nothing", async () => {
+    const { env, repo } = gated();
+    expect((await judge(repo, "cc-smart-dev-kit workflow propose --help", env)).decision).toBe(
+      undefined,
+    );
   });
 });
 

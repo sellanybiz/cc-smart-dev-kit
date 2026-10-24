@@ -328,7 +328,7 @@ export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
  * feature from one that does not by this list, never by guessing. `profiles`: a project's
  * `…/p/<profile>` path names its own chains (owner D29, `docs/gateway.md` § Profiles).
  */
-export const ROUTER_FEATURES: readonly string[] = ["profiles"];
+export const ROUTER_FEATURES = ["profiles"] as const;
 
 /** How many routed requests the health answer lists (`recent`), the last ones first in. */
 export const RECENT_MAX = 200;
