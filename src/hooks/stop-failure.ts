@@ -60,7 +60,7 @@ import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { breakerChangeHint, slotShortName } from "../gateway/breaker";
-import { fallbackOn, type GatewayConfig, loadConfigFile } from "../gateway/config";
+import { fallbackOn, type GatewayConfig } from "../gateway/config";
 import {
   type BreakerRecord,
   currentBreakers,
@@ -71,7 +71,6 @@ import {
   parseLimitState,
   stateKeyFor,
 } from "../gateway/limit-state";
-import { baseUrlPointsAtGateway, settingsReport } from "../gateway/settings";
 import {
   type ClaudeFamily,
   claudeFamily,
@@ -84,6 +83,7 @@ import {
 } from "../gateway/targets";
 import { retryWatchdogState } from "../setup/retry-watchdog";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
+import { sessionGatewayOf } from "./agent-guard";
 import { inBackgroundSession } from "./background-session";
 import { hasDesktop } from "./desktop-alert";
 import type { Env } from "./run";
@@ -142,13 +142,18 @@ export interface AlertContext {
    * milliseconds (`BREAKER_ALERT_FILE`). One opening then never alerts twice.
    */
   breakerAlerted: Record<string, number>;
-  /** The gateway config; null when there is none, or it cannot be read. */
+  /**
+   * The gateway config as this session sees it: a profile's view when its URL names one
+   * (`sessionGatewayOf`); null when there is none, or it cannot be read.
+   */
   config: GatewayConfig | null;
   /** True when `gateway.json` exists, readable or not: the person set the gateway up. */
   gatewaySetUp: boolean;
-  /** True when Claude Code's settings point at the router. */
+  /** True when this session's own `ANTHROPIC_BASE_URL` points at the router. */
   gatewayOn: boolean;
   nowMs: number;
+  /** The profile this session's URL names (`…/p/<name>`): its own commands change its chains. */
+  profile: null | string;
   /** The session's own model: the last Claude model in its transcript; null when unknown. */
   sessionModel: null | string;
   state: LimitState | null;
@@ -273,15 +278,20 @@ type Offer =
  *   - no chain, or one target: the chain `suggestedTargets` builds, saved with
  *     `gateway slot <slot> <targets>`, then the switch on. Both, always, in that order: the
  *     switch needs a chain, and a click may come half an hour after the alert.
+ *
+ * A session on a profile gets the profile's own commands (`gateway profile <name> slot|fallback
+ * …`, `chainCommand`): its chain is the profile's (owner D29), so a machine command would not
+ * reach it.
  */
 function offerFor(
   config: GatewayConfig,
   slot: FamilySlot,
   model: string,
   claim: null | string,
+  profile: null | string,
 ): Offer {
   const chain = config.slots[slot.key] ?? [];
-  const fallback = ["gateway", "fallback", slot.name, "on"];
+  const fallback = chainCommand(profile, ["fallback", slot.name, "on"]);
   const head = chain[0];
   if (head !== undefined) {
     const parsed = parseTarget(head);
@@ -304,7 +314,7 @@ function offerFor(
   const targets = suggestedTargets(config, head ?? model, slot, claim);
   if (targets === null) {
     const shown = typed([
-      ["gateway", "slot", slot.name, `${head ?? model},<backend>:<model>`],
+      chainCommand(profile, ["slot", slot.name, `${head ?? model},<backend>:<model>`]),
       fallback,
     ]);
     return {
@@ -313,10 +323,15 @@ function offerFor(
     };
   }
   return {
-    commands: [["gateway", "slot", slot.name, targets.join(",")], fallback],
+    commands: [chainCommand(profile, ["slot", slot.name, targets.join(",")]), fallback],
     kind: "commands",
     targets,
   };
+}
+
+/** `gateway <words>`, or the profile's own `gateway profile <name> <words>` for a profile's session. */
+function chainCommand(profile: null | string, words: string[]): string[] {
+  return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
 }
 
 /** A breaker opening that explains this stop: the slot, and the state's fresh record for it. */
@@ -535,7 +550,7 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
       title,
     };
   }
-  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null);
+  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null, ctx.profile);
   if (offer.kind !== "commands") return { action: null, body: `${head} ${offer.words}`, title };
   const shown = typed(offer.commands);
   if (!ctx.gatewayOn) {
@@ -570,28 +585,16 @@ export function readAlertContext(
     isJsonObject(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync(paths.gatewayConfigFile);
-  let config: GatewayConfig | null = null;
-  if (gatewaySetUp) {
-    try {
-      config = loadConfigFile(paths.gatewayConfigFile);
-    } catch {
-      // A config that cannot be used offers no action; the alert still says what happened.
-      config = null;
-    }
-  }
+  // The session's own gateway (RF1-2): its effective `ANTHROPIC_BASE_URL`, which the hook's
+  // environment carries, and a profile's chains when that URL names one. A config that cannot
+  // be used is null: it offers no action, and the alert still says what happened.
+  const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
   let state: LimitState | null = null;
   try {
     state = parseLimitState(readFileSync(paths.gatewayStateFile, "utf8"));
   } catch {
     // No state file yet: the router never saw a limit.
     state = null;
-  }
-  let gatewayOn = false;
-  try {
-    // `gateway off` leaves Anthropic's own address in the file (GP5), which is not "on".
-    gatewayOn = baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
-  } catch {
-    gatewayOn = false;
   }
   // The retry watchdog: a value the person set counts like setup's own; a settings file that
   // cannot be read says nothing, so the alert speaks of a message instead.
@@ -613,6 +616,7 @@ export function readAlertContext(
     gatewayOn,
     gatewaySetUp,
     nowMs,
+    profile,
     sessionModel,
     state,
     watchdogOn,

@@ -144,6 +144,7 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
     gatewayOn: true,
     gatewaySetUp: true,
     nowMs: NOW,
+    profile: null,
     sessionModel: null,
     state: state("claude-opus-5-5", 5_000),
     timeZone: "UTC",
@@ -410,7 +411,7 @@ describe("which stops get an alert", () => {
       transcript,
       `${JSON.stringify({ message: { model: "claude-fable-5-1" }, type: "assistant" })}\n`,
     );
-    const read = readAlertContext(paths, NOW, { ...AT_LIMIT, transcript_path: transcript });
+    const read = readAlertContext(paths, NOW, { ...AT_LIMIT, transcript_path: transcript }, {});
     expect(read).toEqual({
       alerts: alerts(),
       alertsProblem: null,
@@ -419,9 +420,100 @@ describe("which stops get an alert", () => {
       gatewayOn: false,
       gatewaySetUp: true,
       nowMs: NOW,
+      profile: null,
       sessionModel: "claude-fable-5-1",
       state: null,
       watchdogOn: false,
+    });
+  });
+
+  describe("RF1-2: the session's own gateway, from the hook's environment", () => {
+    /** A machine whose user file points at the router and whose config has the profile `cheap`. */
+    function machineOn(): ReturnType<typeof cliPaths> {
+      const home = tempDir("alert-session");
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+      mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
+      writeFileSync(
+        paths.gatewayConfigFile,
+        JSON.stringify(
+          config({
+            profiles: {
+              cheap: {
+                slots: { "cc-smart-dev-kit-opus": ["omniroute:ollama-cloud/glm-5.3-flash"] },
+              },
+            },
+          }),
+        ),
+        { mode: 0o600 },
+      );
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      writeFileSync(
+        paths.settingsFile,
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+      );
+      return paths;
+    }
+
+    it("the project is off while the user file is on: the session is off", () => {
+      const read = readAlertContext(machineOn(), NOW, AT_LIMIT, {
+        ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+      });
+      expect([read.gatewayOn, read.profile]).toEqual([false, null]);
+      // No URL at all reaches Anthropic too.
+      expect(readAlertContext(machineOn(), NOW, AT_LIMIT, {}).gatewayOn).toBe(false);
+    });
+
+    it("the session points at the router while the user file says nothing: on", () => {
+      const home = tempDir("alert-session-on");
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+      mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
+      writeFileSync(paths.gatewayConfigFile, JSON.stringify(config()), { mode: 0o600 });
+      const read = readAlertContext(paths, NOW, AT_LIMIT, {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:20199",
+      });
+      expect([read.gatewayOn, read.profile]).toEqual([true, null]);
+    });
+
+    it("a profile's URL: the profile's chains, and the alert points at the profile's own key", () => {
+      const read = readAlertContext(machineOn(), NOW, AT_LIMIT, {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:20199/p/cheap",
+      });
+      expect([read.gatewayOn, read.profile]).toEqual([true, "cheap"]);
+      expect(read.config?.slots["cc-smart-dev-kit-opus"]).toEqual([
+        "omniroute:ollama-cloud/glm-5.3-flash",
+      ]);
+      // The profile's opus chain answers from a backend first: the alert says so, as for a
+      // machine chain that does.
+      expect(planAlert(AT_LIMIT, { ...ctx(), ...read, state: ctx().state })?.body).toBe(
+        "claude-opus-5-5: five_hour, resets 13:00. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+      );
+    });
+
+    it("a profile whose slot answers as Claude: the profile's own commands, never the machine's", () => {
+      const read = readAlertContext(machineOn(), NOW, AT_LIMIT, {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:20199/p/nope",
+      });
+      // A name the config lacks answers as plain Claude, as the router does.
+      expect([read.gatewayOn, read.profile, read.config?.slots]).toEqual([true, "nope", {}]);
+      // A machine `gateway slot` would not reach this session: its profile's chain decides.
+      expect(planAlert(AT_LIMIT, ctx({ profile: "cheap" }))).toEqual({
+        action: {
+          commands: [
+            [
+              "gateway",
+              "profile",
+              "cheap",
+              "slot",
+              "opus",
+              "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash",
+            ],
+            ["gateway", "profile", "cheap", "fallback", "opus", "on"],
+          ],
+          label: "Use glm-5.3-flash until it resets",
+        },
+        body: "claude-opus-5-5: five_hour, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway profile cheap slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash && cc-smart-dev-kit gateway profile cheap fallback opus on (Claude takes over again by itself once it answers).",
+        title: "Claude usage limit reached",
+      });
     });
   });
 
@@ -921,6 +1013,9 @@ describe("the hook as Claude Code runs it", () => {
           CLAUDE_CONFIG_DIR: claudeDir,
           HOME: home,
           PATH: bin,
+          // Claude Code hands a hook the session's effective `ANTHROPIC_BASE_URL` (proved live
+          // on 2.1.310): here, the user file's router address above.
+          ...(gateway === "none" ? {} : { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" }),
           ...guard.env,
           ...extraEnv,
         },

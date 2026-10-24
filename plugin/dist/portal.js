@@ -26621,9 +26621,26 @@ function gatewayOnOf(paths) {
 function gatewayFactsOf(paths) {
   return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
 }
-function readGuardContext(paths, input, env) {
+function sessionGatewayOf(paths, env) {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url))
+    return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null)
+    return { config, gatewayOn: true, profile: null };
   return {
-    ...gatewayFactsOf(paths),
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile
+  };
+}
+function readGuardContext(paths, input, env) {
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  return {
+    config,
+    gatewayOn,
     sessionModel: sessionModelOf(input, env)
   };
 }

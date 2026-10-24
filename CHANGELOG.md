@@ -42,6 +42,10 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   `CLAUDE_CONFIG_DIR`.
 - **Two guard fixes:** a crew session's text that starts with `-` is passed safely, and the
   escape guard no longer flags a computed command because its path holds the kit's name.
+- **The Agent guard and the usage-limit alert judge your session's own gateway** — the address
+  the session really runs with, so a project turned off or on, a profile and `launch` each count —
+  never the machine's settings file alone. A session on a profile is offered that profile's own
+  commands.
 
 - **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when

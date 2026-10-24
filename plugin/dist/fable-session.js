@@ -11838,6 +11838,7 @@ function isSlotKey(name) {
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
 }
+var PROFILE_PATH_PREFIX = "/p/";
 var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function isProfileName(name) {
   return PROFILE_NAME.test(name);
@@ -12148,6 +12149,39 @@ function aliasError(name, to, config) {
 function slotMode(config, slot) {
   return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
 }
+function profileView(config, name) {
+  if (!isProfileName(name))
+    return null;
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (profile === undefined)
+    return null;
+  const slots = { ...config.slots };
+  for (const slot of Object.keys(profile.slots ?? {})) {
+    const chain = profileSlotChain(config, profile, slot);
+    if (chain === null)
+      delete slots[slot];
+    else
+      slots[slot] = chain;
+  }
+  const view = { ...config, slots };
+  const fallback = { ...config.fallback, ...profile.fallback };
+  if (Object.keys(fallback).length === 0)
+    delete view.fallback;
+  else
+    view.fallback = fallback;
+  const breaker = { ...config.breaker, ...profile.breaker };
+  if (Object.keys(breaker).length === 0)
+    delete view.breaker;
+  else
+    view.breaker = breaker;
+  return view;
+}
+function plainClaudeView(config) {
+  const view = { ...config, aliases: {}, slots: {} };
+  delete view.breaker;
+  delete view.fallback;
+  return view;
+}
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -12443,6 +12477,29 @@ function settingsReport(settingsPath) {
     loginOverrides,
     subagentOverrides
   };
+}
+
+// src/gateway/project-state.ts
+var PERSONAL_FILE = "settings.local.json";
+var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
+function profileUrlOf(routerUrl, name) {
+  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
+}
+function urlMeaning(url, routerUrl) {
+  if (url === null)
+    return { profile: null, state: "default" };
+  if (!baseUrlPointsAtGateway(url))
+    return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
+  if (clean === routerUrl)
+    return { profile: null, state: "on" };
+  const prefix = profileUrlOf(routerUrl, "");
+  if (clean.startsWith(prefix)) {
+    const name = clean.slice(prefix.length);
+    if (isProfileName(name))
+      return { profile: name, state: "on" };
+  }
+  return { profile: null, state: "other" };
 }
 
 // src/models/launch-policy.ts
@@ -13926,9 +13983,26 @@ function gatewayOnOf(paths) {
 function gatewayFactsOf(paths) {
   return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
 }
-function readGuardContext(paths, input, env) {
+function sessionGatewayOf(paths, env) {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url))
+    return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null)
+    return { config, gatewayOn: true, profile: null };
   return {
-    ...gatewayFactsOf(paths),
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile
+  };
+}
+function readGuardContext(paths, input, env) {
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  return {
+    config,
+    gatewayOn,
     sessionModel: sessionModelOf(input, env)
   };
 }

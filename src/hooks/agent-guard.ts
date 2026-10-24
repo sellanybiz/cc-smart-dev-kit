@@ -141,8 +141,14 @@ import type { CliPaths } from "../cli/paths";
 import { OPUS_TIER, type Place, placeForLeadStart } from "../crew/places";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { readLead } from "../crew/store";
-import { type GatewayConfig, loadConfigFile } from "../gateway/config";
-import { baseUrlPointsAtGateway, settingsReport } from "../gateway/settings";
+import {
+  type GatewayConfig,
+  loadConfigFile,
+  plainClaudeView,
+  profileView,
+} from "../gateway/config";
+import { urlMeaning } from "../gateway/project-state";
+import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gateway/settings";
 import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
 import {
   AFFORDABLE_EFFORT,
@@ -1485,15 +1491,56 @@ export function gatewayOnOf(paths: CliPaths): boolean {
   }
 }
 
-/** The gateway as a hook on this machine sees it: its config, and whether it is on. */
+/**
+ * The gateway as the machine's own files see it: its config, and whether the user's settings
+ * point at the router. A command outside a session (`crew start`, the usage guard) reads this;
+ * a hook reads the session's own gateway instead (`sessionGatewayOf`).
+ */
 export function gatewayFactsOf(paths: CliPaths): GatewayFacts {
   return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
 }
 
-/** What the guard reads from this machine for `judgeLaunch`; never throws. */
-export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
+/** The gateway one session runs on: `GatewayFacts`, and the profile its URL names. */
+export interface SessionGateway extends GatewayFacts {
+  /** The profile the session's URL names (`…/p/<name>`); null for none. */
+  profile: null | string;
+}
+
+/**
+ * The gateway as THIS session runs on it (RF1-2). Claude Code gives a hook process the session's
+ * effective `ANTHROPIC_BASE_URL` in its own environment — the project's personal file over its
+ * team file over the user file, a `--settings` file over all of them, and any of them over the
+ * shell's own export (proved live on 2.1.310, `docs/claude-code-contract.md` § Hooks) — so
+ * `gateway project on|off`, a profile and `launch --settings` are each judged as the session
+ * really runs, never from the machine's file alone:
+ *   - no URL, or Anthropic's own address (what `gateway off` and `gateway project off` write):
+ *     off, the Claude model answers on the person's login;
+ *   - `…/p/<name>` on this machine's router: on, with that profile's chains (`profileView`); a
+ *     name the config does not hold answers as plain Claude (`plainClaudeView`), as the router
+ *     answers it;
+ *   - this machine's router, or any other address: on, with the machine's chains, as before.
+ * Never throws: a config that cannot be read gives no chains (`gatewayConfigOf`).
+ */
+export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url)) return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null) return { config, gatewayOn: true, profile: null };
   return {
-    ...gatewayFactsOf(paths),
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile,
+  };
+}
+
+/** What the guard reads for `judgeLaunch`: the session's own gateway and model; never throws. */
+export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  return {
+    config,
+    gatewayOn,
     // The session's own model, for a fork: what last answered, else the model the session was
     // started on, else unknowable.
     sessionModel: sessionModelOf(input, env),

@@ -256,13 +256,22 @@ run on:
 
 1. a family name (`haiku|sonnet|opus|fable`) goes through Claude Code's own override, when
    the person set one (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable
-   included; `gateway on` writes none since 0.5.0), then — with the gateway on
-   (`ANTHROPIC_BASE_URL` in Claude Code's settings) — the family's slot, the way the router
+   included; `gateway on` writes none since 0.5.0), then — with the gateway on for **this
+   session** — the family's slot, the way the router
    picks it (`FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus → opus, fable → fable): its
    chain's first target answers, read from `gateway.json` through the gateway's own
    `loadConfigFile`. A slot with no chain answers as Claude, and the Claude model answers. So `sonnet` is
-   an affordable slot (effort `max`) exactly when the gateway is on and the worker's chain
-   starts with a `<backend>:<model>`;
+   an affordable slot (effort `max`) exactly when the session is on the gateway and the
+   worker's chain starts with a `<backend>:<model>`. **The session's gateway is its own
+   effective `ANTHROPIC_BASE_URL`, read from the hook's environment** (`sessionGatewayOf`;
+   RF1-2): Claude Code hands a hook the value the session runs with — the project's personal
+   file over its team file over the user file, a `--settings` file over all of them
+   (`docs/claude-code-contract.md` § Hooks) — so `gateway project off`, a project turned on
+   while the machine is off, and `launch --settings` are each judged as the session runs. No
+   URL or Anthropic's own address is off; `…/p/<name>` reads that profile's chains
+   (`profileView`), and a name the config lacks reads as plain Claude (`plainClaudeView`), as
+   the router answers it. The StopFailure alert reads the same facts, and a session on a
+   profile is offered that profile's own commands (`gateway profile <name> slot|fallback …`);
 2. a full Claude id goes through its family's slot the same way; a slot key or
    `<backend>:<model>` is resolved as itself (a slot's first target answers); **any other name** (`best`, `opusplan`,
    `default`, `inherit`, a name no rule knows) is resolved the strictest way — the rule for a

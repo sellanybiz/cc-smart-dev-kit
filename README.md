@@ -973,7 +973,10 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   the second command runs. "Wait" does nothing; after "Use", send a message in Claude Code to
   go on. The plugin names no model of its own: with no affordable target in your chains, the
   alert offers nothing and points at `gateway models`. On macOS and Windows it names the
-  commands (a Windows toast has no action button).
+  commands (a Windows toast has no action button). It judges the gateway your session really
+  runs on — its own `ANTHROPIC_BASE_URL`, so a project you turned off or on counts — and a
+  session on a profile gets that profile's own commands
+  (`gateway profile <name> slot …`, then `gateway profile <name> fallback <slot> on`).
   It needs a desktop to show the alert on: where there is none
   (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
   announces the stopped turn instead. A short rate limit is not the plan's limit: Claude Code

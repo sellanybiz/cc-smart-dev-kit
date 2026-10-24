@@ -974,6 +974,14 @@ worker through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, s
 it may wait runs from the installed version, never from the hook's version folder) and exits
 at once; with no launcher, a plain notification with no action.
 
+**Which gateway it judges** is the session's own (RF1-2, `sessionGatewayOf`, shared with the
+Agent guard): the session's effective `ANTHROPIC_BASE_URL`, which Claude Code hands the hook in
+its environment (`docs/claude-code-contract.md` § Hooks). No URL or Anthropic's own address is
+off (the action becomes words: turn the gateway on first); `…/p/<name>` reads that profile's
+chains (`profileView`, or `plainClaudeView` for a name the config lacks), and its commands are
+the profile's own — `gateway profile <name> slot <slot> <targets>` and `gateway profile <name>
+fallback <slot> on` — since a machine `gateway slot` would not reach a session on a profile.
+
 - **What it offers** is that family's slot with its fallback switch on, from the person's
   own config only (`offerFor`, `src/hooks/stop-failure.ts`); the plugin names no model:
   - the slot has no chain, or one `claude-…` target: that target (else the model that hit

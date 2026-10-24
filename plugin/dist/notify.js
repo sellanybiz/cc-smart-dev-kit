@@ -1,7 +1,7 @@
 // @bun
 // src/hooks/notify-entry.ts
 import { existsSync as existsSync9 } from "fs";
-import { join as join11 } from "path";
+import { join as join12 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -183,9 +183,9 @@ function shellQuote(value) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8, rmSync, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8, rmSync, statSync as statSync5, writeFileSync as writeFileSync4 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename2, join as join9 } from "path";
+import { basename as basename2, join as join10 } from "path";
 
 // src/crew/names.ts
 var MAX_SESSION_NAME = 60;
@@ -2729,6 +2729,89 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
     return Promise.all(results).then((results) => {
       return handleUnionResults(results, payload, inst, ctx);
     });
+  };
+});
+function discriminatorMap(def) {
+  const map = new Map;
+  for (const option of def.options) {
+    const values = option._zod.propValues?.[def.discriminator];
+    if (!values || values.size === 0)
+      throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(option)}"`);
+    for (const value of values) {
+      if (map.has(value)) {
+        if (value !== undefined)
+          throw new Error(`Duplicate discriminator value "${String(value)}"`);
+        map.set(value, null);
+      } else {
+        map.set(value, option);
+      }
+    }
+  }
+  return map;
+}
+var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnion", (inst, def) => {
+  def.inclusive = false;
+  $ZodUnion.init(inst, def);
+  const _super = inst._zod.parse;
+  defineLazyInternal(inst, "propValues", (zod) => {
+    const propValues = {};
+    let undefinedCount = 0;
+    for (const option of zod.def.options) {
+      const pv = option._zod.propValues;
+      if (!pv || Object.keys(pv).length === 0)
+        throw new Error(`Invalid discriminated union option at index "${zod.def.options.indexOf(option)}"`);
+      if (pv[zod.def.discriminator]?.has(undefined))
+        undefinedCount++;
+      for (const [k, v] of Object.entries(pv)) {
+        if (!Object.prototype.hasOwnProperty.call(propValues, k)) {
+          assignProp(propValues, k, new Set);
+        }
+        for (const val of v) {
+          propValues[k].add(val);
+        }
+      }
+    }
+    if (!zod.def.unionFallback && undefinedCount > 1)
+      propValues[zod.def.discriminator]?.delete(undefined);
+    return propValues;
+  });
+  def.options.forEach((option, i) => {
+    const propShape = rawShape(option._zod.def);
+    if (propShape && !Object.prototype.hasOwnProperty.call(propShape, def.discriminator)) {
+      throw new Error(`Invalid discriminated union option at index "${i}"`);
+    }
+  });
+  const disc = cached(() => discriminatorMap(def));
+  inst._zod.parse = (payload, ctx) => {
+    const input = payload.value;
+    if (!isObject(input)) {
+      payload.issues.push({
+        code: "invalid_type",
+        expected: "object",
+        input,
+        inst
+      });
+      return payload;
+    }
+    const value = input?.[def.discriminator];
+    const opt = disc.value.get(value);
+    if (opt && (value !== undefined || ctx.direction !== "backward")) {
+      return opt._zod.run(payload, ctx);
+    }
+    if (def.unionFallback || ctx.direction === "backward") {
+      return _super(payload, ctx);
+    }
+    payload.issues.push({
+      code: "invalid_union",
+      errors: [],
+      note: "No matching discriminator",
+      discriminator: def.discriminator,
+      options: Array.from(disc.value.keys()).filter((value) => disc.value.get(value) !== null),
+      input,
+      path: [def.discriminator],
+      inst
+    });
+    return payload;
   };
 });
 var $ZodIntersection = /* @__PURE__ */ $constructor("$ZodIntersection", (inst, def) => {
@@ -5924,6 +6007,18 @@ function union(options, params) {
     ...normalizeParams(params)
   });
 }
+var ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("ZodDiscriminatedUnion", (inst, def) => {
+  ZodUnion.init(inst, def);
+  $ZodDiscriminatedUnion.init(inst, def);
+});
+function discriminatedUnion(discriminator, options, params) {
+  return new ZodDiscriminatedUnion({
+    type: "union",
+    options,
+    discriminator,
+    ...normalizeParams(params)
+  });
+}
 var ZodIntersection = /* @__PURE__ */ $constructor("ZodIntersection", (inst, def) => {
   $ZodIntersection.init(inst, def);
   ZodType.init(inst, def);
@@ -6960,8 +7055,8 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
-import { join as join8 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "fs";
+import { join as join9 } from "path";
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -7058,6 +7153,7 @@ function isSlotKey(name) {
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
 }
+var PROFILE_PATH_PREFIX = "/p/";
 var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function isProfileName(name) {
   return PROFILE_NAME.test(name);
@@ -7090,9 +7186,6 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
-function familyEnv(family) {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
-}
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -7361,6 +7454,39 @@ function aliasError(name, to, config) {
   }
   return null;
 }
+function profileView(config, name) {
+  if (!isProfileName(name))
+    return null;
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (profile === undefined)
+    return null;
+  const slots = { ...config.slots };
+  for (const slot of Object.keys(profile.slots ?? {})) {
+    const chain = profileSlotChain(config, profile, slot);
+    if (chain === null)
+      delete slots[slot];
+    else
+      slots[slot] = chain;
+  }
+  const view = { ...config, slots };
+  const fallback = { ...config.fallback, ...profile.fallback };
+  if (Object.keys(fallback).length === 0)
+    delete view.fallback;
+  else
+    view.fallback = fallback;
+  const breaker = { ...config.breaker, ...profile.breaker };
+  if (Object.keys(breaker).length === 0)
+    delete view.breaker;
+  else
+    view.breaker = breaker;
+  return view;
+}
+function plainClaudeView(config) {
+  const view = { ...config, aliases: {}, slots: {} };
+  delete view.breaker;
+  delete view.fallback;
+  return view;
+}
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -7417,9 +7543,6 @@ function loadConfigFile(path, platform = hostPlatform()) {
 ${parsed.error}`);
   return parsed.config;
 }
-
-// src/gateway/settings.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
 
 // src/setup/managed-json.ts
 import { createHash } from "crypto";
@@ -7519,102 +7642,6 @@ function getKey(data, path) {
   return { found: true, value: node };
 }
 
-// src/gateway/settings.ts
-function gatewayEnv(port) {
-  return {
-    ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: routerBaseUrl(port)
-  };
-}
-function routerBaseUrl(port) {
-  return `http://127.0.0.1:${port}`;
-}
-function normalizedBaseUrl(url) {
-  return url.replace(/\/+$/, "");
-}
-function baseUrlPointsAtGateway(url) {
-  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
-}
-var RETIRED_GATEWAY_ENV_KEYS = [
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
-];
-var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
-var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
-var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-function isJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function readSettings(path) {
-  if (!existsSync6(path))
-    return {};
-  const text = readFileSync6(path, "utf8");
-  if (text.trim() === "")
-    return {};
-  let parsed;
-  try {
-    parsed = parseUserJson(text);
-  } catch {
-    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
-  }
-  if (!isJsonObject(parsed))
-    throw new Error(`${path} is not a JSON object; not touching it`);
-  const env = parsed.env;
-  if (env !== undefined && !isJsonObject(env))
-    throw new Error(`${path} has an "env" that is not an object`);
-  return parsed;
-}
-function maskKey(key) {
-  return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
-}
-function shownValue(value) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
-    return maskKey(text);
-  return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
-}
-function readGatewaySettings(settingsPath) {
-  const settings = readSettings(settingsPath);
-  const env = isJsonObject(settings.env) ? settings.env : {};
-  const held = env.ANTHROPIC_BASE_URL;
-  const usable = typeof held === "string" && held.trim() !== "";
-  const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
-  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  if (Object.hasOwn(settings, "apiKeyHelper"))
-    loginOverrides.push("apiKeyHelper");
-  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  const modelKeys = [];
-  if (typeof settings.model === "string" && settings.model.trim() !== "") {
-    modelKeys.push({ key: "model", value: settings.model });
-  }
-  for (const family of CLAUDE_FAMILIES) {
-    const key = familyEnv(family);
-    const value = env[key];
-    if (typeof value === "string" && value.trim() !== "")
-      modelKeys.push({ key: `env.${key}`, value });
-  }
-  return {
-    baseUrl: usable ? held : null,
-    baseUrlProblem,
-    loginOverrides,
-    modelKeys,
-    subagentOverrides
-  };
-}
-function settingsReport(settingsPath) {
-  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
-  return {
-    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
-    loginOverrides,
-    subagentOverrides
-  };
-}
-
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
@@ -7650,10 +7677,403 @@ function retryWatchdogState(paths) {
   return turnsOn(current.value) ? "yours" : "disabled";
 }
 
+// src/jobs/config.ts
+import { isAbsolute, join as join8 } from "path";
+var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
+var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
+var jobsMachineConfigSchema = strictObject({
+  stateDir: absolutePath.optional(),
+  budgetGb: number2().int().min(1).optional(),
+  reserveGb: number2().int().min(0).optional(),
+  sharedDirs: array(absolutePath).optional(),
+  launch: _enum(["auto", "plain"]).optional(),
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
+});
+
+// src/jobs/memory.ts
+var GIB = 1024 ** 3;
+
+// src/jobs/queue.ts
+var GIB2 = 1024 ** 3;
+
+// src/jobs/store.ts
+import {
+  chmodSync,
+  existsSync as existsSync6,
+  mkdirSync as mkdirSync3,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync6,
+  realpathSync as realpathSync3,
+  renameSync as renameSync2,
+  statfsSync,
+  statSync as statSync4,
+  unlinkSync as unlinkSync2,
+  utimesSync,
+  writeFileSync as writeFileSync2
+} from "fs";
+var NETWORK_FS = new Map([
+  [26985, "NFS"],
+  [20859, "SMB"],
+  [4283649346, "CIFS"],
+  [4266872130, "SMB2"],
+  [16914839, "9p"],
+  [1397113167, "AFS"],
+  [1799439955, "AFS"],
+  [12805120, "Ceph"],
+  [1937076805, "Coda"],
+  [22092, "NCP"],
+  [198183888, "Lustre"],
+  [18225520, "GFS2"],
+  [1952539503, "OCFS2"]
+]);
+var NETWORK_FUSE = new Set([
+  "sshfs",
+  "rclone",
+  "s3fs",
+  "gcsfuse",
+  "goofys",
+  "glusterfs",
+  "juicefs",
+  "davfs",
+  "curlftpfs",
+  "cephfs"
+]);
+var realSharedFolderFacts = {
+  platform: process.platform,
+  fsType: (dir) => {
+    try {
+      return statfsSync(dir).type;
+    } catch {
+      return null;
+    }
+  },
+  mountinfo: () => {
+    try {
+      return readFileSync6("/proc/self/mountinfo", "utf8");
+    } catch {
+      return null;
+    }
+  }
+};
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+
+// src/crew/store.ts
+var FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var text = string2().min(1);
+var version2 = number2().int().min(1);
+var sha = string2().regex(COMMIT_SHA, "a full commit sha");
+var count = number2().int().min(0);
+var word = () => text.transform((value) => value);
+var crewQuestionFields = looseObject({
+  question: text,
+  options: array(text).min(2),
+  recommended: number2().int().min(1).nullable(),
+  askedAt: text,
+  answeredAt: text.nullable(),
+  answer: text.nullable()
+});
+var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
+  if (asked.recommended !== null && asked.recommended > asked.options.length) {
+    context.addIssue({
+      code: "custom",
+      message: `recommends option ${asked.recommended} of ${asked.options.length}`,
+      path: ["recommended"]
+    });
+  }
+  if (asked.answer === null !== (asked.answeredAt === null)) {
+    context.addIssue({
+      code: "custom",
+      message: "an answer and its time are given together",
+      path: ["answeredAt"]
+    });
+  }
+});
+var waitingForSchema = discriminatedUnion("kind", [
+  looseObject({
+    kind: literal("slot"),
+    since: text,
+    slot: text
+  }),
+  looseObject({
+    kind: literal("claude-limit"),
+    model: text,
+    resetsAt: text.nullable()
+  }),
+  looseObject({
+    kind: literal("unknown"),
+    since: text
+  })
+]);
+var crewFields = object({
+  version: version2,
+  id: string2().regex(FILE_ID, "a plain file name"),
+  name: text,
+  sessionId: text.nullable(),
+  shortId: text.nullable(),
+  leadSessionId: text,
+  leadName: text,
+  repo: text,
+  plan: text,
+  phase: text,
+  slug: text,
+  kind: word(),
+  model: looseObject({
+    named: text,
+    slot: text.nullable(),
+    resolved: text,
+    tier: text.nullable()
+  }),
+  effort: text,
+  permissionMode: text,
+  worktree: text,
+  branch: text,
+  baseRef: text,
+  base: looseObject({ ref: text, sha }).nullable(),
+  waitsFor: array(text),
+  files: array(text),
+  questions: array(crewQuestion),
+  state: word(),
+  lastLine: string2().nullable(),
+  reportPath: text.nullable(),
+  pr: number2().int().positive().nullable(),
+  memoryMb: number2().min(0).nullable(),
+  waitingFor: waitingForSchema.optional(),
+  lastPause: looseObject({ backoffMs: count, since: text }).optional(),
+  startedAt: text.nullable().optional(),
+  continues: text.nullable().optional(),
+  mergedBeforeRemoval: boolean2().optional(),
+  createdAt: text,
+  updatedAt: text
+});
+var crewRecordSchema = crewFields.loose();
+var leadFields = object({
+  version: version2,
+  sessionId: string2().regex(FILE_ID, "a plain file name"),
+  name: text,
+  repo: text,
+  plan: text,
+  tag: text,
+  cwd: text,
+  pausedAgents: array(text).optional(),
+  createdAt: text,
+  updatedAt: text
+});
+var leadRecordSchema = leadFields.loose();
+var eventFields = object({
+  version: version2,
+  at: text,
+  type: word(),
+  crew: string2().regex(FILE_ID, "a plain file name"),
+  name: text,
+  lead: text.nullable(),
+  state: word(),
+  text: string2().nullable(),
+  sha: sha.nullable().optional(),
+  note: string2().nullable().optional(),
+  memoryMb: number2().min(0).nullable().optional(),
+  tell: looseObject({ kind: text, to: array(text) }).nullable().optional()
+});
+var crewEventSchema = eventFields.loose();
+var testRun = looseObject({ command: text, passed: count, failed: count, ok: boolean2() });
+var reportFields = object({
+  version: version2,
+  status: word(),
+  phase: text,
+  branch: looseObject({ name: text, sha }),
+  base: looseObject({ ref: text, sha }),
+  pr: number2().int().positive().nullable(),
+  changed: looseObject({ files: count, insertions: count, deletions: count }),
+  outsideBrief: array(text),
+  tests: looseObject({ targeted: array(testRun), full: testRun.nullable() }),
+  checks: array(looseObject({ name: text, ok: boolean2(), note: string2().nullable() })),
+  review: looseObject({
+    agent: text,
+    model: text,
+    effort: text,
+    sha,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable(),
+  docs: array(text),
+  needsLead: array(text),
+  open: array(text),
+  question: text.nullable(),
+  summary: text.nullable().optional()
+});
+var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
+  if (report.status === "blocked" && report.question === null) {
+    context.addIssue({
+      code: "custom",
+      message: "a blocked report names the question it waits on",
+      path: ["question"]
+    });
+  }
+});
+var watchStateFields = object({
+  noted: boolean2().default(false),
+  offset: count,
+  said: record(string2(), string2()),
+  resumedAt: number2().int().min(0).optional(),
+  routerRequests: number2().int().min(0).nullable().optional()
+});
+var notesStateFields = object({ offset: count });
+var stopStateFields = object({
+  last: _enum(["report", "step"]).nullable(),
+  offset: count
+});
+var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
+
+// src/cli/usage-window.ts
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+// src/worktrees/machine-facts.ts
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
+function crewIdOf(env) {
+  const id = env[CREW_ENV]?.trim() ?? "";
+  return id === "" ? null : id;
+}
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
+
+// src/gateway/settings.ts
+function gatewayEnv(port) {
+  return {
+    ENABLE_TOOL_SEARCH: "true",
+    ANTHROPIC_BASE_URL: routerBaseUrl(port)
+  };
+}
+function routerBaseUrl(port) {
+  return `http://127.0.0.1:${port}`;
+}
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
+var RETIRED_GATEWAY_ENV_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
+];
+var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+
+// src/gateway/project-state.ts
+var PERSONAL_FILE = "settings.local.json";
+var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
+function profileUrlOf(routerUrl, name) {
+  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
+}
+function urlMeaning(url, routerUrl) {
+  if (url === null)
+    return { profile: null, state: "default" };
+  if (!baseUrlPointsAtGateway(url))
+    return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
+  if (clean === routerUrl)
+    return { profile: null, state: "on" };
+  const prefix = profileUrlOf(routerUrl, "");
+  if (clean.startsWith(prefix)) {
+    const name = clean.slice(prefix.length);
+    if (isProfileName(name))
+      return { profile: name, state: "on" };
+  }
+  return { profile: null, state: "other" };
+}
+
+// src/models/launch-policy.ts
+var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
+var UI_POLICY = {
+  minEffort: "high",
+  tiers: ["opus", "fable"]
+};
+function uiEffortAllowed(effort) {
+  if (effort === null)
+    return false;
+  const levels = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
+}
+var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
+var EFFORT_AUTO = "auto";
+var CREW_KINDS = {
+  build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
+  docs: {
+    about: "docs and their updates",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
+  security: {
+    about: "code that touches security",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  money: {
+    about: "code that touches money",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  permissions: {
+    about: "code that touches permissions",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  schema: {
+    about: "a schema or a contract",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
+  architecture: {
+    about: "architecture and design",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  ui: {
+    about: "UI and UX judgment",
+    affordableEffort: null,
+    effort: UI_POLICY.minEffort,
+    model: UI_POLICY.tiers[0]
+  }
+};
+var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
+
+// src/hooks/agent-guard-workflows.ts
+var FAIL = Symbol("not a pure literal");
+
+// src/hooks/agent-launches.ts
+var SESSION_EFFORT = "session-effort";
+var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
+var RECORD_TAIL_BYTES = 64 * 1024;
+
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject2(value) {
+function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
@@ -7686,7 +8106,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject2(entry))
+    if (isJsonObject(entry))
       yield entry;
   }
 }
@@ -7697,7 +8117,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -7721,12 +8141,12 @@ function lastAssistantText(transcriptPath) {
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
       continue;
     const content = entry.message.content;
     if (!Array.isArray(content))
       continue;
-    return content.filter((block) => isJsonObject2(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+    return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
   }
   return null;
 }
@@ -7746,10 +8166,10 @@ function startedByPeer(transcriptPath) {
     } catch {
       continue;
     }
-    if (!isJsonObject2(entry))
+    if (!isJsonObject(entry))
       continue;
-    const attachment = isJsonObject2(entry.attachment) ? entry.attachment : null;
-    const origin = isJsonObject2(entry.origin) ? entry.origin : null;
+    const attachment = isJsonObject(entry.attachment) ? entry.attachment : null;
+    const origin = isJsonObject(entry.origin) ? entry.origin : null;
     if (attachment?.humanTurn === true)
       return false;
     if (origin !== null && origin.senderTaskId !== null && origin.senderTaskId !== undefined) {
@@ -7760,6 +8180,86 @@ function startedByPeer(transcriptPath) {
   return false;
 }
 
+// src/hooks/agent-guard.ts
+function agentKey(type) {
+  const base = type.includes(":") ? type.split(":").pop() ?? type : type;
+  return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
+}
+var READ_ONLY_BUILT_INS = [
+  "Explore",
+  "Plan",
+  "claude-code-guide",
+  "statusline-setup"
+];
+var READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"];
+var READ_ONLY_BUILT_IN_KEYS = new Set(READ_ONLY_BUILT_INS.map(agentKey));
+var READ_ONLY_KIT_KEYS = new Set(READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()));
+var READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`];
+var READ_ONLY_WORKFLOW_KEYS = new Set(READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()));
+var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
+var HANDED_AROUND = {
+  agent: [
+    THROUGH_A_VARIABLE,
+    'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
+  ].join(`
+`),
+  workflow: [
+    THROUGH_A_VARIABLE,
+    'Write every nested workflow as a direct `workflow("<name>")` call.'
+  ].join(`
+`)
+};
+var OPTIONS_BUILT_AT_RUNTIME = [
+  "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
+  "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
+].join(`
+`);
+var NO_WORKFLOW_MODEL = [
+  "This Workflow launch names no `model` the guard can read.",
+  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
+  "Write `model` and `effort` as string literals in the `agent(...)` options."
+].join(`
+`);
+var NO_MODEL = [
+  "This Agent launch names no `model`.",
+  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
+].join(`
+`);
+function levelsText(levels) {
+  const named = levels.map((one) => `\`${one}\``);
+  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
+}
+var EFFORTS = levelsText(ALLOWED_EFFORTS);
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+var NO_EFFORT = [
+  "This Agent launch names no `effort`.",
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  EFFORT_USE
+].join(`
+`);
+function gatewayConfigOf(paths) {
+  try {
+    return loadConfigFile(paths.gatewayConfigFile);
+  } catch {
+    return null;
+  }
+}
+function sessionGatewayOf(paths, env) {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url))
+    return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null)
+    return { config, gatewayOn: true, profile: null };
+  return {
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile
+  };
+}
+
 // src/hooks/stop-failure.ts
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
@@ -7767,7 +8267,7 @@ var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in pr
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject3(value) {
+function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
@@ -7808,9 +8308,9 @@ function shortName(target) {
 function typed(commands) {
   return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
 }
-function offerFor(config, slot, model, claim) {
+function offerFor(config, slot, model, claim, profile) {
   const chain = config.slots[slot.key] ?? [];
-  const fallback = ["gateway", "fallback", slot.name, "on"];
+  const fallback = chainCommand(profile, ["fallback", slot.name, "on"]);
   const head = chain[0];
   if (head !== undefined) {
     const parsed = parseTarget(head);
@@ -7833,7 +8333,7 @@ function offerFor(config, slot, model, claim) {
   const targets = suggestedTargets(config, head ?? model, slot, claim);
   if (targets === null) {
     const shown = typed([
-      ["gateway", "slot", slot.name, `${head ?? model},<backend>:<model>`],
+      chainCommand(profile, ["slot", slot.name, `${head ?? model},<backend>:<model>`]),
       fallback
     ]);
     return {
@@ -7842,13 +8342,16 @@ function offerFor(config, slot, model, claim) {
     };
   }
   return {
-    commands: [["gateway", "slot", slot.name, targets.join(",")], fallback],
+    commands: [chainCommand(profile, ["slot", slot.name, targets.join(",")]), fallback],
     kind: "commands",
     targets
   };
 }
+function chainCommand(profile, words) {
+  return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
+}
 function breakerOpening(input, ctx) {
-  if (!isJsonObject3(input) || input.error !== "rate_limit")
+  if (!isJsonObject2(input) || input.error !== "rate_limit")
     return null;
   if (!ctx.gatewaySetUp || ctx.state === null)
     return null;
@@ -7865,7 +8368,7 @@ function breakerOpening(input, ctx) {
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
     return null;
-  if (!isJsonObject3(input) || input.error !== "rate_limit")
+  if (!isJsonObject2(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   if (BREAKER_TEXT.test(text))
@@ -7901,7 +8404,7 @@ function planAlert(input, ctx) {
       title
     };
   }
-  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null);
+  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null, ctx.profile);
   if (offer.kind !== "commands")
     return { action: null, body: `${head} ${offer.words}`, title };
   const shown = typed(offer.commands);
@@ -7922,28 +8425,15 @@ function planAlert(input, ctx) {
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
-  const cwd = isJsonObject3(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
-  let config = null;
-  if (gatewaySetUp) {
-    try {
-      config = loadConfigFile(paths.gatewayConfigFile);
-    } catch {
-      config = null;
-    }
-  }
+  const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
   let state = null;
   try {
     state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
-  }
-  let gatewayOn = false;
-  try {
-    gatewayOn = baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
-  } catch {
-    gatewayOn = false;
   }
   let watchdogOn = false;
   try {
@@ -7952,7 +8442,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   } catch {
     watchdogOn = false;
   }
-  const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const transcript = isJsonObject2(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return {
     alerts: here.alerts,
@@ -7962,6 +8452,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     gatewayOn,
     gatewaySetUp,
     nowMs,
+    profile,
     sessionModel,
     state,
     watchdogOn
@@ -7969,8 +8460,8 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync7(join8(stateDir, BREAKER_ALERT_FILE), "utf8"));
-    if (!isJsonObject3(raw))
+    const raw = JSON.parse(readFileSync7(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
   } catch {
@@ -8009,19 +8500,6 @@ var spawnRunner = ({ argv, timeoutMs }) => {
   }
 };
 var ACTION_WAIT_MS = 30 * 60000;
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-// src/worktrees/machine-facts.ts
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
-function crewIdOf(env) {
-  const id = env[CREW_ENV]?.trim() ?? "";
-  return id === "" ? null : id;
-}
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/shell/command.ts
 function dialectOfTool(tool) {
@@ -9187,7 +9665,7 @@ var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_AGENT_TITLE = "warp://cli-agent";
 var WARP_AGENT_PROTOCOL = 1;
 var WARP_TERMINAL_NAME = "warpterminal";
-function isJsonObject4(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function shown(text, fallback) {
@@ -9212,20 +9690,20 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync4(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync5(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
 }
 function markWaiting(file) {
   try {
-    writeFileSync3(file, `${Date.now()}
+    writeFileSync4(file, `${Date.now()}
 `);
   } catch {}
 }
 function markFinished(file) {
   try {
-    writeFileSync3(file, `${Date.now()}
+    writeFileSync4(file, `${Date.now()}
 `);
   } catch {}
 }
@@ -9239,8 +9717,8 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync8(join9(claudeConfigDir, "settings.json"), "utf8"));
-    if (!isJsonObject4(settings) || !isJsonObject4(settings.enabledPlugins))
+    const settings = JSON.parse(readFileSync8(join10(claudeConfigDir, "settings.json"), "utf8"));
+    if (!isJsonObject3(settings) || !isJsonObject3(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
       return false;
@@ -9248,8 +9726,8 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync8(join9(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
-    if (!isJsonObject4(installed) || !isJsonObject4(installed.plugins))
+    const installed = JSON.parse(readFileSync8(join10(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    if (!isJsonObject3(installed) || !isJsonObject3(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
     return Array.isArray(entries) && entries.length > 0;
@@ -9316,7 +9794,7 @@ function sessionLabel(transcript, cwd) {
 function askAlert(input, ctx) {
   markWaiting(ctx.mark);
   const tool = typeof input.tool_name === "string" ? input.tool_name : "";
-  const toolInput = isJsonObject4(input.tool_input) ? input.tool_input : {};
+  const toolInput = isJsonObject3(input.tool_input) ? input.tool_input : {};
   if (tool === "ExitPlanMode") {
     return {
       body: "A plan is ready for your OK",
@@ -9327,8 +9805,8 @@ function askAlert(input, ctx) {
     };
   }
   const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-  const first = questions.find((question) => isJsonObject4(question) && question !== null);
-  const asked = (isJsonObject4(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
+  const first = questions.find((question) => isJsonObject3(question) && question !== null);
+  const asked = (isJsonObject3(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
   return {
     body: shown(asked, "Claude has a question for you"),
     critical: true,
@@ -9424,7 +9902,7 @@ function readFailed(file) {
 }
 function writeFailed(file, key) {
   try {
-    writeFileSync3(file, key);
+    writeFileSync4(file, key);
   } catch {}
 }
 function terminalRoute(event, env, notificationType = "") {
@@ -9472,7 +9950,7 @@ function readNotifyConfig(file) {
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
-  if (!isJsonObject4(parsed))
+  if (!isJsonObject3(parsed))
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
@@ -9525,7 +10003,7 @@ function playSound(alert, deps, config, alerts) {
     deps.run(argv);
 }
 function notifyHook(input, event, deps) {
-  if (!isJsonObject4(input))
+  if (!isJsonObject3(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
     return SILENT;
@@ -9533,9 +10011,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join9(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join9(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join9(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join10(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join10(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join10(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -9619,8 +10097,8 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync3, constants, openSync as openSync3, readlinkSync as readlinkSync2, statSync as statSync5, writeSync } from "fs";
-import { join as join10 } from "path";
+import { closeSync as closeSync3, constants, openSync as openSync3, readlinkSync as readlinkSync2, statSync as statSync6, writeSync } from "fs";
+import { join as join11 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -9639,7 +10117,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join10(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join11(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -9676,7 +10154,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync5(path).uid;
+        return statSync6(path).uid;
       } catch {
         return null;
       }
@@ -9702,7 +10180,7 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join11(paths.binDir, LAUNCHER_NAME);
+    const launcher = join12(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
