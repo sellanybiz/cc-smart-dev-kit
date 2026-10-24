@@ -465,18 +465,35 @@ function judgeOne(
   return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
 }
 
+/** What this machine says about the Docker containers, the programs and the sessions at work. */
+export interface MachineFacts {
+  containers: "unknown" | ContainerMounts[];
+  programs: "unknown" | RunningProgram[];
+  sessions: SessionRecord[];
+}
+
+/**
+ * The machine's facts: the options' own (a test gives them), else read from this machine. One
+ * home for what a worktree's verdict and a leftover folder's (`scan-parked.ts`) both ask.
+ */
+export function machineFactsOf(options: ScanOptions): MachineFacts {
+  return {
+    containers: options.facts?.containers ?? dockerMounts(),
+    programs: options.facts?.programs ?? runningPrograms(),
+    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
+  };
+}
+
 /** The machine's facts, read once for a whole scan (or one removal). */
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
-    containers: options.facts?.containers ?? dockerMounts(),
+    ...machineFactsOf(options),
     env: options.env,
     idleLimit: options.idleLimit,
     label: options.against?.label ?? options.base,
     now: options.now ?? Date.now(),
-    programs: options.facts?.programs ?? runningPrograms(),
     ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env),
-    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
   };
 }
 
@@ -636,69 +653,6 @@ export function removeWorktree(
   const said = [`removed ${listed.path}`];
   if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
   return { said, status: "removed" };
-}
-
-/** What one pass over a removal's parked folders came to. */
-export interface ParkedPass {
-  /** The folders that stayed, with the reason the verdict gave. */
-  kept: Array<{ path: string; why: string }>;
-  /** The folders that went (or were forgotten), and the lines said about each. */
-  removed: string[];
-  said: string[];
-}
-
-/**
- * Finishes the removals that stopped halfway: the folders a removal moved aside
- * (`<path>-removing-<time>`, `PARKED_MARK`) and could not then remove, so they are never left
- * behind (D62). Each is judged again right before it goes, by the same verdict as any removal —
- * nothing runs from it, nothing in it is uncommitted, and its work is on `options.against` — and
- * a parked folder asks for no idle hour: the move was the removal's own touch.
- *
- * `paths` names the folders to finish; the caller passes only those it is entitled to (`crew rm`
- * its own record's, the watch and `worktrees --clean` the rest). A folder that does not look
- * finished stays, and nothing is said about it. A folder whose record is gone is finished just
- * the same: this pass needs no store.
- */
-export function finishParked(
-  repo: string,
-  paths: readonly string[],
-  options: ScanOptions,
-  say: (line: string) => void,
-): ParkedPass {
-  const pass: ParkedPass = { kept: [], removed: [], said: [] };
-  if (paths.length === 0) return pass;
-  let scanned: ScannedWorktree[];
-  try {
-    scanned = scanWorktrees(repo, options);
-  } catch {
-    // The ref is not known here: nothing may be judged against a guess.
-    return pass;
-  }
-  for (const worktree of scanned) {
-    if (worktree.state === "main") continue;
-    if (!paths.some((path) => samePath(path, worktree.listed.path))) continue;
-    const shown = worktree.listed.path;
-    if (worktree.state === "gone") {
-      pruneWorktrees(repo, options.env);
-      pass.removed.push(shown);
-      const line = forgottenLine(shown);
-      pass.said.push(line);
-      say(line);
-      continue;
-    }
-    if (!worktree.state.finished) {
-      pass.kept.push({ path: shown, why: worktree.state.why });
-      continue;
-    }
-    const removal = removeWorktree(repo, worktree.listed, options);
-    for (const line of removal.said) {
-      pass.said.push(line);
-      say(line);
-    }
-    if (removal.status === "removed") pass.removed.push(shown);
-    else pass.kept.push({ path: shown, why: removal.said[0] ?? removal.status });
-  }
-  return pass;
 }
 
 /**

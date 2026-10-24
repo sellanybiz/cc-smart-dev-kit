@@ -1179,9 +1179,16 @@ export interface WatchState {
    */
   resumedAt?: number | undefined;
   routerRequests?: null | number | undefined;
+  /**
+   * When the watch last looked for folders a removal moved aside and could not remove (ms): a
+   * folder that stays costs a scan of the whole repository, so it is looked at every few
+   * minutes, not on every pass (D62). Absent on a state a kit wrote before the field.
+   */
+  parkedAt?: number | undefined;
 }
 
 const watchStateFields = z.object({
+  parkedAt: z.number().int().min(0).optional(),
   noted: z.boolean().default(false),
   offset: count,
   said: z.record(z.string(), z.string()),

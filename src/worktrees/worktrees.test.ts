@@ -9,6 +9,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lutimesSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -43,6 +44,7 @@ import {
   replayOntoBase,
   scanWorktrees,
 } from "./scan";
+import { finishStrays, strayParkedFolders } from "./scan-parked";
 import { IDLE_MINUTES, verdict, type WorktreeFacts } from "./verdict";
 
 /** A repo with a bare "origin", one commit on `main`, and one linked worktree. */
@@ -1312,48 +1314,183 @@ describe("the worktrees command", () => {
     expect(found?.state).toMatchObject({ finished: false, why: "1 commit not on main" });
   });
 
-  test("D62: a folder already moved aside is not moved again, whatever fails", () => {
+  test("D62: a folder already moved aside is removed where it stands, never moved again", () => {
     const { main, worktree } = repo();
-    // A directory git cannot empty: the removal deletes what it can, then fails.
-    mkdirSync(join(worktree, "sub"));
-    writeFileSync(join(worktree, "sub", "kept.txt"), "x\n");
-    git(worktree, "add", ".");
-    git(worktree, "commit", "-m", "sub");
-    git(main, "merge", "--no-ff", "-m", "merge", "fix/login");
-    const options = {
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // The name a second move would take is taken. A move would fail on it (and a removal that
+    // moved first would be held); a removal in place does not need it.
+    const realNow = Date.now;
+    Date.now = () => 1761300090000;
+    mkdirSync(`${parked}-removing-1761300090000`);
+    try {
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("worktrees-config"),
+        env: cleanGitEnv(),
+        facts: { containers: [], programs: [], sessions: [] },
+        idleLimit: 0,
+      };
+      const listed = scanWorktrees(main, options).find((one) => one.listed.path === parked)?.listed;
+      if (listed === undefined) throw new Error("the parked folder is not listed");
+      const removal = removeWorktree(main, listed, options);
+      expect(removal.status).toBe("removed");
+      expect(removal.said[0]).toBe(`removed ${parked}`);
+      expect(existsSync(parked)).toBe(false);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  describe("D62: a folder git no longer lists, left by a removal that stopped halfway", () => {
+    /** The moment the removal moved it aside, in the name `removeWorktree` gives it. */
+    const PARKED_AT = 1761300000000;
+
+    /**
+     * What `git worktree remove` leaves when it fails midway: git has deleted the registration,
+     * the `.git` file and most of the files, and what it could not delete stays. The files keep
+     * the time they were written, which is before the move.
+     */
+    function leftover(
+      root: string,
+      name = "app-wt-gone",
+      files = ["docs/guide.md", "next.config.ts"],
+    ) {
+      const folder = join(root, `${name}-removing-${String(PARKED_AT)}`);
+      for (const file of files) {
+        mkdirSync(dirname(join(folder, file)), { recursive: true });
+        writeFileSync(join(folder, file), "left\n");
+        const before = new Date(PARKED_AT - 60_000);
+        utimesSync(join(folder, file), before, before);
+      }
+      return folder;
+    }
+
+    const options = (facts: Record<string, unknown> = {}) => ({
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
       env: cleanGitEnv(),
-      facts: { containers: [], programs: [], sessions: [] },
-      idleLimit: 0,
-    };
-    const listing = () =>
-      git(main, "worktree", "list", "--porcelain")
-        .split("\n")
-        .filter((line) => line.startsWith("worktree "))
-        .map((line) => line.slice("worktree ".length));
-    const first = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
-    if (first === undefined) throw new Error("the worktree is not listed");
-    chmodSync(join(worktree, "sub"), 0o555);
-    try {
-      removeWorktree(main, first.listed, options);
-      const parkedNow = listing().filter((path) => isParkedWorktree(path));
-      // Whether git could finish or not (a user with every right can), a second attempt at a
-      // folder that is still there never nests one mark inside another.
-      for (const path of parkedNow) {
-        const again = scanWorktrees(main, options).find((one) => one.listed.path === path);
-        if (again !== undefined) removeWorktree(main, again.listed, options);
-      }
-      for (const path of listing()) expect(path.match(/-removing-/g)?.length ?? 0).toBeLessThan(2);
-    } finally {
-      for (const path of listing()) {
-        try {
-          chmodSync(join(path, "sub"), 0o755);
-        } catch {
-          // The folder is gone: nothing to put back.
-        }
-      }
-    }
+      facts: { containers: [], programs: [], sessions: [], ...facts },
+    });
+
+    test("it is found beside the worktrees git lists, and nothing else is", () => {
+      const { main, worktree } = repo();
+      const root = dirname(main);
+      const folder = leftover(root);
+      // Not strays: a name without the mark, the registered worktree, and a plain file with it.
+      mkdirSync(join(root, "app-wt-notes"));
+      writeFileSync(join(root, `app-wt-file-removing-${String(PARKED_AT)}`), "x\n");
+      expect(strayParkedFolders(main, cleanGitEnv())).toEqual([
+        { parkedAt: PARKED_AT, path: folder },
+      ]);
+      expect(existsSync(worktree)).toBe(true);
+    });
+
+    test("--clean removes it when nothing runs from it and nothing was written after the move", async () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+      const out: string[] = [];
+      const sinks = {
+        error: (line: string) => out.push(line),
+        print: (line: string) => out.push(line),
+      };
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: true, json: false, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          sinks,
+          freeLock,
+        ),
+      ).toBe(0);
+      expect(existsSync(folder)).toBe(false);
+      expect(out.join("\n")).toContain(
+        `removed ${folder} (left by a removal that stopped halfway; git no longer lists it)`,
+      );
+    });
+
+    test("plain `worktrees` names it and changes nothing", async () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+      const out: string[] = [];
+      const sinks = {
+        error: (line: string) => out.push(line),
+        print: (line: string) => out.push(line),
+      };
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: false, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          sinks,
+          freeLock,
+        ),
+      ).toBe(0);
+      expect(existsSync(folder)).toBe(true);
+      const text = out.join("\n");
+      expect(text).toContain("app-wt-gone-removing-1761300000000");
+      expect(text).toContain("left by a removal that stopped halfway");
+      expect(text).toContain("`cc-smart-dev-kit worktrees --clean`");
+    });
+
+    test("a file written after the move keeps it, and says which", () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      // Newer than the move: something wrote here since, and it is not the removal's own.
+      writeFileSync(join(folder, "mine.txt"), "someone's notes\n");
+      const pass = finishStrays(main, options(), () => undefined);
+      expect(pass.removed).toEqual([]);
+      expect(pass.kept).toEqual([
+        { path: folder, why: "files were written in it after the removal moved it: mine.txt" },
+      ]);
+      expect(existsSync(join(folder, "mine.txt"))).toBe(true);
+    });
+
+    test("a program that runs from it, a session in it or a container on it keeps it", () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const whyKept = (facts: Record<string, unknown>) =>
+        finishStrays(main, options(facts), () => undefined).kept.map((one) => one.why);
+      expect(whyKept({ programs: [{ cwd: folder, path: "/usr/bin/bun dev", pid: 9 }] })).toEqual([
+        "a program runs from its files: bun",
+      ]);
+      expect(
+        whyKept({ sessions: [{ cwd: folder, name: "busy", pid: 9, sessionId: "s" }] }),
+      ).toEqual(['Claude session "busy" works in it']);
+      expect(whyKept({ containers: [{ name: "db", sources: [folder] }] })).toEqual([
+        'Docker container "db" uses its files',
+      ]);
+      expect(whyKept({ programs: "unknown" })[0]).toContain("could not be listed");
+      expect(existsSync(folder)).toBe(true);
+    });
+
+    test("a repository of its own is never removed", () => {
+      const { main } = repo();
+      const own = leftover(dirname(main), "app-wt-clone");
+      git(own, "init", "-q");
+      expect(finishStrays(main, options(), () => undefined).kept).toEqual([
+        { path: own, why: "it holds a git repository of its own" },
+      ]);
+      expect(existsSync(own)).toBe(true);
+    });
+
+    test("it goes with its links, and nothing outside it goes", () => {
+      const { main } = repo();
+      const root = dirname(main);
+      const folder = leftover(root);
+      const outside = join(root, "precious.txt");
+      writeFileSync(outside, "keep me\n");
+      symlinkSync(outside, join(folder, "link-out"));
+      const before = new Date(PARKED_AT - 60_000);
+      lutimesSync(join(folder, "link-out"), before, before);
+      expect(finishStrays(main, options(), () => undefined).removed).toEqual([folder]);
+      expect(existsSync(folder)).toBe(false);
+      expect(existsSync(outside)).toBe(true);
+    });
   });
 
   test("D62: a removal that stopped halfway is finished by --clean, with no record of it", async () => {

@@ -5,8 +5,8 @@
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
@@ -92,6 +92,24 @@ function startProgram(cwd: string): Bun.Subprocess {
 /** True when `child` ended within two seconds (the removal's SIGTERM and SIGKILL are instant here). */
 async function ended(child: Bun.Subprocess): Promise<boolean> {
   return await Promise.race([child.exited.then(() => true), Bun.sleep(2_000).then(() => false)]);
+}
+
+/** The moment a removal moved a leftover folder aside, in the name `removeWorktree` gives it. */
+const PARKED_AT = 1761300000000;
+
+/**
+ * What a removal that failed midway leaves when git no longer lists the folder: the files git
+ * could not delete, written before the move.
+ */
+function leftoverFolder(repo: string, name: string, files = ["docs/guide.md"]): string {
+  const folder = join(repo, ".claude", "worktrees", `${name}-removing-${String(PARKED_AT)}`);
+  for (const file of files) {
+    mkdirSync(dirname(join(folder, file)), { recursive: true });
+    writeFileSync(join(folder, file), "left\n");
+    const before = new Date(PARKED_AT - 60_000);
+    utimesSync(join(folder, file), before, before);
+  }
+  return folder;
 }
 
 /** Agent view still lists the crew session of the board world: a failed `claude rm` is a real failure. */
@@ -764,6 +782,38 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "removed",
+    });
+  });
+
+  test("D62: crew rm also finishes a leftover folder no record names, and says so", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const stray = leftoverFolder(world.repo, "crew-ghost");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(stray)).toBe(false);
+    expect(world.out).toContain(
+      `removed ${stray} (left by a removal that stopped halfway; git no longer lists it)`,
+    );
+  });
+
+  test("D62: a leftover of this crew session's own that stays refuses crew rm, with its reason", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done", worktree: false });
+    const { worktree } = places(world.repo);
+    const stray = leftoverFolder(world.repo, "crew-B1-help");
+    // Something wrote in it after the removal moved it: not the removal's own, and not ours to delete.
+    writeFileSync(join(stray, "mine.txt"), "someone's notes\n");
+    expect(stray).toBe(`${worktree}-removing-${String(PARKED_AT)}`);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: .claude/worktrees/crew-B1-help-removing-1761300000000 is kept: files were written in it after the removal moved it: mine.txt",
+      "Fix: clear that, then run crew rm again; it never forces",
+    ]);
+    expect(existsSync(join(stray, "mine.txt"))).toBe(true);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "done",
     });
   });
 

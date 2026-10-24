@@ -13,6 +13,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -253,6 +254,35 @@ describe("the background clean removes what is finished, and keeps the rest", ()
       expect(line).toEndWith("kept 0");
     },
   );
+
+  test("D62: a leftover folder git no longer lists is finished, and the log says so", async () => {
+    const { add, env, repo } = project();
+    // A worktree git lists beside it: the leftovers are looked for next to the worktrees, and
+    // this one is finished, so the clean removes it before it finishes the leftovers.
+    add("live");
+    // What a removal that failed midway leaves: the files git could not delete, written
+    // before the move (the time is in the folder's name).
+    const parkedAt = 1761300000000;
+    const folder = join(repo, "..", `app-wt-gone-removing-${String(parkedAt)}`);
+    mkdirSync(join(folder, "docs"), { recursive: true });
+    writeFileSync(join(folder, "docs", "guide.md"), "left\n");
+    const before = new Date(parkedAt - 60_000);
+    utimesSync(join(folder, "docs", "guide.md"), before, before);
+    // Another one that something wrote into since the move: it stays, and the log says why.
+    const written = join(repo, "..", `app-wt-written-removing-${String(parkedAt)}`);
+    mkdirSync(written);
+    writeFileSync(join(written, "mine.txt"), "someone's notes\n");
+
+    expect(await runAutoClean(repo, "session", deps(env))).toBe("cleaned");
+
+    expect(existsSync(folder)).toBe(false);
+    expect(existsSync(written)).toBe(true);
+    const [line] = logLines(env);
+    expect(line).toContain("finished 1 leftover folder (");
+    expect(line).toContain(folder);
+    expect(line).toContain("left 1 leftover folder (");
+    expect(line).toContain("files were written in it after the removal moved it: mine.txt");
+  });
 
   test("a commit that is not on the base keeps the worktree", async () => {
     const { add, env, repo } = project();

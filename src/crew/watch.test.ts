@@ -30,7 +30,7 @@ import {
   writeStoreFile,
 } from "./store";
 import type { GatewayNow } from "./wait";
-import { eventLine, type WatchScope, watchPass } from "./watch";
+import { eventLine, PARKED_PASS_MS, type WatchScope, watchPass } from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -796,6 +796,50 @@ describe("crew watch", () => {
     expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
     // Its commit is safe on the branch the folder stood on.
     expect(git(world.repo, "log", "--format=%s", "-1", "crew/ghost").trim()).toBe("ghost work");
+  });
+
+  test("D62: the watch finishes a leftover folder git no longer lists, and says so once", async () => {
+    const world = await leadWorld();
+    const folder = join(world.repo, ".claude", "worktrees", "crew-ghost-removing-1761300000000");
+    mkdirSync(join(folder, "docs"), { recursive: true });
+    writeFileSync(join(folder, "docs", "guide.md"), "left\n");
+    const before = new Date(1761300000000 - 60_000);
+    utimesSync(join(folder, "docs", "guide.md"), before, before);
+    const ctx = world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(folder)).toBe(false);
+    expect(world.out).toEqual([
+      `removed ${folder} (left by a removal that stopped halfway; git no longer lists it)`,
+    ]);
+  });
+
+  test("D62: the watch looks for moved-aside folders every few minutes, not on every pass", async () => {
+    const world = await leadWorld();
+    let clock = T0;
+    const ctx = world.ctx({
+      now: () => clock,
+      scanFacts: { containers: [], programs: [], sessions: [] },
+    });
+    const leftover = (name: string): string => {
+      const folder = join(world.repo, ".claude", "worktrees", `${name}-removing-1761300000000`);
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "left.txt"), "left\n");
+      const before = new Date(1761300000000 - 60_000);
+      utimesSync(join(folder, "left.txt"), before, before);
+      return folder;
+    };
+    const first = leftover("crew-one");
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(first)).toBe(false);
+    // A minute later: too soon to look again, however many passes there are.
+    const second = leftover("crew-two");
+    clock = T0 + 60_000;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(second)).toBe(true);
+    // Past the interval: it looks, and finishes it.
+    clock = T0 + PARKED_PASS_MS + 1;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(second)).toBe(false);
   });
 
   test("D62: the watch leaves a moved-aside folder alone while something is uncommitted in it", async () => {

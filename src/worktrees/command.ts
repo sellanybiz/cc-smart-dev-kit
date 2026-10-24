@@ -46,6 +46,7 @@ import {
   type ScannedWorktree,
   scanWorktrees,
 } from "./scan";
+import { finishStrays, type StrayFolder, strayParkedFolders } from "./scan-parked";
 
 /** The default base when nothing else says: the remote's default branch, else this. */
 export const DEFAULT_BASE = "main";
@@ -160,6 +161,12 @@ const CONSOLE_SINKS: WorktreesSinks = {
   error: (line) => console.error(line),
   print: (line) => console.log(line),
 };
+
+/** The row `worktrees` prints for a leftover folder git no longer lists (D62). */
+function strayRow(stray: StrayFolder): string {
+  const name = basename(stray.path).padEnd(30);
+  return `  ${name} ${"(no worktree)".padEnd(42)} left by a removal that stopped halfway; git no longer lists it`;
+}
 
 function show(
   scanned: ScannedWorktree[],
@@ -441,8 +448,14 @@ export async function runWorktrees(
 
     const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
     const scanned = scanWorktrees(repo, judged);
+    // The folders a removal moved aside and could not remove, that git no longer lists (D62).
+    const strays = strayParkedFolders(repo, env);
     print(`Worktrees of ${repo}\n`);
     show(scanned, crewRecords, print);
+    if (strays.length > 0) {
+      for (const stray of strays) print(strayRow(stray));
+      print("");
+    }
 
     // A crew session's worktree is never cleared here: its lead removes it with `crew rm`, or
     // the watch does once the branch is merged (D62). The summary says so, so a person is not
@@ -454,6 +467,11 @@ export async function runWorktrees(
       crewCount === 0
         ? null
         : `${String(crewCount)} crew worktree${crewCount === 1 ? "" : "s"}: their leads remove them (\`${COMMAND} crew rm\`)`;
+    const strayLine =
+      strays.length === 0
+        ? null
+        : `${String(strays.length)} leftover folder${strays.length === 1 ? "" : "s"} from a removal that stopped halfway: \`${COMMAND} worktrees --clean\` removes ${strays.length === 1 ? "it" : "them"} when nothing runs from ${strays.length === 1 ? "it" : "them"}.`;
+    const nothing = going.length === 0 && crewLine === null && strayLine === null;
     if (!options.clean) {
       if (going.length > 0) {
         print(
@@ -461,13 +479,17 @@ export async function runWorktrees(
         );
       }
       if (crewLine !== null) print(crewLine);
-      if (going.length === 0 && crewLine === null) print("Nothing finished to clear.");
+      if (strayLine !== null) print(strayLine);
+      if (nothing) print("Nothing finished to clear.");
       return 0;
     }
 
     cleanFinished(repo, scanned, judged, (line) => print(line), isCrew);
+    // The leftover folders git no longer lists: removed when the folder itself proves it is safe.
+    const finished = finishStrays(repo, judged, (line) => print(line), strays);
+    for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
     if (crewLine !== null) print(crewLine);
-    if (going.length === 0 && crewLine === null) print("Nothing finished to clear.");
+    if (nothing) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();

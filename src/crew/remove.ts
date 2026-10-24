@@ -35,13 +35,13 @@ import { tildify } from "../cli/paths";
 import { hasChanges, listWorktrees, runGit, samePath } from "../hooks/git";
 import {
   deleteBranchOnRef,
-  finishParked,
   isParkedWorktree,
   parkedOriginal,
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
 } from "../worktrees/scan";
+import { finishParked, finishStrays } from "../worktrees/scan-parked";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
@@ -220,26 +220,22 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   const facts =
     ctx.scanFacts === undefined ? undefined : { ...ctx.scanFacts, programs: leftovers.programs };
 
-  // 5c. A removal that stopped halfway left the worktree at `<path>-removing-<time>`: git lists
-  // it there and the record still names the old path. Finish it now, under the same safe checks,
-  // so it is never left behind (D62) — and refuse rather than leave it, because the record is
-  // about to say removed and nothing would come back for it.
-  const parkedPaths = listWorktrees(repo, ctx.env)
-    .filter((one) => {
-      const original = parkedOriginal(one.path);
-      return original !== null && samePath(original, record.worktree);
-    })
-    .map((one) => one.path);
-  const parkedOptions = {
-    against: { label: lead.label, ref: lead.sha },
-    base: lead.label,
-    claudeConfigDir: ctx.paths.claudeConfigDir,
-    env: ctx.env,
-    ...(facts === undefined ? {} : { facts }),
-    idleLimit: 0,
-  };
-  const finished = finishParked(repo, parkedPaths, parkedOptions, (line) => ctx.print(line));
-  const stuck = finished.kept[0];
+  // 5c. A removal that stopped halfway left a folder at `<path>-removing-<time>` (D62): git
+  // lists it there and the record still names the old path, or git lists it no more and half of
+  // it stays. Finish them now, under the same safe checks — this record's and any other's — so
+  // none is left behind. This record's own, if it stays, refuses the command: the record is about
+  // to say removed, and nothing would come back for the folder.
+  const finished = finishParkedWorktrees(
+    repo,
+    ctx,
+    { label: lead.label, ref: lead.sha },
+    (line) => ctx.print(line),
+    facts,
+  );
+  const stuck = finished.kept.find((one) => {
+    const original = parkedOriginal(one.path);
+    return original !== null && samePath(original, record.worktree);
+  });
   if (stuck !== undefined) {
     return refuseKept(
       failure(
@@ -368,54 +364,71 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   return stored ? 0 : 1;
 }
 
+/** What a pass over a repository's moved-aside folders came to: the ones that stayed, and why. */
+export interface ParkedWorktreesPass {
+  kept: Array<{ path: string; why: string }>;
+  removed: string[];
+}
+
 /**
  * Finishes every removal that stopped halfway in `repo` (D62): the folders a removal moved
- * aside (`<path>-removing-<time>`) and could not then remove. A folder the store still knows is
- * judged against its own crew session's branch; one whose record is gone is judged against
- * `base`, the repository's `origin/<base>`. Nothing is said about a folder that stays: the next
- * pass judges it again. A ref that is not known here leaves its folders alone.
+ * aside (`<path>-removing-<time>`) and could not then remove. One home for `crew rm` and the
+ * lead's watch.
+ *
+ * Those git still lists are judged against the branch their own crew session was cut from when
+ * the store knows it, else against `base` (`origin/<base>`, else the local branch of that name);
+ * with no ref at all they stay, because nothing is judged against a guess. Those git no longer
+ * lists are judged by what the folder holds (`finishStrays`, `scan-parked.ts`) and need no ref.
+ * `facts` replaces the machine's (`ctx.scanFacts`): `crew rm` hands in what is left after it
+ * stopped a finished session's own programs. Nothing is said about a folder that stays — the
+ * caller reads `kept` — because the next pass judges it again.
  */
 export function finishParkedWorktrees(
   repo: string,
   ctx: CrewContext,
   base: null | { label: string; ref: string },
   say: (line: string) => void,
-): string[] {
+  facts: CrewContext["scanFacts"] = ctx.scanFacts,
+): ParkedWorktreesPass {
+  const pass: ParkedWorktreesPass = { kept: [], removed: [] };
+  const options = {
+    claudeConfigDir: ctx.paths.claudeConfigDir,
+    env: ctx.env,
+    ...(facts === undefined ? {} : { facts }),
+    idleLimit: 0,
+  };
   const parked = listWorktrees(repo, ctx.env).filter((one) => isParkedWorktree(one.path));
-  if (parked.length === 0) return [];
-  const records = listCrew(ctx.paths.stateDir, repo).records;
-  // One scan per ref: a whole scan is judged against one branch.
-  const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
-  for (const one of parked) {
-    const original = parkedOriginal(one.path) ?? one.path;
-    const record = records.find((two) => samePath(two.worktree, original));
-    let chosen: null | { label: string; ref: string } = null;
-    if (record !== undefined) {
-      const lead = leadRef(record, ctx);
-      if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+  if (parked.length > 0) {
+    const records = listCrew(ctx.paths.stateDir, repo).records;
+    // One scan per ref: a whole scan is judged against one branch.
+    const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
+    for (const one of parked) {
+      const original = parkedOriginal(one.path) ?? one.path;
+      const record = records.find((two) => samePath(two.worktree, original));
+      let chosen: null | { label: string; ref: string } = null;
+      if (record !== undefined) {
+        const lead = leadRef(record, ctx);
+        if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+      }
+      chosen = chosen ?? base;
+      if (chosen === null) continue;
+      const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
+      group.paths.push(one.path);
+      groups.set(chosen.ref, group);
     }
-    chosen = chosen ?? base;
-    if (chosen === null) continue;
-    const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
-    group.paths.push(one.path);
-    groups.set(chosen.ref, group);
+    for (const group of groups.values()) {
+      const done = finishParked(
+        repo,
+        group.paths,
+        { ...options, against: { label: group.label, ref: group.ref }, base: group.label },
+        say,
+      );
+      pass.removed.push(...done.removed);
+      pass.kept.push(...done.kept);
+    }
   }
-  const removed: string[] = [];
-  for (const group of groups.values()) {
-    const pass = finishParked(
-      repo,
-      group.paths,
-      {
-        against: { label: group.label, ref: group.ref },
-        base: group.label,
-        claudeConfigDir: ctx.paths.claudeConfigDir,
-        env: ctx.env,
-        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
-        idleLimit: 0,
-      },
-      say,
-    );
-    removed.push(...pass.removed);
-  }
-  return removed;
+  const strays = finishStrays(repo, { ...options, base: base?.label ?? "" }, say);
+  pass.removed.push(...strays.removed);
+  pass.kept.push(...strays.kept);
+  return pass;
 }

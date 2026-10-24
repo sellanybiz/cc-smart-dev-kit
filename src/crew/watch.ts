@@ -101,6 +101,13 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
  */
 const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
+/**
+ * How often the watch looks for folders a removal moved aside and could not remove (D62). One
+ * that stays costs a scan of the whole repository, so a pass every 20 seconds would repeat it
+ * for ever; a few minutes is soon enough for something that is not urgent.
+ */
+export const PARKED_PASS_MS = 5 * 60_000;
+
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
 
@@ -754,8 +761,21 @@ export async function watchPass(
   // (`<path>-removing-<time>`) and could not remove, whether or not the store still knows its
   // crew session. After the loop above, so a crew session whose branch this folder's removal
   // deletes was marked merged first — what waits for its phase starts on that mark. A folder
-  // that stays is not news; the next pass judges it again.
-  finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+  // that stays is not news; a later look judges it again, every `PARKED_PASS_MS`.
+  let parkedAt = state.parkedAt;
+  if (parkedAt === undefined || ctx.now() - parkedAt >= PARKED_PASS_MS) {
+    parkedAt = ctx.now();
+    try {
+      finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+    } catch (error) {
+      // A look that fails never ends the watch: it is said once, and tried again later.
+      const line = `crew watch: could not look for folders a removal left half done: ${reasonOf(error)}`;
+      if (said.parked !== line) {
+        ctx.error(line);
+        said.parked = line;
+      }
+    }
+  }
 
   // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
   const here = listCrew(ctx.paths.stateDir, repo).records;
@@ -806,6 +826,7 @@ export async function watchPass(
       said,
       ...(resumedAt === undefined ? {} : { resumedAt }),
       ...(routerRequests === undefined ? {} : { routerRequests }),
+      parkedAt,
     },
   };
 }
