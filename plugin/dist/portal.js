@@ -12070,6 +12070,7 @@ import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync10, readFileSync as readFileSync14 } from "fs";
 import { join as join11 } from "path";
 var OWNED_FILE = "owned.json";
+var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -12117,6 +12118,12 @@ function toRecord(entry, file) {
       record.value = entry.value;
     if (typeof entry.sha256 === "string")
       record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
+    if (entry.taken === true)
+      record.taken = true;
     return record;
   }
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
@@ -12259,7 +12266,17 @@ function applyOnce(file, options, owned) {
   const skipped = [];
   const updated = [];
   const dropped = [];
+  const released = [];
   let setsSecret = false;
+  const recordFor = (path, value) => {
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    return {
+      ...recordOf(path, value, isSecret(path)),
+      ...held?.was !== undefined && { was: held.was },
+      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+      ...held?.taken === true && { taken: true }
+    };
+  };
   for (const [path, value] of options.set ?? []) {
     if (path.length === 0)
       throw new Error("applyManagedJson: an empty key path");
@@ -12277,7 +12294,7 @@ function applyOnce(file, options, owned) {
         });
         dropped.push(path);
       } else {
-        updated.push(recordOf(path, value, isSecret(path)));
+        updated.push(recordFor(path, value));
       }
       continue;
     }
@@ -12289,7 +12306,50 @@ function applyOnce(file, options, owned) {
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
-    updated.push(recordOf(path, value, isSecret(path)));
+    updated.push(recordFor(path, value));
+  }
+  for (const [path, value] of options.claim ?? []) {
+    const current = getKey(data, path);
+    if (!current.found || !Bun.deepEquals(current.value, value, true)) {
+      skipped.push({ path, reason: "not the value it was taken over with; left alone" });
+      continue;
+    }
+    const record = recordFor(path, value);
+    record.taken = true;
+    if (isSecret(path))
+      record.wasSha256 = hashOf(value);
+    else
+      record.was = value;
+    updated.push(record);
+  }
+  for (const [path, value] of options.release ?? []) {
+    const current = getKey(data, path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    if (value === undefined) {
+      const held = ownedHere.find((entry) => samePath(entry.path, path));
+      if (held?.taken === true) {
+        dropped.push(path);
+        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+        continue;
+      }
+      skipped.push({ path, reason: "no value to write back; left as it is" });
+      continue;
+    }
+    dropped.push(path);
+    released.push(path);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      skipped.push({
+        path,
+        reason: "already holds that value; cc-smart-dev-kit's claim is dropped"
+      });
+      continue;
+    }
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);
@@ -12308,6 +12368,16 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    if (held?.was !== undefined) {
+      setKey(data, path, held.was);
+      changes.push({ path, before: current.value, after: held.was });
+      continue;
+    }
+    if (held?.wasSha256 !== undefined) {
+      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+      continue;
+    }
     const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
     for (const parentPath of emptied) {
@@ -12326,11 +12396,19 @@ function applyOnce(file, options, owned) {
       delete next[file];
     return next;
   };
-  const changedPaths = changes.filter((change) => change.after !== undefined);
+  const changedPaths = changes.filter((change) => change.after !== undefined && !released.some((path) => samePath(path, change.path)));
   if (changedPaths.length > 0) {
     const pending = [
       ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
-      ...changedPaths.map((change) => ({ path: [...change.path] }))
+      ...changedPaths.map((change) => {
+        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
+        return {
+          path: [...change.path],
+          ...held?.was !== undefined && { was: held.was },
+          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+          ...held?.taken === true && { taken: true }
+        };
+      })
     ];
     writeOwned(options.stateDir, nextState(pending));
   }
@@ -26713,6 +26791,13 @@ var CUSTOM_PRESET = "custom";
 var CLAUDE_MODEL = "CLAUDE_MEM_MODEL";
 var CLAUDE_PROVIDER = "claude";
 var PROVIDER_KEYS = [PROVIDER, PRESET, BASE_URL, MODEL, API_KEY];
+var OPENROUTER = "openrouter";
+var OPENROUTER_DEFAULT_MODEL = "cohere/north-mini-code:free";
+var OPENROUTER_BASE_URL = "CLAUDE_MEM_OPENROUTER_BASE_URL";
+var OPENROUTER_MODEL = "CLAUDE_MEM_OPENROUTER_MODEL";
+var OPENROUTER_API_KEY = "CLAUDE_MEM_OPENROUTER_API_KEY";
+var OPENROUTER_API_KEY_POOL = "CLAUDE_MEM_OPENROUTER_API_KEYS";
+var OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_API_KEY];
 var START_BLOCK_KEYS = [
   "CLAUDE_MEM_WORK_STATE_ENABLED",
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
@@ -26730,7 +26815,10 @@ var UNCHOSEN = {
   [START_BLOCK_KEYS[0]]: ["", "true"],
   [START_BLOCK_KEYS[1]]: ["", "true"],
   [FALLBACK_PROVIDER]: ["", CLAUDE_PROVIDER],
-  [FALLBACK_MODEL]: [""]
+  [FALLBACK_MODEL]: [""],
+  [OPENROUTER_BASE_URL]: [""],
+  [OPENROUTER_MODEL]: ["", OPENROUTER_DEFAULT_MODEL],
+  [OPENROUTER_API_KEY]: [""]
 };
 var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 function compatBaseUrl(backendBaseUrl) {
@@ -26991,7 +27079,8 @@ async function checkAffordableTarget(target, timeoutMs = 30000) {
   return `${target.backend} answered HTTP ${status} to a one-token chat request for ${target.model} at ${where}`;
 }
 function isSecretPath(path) {
-  return path.at(-1) === API_KEY;
+  const key = path.at(-1);
+  return key === API_KEY || key === OPENROUTER_API_KEY || key === OPENROUTER_API_KEY_POOL;
 }
 function applyClaudeMem(paths, plan, dryRun) {
   return applyManagedJson({
@@ -27010,7 +27099,8 @@ function shownClaudeMemValue(path, value) {
   if (isSecretPath(path) && typeof value === "string" && value !== "") {
     return JSON.stringify(maskKey(value));
   }
-  if (path.at(-1) === BASE_URL && typeof value === "string" && value !== "") {
+  const key = path.at(-1);
+  if ((key === BASE_URL || key === OPENROUTER_BASE_URL) && typeof value === "string" && value !== "") {
     return JSON.stringify(backendAddress(value) ?? "(an address that is not a URL)");
   }
   return JSON.stringify(value);
@@ -35318,12 +35408,30 @@ function fallbackProvider(read, version) {
 function routeProvider(read) {
   return textOf(read, PROVIDER) || CLAUDE_PROVIDER;
 }
+function fallbackProviderFor(route) {
+  return route === OPENAI_COMPATIBLE ? OPENROUTER : OPENAI_COMPATIBLE;
+}
+function handSetKeys(read) {
+  return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter((one) => sourceOf2(read, one) === "hand");
+}
+function keysPerChoice(route) {
+  return {
+    fallback: [
+      ...route === OPENAI_COMPATIBLE ? OPENROUTER_KEYS : [PRESET, BASE_URL, MODEL, API_KEY],
+      FALLBACK_MODEL,
+      FALLBACK_PROVIDER
+    ],
+    key: [API_KEY],
+    route: PROVIDER_KEYS
+  };
+}
 function readClaudeMemFacts(paths) {
   const config = gatewayConfig(paths);
   const ready = readReady(paths);
   const base = {
     backends: config === null ? null : Object.keys(config.backends).sort(),
     file: tildify(paths.claudeMemSettingsFile, paths.home),
+    handKeys: [],
     minVersion: CLAUDE_MEM_MIN_VERSION
   };
   if ("blocked" in ready) {
@@ -35338,46 +35446,65 @@ function readClaudeMemFacts(paths) {
   const key = textOf(read, API_KEY);
   const fallback = fallbackProvider(read, version);
   const fallbackModel = textOf(read, FALLBACK_MODEL);
+  const claudeModel = textOf(read, CLAUDE_MODEL);
   const compatTarget = backend !== null && compatModel !== "" ? `${backend.name}:${compatModel}` : null;
+  const openRouterBackend = backendAt(config, textOf(read, OPENROUTER_BASE_URL));
+  const openRouterModel = textOf(read, OPENROUTER_MODEL);
+  const openRouterTarget = openRouterBackend !== null && openRouterModel !== "" ? `${openRouterBackend.name}:${openRouterModel}` : null;
+  const refused = keysPerChoice(provider);
+  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
+  const handKeys = handSetKeys(read).filter((one) => writable.has(one));
+  const refusedByHand = (keys) => keys.some((one) => handKeys.includes(one));
   return {
     ...base,
     blocked: null,
     current: {
       fallback: {
+        claudeModel: fallback === CLAUDE_PROVIDER ? fallbackModel || claudeModel || null : null,
         idle: fallback === provider && fallback !== FALLBACK_OFF ? "It is the same provider as the route, so claude-mem has no fallback: it waits for the route's provider." : null,
-        model: fallbackModel === "" ? null : fallbackModel,
+        model: fallback === CLAUDE_PROVIDER && fallbackModel !== "" ? fallbackModel : null,
         provider: fallback,
+        refusedByHand: refusedByHand(refused.fallback),
         source: sourceOf2(read, FALLBACK_PROVIDER),
-        target: fallback === OPENAI_COMPATIBLE ? compatTarget : null
+        target: fallback === OPENAI_COMPATIBLE ? compatTarget : fallback === OPENROUTER ? openRouterTarget : null
       },
       key: {
         pool: textOf(read, API_KEY_POOL).trim() !== "",
+        refusedByHand: refusedByHand(refused.key),
         source: sourceOf2(read, API_KEY),
         state: key === "" ? "none" : backend !== null && backend.apiKey === key ? "gateway" : "other"
       },
       route: {
         address: kind === "claude" || baseUrl === "" ? null : backendAddress(baseUrl),
         kind,
-        model: kind === "claude" ? textOf(read, CLAUDE_MODEL) || null : compatModel === "" ? null : compatModel,
+        model: kind === "claude" ? claudeModel || null : compatModel === "" ? null : compatModel,
         provider,
+        refusedByHand: refusedByHand(refused.route),
         source: sourceOf2(read, kind === "backend" ? MODEL : PROVIDER),
         target: kind === "backend" ? compatTarget : null
       }
     },
+    handKeys,
     version
   };
 }
-function keyFor(read, gatewayKey, gatewayKeys) {
-  const current = textOf(read, API_KEY);
-  const source = sourceOf2(read, API_KEY);
-  if (current !== "" && !gatewayKeys.includes(current) && (source === "portal" || source === "hand")) {
-    return { key: current, set: false };
+function keyFor(read, keyName, gatewayKey, gatewayKeys, backendBaseUrl) {
+  const current = textOf(read, keyName);
+  const source = sourceOf2(read, keyName);
+  const taken = read.records.some((record) => record.taken === true && samePath(record.path, read.at(keyName)));
+  if (current !== "" && !gatewayKeys.includes(current) && (taken || source === "portal" || source === "hand")) {
+    if (!taken || textOf(read, pairedAddress(keyName)) === compatBaseUrl(backendBaseUrl)) {
+      return { key: current, set: false };
+    }
   }
   return { key: gatewayKey, set: true };
 }
+function pairedAddress(keyName) {
+  return keyName === OPENROUTER_API_KEY ? OPENROUTER_BASE_URL : BASE_URL;
+}
 function compatKeys(read, backend, model) {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
   return {
     set: [
       [PRESET, CUSTOM_PRESET],
@@ -35387,6 +35514,21 @@ function compatKeys(read, backend, model) {
     ],
     target: { apiKey: key.key, backend: backend.name, baseUrl, model }
   };
+}
+function openRouterKeys(read, backend, model) {
+  const baseUrl = compatBaseUrl(backend.baseUrl);
+  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
+  return {
+    set: [
+      [OPENROUTER_BASE_URL, baseUrl],
+      [OPENROUTER_MODEL, model],
+      ...key.set ? [[OPENROUTER_API_KEY, key.key]] : []
+    ],
+    target: { apiKey: key.key, backend: backend.name, baseUrl, model }
+  };
+}
+function fallbackKeys(read, backend, model, route) {
+  return fallbackProviderFor(route) === OPENROUTER ? openRouterKeys(read, backend, model) : compatKeys(read, backend, model);
 }
 function gatewayBackend(paths, name) {
   const config = gatewayConfig(paths);
@@ -35423,7 +35565,12 @@ function handRefusal(read, set) {
   }
   return null;
 }
-var PLANNED_FROM = [...PROVIDER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL];
+var PLANNED_FROM = [
+  ...PROVIDER_KEYS,
+  FALLBACK_PROVIDER,
+  FALLBACK_MODEL,
+  ...OPENROUTER_KEYS
+];
 function plannedFrom(read) {
   return PLANNED_FROM.map((key) => getKey(read.data, read.at(key)));
 }
@@ -35488,7 +35635,11 @@ async function chooseRoute(paths, choice, check = checkAffordableTarget) {
   if ("blocked" in ready)
     return { lines: [ready.blocked.text], ok: false };
   if (choice.kind === "claude") {
-    return save(paths, ready.read, [[PROVIDER, CLAUDE_PROVIDER]], routeLine("Claude, on your own Claude login"));
+    const result = await save(paths, ready.read, [[PROVIDER, CLAUDE_PROVIDER]], routeLine("Claude, on your own Claude login"));
+    if (result.ok && fallbackProvider(ready.read, ready.version) === CLAUDE_PROVIDER) {
+      result.lines.push("! claude-mem's fallback is Claude, the same as the route now, so claude-mem ignores it: choose the fallback again, or off.");
+    }
+    return result;
   }
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found)
@@ -35501,7 +35652,11 @@ async function chooseRoute(paths, choice, check = checkAffordableTarget) {
   const problem = await check(keys.target);
   if (problem !== null)
     return { lines: [`Nothing was saved: ${problem}.`], ok: false };
-  return save(paths, ready.read, set, routeLine(`${choice.model} on ${choice.backend}`));
+  const result = await save(paths, ready.read, set, routeLine(`${choice.model} on ${choice.backend}`));
+  if (result.ok && fallbackProvider(ready.read, ready.version) === OPENAI_COMPATIBLE) {
+    result.lines.push("! claude-mem's fallback is on the route's own provider now, so claude-mem ignores it: choose the fallback again, or off.");
+  }
+  return result;
 }
 async function chooseKey(paths, choice, check = checkAffordableTarget) {
   const ready = readReady(paths);
@@ -35573,19 +35728,12 @@ async function chooseFallback(paths, choice, check = checkAffordableTarget) {
       [FALLBACK_MODEL, choice.model ?? ""]
     ], `While its route's provider is limited, claude-mem uses ${choice.model ?? "its own Claude model"} on your own Claude login.`);
   }
-  if (route === OPENAI_COMPATIBLE) {
-    return {
-      lines: [
-        "claude-mem has one OpenAI-compatible backend, and its route uses it: the fallback can be Claude, or off."
-      ],
-      ok: false
-    };
-  }
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found)
     return { lines: [found.why], ok: false };
-  const keys = compatKeys(read, found.backend, choice.model);
-  const set = [...keys.set, [FALLBACK_PROVIDER, OPENAI_COMPATIBLE]];
+  const provider = fallbackProviderFor(route);
+  const keys = fallbackKeys(read, found.backend, choice.model, route);
+  const set = [...keys.set, [FALLBACK_PROVIDER, provider]];
   const theirs = handRefusal(read, set);
   if (theirs !== null)
     return theirs;
@@ -35628,6 +35776,59 @@ async function followSetup(paths, check = checkAffordableTarget) {
     ],
     ok: true
   };
+}
+async function takeOver(paths) {
+  const ready = readReady(paths);
+  if ("blocked" in ready)
+    return { lines: [ready.blocked.text], ok: false };
+  const { read } = ready;
+  const claims = [];
+  for (const key of handSetKeys(read)) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found)
+      continue;
+    claims.push([path, current.value]);
+  }
+  if (claims.length === 0) {
+    return {
+      lines: [
+        `Nothing to take over: every value claude-mem holds in ${read.short} is ${COMMAND}'s own, or claude-mem's own default.`
+      ],
+      ok: true
+    };
+  }
+  return withLock(paths.stateDir, () => {
+    const result = applyManagedJson({
+      claim: claims,
+      file: paths.claudeMemSettingsFile,
+      secret: isSecretPath,
+      stateDir: paths.stateDir,
+      unchosen
+    });
+    const taken = [];
+    const moved = [];
+    for (const [path] of claims) {
+      if (result.skipped.some((one) => samePath(one.path, path)))
+        moved.push(formatKeyPath(path));
+      else
+        taken.push(path);
+    }
+    if (taken.length === 0)
+      return { lines: [CHANGED_MEANWHILE], ok: false };
+    recordChoices(paths, taken.map((path) => [path, getKey(read.data, path).value]));
+    const short = tildify(paths.claudeMemSettingsFile, paths.home);
+    return {
+      lines: [
+        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as ${COMMAND}'s: each stays exactly as it is until you pick another.`,
+        ...taken.map((path) => `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`),
+        "restore puts them back.",
+        `A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
+        ...moved.map((key) => `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`)
+      ],
+      ok: true
+    };
+  });
 }
 
 // src/setup/auto-mode.ts
@@ -36569,6 +36770,11 @@ async function claudeMemFallback(action, body) {
   const choice = "claude" in target ? { kind: "claude", model: target.claude } : { kind: "backend", ...target };
   return claudeMemWrite(() => chooseFallback(paths, choice));
 }
+async function claudeMemTakeOver(action, body) {
+  if (body.confirm !== true)
+    return notConfirmed("taken over");
+  return claudeMemWrite(() => takeOver(action.portal.paths));
+}
 async function claudeMemFollow(action, body) {
   if (body.confirm !== true)
     return notConfirmed("changed");
@@ -36706,6 +36912,8 @@ async function runAction(name, body, action) {
       return claudeMemFollow(action, body);
     case "claudemem.fallback":
       return claudeMemFallback(action, body);
+    case "claudemem.takeover":
+      return claudeMemTakeOver(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":

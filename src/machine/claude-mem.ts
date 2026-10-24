@@ -99,6 +99,29 @@ export const CLAUDE_PROVIDER = "claude";
 export const PROVIDER_KEYS = [PROVIDER, PRESET, BASE_URL, MODEL, API_KEY] as const;
 
 /**
+ * claude-mem's OpenRouter provider, which is its own setup apart from the OpenAI-compatible
+ * one: the same three things (an address, a model, a key), under different keys. claude-mem
+ * reads `CLAUDE_MEM_OPENROUTER_BASE_URL` and appends `/chat/completions` to it, exactly as
+ * its custom preset does, so OmniRoute's `/v1` answers either provider.
+ *
+ * It is the second home for a backend fallback (`claude-mem-choices.ts`): claude-mem ignores
+ * a fallback whose provider is the route's own, so a route on `openai-compatible` needs this
+ * one, and this one is then free. A person who really uses OpenRouter keeps their values here
+ * (their own address is not one of the gateway's backends), and none of them is ever
+ * overwritten without their take-over.
+ */
+export const OPENROUTER = "openrouter";
+/** claude-mem's own seeded OpenRouter model: nobody chose it until one is set. */
+export const OPENROUTER_DEFAULT_MODEL = "cohere/north-mini-code:free";
+export const OPENROUTER_BASE_URL = "CLAUDE_MEM_OPENROUTER_BASE_URL";
+export const OPENROUTER_MODEL = "CLAUDE_MEM_OPENROUTER_MODEL";
+export const OPENROUTER_API_KEY = "CLAUDE_MEM_OPENROUTER_API_KEY";
+/** The person's own pool of OpenRouter keys. Never set by cc-smart-dev-kit. */
+export const OPENROUTER_API_KEY_POOL = "CLAUDE_MEM_OPENROUTER_API_KEYS";
+/** The keys that point claude-mem's OpenRouter provider at a model. */
+export const OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_API_KEY] as const;
+
+/**
  * claude-mem's two start blocks (D23), off on every machine. Work state is claude-mem's
  * to-do list, which tells every session to use its `work_state_write` tool; the memory-use
  * block tells it how to use memories. Together they pass Claude Code's 10,000-character
@@ -140,6 +163,10 @@ const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
   // claude-mem 13.37.0 and newer seed "claude"; older ones seeded "".
   [FALLBACK_PROVIDER]: ["", CLAUDE_PROVIDER],
   [FALLBACK_MODEL]: [""],
+  // Its OpenRouter provider, seeded with its own address-less setup and its own model.
+  [OPENROUTER_BASE_URL]: [""],
+  [OPENROUTER_MODEL]: ["", OPENROUTER_DEFAULT_MODEL],
+  [OPENROUTER_API_KEY]: [""],
 };
 
 /** True for a value claude-mem seeded itself in that key: nobody chose it. */
@@ -611,7 +638,8 @@ export async function checkAffordableTarget(
 
 /** True for a claude-mem key path whose value must never be printed. */
 export function isSecretPath(path: KeyPath): boolean {
-  return path.at(-1) === API_KEY;
+  const key = path.at(-1);
+  return key === API_KEY || key === OPENROUTER_API_KEY || key === OPENROUTER_API_KEY_POOL;
 }
 
 /** Writes (or, with `dryRun`, only checks) the plan's keys, and takes out the retired ones. */
@@ -638,7 +666,12 @@ export function shownClaudeMemValue(path: KeyPath, value: unknown): string {
     return JSON.stringify(maskKey(value));
   }
   // An address can carry a user name and password, or a key in its query: never shown.
-  if (path.at(-1) === BASE_URL && typeof value === "string" && value !== "") {
+  const key = path.at(-1);
+  if (
+    (key === BASE_URL || key === OPENROUTER_BASE_URL) &&
+    typeof value === "string" &&
+    value !== ""
+  ) {
     return JSON.stringify(backendAddress(value) ?? "(an address that is not a URL)");
   }
   return JSON.stringify(value);

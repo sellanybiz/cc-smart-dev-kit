@@ -19,6 +19,7 @@ import {
 import { TASK_LABEL } from "../gateway/service-windows";
 import { ownedGatewayEnvKeys, readGatewaySettings } from "../gateway/settings";
 import { forgetClaudeMemChoices } from "../machine/claude-mem";
+import { restoreTakenOver } from "../machine/claude-mem-choices";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
 import { bunConfigPath } from "../setup/bun-config";
@@ -228,6 +229,25 @@ function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string
 }
 
 /**
+ * Puts the values a take-over recorded back, before this command's own pass
+ * (`restoreTakenOver`): `restore` takes the records out with the keys, and the value to write
+ * back lives in the record. It runs in both stages.
+ *
+ * A value cc-smart-dev-kit never wrote is not its to remove: without this, a restore would take
+ * away the values the person had before the take-over. A key is the one exception — its value is
+ * never written down, so `restore` removes it as any other key of ours.
+ *
+ * A failure here is one line, never a stop: the restore itself still runs, and says what it did.
+ */
+async function takeOverBack(paths: CliPaths): Promise<void> {
+  try {
+    for (const line of (await restoreTakenOver(paths)).lines) console.log(line);
+  } catch (error) {
+    console.log(`! the values a take-over recorded could not be put back (${messageOf(error)})`);
+  }
+}
+
+/**
  * Does this settings file mean some session reading it still sends its requests to the router
  * (GP4a)? A gateway key of ours that still holds our value says so — **unless the file's own
  * address is Anthropic's**: `gateway project off` writes exactly that (`P1`), the session goes
@@ -305,7 +325,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     // Stage 1: nothing stops, so nothing is asked.
     return withLock(
       paths.stateDir,
-      () => {
+      async () => {
+        await takeOverBack(paths);
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
         const mcp = removeMcp(paths, options, short);
@@ -395,6 +416,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
             break;
         }
       }
+      await takeOverBack(paths);
       const results = restore(paths.stateDir);
       if (definitionTracked) service.forget(options.runner);
       // The MCP servers setup registered, and the record of them.

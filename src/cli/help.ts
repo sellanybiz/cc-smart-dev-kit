@@ -257,6 +257,28 @@ hand.`;
  * this table does not would have no help: `src/cli/help.test.ts` fails when one is added
  * without a row.
  */
+const CLAUDE_MEM_HELP = `Usage: ${COMMAND} claude-mem [status]
+       ${COMMAND} claude-mem route claude|<backend>:<model>
+       ${COMMAND} claude-mem key [--gateway]
+       ${COMMAND} claude-mem fallback off|claude [<claude model id>]|<backend>:<model>
+       ${COMMAND} claude-mem take-over [--yes]
+
+status (the default) prints claude-mem's route and its model, its key (never the key itself),
+its quota fallback and the model that fallback runs on, each with who set it.
+
+route   sends claude-mem's summaries to Claude on your own login, or to <backend>:<model> from
+        the gateway's backends. A model the backend does not list is refused.
+key     reads the OpenAI-compatible key from stdin (never an argument) and checks it before it
+        is saved. --gateway puts the gateway's own key for that backend back.
+fallback picks what takes over while the route's provider is limited: off, claude (with
+        claude-mem's own model, or the <claude model id> you name), or a <backend>:<model>.
+take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
+        route, the key and the fallback may change. Nothing in that file changes: each value
+        stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
+        key's value is never written down, so restore leaves your key exactly as it is while it
+        is still yours; once ${COMMAND} replaced it, restore leaves that key and names the
+        backup that holds yours. It asks first; --yes takes them over without the question.`;
+
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {
     name: "setup",
@@ -305,6 +327,9 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "portal", listed: "more", help: PORTAL_USAGE },
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: OMNIROUTE_USAGE },
+  // Not in the top-level help: one screen is the budget (UX-3), and claude-mem is a companion
+  // plugin's own command — `help claude-mem` and the README's table name it.
+  { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
   { name: "crew", listed: "more", help: CREW_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },

@@ -125,8 +125,46 @@ describe("PM1: the claude-mem actions", () => {
       lines: ["Nothing was changed: the page's confirmation did not come with the request."],
       ok: false,
     });
+    expect(await w.run("claudemem.takeover", {})).toEqual({
+      lines: ["Nothing was taken over: the page's confirmation did not come with the request."],
+      ok: false,
+    });
     expect(w.settingsText()).toBe(before);
     expect(w.backend.chats).toEqual([]);
+  });
+
+  test("MS1: the take-over action opens what the card refuses, and changes nothing else", async () => {
+    const w = world();
+    writeFileSync(
+      w.paths.claudeMemSettingsFile,
+      JSON.stringify(
+        {
+          ...SEEDED,
+          CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
+          CLAUDE_MEM_PROVIDER: "openai-compatible",
+        },
+        null,
+        2,
+      ),
+    );
+    // What the person set by hand refuses the route, through the facts the card reads.
+    expect(
+      await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" }),
+    ).toEqual({
+      lines: [
+        'Nothing was saved: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "their-model" in ~/.claude-mem/settings.json, set by hand. Change it there, or remove it there to set it here.',
+      ],
+      ok: false,
+    });
+    const before = w.settingsText();
+    const taken = await w.run("claudemem.takeover", { confirm: true });
+    expect(taken.ok).toBe(true);
+    // Nothing in claude-mem's file changes: the values stay until the person picks another.
+    expect(w.settingsText()).toBe(before);
+    expect(
+      await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" }),
+    ).toMatchObject({ ok: true });
+    expect(JSON.parse(w.settingsText()).CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("glm/flash");
   });
 
   test("PM1: empty bodies say what is missing", async () => {

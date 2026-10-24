@@ -3,6 +3,25 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.2.0
+
+- **claude-mem's route, key and fallback are yours to change — from the portal or your own
+  terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every
+  change was refused, because the kit never overwrites a value it did not write. The
+  **take-over** records those values as cc-smart-dev-kit's own, after asking and naming them:
+  nothing in claude-mem's settings file changes, each value stays exactly as it is until you pick
+  another, and `restore` puts them back — a key's value is never written down, so `restore`
+  leaves a taken-over key as you set it, or as the kit set it once it replaced yours, naming the
+  backup that holds yours. It is
+  `cc-smart-dev-kit claude-mem take-over`. A new **`cc-smart-dev-kit claude-mem`** command makes
+  the card's choices from your own terminal — `status`, `route`, `key` (on stdin, never an
+  argument, never printed), `fallback` and `take-over` — through the same functions and the same
+  checks, so the page and the command can never disagree about a machine. And a **backend
+  fallback now works on every route**: claude-mem ignores a fallback whose provider is the
+  route's own, so where the route is already a backend model the fallback goes through
+  claude-mem's OpenRouter provider, pointed at the same backend; an empty fallback provider is
+  now shown as Claude with the model it really runs on.
+
 ## 1.1.2
 
 - **A crew session's name says whose it is.** With several leads in one project, every crew

@@ -1,6 +1,8 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -11,7 +13,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { applyManagedJson, createdObjects, ForeignKeyError, formatKeyPath } from "./managed-json";
+import {
+  applyManagedJson,
+  createdObjects,
+  ForeignKeyError,
+  formatKeyPath,
+  type KeyPath,
+  type OwnedRecord,
+} from "./managed-json";
 import { restore } from "./restore";
 import { ConcurrentChangeError, listBackups, readChanged, writeManagedFile } from "./write";
 
@@ -585,5 +594,228 @@ describe("formatKeyPath", () => {
       'extraKnownMarketplaces["my-marketplace"].autoUpdate',
     );
     expect(formatKeyPath(["two words"])).toBe('["two words"]');
+  });
+});
+
+describe("a key cc-smart-dev-kit takes over, and one it gives back", () => {
+  test("claim: the key becomes ours with the value it holds, and the file is not written", () => {
+    const { file, stateDir } = setup({ a: "theirs", b: "ours" });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      claim: [
+        [["a"], "theirs"],
+        [["missing"], "gone"],
+      ],
+    });
+    // Nothing was written: no change, no backup, and the file is byte for byte the same.
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(result.backup).toBe(null);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(result.skipped).toEqual([
+      { path: ["missing"], reason: "not the value it was taken over with; left alone" },
+    ]);
+    // The record keeps the value it held, which is what restore writes back, and says the key
+    // is a taken-over one: its value is the person's, never replaced by another.
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["a"], value: "theirs", was: "theirs", taken: true }],
+    });
+  });
+
+  test("claim: a key that holds another value is left alone, and not owned", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    const result = applyManagedJson({ file, stateDir, claim: [[["a"], "someone-elses"]] });
+    expect(result.skipped).toEqual([
+      { path: ["a"], reason: "not the value it was taken over with; left alone" },
+    ]);
+    expect(read(file).a).toBe("theirs");
+    // Nothing was claimed, so there is no owned.json at all: no record proves nothing.
+    expect(existsSync(join(stateDir, "owned.json"))).toBe(false);
+  });
+
+  test("claim: a secret keeps its hash alone, and the hash it was taken over with", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    applyManagedJson({
+      file,
+      stateDir,
+      claim: [[["key"], "sk-planted-0001"]],
+      secret: (path) => path.at(-1) === "key",
+    });
+    const owned = readFileSync(join(stateDir, "owned.json"), "utf8");
+    expect(owned).not.toContain("PLANTED");
+    // The record keeps the hash and the hash it was taken over with, never the value: a release
+    // can then prove the key is still the person's own, and leave it where it is.
+    const hash = createHash("sha256").update(JSON.stringify("sk-planted-0001")).digest("hex");
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["key"], sha256: hash, taken: true, wasSha256: hash }],
+    });
+  });
+
+  test("claim, then a write: the value it held then is kept, and restore can put it back", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    applyManagedJson({ file, stateDir, set: [[["a"], "ours"]] });
+    expect(read(file).a).toBe("ours");
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["a"], value: "ours", was: "theirs", taken: true }],
+    });
+    // And `release` writes that value back and gives the key up.
+    applyManagedJson({ file, stateDir, release: [[["a"], "theirs"]] });
+    expect(read(file).a).toBe("theirs");
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+    // A second restore has nothing of ours left in it.
+    expect(restore(stateDir)).toEqual([{ action: "unchanged", details: [], file }]);
+  });
+
+  test("release: a key that already holds the value is given up, with no write", () => {
+    const { file, stateDir } = setup();
+    applyManagedJson({ file, stateDir, set: [[["a"], "ours"]] });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({ file, stateDir, release: [[["a"], "ours"]] });
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("release: a value the person changed since is theirs, and is never written over", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    // The person edits claude-mem's file by hand, after the take-over.
+    writeFileSync(file, `${JSON.stringify({ a: "their-newer-value" }, null, 2)}\n`);
+    const result = applyManagedJson({ file, stateDir, release: [[["a"], "theirs"]] });
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(read(file).a).toBe("their-newer-value");
+    expect(result.skipped).toEqual([
+      { path: ["a"], reason: "changed since cc-smart-dev-kit managed it; left alone" },
+    ]);
+    // The claim goes with it: nothing of ours is left to take out of that key.
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("release with no value: a taken secret's key stays as the person set it", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    const secret = (path: KeyPath) => path.at(-1) === "key";
+    applyManagedJson({ file, stateDir, claim: [[["key"], "sk-planted-0001"]], secret });
+    const before = readFileSync(file, "utf8");
+    const result = applyManagedJson({ file, stateDir, release: [[["key"], undefined]], secret });
+    // The key's value is never kept, so there is nothing to write: the claim goes and the key
+    // stays exactly as it was, the person's own again.
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(read(file).key).toBe("sk-planted-0001");
+    expect(result.skipped).toEqual([
+      {
+        path: ["key"],
+        reason: "a taken-over key's value is never kept; its claim is dropped and the key stays",
+      },
+    ]);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("release with no value: a key the kit replaced since stays too, and its claim goes", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    const secret = (path: KeyPath) => path.at(-1) === "key";
+    applyManagedJson({ file, stateDir, claim: [[["key"], "sk-planted-0001"]], secret });
+    // The person picks another key through the kit: the kit writes it.
+    applyManagedJson({ file, stateDir, set: [[["key"], "sk-planted-0002"]], secret });
+    const result = applyManagedJson({ file, stateDir, release: [[["key"], undefined]], secret });
+    // The earlier key is in the backup the kit made before that write; the current key stays,
+    // because nothing of the person's is left in the file to put back over it.
+    expect(result.changes).toEqual([]);
+    expect(read(file).key).toBe("sk-planted-0002");
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+    const backups = listBackups(stateDir, file);
+    expect(backups).toHaveLength(1);
+    const backup = backups[0];
+    if (backup === undefined) throw new Error("expected one backup");
+    expect(readFileSync(backup.path, "utf8")).toContain("sk-planted-0001");
+  });
+
+  test("release with no value: a taken secret removed since has nothing to give back", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    const secret = (path: KeyPath) => path.at(-1) === "key";
+    applyManagedJson({ file, stateDir, claim: [[["key"], "sk-planted-0001"]], secret });
+    // The person removes the key by hand, after the take-over.
+    writeFileSync(file, `${JSON.stringify({}, null, 2)}\n`);
+    const result = applyManagedJson({ file, stateDir, release: [[["key"], undefined]], secret });
+    expect(result.changes).toEqual([]);
+    expect(result.skipped).toEqual([
+      { path: ["key"], reason: "changed since cc-smart-dev-kit managed it; left alone" },
+    ]);
+    // The claim goes: nothing of ours is left in a key that is not there.
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("the record written before a file write carries was, taken and the hash it took", () => {
+    const { file, stateDir } = setup({ a: "theirs", key: "sk-planted-0001" });
+    const secret = (path: KeyPath) => path.at(-1) === "key";
+    applyManagedJson({
+      file,
+      stateDir,
+      claim: [
+        [["a"], "theirs"],
+        [["key"], "sk-planted-0001"],
+      ],
+      secret,
+    });
+    const hash = createHash("sha256").update(JSON.stringify("sk-planted-0001")).digest("hex");
+    let pending: unknown = null;
+    // `onBeforeWrite` runs after the claim's own write and before the file's: a crash there
+    // leaves this record, so it must still say the keys were taken over.
+    applyManagedJson({
+      file,
+      stateDir,
+      secret,
+      set: [
+        [["a"], "ours"],
+        [["key"], "sk-planted-0002"],
+      ],
+      onBeforeWrite: () => {
+        pending = read(join(stateDir, "owned.json"));
+      },
+    });
+    const records = (pending as Record<string, OwnedRecord[]>)[file] ?? [];
+    expect(records.find((record) => record.path[0] === "a")).toEqual({
+      path: ["a"],
+      taken: true,
+      was: "theirs",
+    });
+    expect(records.find((record) => record.path[0] === "key")).toEqual({
+      path: ["key"],
+      taken: true,
+      wasSha256: hash,
+    });
+  });
+
+  test("removal: a taken-over value is put back, never removed", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    applyManagedJson({ file, stateDir, set: [[["a"], "ours"]] });
+    const result = applyManagedJson({ file, stateDir, remove: [["a"]] });
+    // cc-smart-dev-kit never wrote "theirs": removing the key would take the person's value away.
+    expect(read(file).a).toBe("theirs");
+    expect(result.changes).toEqual([{ path: ["a"], before: "ours", after: "theirs" }]);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("removal: a taken-over secret is left as it is, and its claim goes", () => {
+    const { file, stateDir } = setup({ key: "sk-planted-0001" });
+    const secret = (path: KeyPath) => path.at(-1) === "key";
+    applyManagedJson({ file, stateDir, claim: [[["key"], "sk-planted-0001"]], secret });
+    const result = applyManagedJson({ file, stateDir, remove: [["key"]], secret });
+    expect(result.changes).toEqual([]);
+    expect(read(file).key).toBe("sk-planted-0001");
+    expect(result.skipped).toEqual([
+      {
+        path: ["key"],
+        reason: "a taken-over key's value is never kept; its claim is dropped and the key stays",
+      },
+    ]);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
   });
 });

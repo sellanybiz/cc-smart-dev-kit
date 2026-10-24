@@ -370,18 +370,22 @@ export interface ClaudeMemCurrent {
     model: null | string;
     address: null | string;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
   key: {
     state: "gateway" | "none" | "other";
     pool: boolean;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
   fallback: {
     provider: string;
     model: null | string;
+    claudeModel: null | string;
     idle: null | string;
     target: null | string;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
 }
 
@@ -393,6 +397,7 @@ export interface ClaudeMemFacts {
   blocked: null | { fix: null | string; text: string };
   current: null | ClaudeMemCurrent;
   backends: null | string[];
+  handKeys: string[];
 }
 
 export interface MachineAnswer {
@@ -1003,6 +1008,7 @@ export const ACTION_NAMES = [
   "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
+  "claudemem.takeover",
   "companion.enable",
   "crew.answer",
   "crew.resume",

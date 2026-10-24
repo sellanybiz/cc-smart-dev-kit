@@ -125,11 +125,99 @@ three writers; the actions `claudemem.route`, `claudemem.key` and `claudemem.fal
   defaults and `validateSettings`; its CHANGELOG): the provider takes `claude`, `gemini`,
   `openrouter`, `openai-compatible` or `off`; an empty one means Claude since 13.37.0 and none
   before it (`CLAUDE_FALLBACK_SINCE`), where `off` is refused (13.34.2 and 13.35.0's
-  `validateSettings`), so "off" writes `""` there; a fallback equal to the route's provider
-  never takes over; the model applies to a Claude fallback only; and an `openai-compatible`
-  fallback uses the same `CLAUDE_MEM_OPENAI_COMPAT_*` keys as the route. So a backend fallback
-  needs a route that is not `openai-compatible`, a Claude fallback one that is not Claude, and
-  the writer refuses the rest in words.
+  `validateSettings`), so "off" writes `""` there; the model applies to a Claude fallback only
+  (`applyQuotaFallbackModel` returns at once for any other provider, so an empty
+  `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` leaves the Claude client's own model,
+  `CLAUDE_MEM_MODEL`); and **a fallback equal to the route's provider never takes over**:
+  `E4e(t)` answers `null` when that provider `r === t` (`r===null||r===t||!ybr(r)||qC(r,e)?null:r`),
+  and `BE` then keeps the route's own provider with no `fallbackFrom`. So `openai-compatible` →
+  `openai-compatible` does nothing: a Claude fallback needs a route that is not Claude, and the
+  writer refuses that in words. An empty provider reads as Claude in `A1`
+  (`e===""?"claude":_br.includes(e)?e:null`), so the reader answers Claude and never "none", and
+  `status` names the model that fallback really runs on, `fallback.claudeModel` (the fallback's
+  own model, else `CLAUDE_MEM_MODEL`).
+- **A backend fallback has a second home** (MS1). Because of the rule above, a route that is
+  already a backend model gets the fallback through claude-mem's other OpenAI-shaped provider:
+  **`openrouter`**, pointed at the same backend and model. That provider honours its own three
+  keys — `CLAUDE_MEM_OPENROUTER_BASE_URL`, `_MODEL` and `_API_KEY`, read in `t4e` — and
+  `validateSettings` accepts `openrouter` as a fallback provider **whatever the route is**, which
+  is what makes the pair work. The request URL comes from `bI(a)`: the base URL with
+  `/chat/completions` on it (`var Dtt="https://openrouter.ai/api/v1/chat/completions",vI="/chat/completions"`;
+  `r.pathname` ending in `vI` is kept, else `vI` is appended), so OmniRoute's `/v1` becomes
+  `/v1/chat/completions` — the endpoint the custom preset's `openai-compatible` reaches. Both
+  providers therefore reach the same backend, and the person picks the model from the same live
+  list. That provider needs its own key (`E1`: `!!t4e(t).apiKey`), which the kit sets with the
+  gateway's key for that backend, or keeps when it is the person's. On the Claude route the
+  fallback keeps the `CLAUDE_MEM_OPENAI_COMPAT_*` keys, as before: `fallbackProviderFor` writes
+  the OpenRouter keys only where the route is on the compat provider.
 - **No restart.** claude-mem's `loadFromFile` reads the settings file at each use.
 - **No address shown with its credentials.** `shownClaudeMemValue` shows a base URL through
   `backendAddress` (no user name, password, query or fragment), in setup's lines too.
+
+## The take-over (MS1, D63)
+
+A value claude-mem's file holds that cc-smart-dev-kit never wrote is the person's, and the kit
+never overwrites it (`handRefusal`, above). Measured on the owner's own machine: five keys point
+claude-mem at a backend, `owned.json` records only the kit's two start-block keys, so the reader
+calls those five `hand` and **every** route, key and fallback change is refused. The person
+needed a way to hand those values to the kit without changing what claude-mem does. That is the
+take-over, and it is theirs to ask for: a plain `setup` never runs it, and the command asks first
+(`--yes` skips the question).
+
+- **Nothing in claude-mem's file changes.** Each value stays exactly as it is until the person
+  picks another. What changes is the claim: `applyManagedJson`'s `claim` makes a key the kit's
+  when it still holds the value the take-over read it with — one that moved meanwhile is skipped,
+  so nothing is taken over unseen — writes no file, and keeps that value in the record
+  (`OwnedRecord.was`, with `taken` true). A key that already holds cc-smart-dev-kit's own value,
+  or claude-mem's own default, is not one of them: with no hand-set value at all, the take-over
+  says there is nothing to take.
+- **`restore` puts the value back, before its own pass.** `restore` removes the owned keys and
+  takes the records out with them, and the value to write back lives in the record, so
+  `restoreTakenOver` runs first, in both stages (`src/cli/restore.ts`): `release` writes the value
+  and drops the claim, so the key is the person's again and restore leaves it. A key the person
+  changed — or took away — since the take-over keeps their value instead: `release` writes
+  nothing back unless the key is still the kit's (`applyOnce`'s `ownership` check), and only the
+  claim goes, so a restore never undoes their own edit.
+- **A key's value is never written down.** `owned.json` keeps a secret's hash, and the claim also
+  keeps the hash it took the key over with (`OwnedRecord.wasSha256`): while the key still hashes
+  to that, the kit never replaced it. So `release` with no value (`[path, undefined]`) drops the
+  claim and leaves the key exactly as it is — the person's own again — and `restore` leaves it.
+  A key the kit replaced since (the person picked another through the kit) cannot get its old
+  value back: `restore` leaves that key as the kit wrote it and names the backup whose copy still
+  holds the earlier one — the path only, never the key. A key removed since is simply the
+  person's. `applyManagedJson`'s `remove` treats a taken-over key the same way, so a restore that
+  falls back to its own pass (when `restoreTakenOver` throws) writes a plain value back and leaves
+  a secret's key where it is.
+- **What it takes is what refuses a choice now** (`handSetKeys`): the route's five keys,
+  claude-mem's OpenRouter three, and the quota fallback's two.
+- **A taken-over key is treated as the person's, while its address is the backend's.** `keyFor`
+  reads the `taken` record and keeps that value, so a route change does not swap in the new
+  backend's own key from `gateway.json` — the key is the person's, kept as it is. A key the kit
+  wrote still follows its backend: moving the route from backend `a` to `b` gives claude-mem
+  `b`'s key. A taken-over key was set for one address, so it stays only while that address is the
+  backend's this write goes to: a route that moves to another host takes the gateway's key for
+  that host instead, so the person's key is never sent to another host.
+
+## The same choices from the command (MS1, D63)
+
+`cc-smart-dev-kit claude-mem` (`src/cli/claude-mem.ts`) is the fourth way in — after the person's
+own `~/.claude-mem/settings.json` by hand, `setup` from the scout slot, and the Machine page's
+card — and it calls the same functions the card's actions call (`chooseRoute`, `chooseKey`,
+`chooseFallback`, `takeOver`), so the page and the terminal can never disagree about a machine.
+Its words are `status` (the default), `route`, `key`, `fallback` and `take-over`; the help text
+(`CLAUDE_MEM_HELP`) lives in `src/cli/help.ts` because this module imports `usageError` from
+there, and it has no row in the top-level help: claude-mem is a companion plugin's own command,
+and `help claude-mem` and the README's table name it.
+
+- **The same checks, and the same refusals.** A `<backend>:<model>` passes the slot picker's own
+  rule (`chainProblem` against the backend's live `/v1/models`) and then one tiny chat with the
+  key it would use; a refusal says what to do and writes nothing.
+- **The key comes on stdin**, never as an argument (a command line is readable in `/proc` and
+  lands in the shell's history), and is never printed; `--gateway` puts the gateway's own key for
+  that backend back.
+- **`status` names who set each value** (claude-mem's own default, setup from the scout slot, the
+  person's own choice, or the person by hand in claude-mem's file) and, where a hand-set key
+  refuses a choice, names it and points at the take-over. A write from the command lands in the
+  same choices file the card writes (`recordChoices`), and the record cannot tell the two apart,
+  so the word is `your choice` — the person, not the way in.
+- **Exit codes**: 0 done, 1 a refusal or a failed check, 2 a wrong word or option.
