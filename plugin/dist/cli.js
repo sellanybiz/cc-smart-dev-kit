@@ -28,9 +28,9 @@ __export(exports_iso, {
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync76, statSync as statSync29 } from "fs";
+import { existsSync as existsSync75, statSync as statSync29 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join90, resolve as resolve14 } from "path";
+import { join as join89, resolve as resolve14 } from "path";
 
 // src/browser/check.ts
 import { existsSync as existsSync4, mkdtempSync, readdirSync as readdirSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -2383,7 +2383,7 @@ function oldBunRefusal(command, version, path) {
 }
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync61, readFileSync as readFileSync74 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync61, readFileSync as readFileSync75 } from "fs";
 import { dirname as dirname25, join as join73 } from "path";
 
 // src/gateway/config.ts
@@ -22293,7 +22293,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync60, readFileSync as readFileSync73 } from "fs";
+import { existsSync as existsSync60, readFileSync as readFileSync74 } from "fs";
 import { join as join72 } from "path";
 
 // src/hooks/git.ts
@@ -34858,8 +34858,8 @@ import {
   lstatSync as lstatSync6,
   mkdirSync as mkdirSync24,
   openSync as openSync10,
-  readdirSync as readdirSync24,
-  readFileSync as readFileSync68,
+  readdirSync as readdirSync25,
+  readFileSync as readFileSync69,
   renameSync as renameSync6,
   rmdirSync as rmdirSync3,
   rmSync as rmSync17,
@@ -35066,14 +35066,90 @@ function sessionsToReopen(sessions, running, machineStartedAt, withinHours) {
 }
 
 // src/crew/archive-read.ts
+import { readdirSync as readdirSync24, readFileSync as readFileSync68, statSync as statSync19 } from "fs";
 import { join as join65 } from "path";
+import { gunzipSync } from "zlib";
 function crewArchiveRoot(stateDir) {
   return join65(stateDir, "crew-archive");
 }
 var ARCHIVE_PROJECTS = "projects";
+var GZ = ".gz";
+function listed(path) {
+  try {
+    const all = readdirSync24(path, { withFileTypes: true });
+    const names = (keep) => all.filter(keep).map((entry) => entry.name).sort();
+    return { dirs: names((entry) => entry.isDirectory()), files: names((entry) => entry.isFile()) };
+  } catch {
+    return { dirs: [], files: [] };
+  }
+}
+function addRoot(tree, root, gz) {
+  const suffix = gz ? GZ : "";
+  const plain = (name) => gz ? name.slice(0, -GZ.length) : name;
+  for (const project of listed(root).dirs) {
+    const folder = join65(root, project);
+    const here = listed(folder);
+    const ids = new Set([
+      ...here.files.filter((name) => name.endsWith(`.jsonl${suffix}`)).map((name) => plain(name).slice(0, -".jsonl".length)),
+      ...here.dirs
+    ]);
+    if (ids.size === 0)
+      continue;
+    const sessions = tree.get(project) ?? new Map;
+    tree.set(project, sessions);
+    for (const id of [...ids].sort()) {
+      const session = sessions.get(id) ?? { main: null, subagents: new Map };
+      sessions.set(id, session);
+      const main = `${id}.jsonl${suffix}`;
+      if (session.main === null && here.files.includes(main)) {
+        session.main = { gz, path: join65(folder, main) };
+      }
+      const subagents = join65(folder, id, "subagents");
+      for (const name of listed(subagents).files) {
+        if (gz && !name.endsWith(GZ))
+          continue;
+        const key = plain(name);
+        if (!session.subagents.has(key)) {
+          session.subagents.set(key, { gz, path: join65(subagents, name) });
+        }
+      }
+    }
+  }
+}
+function transcriptTree(projectsDir, stateDir) {
+  const tree = new Map;
+  addRoot(tree, projectsDir, false);
+  if (stateDir === null)
+    return tree;
+  const root = crewArchiveRoot(stateDir);
+  for (const key of listed(root).dirs) {
+    for (const crew of listed(join65(root, key)).dirs) {
+      addRoot(tree, join65(root, key, crew, ARCHIVE_PROJECTS), true);
+    }
+  }
+  return tree;
+}
+function transcriptBytes(ref) {
+  try {
+    const bytes = readFileSync68(ref.path);
+    return ref.gz ? gunzipSync(bytes) : bytes;
+  } catch {
+    return null;
+  }
+}
+function transcriptText(ref) {
+  return transcriptBytes(ref)?.toString("utf8") ?? null;
+}
+function transcriptChangedAt(ref) {
+  try {
+    return statSync19(ref.path).mtimeMs;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+}
 
 // src/crew/transcript.ts
-import { closeSync as closeSync9, openSync as openSync9, readSync as readSync5, statSync as statSync19 } from "fs";
+import { closeSync as closeSync9, openSync as openSync9, readSync as readSync5, statSync as statSync20 } from "fs";
 import { join as join66 } from "path";
 var TAIL_BYTES = 256 * 1024;
 function transcriptFile(projectsDir, folder, sessionId) {
@@ -35106,7 +35182,7 @@ function contextUseOf(file) {
     return null;
   }
   try {
-    const size = statSync19(file).size;
+    const size = statSync20(file).size;
     const from = Math.max(0, size - TAIL_BYTES);
     const bytes = Buffer.alloc(size - from);
     let filled = 0;
@@ -35142,7 +35218,7 @@ function contextUseOf(file) {
 }
 function changedAt(file) {
   try {
-    return statSync19(file).mtimeMs;
+    return statSync20(file).mtimeMs;
   } catch {
     return null;
   }
@@ -35173,7 +35249,7 @@ var manifestSchema = looseObject({
 });
 function readArchiveManifest(dir) {
   try {
-    const parsed = manifestSchema.safeParse(JSON.parse(readFileSync68(join67(dir, ARCHIVE_MANIFEST), "utf8")));
+    const parsed = manifestSchema.safeParse(JSON.parse(readFileSync69(join67(dir, ARCHIVE_MANIFEST), "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -35184,7 +35260,7 @@ function regularFiles(folder) {
   const walk = (dir) => {
     let names;
     try {
-      names = readdirSync24(dir).sort();
+      names = readdirSync25(dir).sort();
     } catch {
       return;
     }
@@ -35236,7 +35312,7 @@ function removeEmptyFolder(folder) {
 function removeEmptyTree(folder) {
   let names;
   try {
-    names = readdirSync24(folder);
+    names = readdirSync25(folder);
   } catch {
     return;
   }
@@ -35333,7 +35409,7 @@ function pruneCrewArchives(stateDir, daysOf, nowMs, dryRun = false) {
   const root = crewArchiveRoot(stateDir);
   const folders = (dir) => {
     try {
-      return readdirSync24(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join67(dir, entry.name)).sort();
+      return readdirSync25(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join67(dir, entry.name)).sort();
     } catch {
       return [];
     }
@@ -36125,13 +36201,13 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 }
 
 // src/crew/memory.ts
-import { readFileSync as readFileSync69 } from "fs";
+import { readFileSync as readFileSync70 } from "fs";
 var VM_RSS = /^VmRSS:\s+(\d+)\s+kB$/m;
 function memoryMbOf(pid) {
   if (pid === null || pid <= 0)
     return null;
   try {
-    const found = VM_RSS.exec(readFileSync69(`/proc/${String(pid)}/status`, "utf8"));
+    const found = VM_RSS.exec(readFileSync70(`/proc/${String(pid)}/status`, "utf8"));
     if (found?.[1] === undefined)
       return null;
     return Math.round(Number(found[1]) / 1024 * 10) / 10;
@@ -36141,7 +36217,7 @@ function memoryMbOf(pid) {
 }
 
 // src/crew/start.ts
-import { existsSync as existsSync57, readFileSync as readFileSync70 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync71 } from "fs";
 import { basename as basename14, join as join69, resolve as resolve9 } from "path";
 
 // src/worktrees/include.ts
@@ -36329,7 +36405,7 @@ async function readBrief(args, ctx) {
     text = await ctx.readStdin();
   } else {
     try {
-      text = readFileSync70(resolve9(ctx.cwd, args.brief), "utf8");
+      text = readFileSync71(resolve9(ctx.cwd, args.brief), "utf8");
     } catch (error) {
       throw refusal(`the brief ${args.brief} cannot be read (${reasonOf3(error)})`);
     }
@@ -36491,7 +36567,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
 function continuationBrief(ctx, repo, old) {
   let given = "";
   try {
-    const text = readFileSync70(crewBriefFile(ctx.paths.stateDir, repo, old.id), "utf8");
+    const text = readFileSync71(crewBriefFile(ctx.paths.stateDir, repo, old.id), "utf8");
     const cut = text.lastIndexOf(BRIEF_FRAME_MARK);
     given = (cut === -1 ? text : text.slice(0, cut)).trimEnd();
   } catch {}
@@ -39015,7 +39091,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync71 } from "fs";
+import { readFileSync as readFileSync72 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -39113,7 +39189,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync71(transcript, "utf8");
+    text = readFileSync72(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -39549,7 +39625,7 @@ var MACHINE_WIDE_HOOKS = [
 ];
 
 // src/cli/project-init.ts
-import { existsSync as existsSync59, readFileSync as readFileSync72 } from "fs";
+import { existsSync as existsSync59, readFileSync as readFileSync73 } from "fs";
 import { join as join71, relative as relative7 } from "path";
 
 // src/project/init.ts
@@ -40003,7 +40079,7 @@ function defaultFastCheck(root) {
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync72(file, "utf8"));
+    const parsed = parseUserJson(readFileSync73(file, "utf8"));
     scripts = isObject(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -40298,7 +40374,7 @@ function printPlan(plan, context) {
   return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText2(file) {
-  return existsSync59(file) ? readFileSync72(file, "utf8") : null;
+  return existsSync59(file) ? readFileSync73(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText2(file);
@@ -40528,7 +40604,7 @@ function baseRefOf(sources) {
     if (!existsSync60(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync73(file, "utf8"));
+      const parsed = JSON.parse(readFileSync74(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -40542,7 +40618,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync73(file, "utf8"));
+  const parsed = JSON.parse(readFileSync74(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -40765,7 +40841,7 @@ function checkLauncher(paths, platform) {
       }
     ];
   }
-  const script = readFileSync74(launcher, "utf8");
+  const script = readFileSync75(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -40801,7 +40877,7 @@ function checkLauncherCmd(paths, shLauncher) {
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync74(cmd, "utf8");
+  const script = readFileSync75(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -41160,7 +41236,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync61(where.claudeMd) ? readFileSync74(where.claudeMd, "utf8") : "";
+  const text = existsSync61(where.claudeMd) ? readFileSync75(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -41222,7 +41298,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync74(from, "utf8");
+        text = readFileSync75(from, "utf8");
       } catch {
         continue;
       }
@@ -42250,7 +42326,7 @@ async function runCrewReport(args, ctx) {
 }
 
 // src/crew/context-window.ts
-import { existsSync as existsSync63, readFileSync as readFileSync75 } from "fs";
+import { existsSync as existsSync63, readFileSync as readFileSync76 } from "fs";
 import { join as join74 } from "path";
 var CONTEXT_WINDOW_1M = 1e6;
 var CONTEXT_WINDOW_SMALL = 200000;
@@ -42282,7 +42358,7 @@ function readClaudeStored(file) {
   if (!existsSync63(file))
     return {};
   try {
-    const parsed = claudeStoredSchema.safeParse(JSON.parse(readFileSync75(file, "utf8")));
+    const parsed = claudeStoredSchema.safeParse(JSON.parse(readFileSync76(file, "utf8")));
     return parsed.success ? parsed.data : {};
   } catch {
     return {};
@@ -42335,7 +42411,7 @@ function readKept(paths) {
   if (!existsSync63(file))
     return {};
   try {
-    const parsed = keptSchema2.safeParse(JSON.parse(readFileSync75(file, "utf8")));
+    const parsed = keptSchema2.safeParse(JSON.parse(readFileSync76(file, "utf8")));
     return parsed.success ? parsed.data : {};
   } catch {
     return {};
@@ -43314,7 +43390,7 @@ function parseWatchArgs(argv) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync64, mkdirSync as mkdirSync26, readFileSync as readFileSync76, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync64, mkdirSync as mkdirSync26, readFileSync as readFileSync77, writeFileSync as writeFileSync13 } from "fs";
 import { join as join75 } from "path";
 
 // src/workflow/alerts.ts
@@ -43523,7 +43599,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync76(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync77(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -43557,7 +43633,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync76(join75(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync77(join75(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject17(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
@@ -43687,7 +43763,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { readdirSync as readdirSync26, statSync as statSync21 } from "fs";
+import { readdirSync as readdirSync27, statSync as statSync22 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
 
 // src/jobs/launch.ts
@@ -44105,7 +44181,7 @@ async function runJob(request, deps) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync27, readdirSync as readdirSync25, statSync as statSync20 } from "fs";
+import { mkdirSync as mkdirSync27, readdirSync as readdirSync26, statSync as statSync21 } from "fs";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -44294,7 +44370,7 @@ How it works: docs/jobs.md in the plugin's repo.`;
 var PREFIX = "[cc-smart-dev-kit job]";
 function envFilesIn(dir) {
   try {
-    return readdirSync26(dir).filter((name) => /^\.env(\..+)?$/.test(name));
+    return readdirSync27(dir).filter((name) => /^\.env(\..+)?$/.test(name));
   } catch {
     return [];
   }
@@ -44302,7 +44378,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync21(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync22(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -44612,7 +44688,7 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync66, readFileSync as readFileSync77, rmSync as rmSync18 } from "fs";
+import { existsSync as existsSync66, readFileSync as readFileSync78, rmSync as rmSync18 } from "fs";
 import { join as join76 } from "path";
 function portalServerArgv(bunPath, copy, pluginDir) {
   return [
@@ -44633,7 +44709,7 @@ function refreshPortalCopy(paths, pluginFolder) {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync77(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync78(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
@@ -44769,7 +44845,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync77(paths.portalHeldFile, "utf8");
+    const text = readFileSync78(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -45446,17 +45522,16 @@ ${WORKFLOW_USAGE}`);
 
 // src/sessions/flow.ts
 import { closeSync as closeSync11, mkdirSync as mkdirSync29, openSync as openSync11, readFileSync as readFileSync80, readSync as readSync6, statSync as statSync23 } from "fs";
-import { dirname as dirname27, join as join78 } from "path";
+import { dirname as dirname27, join as join77 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync67, readdirSync as readdirSync27, readFileSync as readFileSync79, statSync as statSync22 } from "fs";
-import { basename as basename15, join as join77, resolve as resolve12 } from "path";
+import { basename as basename15, resolve as resolve12 } from "path";
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync78 } from "fs";
+import { readFileSync as readFileSync79 } from "fs";
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync78(file, "utf8"));
+    return parseSafetyCheckState(readFileSync79(file, "utf8"));
   } catch {
     return null;
   }
@@ -45466,42 +45541,21 @@ function readSafetyChecks(file) {
 function isJsonObject18(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function entries(path) {
+function readJson3(ref) {
   try {
-    const all = readdirSync27(path, { withFileTypes: true });
-    return {
-      dirs: all.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
-      files: all.filter((entry) => entry.isFile()).map((entry) => entry.name).sort()
-    };
-  } catch {
-    return { dirs: [], files: [] };
-  }
-}
-function changedAt2(path) {
-  try {
-    return statSync22(path).mtimeMs;
-  } catch {
-    return Number.NEGATIVE_INFINITY;
-  }
-}
-function readJson3(path) {
-  try {
-    return JSON.parse(readFileSync79(path, "utf8"));
+    return JSON.parse(transcriptText(ref) ?? "");
   } catch {
     return null;
   }
 }
-function readTranscript(path, sinceMs, sidechains) {
+function readTranscript(ref, sinceMs, sidechains) {
   const replies = new Map;
   let cwd = null;
-  if (changedAt2(path) < sinceMs)
+  if (ref == null || transcriptChangedAt(ref) < sinceMs)
     return { cwd, replies };
-  let text;
-  try {
-    text = readFileSync79(path, "utf8");
-  } catch {
+  const text = transcriptText(ref);
+  if (text === null)
     return { cwd, replies };
-  }
   for (const line of text.split(`
 `)) {
     if (line.trim() === "")
@@ -45542,17 +45596,12 @@ function count3(into, replies) {
   for (const model of replies.values())
     into[model] = (into[model] ?? 0) + 1;
 }
-function collectUsage(projectsDir, options) {
+function collectUsage(projectsDir, options, stateDir = null) {
   const out = [];
-  for (const project of entries(projectsDir).dirs) {
-    const folder = join77(projectsDir, project);
-    const listed = entries(folder);
-    const sessions = new Set([
-      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
-      ...listed.dirs
-    ]);
-    for (const session of [...sessions].sort()) {
+  for (const [project, sessions] of transcriptTree(projectsDir, stateDir)) {
+    for (const [session, files] of sessions) {
       const usage = {
+        archived: files.main?.gz === true || [...files.subagents.values()].some((file) => file.gz),
         cwd: null,
         launched: {},
         main: {},
@@ -45561,18 +45610,20 @@ function collectUsage(projectsDir, options) {
         session,
         subagents: 0
       };
-      const own = readTranscript(join77(folder, `${session}.jsonl`), options.sinceMs, false);
+      const own = readTranscript(files.main, options.sinceMs, false);
       usage.cwd = own.cwd;
       count3(usage.main, own.replies);
-      const subagents = join77(folder, session, "subagents");
-      const metas = existsSync67(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
-      for (const name of metas) {
-        const transcript = join77(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
-        const started = changedAt2(join77(subagents, name));
+      const metas = [...files.subagents.keys()].filter((name) => name.endsWith(".meta.json"));
+      for (const name of metas.sort()) {
+        const metaRef = files.subagents.get(name);
+        if (metaRef === undefined)
+          continue;
+        const transcript = files.subagents.get(name.replace(/\.meta\.json$/, ".jsonl"));
+        const started = transcriptChangedAt(metaRef);
         const { cwd, replies } = readTranscript(transcript, options.sinceMs, true);
         if (replies.size === 0 && started < options.sinceMs)
           continue;
-        const meta = readJson3(join77(subagents, name));
+        const meta = readJson3(metaRef);
         usage.cwd ??= cwd;
         usage.subagents += 1;
         const launched = isJsonObject18(meta) && typeof meta.model === "string" ? meta.model : "inherited";
@@ -45751,7 +45802,7 @@ function formatUsage(sessions, hours, projectsDir, home, launches = [], agents =
   let subagents = 0;
   let withSubagents = 0;
   for (const session of sessions) {
-    lines.push("", `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}`);
+    lines.push("", `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}${session.archived ? " (a removed crew session, from the kit's crew archive)" : ""}`);
     lines.push(`  main session, replies by model: ${counts(session.main) || "none in the window"}`);
     if (session.subagents === 0) {
       lines.push("  subagents: none in the window");
@@ -45812,7 +45863,7 @@ Usage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>] [--json
   }
   const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3600000;
-  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
+  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs }, paths.stateDir);
   const recorded = readAgentUsage(agentUsageFile(paths.stateDir), sinceMs);
   const agents = options.project === null ? recorded : recorded.filter((agent) => sessions.some((session) => session.session === agent.session));
   if (options.json) {
@@ -46353,18 +46404,40 @@ function resetSession(session) {
     transcript.endAt = null;
   }
 }
-function replaced(file, transcript) {
+function replaced(ref, transcript) {
   if (transcript.inode === 0)
     return false;
   let stat;
   try {
-    stat = statSync23(file);
+    stat = statSync23(ref.path);
   } catch {
     return false;
   }
-  return Number(stat.ino) !== transcript.inode || stat.size < transcript.offset;
+  if (Number(stat.ino) !== transcript.inode)
+    return true;
+  return !ref.gz && stat.size < transcript.offset;
 }
-function readTranscriptFile(file, session, transcript, subagent, context) {
+function applyLines(text, session, transcript, subagent, context) {
+  for (const line of text.split(`
+`)) {
+    if (line.trim() === "" || !neededLine(line))
+      continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      session.skipped += 1;
+      continue;
+    }
+    if (!isJsonObject19(record)) {
+      session.skipped += 1;
+      continue;
+    }
+    apply(record, session, transcript, subagent, context);
+  }
+}
+function readTranscriptFile(ref, session, transcript, subagent, context) {
+  const file = ref.path;
   let stat;
   try {
     stat = statSync23(file);
@@ -46374,6 +46447,19 @@ function readTranscriptFile(file, session, transcript, subagent, context) {
   const unchanged = Number(stat.ino) === transcript.inode && stat.size === transcript.size && stat.mtimeMs === transcript.mtimeMs;
   if (unchanged)
     return false;
+  if (ref.gz) {
+    const bytes = transcriptBytes(ref);
+    if (bytes === null)
+      return false;
+    const data = bytes.subarray(Math.min(transcript.offset, bytes.length));
+    const whole = data.lastIndexOf(10) + 1;
+    applyLines(data.subarray(0, whole).toString("utf8"), session, transcript, subagent, context);
+    transcript.offset += whole;
+    transcript.inode = Number(stat.ino);
+    transcript.size = stat.size;
+    transcript.mtimeMs = stat.mtimeMs;
+    return whole > 0;
+  }
   let fd;
   try {
     fd = openSync11(file, "r");
@@ -46397,24 +46483,7 @@ function readTranscriptFile(file, session, transcript, subagent, context) {
       readAnything = true;
       const data = carry.length === 0 ? Buffer.from(chunk.subarray(0, read)) : Buffer.concat([carry, chunk.subarray(0, read)]);
       const whole = data.lastIndexOf(10) + 1;
-      const text = data.subarray(0, whole).toString("utf8");
-      for (const line of text.split(`
-`)) {
-        if (line.trim() === "" || !neededLine(line))
-          continue;
-        let record;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          session.skipped += 1;
-          continue;
-        }
-        if (!isJsonObject19(record)) {
-          session.skipped += 1;
-          continue;
-        }
-        apply(record, session, transcript, subagent, context);
-      }
+      applyLines(data.subarray(0, whole).toString("utf8"), session, transcript, subagent, context);
       absolute += whole;
       carry = Buffer.from(data.subarray(whole));
       if (read < CHUNK_BYTES)
@@ -46746,7 +46815,7 @@ function missingMeasures(sessions) {
 }
 function readFlow(paths, options) {
   const nowMs = options.nowMs ?? Date.now();
-  const logged = readAskLog(join78(paths.stateDir, GUARD_ASKS_FILE));
+  const logged = readAskLog(join77(paths.stateDir, GUARD_ASKS_FILE));
   const context = {
     askLog: logged.asks,
     nowMs,
@@ -46756,42 +46825,34 @@ function readFlow(paths, options) {
   const sessions = [];
   const open = [];
   const seenSessions = [];
-  const projectsDir = join78(paths.claudeConfigDir, "projects");
-  for (const project of entries(projectsDir).dirs) {
-    const folder = join78(projectsDir, project);
-    const cacheFile = join78(paths.stateDir, "flow", `${project}.json`);
+  const tree = transcriptTree(projectsFolder(paths), paths.stateDir);
+  for (const [project, ids] of tree) {
+    const cacheFile = join77(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
       cache = parseCache(readFileSync80(cacheFile, "utf8"), project);
     } catch {}
     let dirty = false;
-    const listed = entries(folder);
-    const ids = new Set([
-      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
-      ...listed.dirs
-    ]);
-    for (const id of [...ids].sort()) {
+    for (const [id, found] of ids) {
       if (!sessionMatches(options.session, id))
         continue;
       const session = cache.sessions[id] ?? emptySession();
       cache.sessions[id] = session;
-      const own = join78(folder, `${id}.jsonl`);
       const entry = session.transcripts[`${id}.jsonl`] ?? emptyTranscript();
       session.transcripts[`${id}.jsonl`] = entry;
-      const subagents = join78(folder, id, "subagents");
-      const files = [
-        { path: own, subagent: false, transcript: entry }
-      ];
-      for (const name of entries(subagents).files.filter((file) => file.endsWith(".jsonl"))) {
+      const files = found.main === null ? [] : [{ ref: found.main, subagent: false, transcript: entry }];
+      for (const [name, ref] of found.subagents) {
+        if (!name.endsWith(".jsonl"))
+          continue;
         const key = `${id}/subagents/${name}`;
         const transcript = session.transcripts[key] ?? emptyTranscript();
         session.transcripts[key] = transcript;
-        files.push({ path: join78(subagents, name), subagent: true, transcript });
+        files.push({ ref, subagent: true, transcript });
       }
-      if (files.some((file) => replaced(file.path, file.transcript)))
+      if (files.some((file) => replaced(file.ref, file.transcript)))
         resetSession(session);
       for (const file of files) {
-        if (readTranscriptFile(file.path, session, file.transcript, file.subagent, context)) {
+        if (readTranscriptFile(file.ref, session, file.transcript, file.subagent, context)) {
           dirty = true;
         }
       }
@@ -46843,7 +46904,7 @@ function pruneAll(cache, nowMs) {
   return changed;
 }
 function projectsFolder(paths) {
-  return join78(paths.claudeConfigDir, "projects");
+  return join77(paths.claudeConfigDir, "projects");
 }
 
 // src/cli/report.ts
@@ -47081,13 +47142,13 @@ ${REPORT_USAGE}`);
 }
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync69, readFileSync as readFileSync83 } from "fs";
-import { join as join81, relative as relative8 } from "path";
+import { existsSync as existsSync68, readFileSync as readFileSync83 } from "fs";
+import { join as join80, relative as relative8 } from "path";
 
 // src/sessions/command.ts
 import {
   closeSync as closeSync12,
-  existsSync as existsSync68,
+  existsSync as existsSync67,
   mkdirSync as mkdirSync30,
   openSync as openSync12,
   readdirSync as readdirSync29,
@@ -47098,11 +47159,11 @@ import {
   writeFileSync as writeFileSync14
 } from "fs";
 import { platform as platform2 } from "os";
-import { dirname as dirname28, join as join80, resolve as resolve13 } from "path";
+import { dirname as dirname28, join as join79, resolve as resolve13 } from "path";
 
 // src/sessions/finished.ts
 import { readdirSync as readdirSync28, readFileSync as readFileSync81, statSync as statSync24 } from "fs";
-import { join as join79 } from "path";
+import { join as join78 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
   id: string2().regex(/^[0-9a-f]{8}$/),
@@ -47160,7 +47221,7 @@ function sessionTerminalAt(paths, row) {
   if (!/^[0-9a-f]{8}$/.test(row.id))
     return null;
   try {
-    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync81(join79(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
+    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync81(join78(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
     if (!parsed.success || parsed.data.sessionId !== row.sessionId || parsed.data.state !== row.state)
       return null;
     return Math.max(Date.parse(parsed.data.lastTerminalAt), Date.parse(parsed.data.updatedAt));
@@ -47243,7 +47304,7 @@ function readCrewLeftovers(paths, deps) {
         continue;
       }
       const removedAt = Date.parse(record.updatedAt);
-      const newest = Math.max(...found.files.map((file) => statSync24(join79(found.projectDir, file)).mtimeMs));
+      const newest = Math.max(...found.files.map((file) => statSync24(join78(found.projectDir, file)).mtimeMs));
       if (newest > removedAt) {
         out.kept.push({ record, why: "it was written after its crew session was removed" });
         continue;
@@ -47277,10 +47338,10 @@ var RESTORE_HOURS = 12;
 var TAIL_BYTES2 = 512 * 1024;
 function warpTabConfigDir(home, on = platform2()) {
   if (on === "win32")
-    return join80(home, "AppData", "Roaming", "warp", "Warp", "data", "tab_configs");
+    return join79(home, "AppData", "Roaming", "warp", "Warp", "data", "tab_configs");
   if (on === "darwin")
-    return join80(home, ".warp", "tab_configs");
-  return join80(home, ".local", "share", "warp-terminal", "tab_configs");
+    return join79(home, ".warp", "tab_configs");
+  return join79(home, ".local", "share", "warp-terminal", "tab_configs");
 }
 function readTail(path, size) {
   const start = Math.max(0, size - TAIL_BYTES2);
@@ -47296,7 +47357,7 @@ function readTail(path, size) {
 function sessionFiles(projectsDir, folder) {
   let names;
   try {
-    names = readdirSync29(join80(projectsDir, folder));
+    names = readdirSync29(join79(projectsDir, folder));
   } catch {
     return [];
   }
@@ -47304,7 +47365,7 @@ function sessionFiles(projectsDir, folder) {
   for (const name of names) {
     if (!name.endsWith(".jsonl"))
       continue;
-    const path = join80(projectsDir, folder, name);
+    const path = join79(projectsDir, folder, name);
     const stat = statSync25(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
@@ -47324,7 +47385,7 @@ function readSession2(file) {
   });
 }
 function sessionWorkFolderTimes(projectsDir) {
-  if (!existsSync68(projectsDir))
+  if (!existsSync67(projectsDir))
     return [];
   const folders = new Map;
   for (const folder of readdirSync29(projectsDir)) {
@@ -47342,7 +47403,7 @@ function sessionWorkFolders(projectsDir) {
   return sessionWorkFolderTimes(projectsDir).map((worked) => worked.folder);
 }
 function savedSessions(projectsDir, mainCheckout, since) {
-  if (!existsSync68(projectsDir))
+  if (!existsSync67(projectsDir))
     return [];
   const sessions = [];
   for (const folder of readdirSync29(projectsDir)) {
@@ -47372,7 +47433,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
       continue;
     if (keep.has(name.slice(0, -".toml".length)))
       continue;
-    const path = join80(dir, name);
+    const path = join79(dir, name);
     let text;
     try {
       text = readFileSync82(path, "utf8");
@@ -47385,9 +47446,9 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
       rmSync19(path);
   }
   for (const session of sessions) {
-    writeFileSync14(join80(dir, `${tabConfigName(key, session)}.toml`), warpTabConfig(session, mainCheckout));
+    writeFileSync14(join79(dir, `${tabConfigName(key, session)}.toml`), warpTabConfig(session, mainCheckout));
   }
-  writeFileSync14(join80(dir, `${restoreAll}.toml`), [
+  writeFileSync14(join79(dir, `${restoreAll}.toml`), [
     TAB_CONFIG_MARK,
     'name = "Claude \xB7 bring back the sessions a restart or a closed window stopped"',
     'title = "restore Claude sessions"',
@@ -47404,11 +47465,11 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
 var HANDOVER_MS = 3000;
 var OPENED_AGAIN_MINUTES = 5;
 function openedMarkerFile(stateDir, id) {
-  return join80(stateDir, "sessions-opened", id);
+  return join79(stateDir, "sessions-opened", id);
 }
 function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
   const file = openedMarkerFile(stateDir, id);
-  if (!existsSync68(file))
+  if (!existsSync67(file))
     return false;
   let text;
   try {
@@ -47426,7 +47487,7 @@ function markOpened(stateDir, id, now) {
   for (const name of readdirSync29(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
-    rmSync19(join80(dir, name), { force: true });
+    rmSync19(join79(dir, name), { force: true });
   }
 }
 async function openOnDesktop(command, options, deps) {
@@ -47686,7 +47747,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync68(dirname28(tabDir))
+    warpDataFolder: existsSync67(dirname28(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -47761,7 +47822,7 @@ function checkoutFold(checkout) {
   return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
 }
 function checkoutOf2(folder, env) {
-  if (!existsSync69(folder))
+  if (!existsSync68(folder))
     return null;
   try {
     return checkoutFold(locateCheckout(folder, { env }));
@@ -47770,10 +47831,10 @@ function checkoutOf2(folder, env) {
   }
 }
 function retiredPartsOf(repo, mainCheckout = null) {
-  const config = join81(repo, ".claude", "cc-smart-dev-kit.json");
+  const config = join80(repo, ".claude", "cc-smart-dev-kit.json");
   let fields = [];
   let error = null;
-  if (existsSync69(config)) {
+  if (existsSync68(config)) {
     try {
       fields = retiredFieldsOf(parseUserJson(readFileSync83(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
@@ -47800,7 +47861,7 @@ function reposWithRetiredParts(paths, env) {
 function retiredRepoLine(found, home) {
   const fix = `cd ${shellWord(found.repo)} && ${COMMAND} project init`;
   const where = found.mainCheckout === null ? tildify(found.repo, home) : `${tildify(found.repo, home)} (a worktree of ${tildify(found.mainCheckout, home)})`;
-  const config = join81(".claude", "cc-smart-dev-kit.json");
+  const config = join80(".claude", "cc-smart-dev-kit.json");
   if (found.error !== null) {
     return `! ${where}: ${config} cannot be read (${found.error}), so whether it still sets a field retired in ${WORKTREE_ENGINE_RETIRED_IN} is unknown. Fix it, then: ${fix}`;
   }
@@ -48311,8 +48372,8 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync70, readdirSync as readdirSync30, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync26 } from "fs";
-import { basename as basename16, dirname as dirname29, join as join82 } from "path";
+import { existsSync as existsSync69, readdirSync as readdirSync30, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync26 } from "fs";
+import { basename as basename16, dirname as dirname29, join as join81 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
   name: "anymodel",
@@ -48348,20 +48409,20 @@ function migrateUnits(paths, overrides = {}) {
 }
 function migratePaths(paths, units) {
   return {
-    oldConfigDir: join82(paths.home, ".config", OLD.name),
-    configDir: join82(paths.home, ".config", COMMAND),
-    oldStateDir: join82(paths.claudeConfigDir, OLD.name),
+    oldConfigDir: join81(paths.home, ".config", OLD.name),
+    configDir: join81(paths.home, ".config", COMMAND),
+    oldStateDir: join81(paths.claudeConfigDir, OLD.name),
     stateDir: paths.stateDir,
-    oldShareDir: join82(paths.home, ".local", "share", OLD.name),
-    shareDir: join82(paths.home, ".local", "share", COMMAND),
-    oldStateHomeDir: join82(paths.home, ".local", "state", OLD.name),
-    stateHomeDir: join82(paths.home, ".local", "state", COMMAND),
-    oldLauncher: join82(paths.binDir, OLD.name),
-    launcher: join82(paths.binDir, LAUNCHER_NAME),
-    oldUnitFile: join82(units.dir, units.oldUnit),
-    oldSocketFile: join82(units.dir, units.oldSocket),
-    unitFile: join82(units.dir, units.unit),
-    socketFile: join82(units.dir, units.socket)
+    oldShareDir: join81(paths.home, ".local", "share", OLD.name),
+    shareDir: join81(paths.home, ".local", "share", COMMAND),
+    oldStateHomeDir: join81(paths.home, ".local", "state", OLD.name),
+    stateHomeDir: join81(paths.home, ".local", "state", COMMAND),
+    oldLauncher: join81(paths.binDir, OLD.name),
+    launcher: join81(paths.binDir, LAUNCHER_NAME),
+    oldUnitFile: join81(units.dir, units.oldUnit),
+    oldSocketFile: join81(units.dir, units.oldSocket),
+    unitFile: join81(units.dir, units.unit),
+    socketFile: join81(units.dir, units.socket)
   };
 }
 function movedFolders(old) {
@@ -48443,7 +48504,7 @@ var MIGRATE_STEPS = [
   "old-plugin"
 ];
 function progressFile(stateDir) {
-  return join82(stateDir, "migrate-progress.json");
+  return join81(stateDir, "migrate-progress.json");
 }
 function readProgress(stateDir) {
   try {
@@ -48469,7 +48530,7 @@ var BOOKKEEPING_NAMES = [
   ...Object.values(updateFiles("")).map((path) => basename16(path))
 ];
 function foreignStateEntries(old) {
-  if (!existsSync70(old.stateDir))
+  if (!existsSync69(old.stateDir))
     return [];
   return readdirSync30(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
@@ -48482,21 +48543,21 @@ function oldPiecesPresent(paths, old, renamer) {
     old.oldLauncher,
     old.oldUnitFile,
     old.oldSocketFile
-  ].some((path) => existsSync70(path))) {
+  ].some((path) => existsSync69(path))) {
     return true;
   }
   if (readProgress(old.stateDir) !== null)
     return true;
-  const configFile = existsSync70(paths.gatewayConfigFile) ? paths.gatewayConfigFile : join82(old.oldConfigDir, "gateway.json");
+  const configFile = existsSync69(paths.gatewayConfigFile) ? paths.gatewayConfigFile : join81(old.oldConfigDir, "gateway.json");
   if (oldNamesInConfig(configFile, renamer))
     return true;
-  const claudeMd = join82(paths.claudeConfigDir, "CLAUDE.md");
+  const claudeMd = join81(paths.claudeConfigDir, "CLAUDE.md");
   if (readText3(claudeMd)?.includes(OLD.blockBegin) === true)
     return true;
   return recordsNameOldPaths(oldStateFolder(old), renamer);
 }
 function oldStateFolder(old) {
-  return existsSync70(old.oldStateDir) ? old.oldStateDir : old.stateDir;
+  return existsSync69(old.oldStateDir) ? old.oldStateDir : old.stateDir;
 }
 function readText3(file) {
   try {
@@ -48523,7 +48584,7 @@ function oldNamesInConfig(file, renamer) {
 }
 function recordsNameOldPaths(stateDir, renamer) {
   for (const name of ["owned.json", "owned-entries.json", "changed.json"]) {
-    const text = readText3(join82(stateDir, name));
+    const text = readText3(join81(stateDir, name));
     if (text === null)
       continue;
     try {
@@ -48537,8 +48598,8 @@ function recordsNameOldPaths(stateDir, renamer) {
         return true;
     } catch {}
   }
-  const backups = join82(stateDir, "backups");
-  if (existsSync70(backups)) {
+  const backups = join81(stateDir, "backups");
+  if (existsSync69(backups)) {
     for (const folder of readdirSync30(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
@@ -48549,33 +48610,33 @@ function recordsNameOldPaths(stateDir, renamer) {
 function blockedTargets(old) {
   const blocked = [];
   for (const { from, to } of movedFolders(old)) {
-    if (!existsSync70(from) || !existsSync70(to))
+    if (!existsSync69(from) || !existsSync69(to))
       continue;
     if (to === old.stateDir && foreignStateEntries(old).length === 0)
       continue;
     const foreign = to === old.stateDir ? foreignStateEntries(old) : null;
     blocked.push(foreign === null || foreign.length === 0 ? `${to} is already there: ${from} cannot be moved onto it, and two folders are never merged by themselves. Move or remove one of them by hand, then run again.` : `${to} is already there, and it holds ${foreign.join(", ")}: it is this version's own state folder. ${from} holds the old setup's files, which this move brings in, so move or remove ${to} by hand (its own files are the ones to look at first), then run again.`);
   }
-  if (existsSync70(old.oldLauncher) && existsSync70(old.launcher)) {
+  if (existsSync69(old.oldLauncher) && existsSync69(old.launcher)) {
     blocked.push(`${old.launcher} is already there: ${old.oldLauncher} cannot be moved onto it. Remove the old launcher by hand, then run again.`);
   }
   return blocked;
 }
 function move(from, to, dryRun) {
-  if (!existsSync70(from))
+  if (!existsSync69(from))
     return false;
   if (!dryRun)
     renameSync7(from, to);
   return true;
 }
 function absorbStateFolder(from, to, dryRun) {
-  if (!existsSync70(from))
+  if (!existsSync69(from))
     return 0;
   let moved = 0;
   for (const name of readdirSync30(from)) {
-    const source = join82(from, name);
-    const target = join82(to, name);
-    if (!existsSync70(target)) {
+    const source = join81(from, name);
+    const target = join81(to, name);
+    if (!existsSync69(target)) {
       moved += 1;
       if (!dryRun)
         renameSync7(source, target);
@@ -48598,8 +48659,8 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   let files = 0;
   let backups = 0;
   const rewriteJson = (name, rewrite) => {
-    const file = join82(stateDir, name);
-    if (!existsSync70(file))
+    const file = join81(stateDir, name);
+    if (!existsSync69(file))
       return;
     const text = readFileSync84(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
@@ -48624,24 +48685,24 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
         renamer.path(file),
         isObject(entry) && typeof entry.baseline === "string" ? {
           ...entry,
-          baseline: join82(backupDir(stateDir, renamer.path(file)), renamer.backupName(basename16(entry.baseline)))
+          baseline: join81(backupDir(stateDir, renamer.path(file)), renamer.backupName(basename16(entry.baseline)))
         } : entry
       ]))
     };
   });
-  const backupsDir = join82(stateDir, "backups");
-  if (!existsSync70(backupsDir))
+  const backupsDir = join81(stateDir, "backups");
+  if (!existsSync69(backupsDir))
     return { files, backups };
   const folders = readdirSync30(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
-    const folderPath = join82(backupsDir, folder);
+    const folderPath = join81(backupsDir, folder);
     for (const name of readdirSync30(folderPath)) {
       const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
       backups += 1;
       if (!dryRun)
-        renameSync7(join82(folderPath, name), join82(folderPath, renamed));
+        renameSync7(join81(folderPath, name), join81(folderPath, renamed));
     }
     const renamedFolder = encodeURIComponent(renamer.path(decodeURIComponent(folder)));
     if (renamedFolder === folder)
@@ -48649,10 +48710,10 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     backups += 1;
     if (dryRun)
       continue;
-    const target = join82(backupsDir, renamedFolder);
-    if (existsSync70(target)) {
+    const target = join81(backupsDir, renamedFolder);
+    if (existsSync69(target)) {
       for (const name of readdirSync30(folderPath))
-        renameSync7(join82(folderPath, name), join82(target, name));
+        renameSync7(join81(folderPath, name), join81(target, name));
       rmSync20(folderPath, { recursive: true, force: true });
     } else {
       renameSync7(folderPath, target);
@@ -48664,7 +48725,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const set = [];
   const remove = [];
   const kept = [];
-  if (!existsSync70(settingsFile))
+  if (!existsSync69(settingsFile))
     return { set, remove, kept };
   const parsed = JSON.parse(readFileSync84(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
@@ -48738,7 +48799,7 @@ function oldConfigPort(config) {
   return typeof port === "number" && Number.isInteger(port) ? port : DEFAULT_PORT;
 }
 function rewriteLimitState(file, stateDir, renamer, dryRun) {
-  if (!existsSync70(file))
+  if (!existsSync69(file))
     return 0;
   let parsed;
   try {
@@ -48768,7 +48829,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
 }
 function migrateInstructions(paths, stateDir, options) {
   const lines = [];
-  const claudeMd = join82(paths.claudeConfigDir, "CLAUDE.md");
+  const claudeMd = join81(paths.claudeConfigDir, "CLAUDE.md");
   if (instructionsOptedOut(stateDir)) {
     lines.push({
       mark: " ",
@@ -48777,7 +48838,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync70(claudeMd) ? readFileSync84(claudeMd, "utf8") : null;
+  const text = existsSync69(claudeMd) ? readFileSync84(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -48820,7 +48881,7 @@ function readPlan(paths, old, units, renamer, options) {
   if (blocked.length > 0)
     return { error: blocked.join(`
 `) };
-  const configFile = existsSync70(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync70(join82(old.oldConfigDir, "gateway.json")) ? join82(old.oldConfigDir, "gateway.json") : null;
+  const configFile = existsSync69(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync69(join81(old.oldConfigDir, "gateway.json")) ? join81(old.oldConfigDir, "gateway.json") : null;
   let rawConfig = null;
   if (configFile !== null) {
     try {
@@ -48841,7 +48902,7 @@ ${parsed.error}` };
     port = parsed.config.port;
   }
   const stateDir = oldStateFolder(old);
-  if (existsSync70(paths.settingsFile)) {
+  if (existsSync69(paths.settingsFile)) {
     try {
       const parsed = JSON.parse(readFileSync84(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
@@ -48864,13 +48925,13 @@ ${parsed.error}` };
   }
   return {
     plan: {
-      absorbState: existsSync70(old.stateDir) && foreignStateEntries(old).length === 0,
+      absorbState: existsSync69(old.stateDir) && foreignStateEntries(old).length === 0,
       config,
       configFile,
       done: readProgress(old.stateDir)?.steps ?? [],
       judgeTargets: judgeTargets(rawConfig),
       oldPlugin: findUserInstall(paths.installedPluginsFile, OLD.pluginId),
-      oldRouterActive: options.systemd && (unitActive(options.runner, units.oldUnit) || existsSync70(old.oldSocketFile) && unitActive(options.runner, units.oldSocket)),
+      oldRouterActive: options.systemd && (unitActive(options.runner, units.oldUnit) || existsSync69(old.oldSocketFile) && unitActive(options.runner, units.oldSocket)),
       port: options.router?.port ?? port,
       rewrite,
       running: runningSessions(updateFiles(stateDir))
@@ -48961,7 +49022,7 @@ ${MIGRATE_DRY_RUN}`);
     say3(" ", null, `would ask: Stop ${units.oldUnit} and start ${units.unit}?`);
   }
   const stateDir = options.dryRun ? old.oldStateDir : old.stateDir;
-  const gatewayStateFile = options.dryRun ? join82(old.oldStateHomeDir, basename16(paths.gatewayStateFile)) : paths.gatewayStateFile;
+  const gatewayStateFile = options.dryRun ? join81(old.oldStateHomeDir, basename16(paths.gatewayStateFile)) : paths.gatewayStateFile;
   const progress = {
     at: new Date(options.probe.now()).toISOString(),
     steps: [...plan.done]
@@ -48977,7 +49038,7 @@ ${MIGRATE_DRY_RUN}`);
       const launcher = movedFile(old);
       for (const { from, to, what } of [...movedFolders(old), launcher]) {
         const into = to === old.stateDir && plan.absorbState;
-        const absorb = to === old.stateDir && existsSync70(from) && existsSync70(to);
+        const absorb = to === old.stateDir && existsSync69(from) && existsSync69(to);
         const moved = absorb ? absorbStateFolder(from, to, options.dryRun) : Number(move(from, to, options.dryRun));
         if (moved === 0)
           continue;
@@ -49029,7 +49090,7 @@ ${parsed.error}`);
         if (result.changes.length > 0) {
           say3("~", short(paths.settingsFile), `${String(result.changes.length)} gateway key(s) changed to this version's, or taken out where it writes none`);
         }
-      } else if (existsSync70(paths.settingsFile)) {
+      } else if (existsSync69(paths.settingsFile)) {
         say3(" ", null, `${short(paths.settingsFile)}: no gateway key of the old setup's is left to change`);
       }
       for (const key of changes.kept) {
@@ -49042,10 +49103,10 @@ ${parsed.error}`);
       }
     },
     launcher: () => {
-      if (!existsSync70(old.oldLauncher) && !existsSync70(old.launcher))
+      if (!existsSync69(old.oldLauncher) && !existsSync69(old.launcher))
         return;
       if (options.dryRun) {
-        const outcome = existsSync70(old.oldLauncher) ? "updated" : "created";
+        const outcome = existsSync69(old.oldLauncher) ? "updated" : "created";
         say3("~", short(old.launcher), `written for this version (${outcome})`);
         return;
       }
@@ -49061,7 +49122,7 @@ ${parsed.error}`);
       const existing = [
         { file: old.oldSocketFile, name: units.oldSocket },
         { file: old.oldUnitFile, name: units.oldUnit }
-      ].filter((unit) => existsSync70(unit.file));
+      ].filter((unit) => existsSync69(unit.file));
       if (existing.length === 0)
         return;
       const names = existing.map((unit) => unit.name).join(", ");
@@ -49164,8 +49225,8 @@ function instructionsToSetup(paths, options) {
 }
 
 // src/cli/restore.ts
-import { existsSync as existsSync71, rmSync as rmSync21 } from "fs";
-import { dirname as dirname30, join as join83 } from "path";
+import { existsSync as existsSync70, rmSync as rmSync21 } from "fs";
+import { dirname as dirname30, join as join82 } from "path";
 function describe3(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -49185,8 +49246,8 @@ var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
-  const launcher = join83(paths.binDir, LAUNCHER_NAME);
-  if (existsSync71(launcher)) {
+  const launcher = join82(paths.binDir, LAUNCHER_NAME);
+  if (existsSync70(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
   const bunfig = bunConfigPath(dirname30(dirname30(cliBundle)));
@@ -49226,7 +49287,7 @@ function removeMcp(paths, options, short) {
     forgetMcpServer(paths.stateDir, name);
   const lines = [...removal.removed, ...removal.notes];
   const ok = !removal.recordsUnreadable && removal.kept.length === 0;
-  if (ok && existsSync71(mcpRecordsFile(paths.stateDir))) {
+  if (ok && existsSync70(mcpRecordsFile(paths.stateDir))) {
     rmSync21(mcpRecordsFile(paths.stateDir), { force: true });
     lines.push(`- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`);
   }
@@ -49336,7 +49397,7 @@ async function runRestore(paths, options) {
     const mcp = removeMcp(paths, options, short);
     const browser = removeBrowser(paths, browserRecord, options.runner);
     rmSync21(restartPendingFile(paths.stateDir), { force: true });
-    const stateGone = routerTracked && existsSync71(paths.gatewayStateFile);
+    const stateGone = routerTracked && existsSync70(paths.gatewayStateFile);
     if (stateGone)
       rmSync21(paths.gatewayStateFile, { force: true });
     print(results, short);
@@ -49360,11 +49421,11 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync72, mkdirSync as mkdirSync31, rmSync as rmSync22 } from "fs";
-import { basename as basename17, delimiter, dirname as dirname31, isAbsolute as isAbsolute8, join as join85, relative as relative9 } from "path";
+import { existsSync as existsSync71, mkdirSync as mkdirSync31, rmSync as rmSync22 } from "fs";
+import { basename as basename17, delimiter, dirname as dirname31, isAbsolute as isAbsolute8, join as join84, relative as relative9 } from "path";
 
 // src/setup/auto-mode.ts
-import { join as join84 } from "path";
+import { join as join83 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -49376,9 +49437,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join84(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join83(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join84(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join83(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -49412,7 +49473,7 @@ function shownValue2(path, value) {
   return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync72(settingsFile))
+  if (!existsSync71(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -49423,10 +49484,10 @@ function marketplaceKnown(settingsFile) {
   }
 }
 function statuslineDeclinedFile(stateDir) {
-  return join85(stateDir, "statusline-declined");
+  return join84(stateDir, "statusline-declined");
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync72(settingsFile))
+  if (!existsSync71(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -49482,7 +49543,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync72(paths.tavilyKeyFile) ? "changed" : "created";
+    const mark = existsSync71(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
       mkdirSync31(dirname31(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
@@ -49690,7 +49751,7 @@ function askAutoMode(paths, options, planned, out, screen, report) {
   return wanted;
 }
 function askStatusline(paths, machine, managed, yes) {
-  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync72(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync71(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
@@ -50294,12 +50355,12 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync73, readFileSync as readFileSync86, rmSync as rmSync23, statSync as statSync27, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync72, readFileSync as readFileSync86, rmSync as rmSync23, statSync as statSync27, writeFileSync as writeFileSync15 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
-import { basename as basename18, join as join87 } from "path";
+import { basename as basename18, join as join86 } from "path";
 
 // src/hooks/alert-sound.ts
-import { join as join86 } from "path";
+import { join as join85 } from "path";
 var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
 var MACOS_SOUNDS = {
   "dialog-warning": "Basso",
@@ -50310,13 +50371,13 @@ function soundArgv(moment, platform, which) {
   if (platform === "linux") {
     const paplay = which("paplay");
     if (paplay !== null)
-      return [paplay, join86(SOUND_DIR, `${moment}.oga`)];
+      return [paplay, join85(SOUND_DIR, `${moment}.oga`)];
     const canberra = which("canberra-gtk-play");
     return canberra === null ? null : [canberra, "-i", moment];
   }
   if (platform === "darwin") {
     const afplay = which("afplay");
-    return afplay === null ? null : [afplay, join86("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+    return afplay === null ? null : [afplay, join85("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
 }
@@ -50396,7 +50457,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync86(join87(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync86(join86(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject21(settings) || !isJsonObject21(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -50405,7 +50466,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync86(join87(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync86(join86(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject21(installed) || !isJsonObject21(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -50518,7 +50579,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync73(ctx.finished))
+      if (input.stop_hook_active === true && existsSync72(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -50690,9 +50751,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join87(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join87(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join87(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join86(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join86(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join86(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -50776,12 +50837,12 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync74 } from "fs";
-import { join as join89 } from "path";
+import { existsSync as existsSync73 } from "fs";
+import { join as join88 } from "path";
 
 // src/hooks/terminal.ts
 import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync28, writeSync as writeSync2 } from "fs";
-import { join as join88 } from "path";
+import { join as join87 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -50800,7 +50861,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join88(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join87(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -50863,11 +50924,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join89(paths.binDir, LAUNCHER_NAME);
+    const launcher = join88(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync74(launcher) ? launcher : null,
+      launcher: existsSync73(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,
@@ -50890,14 +50951,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync75, readFileSync as readFileSync87 } from "fs";
+import { existsSync as existsSync74, readFileSync as readFileSync87 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
-    exists: (path) => existsSync75(path),
+    exists: (path) => existsSync74(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync75("/etc/os-release") ? readFileSync87("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync74("/etc/os-release") ? readFileSync87("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -50978,8 +51039,8 @@ function realMachine(env, confirm) {
 
 // src/entries/cli.ts
 function distBundle(name) {
-  const beside = join90(import.meta.dir, name);
-  return existsSync76(beside) ? beside : join90(import.meta.dir, "..", "..", "plugin", "dist", name);
+  const beside = join89(import.meta.dir, name);
+  return existsSync75(beside) ? beside : join89(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -51128,7 +51189,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync76(project) || !statSync29(project).isDirectory()) {
+      if (!existsSync75(project) || !statSync29(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
@@ -51188,7 +51249,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join90(paths.binDir, LAUNCHER_NAME);
+      const launcher = join89(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
@@ -51216,7 +51277,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         portal: () => testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
         project: {
           cwd: process.cwd(),
-          pluginHooksFile: join90(pluginDir(), "hooks", "hooks.json")
+          pluginHooksFile: join89(pluginDir(), "hooks", "hooks.json")
         },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),

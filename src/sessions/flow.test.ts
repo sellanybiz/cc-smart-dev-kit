@@ -5,8 +5,17 @@
  * must never show.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { tempDir } from "../testing/temp";
 import type { FlowPaths } from "./flow";
 import {
@@ -670,5 +679,66 @@ describe("filters, skipped records and the reader's helpers", () => {
     const cache = readFileSync(join(flowCacheFolder(paths), `${PROJECT}.json`), "utf8");
     expect(cache).not.toContain(SECRET);
     expect(cache).not.toContain("bun test");
+  });
+});
+
+describe("AR1: a removed crew session's conversation in the kit's crew archive", () => {
+  const options = { nowMs: NOW, project: null, session: null, sinceMs: SINCE };
+
+  /** Moves the session's files the way the archive does: each gzipped, its time kept. */
+  function archive(paths: FlowPaths, folder: string): void {
+    const into = join(
+      paths.stateDir,
+      "crew-archive",
+      "0123456789abcdef",
+      "B1-help-1a2b3c",
+      "projects",
+      PROJECT,
+    );
+    for (const file of [`${SESSION}.jsonl`, join(SESSION, "subagents", "agent-1.jsonl")]) {
+      const to = join(into, `${file}.gz`);
+      mkdirSync(dirname(to), { recursive: true });
+      writeFileSync(to, gzipSync(readFileSync(join(folder, file))));
+      const time = statSync(join(folder, file)).mtime;
+      utimesSync(to, time, time);
+    }
+    rmSync(folder, { force: true, recursive: true });
+  }
+
+  function crewSession() {
+    const made = world([
+      launches("r1", at(10), 2),
+      turnDuration(at(10, 5), 60_000, null),
+      compact(at(11), "auto", 150_000, 40_000),
+    ]);
+    subagent(made.folder, "agent-1.jsonl", [
+      assistant("s1", at(10, 1), [text()], { isSidechain: true }),
+      assistant("s2", at(10, 30), [text()], { isSidechain: true }),
+    ]);
+    return made;
+  }
+
+  it("counts the same after the move: read again from the copy once, never twice", () => {
+    const { folder, paths } = crewSession();
+    const before = readFlow(paths, options);
+    expect(before.sessions[0]?.agents.launches).toBe(2);
+
+    archive(paths, folder);
+    const after = readFlow(paths, options);
+    const again = readFlow(paths, options);
+
+    expect(after.sessions).toEqual(before.sessions);
+    expect(again.sessions).toEqual(before.sessions);
+    expect(again.totals).toEqual(before.totals);
+  });
+
+  it("a session first seen in the archive is counted", () => {
+    const fresh = crewSession();
+    const expected = readFlow(fresh.paths, options).sessions;
+    const { folder, paths } = crewSession();
+
+    archive(paths, folder);
+
+    expect(readFlow(paths, options).sessions).toEqual(expected);
   });
 });

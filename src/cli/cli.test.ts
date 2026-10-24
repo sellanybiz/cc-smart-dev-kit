@@ -3220,6 +3220,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
       hours: 1,
       sessions: [
         {
+          archived: false,
           cwd: "/home/user/my-app",
           launched: { sonnet: 1 },
           main: {},

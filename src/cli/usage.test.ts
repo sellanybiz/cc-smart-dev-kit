@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import type { SafetyCheckState } from "../gateway/safety-checks";
 import { type AgentLaunch, parseAgentLaunch } from "../hooks/agent-launches";
 import { type AgentUsage, agentUsageFile, parseAgentUsage } from "../hooks/agent-usage";
@@ -141,6 +142,7 @@ describe("usage", () => {
     const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
     expect(sessions).toEqual([
       {
+        archived: false,
         cwd: "/home/user/my-app",
         launched: { inherited: 1, opus: 1, sonnet: 1 },
         main: { "claude-opus-5-5": 1, "glm-5.3-flash": 1 },
@@ -166,6 +168,66 @@ describe("usage", () => {
       ].join("\n"),
     );
     expect(text).not.toContain(SECRET_TEXT);
+  });
+
+  it("AR1: a removed crew session's conversation is read from the kit's crew archive, and says so", () => {
+    const home = tempDir("usage");
+    const paths = cliPaths({ HOME: home });
+    const root = paths.projectsDir;
+    const stateDir = paths.stateDir;
+    mkdirSync(root, { recursive: true });
+    // The layout the archive keeps: Claude Code's own, each file gzipped, its time kept.
+    const project = join(
+      stateDir,
+      "crew-archive",
+      "0123456789abcdef",
+      "B1-help-1a2b3c",
+      "projects",
+      "-home-user-my-app--claude-worktrees-crew-B1-help",
+    );
+    const session = "55555555-aaaa-bbbb-cccc-000000000005";
+    const gz = (file: string, lines: string[] | string) => {
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, gzipSync(typeof lines === "string" ? lines : `${lines.join("\n")}\n`));
+      utimesSync(file, (NOW - 60_000) / 1000, (NOW - 60_000) / 1000);
+    };
+    gz(join(project, `${session}.jsonl.gz`), reply("c1", "claude-opus-5-5", NOW - 120_000, 2));
+    gz(join(project, session, "subagents", "agent-c1.meta.json.gz"), '{"model":"haiku"}');
+    gz(
+      join(project, session, "subagents", "agent-c1.jsonl.gz"),
+      reply("c2", "claude-haiku-5-5", NOW - 90_000).map((line) =>
+        line.replace('"type":"assistant"', '"isSidechain":true,"type":"assistant"'),
+      ),
+    );
+
+    // Without the state folder the archive is not read: the report is the projects folder's.
+    expect(collectUsage(root, { project: null, sinceMs: SINCE })).toEqual([]);
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE }, stateDir);
+    expect(sessions).toEqual([
+      {
+        archived: true,
+        cwd: "/home/user/my-app",
+        launched: { haiku: 1 },
+        main: { "claude-opus-5-5": 1 },
+        project: "-home-user-my-app--claude-worktrees-crew-B1-help",
+        replies: { "claude-haiku-5-5": 1 },
+        session,
+        subagents: 1,
+      },
+    ]);
+    expect(formatUsage(sessions, 6, root, "/home/user").split("\n")[2]).toBe(
+      "~/my-app  session 55555555 (a removed crew session, from the kit's crew archive)",
+    );
+    // The command reads the kit's own state folder's archive.
+    const logged: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => logged.push(String(args[0]));
+    try {
+      expect(runUsage(paths, ["--hours", "6", "--json"], NOW)).toBe(0);
+    } finally {
+      console.log = original;
+    }
+    expect(JSON.parse(logged[0] ?? "{}").sessions).toEqual(sessions);
   });
 
   it("a main session with no subagent is counted too", () => {

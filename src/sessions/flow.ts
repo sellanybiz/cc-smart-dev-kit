@@ -5,7 +5,9 @@
  *
  * **Where the records are.** A session is `<config>/projects/<project folder>/<session id>.jsonl`;
  * each subagent of it is `<project folder>/<session id>/subagents/agent-<id>.jsonl`
- * (the same layout `usage.ts` reads, and the same file walk and project match). Claude Code
+ * (the same layout `usage.ts` reads, and the same file walk and project match: `transcriptTree`
+ * in `src/crew/archive-read.ts`, which adds the kit's crew archive, where a removed crew
+ * session's conversation moves, gzipped file by file: its flow still counts). Claude Code
  * appends one JSON object per line; a line's `type` says what it holds. The fields this reader
  * relies on are **undocumented**: their contract rows are marked "seen, may change"
  * (`docs/claude-code-contract.md`). Every read is defensive: a missing, renamed or wrongly
@@ -56,7 +58,8 @@
  */
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { entries, matches } from "../cli/usage";
+import { matches } from "../cli/usage";
+import { type TranscriptRef, transcriptBytes, transcriptTree } from "../crew/archive-read";
 import { atomicWrite } from "../setup/write";
 
 /** The paths the report reads and writes; `CliPaths` satisfies it. */
@@ -896,30 +899,63 @@ function resetSession(session: CachedSession): void {
   }
 }
 
-/** Whether a transcript this cache already read is not the same file any more. */
-function replaced(file: string, transcript: CachedTranscript): boolean {
+/**
+ * Whether a transcript this cache already read is not the same file any more. An archived copy
+ * (`ref.gz`) is written once and never grows: only another file (a new inode) replaces it, and
+ * its offset counts the unzipped bytes, so its own size says nothing.
+ */
+function replaced(ref: TranscriptRef, transcript: CachedTranscript): boolean {
   if (transcript.inode === 0) return false;
   let stat: ReturnType<typeof statSync>;
   try {
-    stat = statSync(file);
+    stat = statSync(ref.path);
   } catch {
     return false;
   }
-  return Number(stat.ino) !== transcript.inode || stat.size < transcript.offset;
+  if (Number(stat.ino) !== transcript.inode) return true;
+  return !ref.gz && stat.size < transcript.offset;
+}
+
+/** Applies each whole line of `text` to the session: what one read of a transcript does. */
+function applyLines(
+  text: string,
+  session: CachedSession,
+  transcript: CachedTranscript,
+  subagent: boolean,
+  context: ReadContext,
+): void {
+  for (const line of text.split("\n")) {
+    if (line.trim() === "" || !neededLine(line)) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      session.skipped += 1;
+      continue;
+    }
+    if (!isJsonObject(record)) {
+      session.skipped += 1;
+      continue;
+    }
+    apply(record, session, transcript, subagent, context);
+  }
 }
 
 /**
  * Reads one transcript from its cached offset, applying each whole line. Returns whether
  * anything was read (the cache needs writing then). The caller has already reset the session
- * when a transcript was replaced.
+ * when a transcript was replaced. An archived copy (`ref.gz`, `src/crew/archive-read.ts`) is
+ * unzipped whole and read from the same offset, counted in its unzipped bytes; its own size,
+ * time and inode say whether it changed, so an unchanged copy is never unzipped again.
  */
 function readTranscriptFile(
-  file: string,
+  ref: TranscriptRef,
   session: CachedSession,
   transcript: CachedTranscript,
   subagent: boolean,
   context: ReadContext,
 ): boolean {
+  const file = ref.path;
   let stat: ReturnType<typeof statSync>;
   try {
     stat = statSync(file);
@@ -932,6 +968,19 @@ function readTranscriptFile(
     stat.size === transcript.size &&
     stat.mtimeMs === transcript.mtimeMs;
   if (unchanged) return false;
+  if (ref.gz) {
+    const bytes = transcriptBytes(ref);
+    // Not readable now (being written, or not whole): the position stays, and the next run tries again.
+    if (bytes === null) return false;
+    const data = bytes.subarray(Math.min(transcript.offset, bytes.length));
+    const whole = data.lastIndexOf(10) + 1;
+    applyLines(data.subarray(0, whole).toString("utf8"), session, transcript, subagent, context);
+    transcript.offset += whole;
+    transcript.inode = Number(stat.ino);
+    transcript.size = stat.size;
+    transcript.mtimeMs = stat.mtimeMs;
+    return whole > 0;
+  }
   let fd: number;
   try {
     fd = openSync(file, "r");
@@ -959,22 +1008,7 @@ function readTranscriptFile(
           ? Buffer.from(chunk.subarray(0, read))
           : Buffer.concat([carry, chunk.subarray(0, read)]);
       const whole = data.lastIndexOf(10) + 1;
-      const text = data.subarray(0, whole).toString("utf8");
-      for (const line of text.split("\n")) {
-        if (line.trim() === "" || !neededLine(line)) continue;
-        let record: unknown;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          session.skipped += 1;
-          continue;
-        }
-        if (!isJsonObject(record)) {
-          session.skipped += 1;
-          continue;
-        }
-        apply(record, session, transcript, subagent, context);
-      }
+      applyLines(data.subarray(0, whole).toString("utf8"), session, transcript, subagent, context);
       absolute += whole;
       carry = Buffer.from(data.subarray(whole));
       if (read < CHUNK_BYTES) break;
@@ -1350,9 +1384,11 @@ export function readFlow(paths: FlowPaths, options: FlowOptions): FlowReport {
   const sessions: SessionFlow[] = [];
   const open: OpenWait[] = [];
   const seenSessions: CachedSession[] = [];
-  const projectsDir = join(paths.claudeConfigDir, "projects");
-  for (const project of entries(projectsDir).dirs) {
-    const folder = join(projectsDir, project);
+  // The projects folder, and the kit's crew archive beside it: a removed crew session's
+  // conversation moves there (AR1), and its flow still counts. Its first read from the archive
+  // is a replaced file (another inode), so its session is read again whole, from the copy.
+  const tree = transcriptTree(projectsFolder(paths), paths.stateDir);
+  for (const [project, ids] of tree) {
     const cacheFile = join(paths.stateDir, "flow", `${project}.json`);
     let cache: FlowCache = { project, sessions: {}, version: CACHE_VERSION };
     try {
@@ -1361,33 +1397,26 @@ export function readFlow(paths: FlowPaths, options: FlowOptions): FlowReport {
       // No cache yet (or not readable): everything is read from the start.
     }
     let dirty = false;
-    const listed = entries(folder);
-    const ids = new Set([
-      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
-      ...listed.dirs,
-    ]);
-    for (const id of [...ids].sort()) {
+    for (const [id, found] of ids) {
       if (!sessionMatches(options.session, id)) continue;
       const session = cache.sessions[id] ?? emptySession();
       cache.sessions[id] = session;
-      const own = join(folder, `${id}.jsonl`);
       const entry = session.transcripts[`${id}.jsonl`] ?? emptyTranscript();
       session.transcripts[`${id}.jsonl`] = entry;
-      const subagents = join(folder, id, "subagents");
-      const files: { path: string; subagent: boolean; transcript: CachedTranscript }[] = [
-        { path: own, subagent: false, transcript: entry },
-      ];
-      for (const name of entries(subagents).files.filter((file) => file.endsWith(".jsonl"))) {
+      const files: { ref: TranscriptRef; subagent: boolean; transcript: CachedTranscript }[] =
+        found.main === null ? [] : [{ ref: found.main, subagent: false, transcript: entry }];
+      for (const [name, ref] of found.subagents) {
+        if (!name.endsWith(".jsonl")) continue;
         const key = `${id}/subagents/${name}`;
         const transcript = session.transcripts[key] ?? emptyTranscript();
         session.transcripts[key] = transcript;
-        files.push({ path: join(subagents, name), subagent: true, transcript });
+        files.push({ ref, subagent: true, transcript });
       }
       // One transcript replaced or shrunk: the session's buckets cannot be told apart any more,
       // so every one of its transcripts is read again from the start in this run.
-      if (files.some((file) => replaced(file.path, file.transcript))) resetSession(session);
+      if (files.some((file) => replaced(file.ref, file.transcript))) resetSession(session);
       for (const file of files) {
-        if (readTranscriptFile(file.path, session, file.transcript, file.subagent, context)) {
+        if (readTranscriptFile(file.ref, session, file.transcript, file.subagent, context)) {
           dirty = true;
         }
       }
