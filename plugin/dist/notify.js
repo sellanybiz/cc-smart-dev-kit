@@ -7840,6 +7840,7 @@ var ACTION_WAIT_MS = 30 * 60000;
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts

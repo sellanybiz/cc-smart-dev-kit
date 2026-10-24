@@ -20164,6 +20164,7 @@ function liveSessions(claudeConfigDir) {
 }
 
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts
@@ -21465,6 +21466,19 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+var QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"];
+function questionClosed(state) {
+  return QUESTION_CLOSED_STATES.includes(state);
+}
+function openQuestionIndex(record2) {
+  if (questionClosed(record2.state))
+    return null;
+  for (let index = record2.questions.length - 1;index >= 0; index -= 1) {
+    if (record2.questions[index]?.answer === null)
+      return index;
+  }
+  return null;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -21519,6 +21533,7 @@ var crewFields = object({
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -21740,6 +21755,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    if (merged.state === "merged" && before.state === "stopped")
+      merged.mergedWhileStopped = true;
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -21805,6 +21822,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
   said: record(string2(), string2()),
@@ -27882,66 +27900,6 @@ function routeFacts(input, context) {
   return facts;
 }
 
-// src/crew/board.ts
-function findNamed(records, ref, look) {
-  const plain = withoutListRef(ref);
-  const matches = records.filter((one) => one.name === plain || look.ids(one).some((id) => id !== null && id === plain)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  if (matches.length === 0)
-    return { kind: "none" };
-  if (matches.length === 1)
-    return { kind: "one", record: matches[0] };
-  const live = matches.filter((one) => (look.live ?? (() => true))(one));
-  if (live.length === 1)
-    return { kind: "one", record: live[0] };
-  return { kind: "many", records: matches };
-}
-var CREW_LOOK = {
-  ids: (one) => [one.id, one.shortId, one.sessionId],
-  live: (one) => one.state !== "removed"
-};
-function findCrew(records, ref, command) {
-  const found = findNamed(records, ref, CREW_LOOK);
-  switch (found.kind) {
-    case "one":
-      return { record: found.record };
-    case "none":
-      return {
-        refusal: {
-          code: 1,
-          lines: [
-            `crew ${command}: no crew session of this repository is "${ref}"`,
-            `Fix: ${COMMAND} crew list shows them, and --all those of every repository`
-          ]
-        }
-      };
-    case "many":
-      return {
-        refusal: {
-          code: 1,
-          lines: [
-            `crew ${command}: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} crew sessions`,
-            ...found.records.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
-            "Fix: name one by its id"
-          ]
-        }
-      };
-  }
-}
-function stateSince(record, events) {
-  const stateEvent = events.find((one) => one.type === "state" || one.type === "created");
-  return stateEvent?.at ?? record.updatedAt;
-}
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
-
-// src/crew/answer.ts
-function openQuestionIndex(record) {
-  for (let index = record.questions.length - 1;index >= 0; index -= 1) {
-    if (record.questions[index]?.answer === null)
-      return index;
-  }
-  return null;
-}
-
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync3, readdirSync as readdirSync16, readFileSync as readFileSync53, readlinkSync as readlinkSync4 } from "fs";
 import { join as join49 } from "path";
@@ -28134,9 +28092,17 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
+  let crewWorktrees = [];
+  try {
+    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+  } catch {
+    crewWorktrees = [];
+  }
   const finished = [];
   const gone = [];
   for (const listed of linked) {
+    if (crewWorktrees.some((path) => samePath3(path, listed.path)))
+      continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
       finished.push(listed);
@@ -28426,7 +28392,56 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
-
+// src/crew/board.ts
+function findNamed(records, ref, look) {
+  const plain = withoutListRef(ref);
+  const matches = records.filter((one) => one.name === plain || look.ids(one).some((id) => id !== null && id === plain)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (matches.length === 0)
+    return { kind: "none" };
+  if (matches.length === 1)
+    return { kind: "one", record: matches[0] };
+  const live = matches.filter((one) => (look.live ?? (() => true))(one));
+  if (live.length === 1)
+    return { kind: "one", record: live[0] };
+  return { kind: "many", records: matches };
+}
+var CREW_LOOK = {
+  ids: (one) => [one.id, one.shortId, one.sessionId],
+  live: (one) => one.state !== "removed"
+};
+function findCrew(records, ref, command) {
+  const found = findNamed(records, ref, CREW_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: no crew session of this repository is "${ref}"`,
+            `Fix: ${COMMAND} crew list shows them, and --all those of every repository`
+          ]
+        }
+      };
+    case "many":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} crew sessions`,
+            ...found.records.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
+            "Fix: name one by its id"
+          ]
+        }
+      };
+  }
+}
+function stateSince(record, events) {
+  const stateEvent = events.find((one) => one.type === "state" || one.type === "created");
+  return stateEvent?.at ?? record.updatedAt;
+}
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 // src/crew/diff.ts
 var GIT_TIMEOUT_MS3 = 20000;
 
@@ -28573,6 +28588,7 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -35197,7 +35213,8 @@ function repoOf(deps) {
 }
 var SUMMARY_MEMORY_POINTS = 60;
 function crewSummary(record, events, nowMs) {
-  const open = [...record.questions].reverse().find((question) => question.answer === null);
+  const openIndex = openQuestionIndex(record);
+  const open = openIndex === null ? undefined : record.questions[openIndex];
   const own = events.filter((event) => event.crew === record.id).reverse();
   const said = own.find((event) => event.type !== "created" && event.text !== null && event.text.trim() !== "");
   return {
