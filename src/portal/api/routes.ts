@@ -212,7 +212,7 @@ export const API_READS: Readonly<
 };
 
 /** The parts of one project a card reads on its own: `/api/projects/<id>/<part>`. */
-const PROJECT_PARTS: Readonly<
+export const PROJECT_PARTS: Readonly<
   Record<string, (deps: PageDataDeps, id: string) => Promise<object | { error: string }>>
 > = {
   gateway: projectGatewayAnswerFor,

@@ -355,6 +355,23 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     expect(PROPOSE_WORST_CASE_MS).toBeGreaterThan(CLI_CHILD_TIMEOUT_MS);
   });
 
+  test("no project, or an empty one, is refused before the child: a proposal never runs in the portal's own folder", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const refused = async (extra: Record<string, unknown>) =>
+      runAction(
+        "project.workflow.propose",
+        { confirm: true, setting: "autoCommit", value: "true", ...extra },
+        w.action,
+      );
+    const line = "Name the project by its id: a proposal never runs in the portal's own folder.";
+    expect(await refused({})).toEqual({ lines: [line], ok: false });
+    expect(await refused({ project: "" })).toEqual({ lines: [line], ok: false });
+    expect(await refused({ project: "  " })).toEqual({ lines: [line], ok: false });
+    expect(runsOf(w.log)).toEqual([]);
+  });
+
   test("a setting the command does not have, or no value, is refused before the child", async () => {
     const w = world();
     await addProjectRoot(w.paths, w.repoA);

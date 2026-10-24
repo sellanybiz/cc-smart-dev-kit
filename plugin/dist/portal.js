@@ -37407,6 +37407,9 @@ async function setWorkflowSetting(action, body) {
 async function projectWorkflowPropose(action, body) {
   if (body.confirm !== true)
     return notConfirmed("proposed");
+  const unnamed = projectNotNamed(body, "a proposal never runs in the portal's own folder");
+  if (unnamed !== null)
+    return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
@@ -37461,14 +37464,9 @@ async function gatewayCliAction(action, name, args, cwd) {
 async function projectGatewaySet(action, body) {
   if (body.confirm !== true)
     return notConfirmed("changed");
-  if (typeof body.project !== "string" || body.project.trim() === "") {
-    return {
-      lines: [
-        "Name the project by its id: a gateway state is never written to the portal's own folder."
-      ],
-      ok: false
-    };
-  }
+  const unnamed = projectNotNamed(body, "a gateway state is never written to the portal's own folder");
+  if (unnamed !== null)
+    return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
@@ -37619,6 +37617,11 @@ function projectsWorld(action) {
     now: action.portal.now,
     paths: action.portal.paths
   };
+}
+function projectNotNamed(body, why) {
+  if (typeof body.project === "string" && body.project.trim() !== "")
+    return null;
+  return { lines: [`Name the project by its id: ${why}.`], ok: false };
 }
 async function projectTarget(action, body) {
   const named = body.project;
