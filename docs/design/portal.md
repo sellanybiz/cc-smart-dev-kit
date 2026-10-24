@@ -305,6 +305,31 @@ every open breaker with the router's live count of what waits, each doctor failu
 fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
 yet. Nothing carries a key or a prompt.
 
+**A project's gateway, and the two actions that change it** (GP4b, D29):
+`projects/<id>/gateway` (`src/portal/api/project-gateway.ts`) answers the project's own choice
+and what a session started in its folder effectively gets, each in `gateway project status`'
+own words (`decisionWords`, `projectSourceWords`) — an address that is neither Anthropic's nor
+the router's is masked there, so no raw URL reaches the page — every settings file read with
+what it holds, and the notes that change what the card may do: no checkout, a file that cannot
+be read (`unknown`), no gateway config, a personal file git tracks (on is refused), a key or
+`apiKeyHelper` that replaces the login (on and off are refused), a profile the router does not
+have (its requests answer as plain Claude), another gateway's address. It reads the state with
+`projectGatewayStateAsync`, **the awaited twin of the one reader** (`src/gateway/project-state.ts`:
+`locateCheckoutAsync` and an `ls-files` through `Bun.spawn`; every other step is the same code),
+so the read never blocks the server. When the effective address names a profile, the answer
+carries it slot by slot — the Slots page's slots in its order — with the machine's chain in use,
+the profile's own entry (a chain, `claude`, or none) and the fallback switch its view gives
+(`profileView`, `fallbackOn`), from the portal's one config read. A change is
+`project.gateway.set` (on, off or default; `team` for the team file, off and default only; a
+profile with on) or `project.gateway.profile` (a slot's own chain, plain Claude there, the
+machine's chain again, or its fallback switch). Each needs the page's yes (`confirm`) and runs
+the CLI's own `gateway project <state> --folder <root>` or `gateway profile <name> slot|fallback
+…` in a child (`runCliChild`): the project's root is the server's own list's, never a path from
+the request, and a state is never written to the portal's own folder by accident (the project's
+id is required). The command's refusals — a file git tracks, a login key, another gateway's
+address, a router that does not answer, a target its backend does not list — are its own, made
+again under its lock, and the card shows them in place.
+
 **A project's workflow settings, and the one action that changes them** (D57):
 `projects/<id>/workflow` answers every key the project's file can hold (`isProjectKey`: the
 policy settings and the project's two switches), each with its value and where that value came
@@ -418,11 +443,14 @@ child.** `crew stop`, `crew resume` and `crew rm` reach `git` and `claude` throu
 spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm`
 makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
 server, one click froze every page, every other action and the stream for that long. So those
-actions — and `project.workflow.propose` (D57), which makes a worktree, a commit and a push —
-run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
-stop|resume|rm <id>`, each **in the record's own repository**, `dist/cli.js workflow propose`
-**in the project's own folder**, or `dist/cli.js worktrees --clean`, which has no crew record and
-runs **in the portal's own folder** — the folder the portal was started in. Each child gets the
+actions — and `project.workflow.propose` (D57), which makes a worktree, a commit and a push, and
+the Gateway card's two (GP4b), whose commands run git and ask the router — run the CLI's own
+command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew stop|resume|rm <id>`, each
+**in the record's own repository**, `dist/cli.js workflow propose` and `dist/cli.js gateway
+project <state> --folder <root>` **in the project's own folder**, or `dist/cli.js worktrees
+--clean` and `dist/cli.js gateway profile …` (a profile is the machine's config), which have no
+crew record or project and run **in the portal's own folder** — the folder the portal was
+started in. Each child gets the
 plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no
 `CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52), no `CLAUDECODE` (nor a
 Claude Code session: the portal inherits it from the session start that launched it, D9), and a
@@ -495,11 +523,12 @@ the Browser card reads it the same way. The project read is awaited too:
 `resolveProjectAsync` (`locateCheckoutAsync`, `Bun.spawn`) for the Settings page and the Project
 card, `realRunnerAsync` (`runGitAsync`, and `gh api` spawned the same way) for the form's
 defaults, and `projectChecks`' own git reads (the checkout, `check-ignore`, the default branch,
-`git --version`). **Still on the loop**, named so the rule is never read as already true
-everywhere: the actions' changing commands (`ctx.runner`) and the lock's `ps` on every action
-that writes — the actions paragraph above has both — and the Browser card's Windows-only
-registry read (`reg query` through `realBrowserSetupDeps`' own `run`, tens of ms, no other
-platform); and, since GP4a, the per-project lines' own project read (`projectGatewayState`'s synchronous git: `locateCheckout`, `personalTracked`), a cost that grows with the number of projects, until that reader has an awaited twin.
+`git --version`), and the gateway's per-project lines (GP4a), which read each project with
+`projectGatewayStateAsync`, the one reader's awaited twin (GP4b). **Still on the loop**, named so
+the rule is never read as already true everywhere: the actions' changing commands (`ctx.runner`)
+and the lock's `ps` on every action that writes — the actions paragraph above has both — and the
+Browser card's Windows-only registry read (`reg query` through `realBrowserSetupDeps`' own `run`,
+tens of ms, no other platform).
 
 ### The pages' facts and actions (B6d)
 
@@ -557,6 +586,22 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   session never reaches the card: the session-escape guard denies its call into the portal.
   The current project's page no longer shows the portal folder's own settings rows: the
   person's defaults are Settings → This machine's.
+- **Project, the Gateway card** (GP4b, `portal/src/components/gateway-card.tsx`, its rules in
+  `portal/src/lib/gateway.ts`): every project's page, set up or not, shows what its sessions
+  get and which file decides it (the files read, in Claude Code's order, on demand), the
+  answer's notes, and the project's own state to change: On, Off or Default, written to the
+  personal file ("Only me", never committed) or the team file ("The team", off and default
+  only), with a profile when On. Each choice is a `ChoiceSwitch` (`choice-switch.tsx`, the one
+  segmented radio group; the Slots page's Claude/Custom `ModeSwitch` is one of its uses): every
+  state named, the arrow keys move, an option that cannot be chosen stays focusable and says
+  why. The form starts from the project's own choice; Apply asks first and says what reaches a
+  running session (GP0's P7: a changed address within about a second, a removed one — Default —
+  only after a restart). When the address names a profile, its slots are listed with what
+  answers each (its own chain, Claude in the profile, or this machine's chain) and the fallback
+  switch; a slot's Change opens the Slots page's own `ChainEditor` (the model list is
+  `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
+  reaches every project whose address names that profile. A project that is no git project
+  shows its state and no form.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the

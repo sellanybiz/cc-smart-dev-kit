@@ -32,6 +32,7 @@ import type {
   OverviewData,
   PortalFacts,
   ProjectData,
+  ProjectGatewayData,
   ProjectList,
   ProjectWorkflowData,
   RequestPage,
@@ -64,6 +65,8 @@ export interface PortalClient {
   settings(): Promise<SettingsData>;
   projects(): Promise<ProjectList>;
   project(id: string): Promise<ProjectData>;
+  /** A project's Gateway card (GP4b): its own state, what its sessions get, its profile. */
+  projectGateway(id: string): Promise<ProjectGatewayData>;
   /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
   projectWorkflow(id: string): Promise<ProjectWorkflowData>;
   jobs(): Promise<JobsData>;
@@ -152,6 +155,15 @@ export function mockClient(scenario: MockScenario): PortalClient {
         const found = data.projectPages[id];
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         return found;
+      }),
+    projectGateway: (id) =>
+      answer(() => {
+        const found = data.gatewayPages[id];
+        if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
+        // A machine with no gateway: the card shows what a project can still be, off or default.
+        return scenario === "no-gateway"
+          ? { ...found, configured: false, onAllowed: false, profile: null, profiles: [] }
+          : found;
       }),
     projectWorkflow: (id) =>
       answer(() => {
@@ -262,6 +274,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     projects: async () => adapt.projectsOf(await get<Wire.ProjectsAnswer>("/api/projects")),
     project: async (id) =>
       adapt.projectOf(await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`)),
+    projectGateway: (id) =>
+      get<Wire.ProjectGatewayAnswer>(`/api/projects/${encodeURIComponent(id)}/gateway`),
     projectWorkflow: async (id) => {
       // The rows' words and controls are the Settings table's (`/api/settings`), the values the
       // project's own answer. Both or neither: a card without its controls would not say why.

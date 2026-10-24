@@ -16,6 +16,8 @@ import type {
 import type {
   ActionName,
   ActionResult,
+  ProjectGatewayAnswer,
+  ProjectGatewayDecision,
   ProjectWorkflowAnswer,
   ProjectWorkflowSetting,
 } from "./wire";
@@ -83,6 +85,8 @@ function planFor(root: string, answers: ProjectInitAnswers): ProjectInitPlan {
 export interface ProjectMocks {
   projects: ProjectList;
   projectPages: Record<string, ProjectData>;
+  /** Each project's Gateway card (GP4b), by project id. */
+  gatewayPages: Record<string, ProjectGatewayAnswer>;
   /** Each project's workflow settings, for the Workflow card (D57), by project id. */
   workflowPages: Record<string, ProjectWorkflowAnswer>;
   /** The mock's answer to a `project.*` action: a preview carries its plan, as the server's. */
@@ -131,6 +135,183 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "switches.sessionNames", source: "project", value: true },
   { key: "switches.jobRoute", source: "project", value: true },
 ];
+
+/** The machine's chains in the mock (the Slots page's own), as a profile's view reads them. */
+const MACHINE_CHAINS: Record<string, null | string[]> = {
+  "cc-smart-dev-kit-fable": null,
+  "cc-smart-dev-kit-judge": null,
+  "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:glm-5.3", "omniroute:deepseek-v4.1"],
+  "cc-smart-dev-kit-scout": ["omniroute:glm-5.3-flash", "omniroute:minimax-m3", "claude-haiku-5-5"],
+  "cc-smart-dev-kit-worker": ["omniroute:deepseek-v4.1-flash", "claude-sonnet-5-5"],
+};
+
+/** One decision, in the command's own words. */
+function decision(
+  state: ProjectGatewayDecision["state"],
+  source: ProjectGatewayDecision["source"],
+  words: string,
+  from: string,
+  profile: null | string = null,
+): ProjectGatewayDecision {
+  return { from, profile, source, state, words };
+}
+
+const ROUTER = "http://127.0.0.1:20100";
+const MACHINE_FILE = "~/.claude/settings.json";
+
+/**
+ * Each project's Gateway card (GP4b), by id: the current project on with its profile, one that
+ * follows the machine, one off in its team file with a personal file git tracks, and an added
+ * folder that is no git project and whose settings cannot be read.
+ */
+function gatewayPagesFor(rows: ProjectListRow[]): Record<string, ProjectGatewayAnswer> {
+  const machineOn = decision(
+    "on",
+    "machine",
+    `on → ${ROUTER}`,
+    `the machine's settings ${MACHINE_FILE}`,
+  );
+  const pages: Record<string, ProjectGatewayAnswer> = {};
+  for (const project of rows) {
+    const personal = `${project.path.replace("/home/user", "~")}/.claude/settings.local.json`;
+    const team = `${project.path.replace("/home/user", "~")}/.claude/settings.json`;
+    const files = (personalHolds: string, teamHolds: string): ProjectGatewayAnswer["files"] => [
+      { holds: personalHolds, kind: "personal", path: personal, problem: false },
+      { holds: teamHolds, kind: "team", path: team, problem: false },
+      { holds: `on → ${ROUTER}`, kind: "machine", path: MACHINE_FILE, problem: false },
+    ];
+    const base = {
+      configured: true,
+      notes: [],
+      onAllowed: true,
+      profile: null,
+      profiles: ["cheap", "night-shift"],
+      writable: true,
+    };
+    if (project.current) {
+      const on = decision(
+        "on",
+        "personal",
+        `on → ${ROUTER}/p/cheap  (profile cheap)`,
+        `the personal file ${personal} (never committed)`,
+        "cheap",
+      );
+      pages[project.id] = {
+        ...base,
+        choice: on,
+        effective: on,
+        files: files(`on → ${ROUTER}/p/cheap  (profile cheap)`, "sets nothing"),
+        profile: {
+          exists: true,
+          name: "cheap",
+          slots: [
+            {
+              fallback: true,
+              key: "cc-smart-dev-kit-scout",
+              machine: MACHINE_CHAINS["cc-smart-dev-kit-scout"] ?? null,
+              name: "scout",
+              own: ["omniroute:glm-5.3-flash"],
+            },
+            {
+              fallback: true,
+              key: "cc-smart-dev-kit-worker",
+              machine: MACHINE_CHAINS["cc-smart-dev-kit-worker"] ?? null,
+              name: "worker",
+              own: null,
+            },
+            {
+              fallback: true,
+              key: "cc-smart-dev-kit-judge",
+              machine: null,
+              name: "judge",
+              own: null,
+            },
+            {
+              fallback: false,
+              key: "cc-smart-dev-kit-fable",
+              machine: null,
+              name: "fable",
+              own: null,
+            },
+            {
+              fallback: false,
+              key: "cc-smart-dev-kit-opus",
+              machine: MACHINE_CHAINS["cc-smart-dev-kit-opus"] ?? null,
+              name: "opus",
+              own: "claude",
+            },
+          ],
+        },
+      };
+    } else if (project.setUp) {
+      pages[project.id] = {
+        ...base,
+        choice: decision(
+          "default",
+          "none",
+          "default: no file of this project sets a gateway address, so the machine's settings decide",
+          "nothing in this project",
+        ),
+        effective: machineOn,
+        files: files("sets nothing", "sets nothing"),
+      };
+    } else if (project.source === "sessions") {
+      const off = decision(
+        "off",
+        "team",
+        "off → https://api.anthropic.com",
+        `the team file ${team} (committed with the project)`,
+      );
+      pages[project.id] = {
+        ...base,
+        choice: off,
+        effective: off,
+        files: files("sets nothing", "off → https://api.anthropic.com"),
+        notes: [
+          {
+            text: "Git tracks this project's personal file (.claude/settings.local.json), so a router address written there would be committed with it: on is refused until it is untracked (git rm --cached -- .claude/settings.local.json).",
+            tone: "warn",
+          },
+        ],
+        onAllowed: false,
+      };
+    } else {
+      const unknown = decision(
+        "unknown",
+        "team",
+        "unknown: a settings file in the way cannot be read",
+        `the team file ${team} (committed with the project)`,
+      );
+      pages[project.id] = {
+        ...base,
+        choice: unknown,
+        effective: unknown,
+        files: [
+          {
+            holds: `cannot be read (${team} is not valid JSON: Unexpected token n at line 1)`,
+            kind: "team",
+            path: team,
+            problem: true,
+          },
+          { holds: `on → ${ROUTER}`, kind: "machine", path: MACHINE_FILE, problem: false },
+        ],
+        notes: [
+          {
+            text: "This folder is not in a git project: it has no personal file, so its state cannot be set here.",
+            tone: "info",
+          },
+          {
+            text: "A settings file this project's sessions read cannot be read, so its gateway state is unknown: fix the file by hand, or move it aside.",
+            tone: "bad",
+          },
+        ],
+        onAllowed: false,
+        writable: false,
+      };
+    }
+  }
+  return pages;
+}
 
 export function projectMocks(now: number, empty: boolean): ProjectMocks {
   const rows: ProjectListRow[] = empty
@@ -305,6 +486,33 @@ export function projectMocks(now: number, empty: boolean): ProjectMocks {
           url: "https://github.com/example-org/my-app/pull/44",
         };
       }
+      if (action === "project.gateway.set") {
+        if (body.state === "on" && body.profile === "night-shift") {
+          // One refusal, so the card's refused state is seen in mock data too.
+          return {
+            lines: [
+              "the router does not answer on 127.0.0.1:20100 (connection refused); every Claude request in this project would fail. Run cc-smart-dev-kit gateway setup first.",
+            ],
+            ok: false,
+          };
+        }
+        return {
+          lines: [
+            `~ .claude/${body.team === true ? "settings.json" : "settings.local.json"}: env.ANTHROPIC_BASE_URL (mock)`,
+            "Mock data: nothing was written. The real portal runs gateway project.",
+          ],
+          ok: true,
+        };
+      }
+      if (action === "project.gateway.profile") {
+        return {
+          lines: [
+            `${String(body.profile)}: ${String(body.slot)} changed (mock)`,
+            "The router uses it from its next request: it reads the config again within about a second.",
+          ],
+          ok: true,
+        };
+      }
       if (action === "project.preview") {
         const page = typeof body.project === "string" ? projectPages[body.project] : undefined;
         if (page === undefined) return { lines: ["Mock data: no such project."], ok: false };
@@ -325,6 +533,7 @@ export function projectMocks(now: number, empty: boolean): ProjectMocks {
       }
       return null;
     },
+    gatewayPages: gatewayPagesFor(rows),
     projectPages,
     workflowPages,
     projects: {
