@@ -2,7 +2,8 @@
  * P6 — where the two project files are read from: the main checkout, a subfolder of it, and a
  * linked worktree.
  *
- * A throwaway git repo (the main checkout) with a subfolder `sub` and a linked worktree `wt`.
+ * A throwaway git repo (the main checkout) with a subfolder `sub` and a linked worktree `wt`,
+ * and a `plain` folder outside any git repo.
  * Fakes: L (the main root's settings.local.json), P (the main root's settings.json), C (a file
  * in the subfolder or the worktree), D (the shell). Each case sets exactly the files it names,
  * runs one `claude -p` in its folder, and records the fake the message request reached. Every
@@ -29,7 +30,7 @@ import {
   trust,
 } from "./lib.ts";
 
-type Where = "main" | "sub" | "wt";
+type Where = "main" | "sub" | "wt" | "plain";
 type Files = {
   mainLocal?: string;
   mainShared?: string;
@@ -37,6 +38,7 @@ type Files = {
   subShared?: string;
   wtLocal?: string;
   wtShared?: string;
+  plainLocal?: string;
 };
 type Case = { name: string; cwd: Where; files: Files; gp0: string; commitSharedFirst?: boolean };
 
@@ -135,6 +137,12 @@ const CASES: Case[] = [
     files: { mainShared: "P", wtShared: "P", wtLocal: "C" },
     gp0: "(not run)",
   },
+  {
+    name: "17 a folder outside any git repo, its own local",
+    cwd: "plain",
+    files: { plainLocal: "C" },
+    gp0: "(not run)",
+  },
 ];
 
 const world = makeWorld("p6");
@@ -144,7 +152,10 @@ const sub = join(main, "sub");
 mkdirSync(sub, { recursive: true });
 const wt = join(world.root, "wt");
 await git(world, main, "worktree", "add", "-q", "-b", "wt", wt);
-const folders: Record<Where, string> = { main, sub, wt };
+// No git repo may sit above the world: run with R6_TMP outside any checkout.
+const plain = join(world.root, "plain");
+mkdirSync(plain, { recursive: true });
+const folders: Record<Where, string> = { main, sub, wt, plain };
 for (const folder of Object.values(folders)) await trust(world, folder);
 
 const rows = [];
@@ -161,6 +172,7 @@ try {
     placeSettings(fakes, join(sub, ".claude", "settings.local.json"), c.files.subLocal);
     placeSettings(fakes, join(sub, ".claude", "settings.json"), c.files.subShared);
     placeSettings(fakes, join(wt, ".claude", "settings.local.json"), c.files.wtLocal);
+    placeSettings(fakes, join(plain, ".claude", "settings.local.json"), c.files.plainLocal);
     if (!c.commitSharedFirst) {
       placeSettings(fakes, join(wt, ".claude", "settings.json"), c.files.wtShared);
     }

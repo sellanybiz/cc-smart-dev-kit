@@ -18,6 +18,7 @@ import {
   baseEnv,
   claudeVersion,
   type Fakes,
+  git,
   gitRepo,
   makeWorld,
   messagesTo,
@@ -36,7 +37,15 @@ type Step =
   | { remove: "local" | "user" }
   | { wait: number };
 
-type SessionPlan = { name: string; local?: string; shared?: string; user?: string; steps: Step[] };
+type SessionPlan = {
+  name: string;
+  local?: string;
+  shared?: string;
+  user?: string;
+  /** Run the session in a linked worktree whose own settings.local.json names this fake. */
+  worktreeLocal?: string;
+  steps: Step[];
+};
 
 const PLANS: SessionPlan[] = [
   {
@@ -119,6 +128,13 @@ const PLANS: SessionPlan[] = [
       { turn: "t3" },
     ],
   },
+  {
+    name: "in a linked worktree with its own local file (E): the main root's local key removed",
+    local: "B",
+    user: "U",
+    worktreeLocal: "E",
+    steps: [{ turn: "t1" }, { write: null }, { wait: 3000 }, { turn: "t2" }],
+  },
 ];
 
 function place(fakes: Fakes, file: string, label: string | null, atomic: boolean): void {
@@ -144,9 +160,19 @@ async function runPlan(world: World, fakes: Fakes, index: number, plan: SessionP
   if (plan.local) writeJson(files.local, urlSettings(fakes.url(plan.local)));
   if (plan.shared) writeJson(files.shared, urlSettings(fakes.url(plan.shared)));
   if (plan.user) writeJson(files.user, urlSettings(fakes.url(plan.user)));
+  let cwd = dir;
+  if (plan.worktreeLocal) {
+    cwd = join(world.root, `proj-${index + 1}-wt`);
+    await git(world, dir, "worktree", "add", "-q", "-b", "wt", cwd);
+    await trust(world, cwd);
+    writeJson(
+      join(cwd, ".claude", "settings.local.json"),
+      urlSettings(fakes.url(plan.worktreeLocal)),
+    );
+  }
 
   const session = new StreamSession();
-  session.start(dir, baseEnv(world, fakes.url("D")));
+  session.start(cwd, baseEnv(world, fakes.url("D")));
   const events: string[] = [];
   let lastWrite = 0;
   for (const step of plan.steps) {
