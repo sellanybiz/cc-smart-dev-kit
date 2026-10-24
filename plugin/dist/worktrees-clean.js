@@ -9892,7 +9892,7 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   }
   return kept;
 }
-function removeIfEmpty(folder) {
+function removeEmptyFolder(folder) {
   try {
     rmdirSync(folder);
     return true;
@@ -9912,7 +9912,7 @@ function removeEmptyTree(folder) {
     if (lstatSync4(path, { throwIfNoEntry: false })?.isDirectory())
       removeEmptyTree(path);
   }
-  removeIfEmpty(folder);
+  removeEmptyFolder(folder);
 }
 async function gzipInto(from, to) {
   const temporary = `${to}.${String(process.pid)}.tmp`;
@@ -9951,7 +9951,7 @@ async function archiveConversation(input) {
   try {
     const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
     if (found.files.length === 0) {
-      return { folderGone: removeIfEmpty(found.projectDir), kind: "nothing" };
+      return { folderGone: removeEmptyFolder(found.projectDir), kind: "nothing" };
     }
     const dir = crewArchiveDir(paths.stateDir, record.repo, record.id);
     const into = join19(dir, ARCHIVE_PROJECTS, basename4(found.projectDir));
@@ -9990,7 +9990,7 @@ async function archiveConversation(input) {
       moved += 1;
     }
     removeEmptyTree(join19(found.projectDir, sessionId));
-    return { dir, files: moved, folderGone: removeIfEmpty(found.projectDir), kind: "archived" };
+    return { dir, files: moved, folderGone: removeEmptyFolder(found.projectDir), kind: "archived" };
   } catch (error) {
     return { kind: "failed", moved, why: reasonOf2(error) };
   }
@@ -10030,7 +10030,7 @@ function pruneCrewArchives(stateDir, daysOf, nowMs, dryRun = false) {
       }
     }
     if (!dryRun)
-      removeIfEmpty(repoDir);
+      removeEmptyFolder(repoDir);
   }
   return outcome;
 }

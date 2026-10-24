@@ -45,10 +45,17 @@ import {
 } from "node:fs";
 import { platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { CliPaths } from "../cli/paths";
+import { type CliPaths, tildify } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
 import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
+import {
+  archiveConversation,
+  archiveDaysOf,
+  pruneCrewArchives,
+  removeEmptyFolder,
+  sessionsNeverTaken,
+} from "../crew/archive";
 import { callClaude, findClaude } from "../crew/claude";
 import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
@@ -57,6 +64,7 @@ import { atomicWrite } from "../setup/write";
 import { repoKey } from "../workflow/reviews";
 import {
   FINISHED_SESSION_AGE_MS,
+  readCrewLeftovers,
   readFinishedSessions,
   readSessionAgents,
   type SessionAgentRow,
@@ -382,14 +390,173 @@ export interface SessionsOptions {
   yes?: boolean;
 }
 
-function runFinishedSessions(
+/**
+ * `sessions --finished [--remove]`: the finished background sessions, then what removed crew
+ * sessions left in `/resume` (AR1). `--id` names finished sessions only, so it leaves the crew
+ * part out.
+ */
+async function runFinishedSessions(
   paths: CliPaths,
   options: SessionsOptions,
   deps: SessionsDeps,
   cwd: string,
-): number {
+): Promise<number> {
   const term = currentTerminal(process.env);
   const out = createOut(term);
+  const finished = finishedPart(paths, options, deps, cwd, out, term);
+  if ((options.ids?.length ?? 0) > 0) return finished;
+  const crew = await crewLeftoversPart(paths, options, deps, out, term);
+  return Math.max(finished, crew);
+}
+
+/** The phrase for a count of a thing: `1 conversation`, `3 conversations`. */
+function counted(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+
+/** Joins phrases as a person writes them: `a`, `a and b`, `a, b and c`. */
+function joined(parts: string[]): string {
+  return parts.length <= 1
+    ? (parts[0] ?? "")
+    : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1) ?? ""}`;
+}
+
+/**
+ * What removed crew sessions left (AR1): their conversations still in `/resume`, the empty
+ * project folders of their worktrees, the archives past `crew.archiveDays`. Lists them; with
+ * `--remove`, asks once (or `--yes`), reads them again, then moves each conversation into the
+ * kit's archive, removes each empty folder and deletes each expired archive. The exit code.
+ */
+async function crewLeftoversPart(
+  paths: CliPaths,
+  options: SessionsOptions,
+  deps: SessionsDeps,
+  out: ReturnType<typeof createOut>,
+  term: ReturnType<typeof currentTerminal>,
+): Promise<number> {
+  const read = () => readCrewLeftovers(paths, { env: process.env, now: deps.now });
+  const left = read();
+  if (left.error !== null) {
+    out.line("fail", left.error);
+    return 1;
+  }
+  const home = paths.home;
+  if (left.conversations.length + left.kept.length > 0) {
+    out.heading("Conversations of removed crew sessions, still in /resume");
+    for (const one of left.conversations)
+      out.line(
+        "info",
+        `${one.record.name} — ${tildify(one.record.worktree, home)} — ${counted(one.files, "file", "files")}`,
+      );
+    for (const one of left.kept) out.line("info", `${one.record.name} stays: ${one.why}`);
+  }
+  if (left.emptyFolders.length > 0) {
+    out.heading("Empty project folders of removed crew sessions");
+    for (const folder of left.emptyFolders) out.line("info", tildify(folder, home));
+  }
+  if (left.expired.length > 0) {
+    out.heading("Archived crew conversations past crew.archiveDays");
+    for (const one of left.expired)
+      out.line("info", `${one.name} — archived ${finishedAge(one.ageMs)}`);
+  }
+  const plan = [
+    left.conversations.length === 0
+      ? ""
+      : `move ${counted(left.conversations.length, "conversation", "conversations")} out of /resume into the kit's archive`,
+    left.emptyFolders.length === 0
+      ? ""
+      : `remove ${counted(left.emptyFolders.length, "empty project folder", "empty project folders")}`,
+    left.expired.length === 0
+      ? ""
+      : `delete ${counted(left.expired.length, "archive", "archives")} past crew.archiveDays`,
+  ].filter((part) => part !== "");
+  if (plan.length === 0) {
+    if (left.kept.length === 0)
+      out.line("info", "No conversations of removed crew sessions are left in /resume.");
+    return 0;
+  }
+  if (!options.remove) return 0;
+  if (!options.yes) {
+    const confirm =
+      deps.confirm ?? ((question: string) => terminalPrompts(term)?.confirm(question) ?? false);
+    const question = joined(plan);
+    if (!confirm(`${question.charAt(0).toUpperCase()}${question.slice(1)}?`)) {
+      out.line(
+        "info",
+        `Nothing moved. Use ${deps.command} sessions --finished --remove --yes to confirm without a terminal.`,
+      );
+      return 0;
+    }
+  }
+  // The person may resume a conversation, or a record may change, while the question is open:
+  // what moves is read again now, and each conversation is judged again as it moves.
+  const now = read();
+  if (now.error !== null) {
+    out.line("fail", now.error);
+    return 1;
+  }
+  let failed = false;
+  let neverTaken: Set<string>;
+  let running: Set<string>;
+  try {
+    neverTaken = sessionsNeverTaken(paths.stateDir, null);
+    running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+  } catch (error) {
+    out.line(
+      "fail",
+      `Could not read whose sessions these are: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 1;
+  }
+  for (const one of left.conversations) {
+    const current = now.conversations.find(
+      (two) => two.record.id === one.record.id && two.record.repo === one.record.repo,
+    );
+    if (current === undefined) {
+      out.line("info", `Kept ${one.record.name}: its conversation is no longer one to move.`);
+      continue;
+    }
+    const outcome = await archiveConversation({
+      neverTaken,
+      nowMs: deps.now,
+      paths,
+      record: current.record,
+      running,
+    });
+    if (outcome.kind === "archived") {
+      out.line(
+        "removed",
+        `Moved the conversation of ${one.record.name} (${counted(outcome.files, "file", "files")}) into ${tildify(outcome.dir, home)}.`,
+      );
+    } else if (outcome.kind === "kept") {
+      out.line("info", `Kept ${one.record.name}: ${outcome.why}.`);
+    } else if (outcome.kind === "failed") {
+      failed = true;
+      out.line("fail", `Could not move the conversation of ${one.record.name}: ${outcome.why}`, {
+        fix: `Clear what the line says, then run ${deps.command} sessions --finished --remove again; what moved stays in the archive.`,
+      });
+    }
+  }
+  for (const folder of left.emptyFolders) {
+    if (now.emptyFolders.includes(folder) && removeEmptyFolder(folder))
+      out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
+  }
+  const pruned = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, process.env), deps.now);
+  for (const one of pruned.pruned)
+    out.line("removed", `Deleted the archived conversation of ${one.name}.`);
+  for (const one of pruned.kept) out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  return failed ? 1 : 0;
+}
+
+/** The finished background sessions: listed, and with `--remove` removed by `claude rm`. The exit code. */
+function finishedPart(
+  paths: CliPaths,
+  options: SessionsOptions,
+  deps: SessionsDeps,
+  cwd: string,
+  out: ReturnType<typeof createOut>,
+  term: ReturnType<typeof currentTerminal>,
+): number {
   const context = sessionsClaudeDeps(paths, deps.platform, deps.which);
   const agents = deps.agents ?? (() => readSessionAgents(context, cwd));
   const read = () => readFinishedSessions(paths, { agents, now: deps.now });

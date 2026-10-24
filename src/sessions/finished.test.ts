@@ -1,8 +1,11 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { cliPaths } from "../cli/paths";
+import { gunzipSync } from "node:zlib";
+import { cliPaths, tildify } from "../cli/paths";
+import { crewArchiveDir } from "../crew/archive";
 import { createCrew, crewFile, leadFile, type NewCrew, writeLead } from "../crew/store";
+import { writeSessionRecord } from "../testing/crew-world";
 import { tempDir } from "../testing/temp";
 import { runSessions, type SessionsDeps, type SessionsOptions } from "./command";
 import {
@@ -17,6 +20,9 @@ const NOW = Date.parse("2026-10-24T12:00:00.000Z");
 const OLD = Date.parse("2026-10-23T10:00:00.000Z");
 const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 const LEAD = "bbbbbbbb-1111-2222-3333-444444444444";
+const OTHER_CREW = "f11d0000-1111-2222-3333-444444444444";
+const THIRD_CREW = "f22d0000-1111-2222-3333-444444444444";
+const DAY = 24 * 60 * 60 * 1000;
 
 function agent(over: Partial<SessionAgentRow> = {}): SessionAgentRow {
   return {
@@ -380,5 +386,239 @@ if (process.argv[3] === "aaaaaaaa") {
     };
     expect(await w.run({ remove: true, yes: true })).toBe(0);
     expect(w.removed).toEqual([["rm", "aaaaaaaa"]]);
+  });
+});
+
+describe("what removed crew sessions left in /resume (AR1)", () => {
+  const CREW_SESSION = "f00d0000-1111-2222-3333-444444444444";
+  /** Before the record's removal (`OLD`): the conversation a crew session wrote while it ran. */
+  const WRITTEN = OLD - 60 * 60 * 1000;
+
+  /** A crew record the store marks removed (at `OLD`), and where its conversation is. */
+  async function removedCrew(
+    w: ReturnType<typeof world>,
+    over: Partial<NewCrew> = {},
+  ): Promise<{ project: string; worktree: string }> {
+    const slug = over.slug ?? "tests";
+    const worktree = join(w.repo, ".claude", "worktrees", `crew-T-${slug}`);
+    await createCrew(
+      w.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: `crew/T-${slug}`,
+        effort: "high",
+        files: [],
+        id: `crew-T-${slug}`,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app plan",
+        leadSessionId: LEAD,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "claude-sonnet-5-5", slot: null, tier: null },
+        name: `C my-app T ${slug}`,
+        permissionMode: "auto",
+        phase: "T",
+        plan: "plan",
+        pr: null,
+        questions: [],
+        reportPath: null,
+        repo: w.repo,
+        sessionId: CREW_SESSION,
+        shortId: "f00d0000",
+        slug,
+        state: "removed",
+        waitsFor: [],
+        worktree,
+        ...over,
+      },
+      OLD,
+    );
+    return {
+      project: join(w.paths.projectsDir, worktree.replace(/[^A-Za-z0-9]/g, "-")),
+      worktree,
+    };
+  }
+
+  /** The crew session's transcript and one subagent's, written at `atMs`. */
+  function conversation(project: string, session = CREW_SESSION, atMs = WRITTEN): string {
+    const file = join(project, `${session}.jsonl`);
+    const subagent = join(project, session, "subagents", "agent-1.jsonl");
+    mkdirSync(dirname(subagent), { recursive: true });
+    writeFileSync(file, '{"type":"assistant"}\n');
+    writeFileSync(subagent, "{}\n");
+    for (const one of [file, subagent]) utimesSync(one, atMs / 1000, atMs / 1000);
+    return file;
+  }
+
+  /** An archive of another crew session, archived `ageMs` before now. */
+  function archive(w: ReturnType<typeof world>, crew: string, ageMs: number): string {
+    const dir = crewArchiveDir(w.paths.stateDir, w.repo, crew);
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    writeFileSync(
+      join(dir, "archive.json"),
+      JSON.stringify({
+        archivedAt: new Date(NOW - ageMs).toISOString(),
+        crew,
+        name: `C my-app ${crew}`,
+        projectFolder: "-x",
+        repo: w.repo,
+        sessionId: SESSION,
+        version: 1,
+      }),
+    );
+    return dir;
+  }
+
+  test("lists the conversations, the empty folders and the expired archives, and moves nothing", async () => {
+    const w = world();
+    const { project } = await removedCrew(w);
+    const transcript = conversation(project);
+    const empty = await removedCrew(w, {
+      id: "crew-U-empty",
+      sessionId: OTHER_CREW,
+      slug: "empty",
+    });
+    mkdirSync(empty.project, { recursive: true });
+    const expired = archive(w, "crew-V-old", 8 * DAY);
+
+    expect(await w.run()).toBe(0);
+
+    const from = w.out.indexOf("Conversations of removed crew sessions, still in /resume");
+    expect(w.out.slice(from)).toEqual([
+      "Conversations of removed crew sessions, still in /resume",
+      "· C my-app T tests — ~/repo/.claude/worktrees/crew-T-tests — 2 files",
+      "Empty project folders of removed crew sessions",
+      `· ${tildify(empty.project, w.home)}`,
+      "Archived crew conversations past crew.archiveDays",
+      "· C my-app crew-V-old — archived 8d 0h ago",
+    ]);
+    expect(existsSync(transcript)).toBe(true);
+    expect(existsSync(empty.project)).toBe(true);
+    expect(existsSync(expired)).toBe(true);
+  });
+
+  test("--remove asks once, then moves each conversation, removes each empty folder and deletes each expired archive", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const { project } = await removedCrew(w);
+    conversation(project);
+    const empty = await removedCrew(w, {
+      id: "crew-U-empty",
+      sessionId: OTHER_CREW,
+      slug: "empty",
+    });
+    mkdirSync(empty.project, { recursive: true });
+    const expired = archive(w, "crew-V-old", 8 * DAY);
+    const questions: string[] = [];
+    w.deps.confirm = (question) => {
+      questions.push(question);
+      return true;
+    };
+
+    expect(await w.run({ remove: true })).toBe(0);
+
+    expect(questions).toEqual([
+      "Move 1 conversation out of /resume into the kit's archive, remove 1 empty project folder and delete 1 archive past crew.archiveDays?",
+    ]);
+    expect(existsSync(project)).toBe(false);
+    expect(existsSync(empty.project)).toBe(false);
+    expect(existsSync(expired)).toBe(false);
+    const into = join(
+      crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-tests"),
+      "projects",
+      project.split("/").at(-1) ?? "",
+    );
+    expect(gunzipSync(readFileSync(join(into, `${CREW_SESSION}.jsonl.gz`))).toString()).toBe(
+      '{"type":"assistant"}\n',
+    );
+    expect(w.out.join(" ")).toContain(
+      "- Moved the conversation of C my-app T tests (2 files) into",
+    );
+    expect(w.out).toContain("- Deleted the archived conversation of C my-app crew-V-old.");
+  });
+
+  test("a refusal moves nothing; --yes asks nothing", async () => {
+    const no = world();
+    no.rows.length = 0;
+    const { project } = await removedCrew(no);
+    const transcript = conversation(project);
+    no.deps.confirm = () => false;
+    expect(await no.run({ remove: true })).toBe(0);
+    expect(existsSync(transcript)).toBe(true);
+    expect(no.out).toContain(
+      "· Nothing moved. Use kit sessions --finished --remove --yes to confirm without a terminal.",
+    );
+
+    const yes = world();
+    yes.rows.length = 0;
+    const moved = await removedCrew(yes);
+    conversation(moved.project);
+    expect(await yes.run({ remove: true, yes: true })).toBe(0);
+    expect(yes.asks()).toBe(0);
+    expect(existsSync(moved.project)).toBe(false);
+  });
+
+  test("never taken: a crew session still on the board, a lead's session, a running one, one resumed since", async () => {
+    const w = world();
+    w.rows.length = 0;
+    // Still on the board: its record is stopped, not removed.
+    const stopped = await removedCrew(w, { slug: "stopped", state: "stopped" });
+    const stoppedFile = conversation(stopped.project);
+    // A lead's session, under a removed record's name.
+    const lead = await removedCrew(w, { id: "crew-T-lead", sessionId: LEAD, slug: "lead" });
+    const leadFile = conversation(lead.project, LEAD);
+    // Written after its record was removed: the person resumed it since.
+    const resumed = await removedCrew(w, {
+      id: "crew-T-resumed",
+      sessionId: OTHER_CREW,
+      slug: "resumed",
+    });
+    const resumedFile = conversation(resumed.project, OTHER_CREW, OLD + 60_000);
+    // A running Claude session holds it (Claude Code's own record of this test's process).
+    const running = await removedCrew(w, {
+      id: "crew-T-running",
+      sessionId: THIRD_CREW,
+      slug: "running",
+    });
+    const runningFile = conversation(running.project, THIRD_CREW);
+    writeSessionRecord(w.paths, process.pid, THIRD_CREW, running.worktree);
+
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+
+    for (const file of [stoppedFile, leadFile, resumedFile, runningFile])
+      expect(`${file}: ${existsSync(file)}`).toBe(`${file}: true`);
+    // Not even listed: a record on the board and a lead's session are not the sweep's to name.
+    expect(w.out.filter((line) => line.includes("T stopped") || line.includes("T lead"))).toEqual(
+      [],
+    );
+    expect(w.out).toContain(
+      "· C my-app T resumed stays: it was written after its crew session was removed",
+    );
+    expect(w.out).toContain("· C my-app T running stays: a running Claude session holds it");
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-stopped"))).toBe(false);
+  });
+
+  test("a crew record it cannot read fails closed: nothing is listed or moved", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const { project } = await removedCrew(w);
+    const transcript = conversation(project);
+    writeFileSync(crewFile(w.paths.stateDir, w.repo, "broken"), "{}");
+
+    expect(await w.run({ remove: true, yes: true })).toBe(1);
+
+    expect(existsSync(transcript)).toBe(true);
+    expect(w.out).toContain(
+      "✗ Could not read every crew record; repair the crew store before moving them.",
+    );
+  });
+
+  test("--id names finished sessions only: the crew part is left out", async () => {
+    const w = world();
+    const { project } = await removedCrew(w);
+    const transcript = conversation(project);
+    expect(await w.run({ remove: true, yes: true, ids: ["aaaaaaaa"] })).toBe(0);
+    expect(existsSync(transcript)).toBe(true);
   });
 });

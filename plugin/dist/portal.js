@@ -32854,7 +32854,7 @@ function jobsFingerprint(home) {
 
 // src/portal/actions.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync54, statSync as statSync19 } from "fs";
+import { existsSync as existsSync54, statSync as statSync20 } from "fs";
 import { isAbsolute as isAbsolute8, join as join70 } from "path";
 
 // src/browser/setup.ts
@@ -33122,17 +33122,17 @@ import {
   existsSync as existsSync50,
   mkdirSync as mkdirSync21,
   openSync as openSync7,
-  readdirSync as readdirSync19,
+  readdirSync as readdirSync20,
   readFileSync as readFileSync62,
   readSync as readSync4,
   rmSync as rmSync12,
-  statSync as statSync18,
+  statSync as statSync19,
   writeFileSync as writeFileSync9
 } from "fs";
 import { dirname as dirname21, join as join61, resolve as resolve10 } from "path";
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync61 } from "fs";
+import { readdirSync as readdirSync19, readFileSync as readFileSync61, statSync as statSync18 } from "fs";
 import { join as join60 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -33252,7 +33252,7 @@ function readTail(path, size) {
 function sessionFiles(projectsDir, folder) {
   let names;
   try {
-    names = readdirSync19(join61(projectsDir, folder));
+    names = readdirSync20(join61(projectsDir, folder));
   } catch {
     return [];
   }
@@ -33261,7 +33261,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join61(projectsDir, folder, name);
-    const stat = statSync18(path, { throwIfNoEntry: false });
+    const stat = statSync19(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -33283,7 +33283,7 @@ function sessionWorkFolderTimes(projectsDir) {
   if (!existsSync50(projectsDir))
     return [];
   const folders = new Map;
-  for (const folder of readdirSync19(projectsDir)) {
+  for (const folder of readdirSync20(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined)
       continue;
@@ -33301,7 +33301,7 @@ function savedSessions(projectsDir, mainCheckout, since) {
   if (!existsSync50(projectsDir))
     return [];
   const sessions = [];
-  for (const folder of readdirSync19(projectsDir)) {
+  for (const folder of readdirSync20(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout))
       continue;
     for (const file of sessionFiles(projectsDir, folder)) {
@@ -37305,7 +37305,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync54(folder) && statSync19(folder).isDirectory();
+    isFolder = existsSync54(folder) && statSync20(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -39667,7 +39667,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync55, readFileSync as readFileSync69, statSync as statSync20 } from "fs";
+import { existsSync as existsSync55, readFileSync as readFileSync69, statSync as statSync21 } from "fs";
 import { extname, join as join71, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -39701,7 +39701,7 @@ function fileInside(folder, pathname) {
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
-    return statSync20(file).isFile() ? file : null;
+    return statSync21(file).isFile() ? file : null;
   } catch {
     return null;
   }

@@ -201,7 +201,7 @@ export interface ArchiveInput {
 }
 
 /** Removes `folder` when it is empty; whether it is gone. Never removes anything in it. */
-function removeIfEmpty(folder: string): boolean {
+export function removeEmptyFolder(folder: string): boolean {
   try {
     rmdirSync(folder);
     return true;
@@ -224,7 +224,7 @@ function removeEmptyTree(folder: string): void {
     const path = join(folder, name);
     if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) removeEmptyTree(path);
   }
-  removeIfEmpty(folder);
+  removeEmptyFolder(folder);
 }
 
 /** Gzips `from` into `to`: a temporary name first, synced, then renamed, mode 0600. */
@@ -275,7 +275,7 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
   try {
     const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
     if (found.files.length === 0) {
-      return { folderGone: removeIfEmpty(found.projectDir), kind: "nothing" };
+      return { folderGone: removeEmptyFolder(found.projectDir), kind: "nothing" };
     }
     const dir = crewArchiveDir(paths.stateDir, record.repo, record.id);
     const into = join(dir, ARCHIVE_PROJECTS, basename(found.projectDir));
@@ -314,7 +314,7 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
       moved += 1;
     }
     removeEmptyTree(join(found.projectDir, sessionId));
-    return { dir, files: moved, folderGone: removeIfEmpty(found.projectDir), kind: "archived" };
+    return { dir, files: moved, folderGone: removeEmptyFolder(found.projectDir), kind: "archived" };
   } catch (error) {
     return { kind: "failed", moved, why: reasonOf(error) };
   }
@@ -383,7 +383,7 @@ export function pruneCrewArchives(
         outcome.kept.push({ dir, why: reasonOf(error) });
       }
     }
-    if (!dryRun) removeIfEmpty(repoDir);
+    if (!dryRun) removeEmptyFolder(repoDir);
   }
   return outcome;
 }

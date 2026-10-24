@@ -28,7 +28,7 @@ __export(exports_iso, {
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync76, statSync as statSync28 } from "fs";
+import { existsSync as existsSync76, statSync as statSync29 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join90, resolve as resolve14 } from "path";
 
@@ -35225,7 +35225,7 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   }
   return kept;
 }
-function removeIfEmpty(folder) {
+function removeEmptyFolder(folder) {
   try {
     rmdirSync3(folder);
     return true;
@@ -35245,7 +35245,7 @@ function removeEmptyTree(folder) {
     if (lstatSync6(path, { throwIfNoEntry: false })?.isDirectory())
       removeEmptyTree(path);
   }
-  removeIfEmpty(folder);
+  removeEmptyFolder(folder);
 }
 async function gzipInto(from, to) {
   const temporary = `${to}.${String(process.pid)}.tmp`;
@@ -35284,7 +35284,7 @@ async function archiveConversation(input) {
   try {
     const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
     if (found.files.length === 0) {
-      return { folderGone: removeIfEmpty(found.projectDir), kind: "nothing" };
+      return { folderGone: removeEmptyFolder(found.projectDir), kind: "nothing" };
     }
     const dir = crewArchiveDir(paths.stateDir, record.repo, record.id);
     const into = join67(dir, ARCHIVE_PROJECTS, basename11(found.projectDir));
@@ -35323,7 +35323,7 @@ async function archiveConversation(input) {
       moved += 1;
     }
     removeEmptyTree(join67(found.projectDir, sessionId));
-    return { dir, files: moved, folderGone: removeIfEmpty(found.projectDir), kind: "archived" };
+    return { dir, files: moved, folderGone: removeEmptyFolder(found.projectDir), kind: "archived" };
   } catch (error) {
     return { kind: "failed", moved, why: reasonOf5(error) };
   }
@@ -35363,7 +35363,7 @@ function pruneCrewArchives(stateDir, daysOf, nowMs, dryRun = false) {
       }
     }
     if (!dryRun)
-      removeIfEmpty(repoDir);
+      removeEmptyFolder(repoDir);
   }
   return outcome;
 }
@@ -47090,18 +47090,18 @@ import {
   existsSync as existsSync68,
   mkdirSync as mkdirSync30,
   openSync as openSync12,
-  readdirSync as readdirSync28,
+  readdirSync as readdirSync29,
   readFileSync as readFileSync82,
   readSync as readSync7,
   rmSync as rmSync19,
-  statSync as statSync24,
+  statSync as statSync25,
   writeFileSync as writeFileSync14
 } from "fs";
 import { platform as platform2 } from "os";
 import { dirname as dirname28, join as join80, resolve as resolve13 } from "path";
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync81 } from "fs";
+import { readdirSync as readdirSync28, readFileSync as readFileSync81, statSync as statSync24 } from "fs";
 import { join as join79 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -47204,6 +47204,62 @@ function readFinishedSessions(paths, deps) {
     };
   }
 }
+function emptyFolder(folder) {
+  try {
+    return statSync24(folder).isDirectory() && readdirSync28(folder).length === 0;
+  } catch {
+    return false;
+  }
+}
+function readCrewLeftovers(paths, deps) {
+  const none = (error) => ({
+    conversations: [],
+    emptyFolders: [],
+    error,
+    expired: [],
+    kept: []
+  });
+  try {
+    const crew = listAllCrew(paths.stateDir);
+    if (crew.broken.length > 0)
+      return none("Could not read every crew record; repair the crew store before moving them.");
+    const neverTaken = sessionsNeverTaken(paths.stateDir, null);
+    const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+    const out = none("");
+    out.error = null;
+    for (const record of crew.records) {
+      if (!ARCHIVED_STATES.includes(record.state) || record.sessionId === null)
+        continue;
+      if (!isSessionId2(record.sessionId) || neverTaken.has(record.sessionId))
+        continue;
+      const found = conversationOf(paths.projectsDir, record.worktree, record.sessionId);
+      if (found.files.length === 0) {
+        if (emptyFolder(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
+          out.emptyFolders.push(found.projectDir);
+        continue;
+      }
+      if (running.has(record.sessionId)) {
+        out.kept.push({ record, why: "a running Claude session holds it" });
+        continue;
+      }
+      const removedAt = Date.parse(record.updatedAt);
+      const newest = Math.max(...found.files.map((file) => statSync24(join79(found.projectDir, file)).mtimeMs));
+      if (newest > removedAt) {
+        out.kept.push({ record, why: "it was written after its crew session was removed" });
+        continue;
+      }
+      out.conversations.push({
+        files: found.files.length,
+        projectDir: found.projectDir,
+        record
+      });
+    }
+    out.expired = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, deps.env), deps.now, true).pruned;
+    return out;
+  } catch (error) {
+    return none(`Could not read what removed crew sessions left: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 function readSessionAgents(context, cwd) {
   const binary = findClaude(context);
   if (binary === null)
@@ -47240,7 +47296,7 @@ function readTail(path, size) {
 function sessionFiles(projectsDir, folder) {
   let names;
   try {
-    names = readdirSync28(join80(projectsDir, folder));
+    names = readdirSync29(join80(projectsDir, folder));
   } catch {
     return [];
   }
@@ -47249,7 +47305,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join80(projectsDir, folder, name);
-    const stat = statSync24(path, { throwIfNoEntry: false });
+    const stat = statSync25(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -47271,7 +47327,7 @@ function sessionWorkFolderTimes(projectsDir) {
   if (!existsSync68(projectsDir))
     return [];
   const folders = new Map;
-  for (const folder of readdirSync28(projectsDir)) {
+  for (const folder of readdirSync29(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined)
       continue;
@@ -47289,7 +47345,7 @@ function savedSessions(projectsDir, mainCheckout, since) {
   if (!existsSync68(projectsDir))
     return [];
   const sessions = [];
-  for (const folder of readdirSync28(projectsDir)) {
+  for (const folder of readdirSync29(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout))
       continue;
     for (const file of sessionFiles(projectsDir, folder)) {
@@ -47311,7 +47367,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
   const prefix = tabPrefix(key);
   const restoreAll = `${prefix}restore_all`;
   const keep = new Set([restoreAll, ...sessions.map((session) => tabConfigName(key, session))]);
-  for (const name of readdirSync28(dir)) {
+  for (const name of readdirSync29(dir)) {
     if (!name.startsWith("claude_") || !name.endsWith(".toml"))
       continue;
     if (keep.has(name.slice(0, -".toml".length)))
@@ -47367,7 +47423,7 @@ function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
   const dir = dirname28(openedMarkerFile(stateDir, id));
-  for (const name of readdirSync28(dir)) {
+  for (const name of readdirSync29(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
     rmSync19(join80(dir, name), { force: true });
@@ -47390,9 +47446,117 @@ function clock(time) {
     month: "short"
   });
 }
-function runFinishedSessions(paths, options, deps, cwd) {
+async function runFinishedSessions(paths, options, deps, cwd) {
   const term = currentTerminal(process.env);
   const out = createOut(term);
+  const finished = finishedPart(paths, options, deps, cwd, out, term);
+  if ((options.ids?.length ?? 0) > 0)
+    return finished;
+  const crew = await crewLeftoversPart(paths, options, deps, out, term);
+  return Math.max(finished, crew);
+}
+function counted3(count, one, many) {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+function joined(parts) {
+  return parts.length <= 1 ? parts[0] ?? "" : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1) ?? ""}`;
+}
+async function crewLeftoversPart(paths, options, deps, out, term) {
+  const read = () => readCrewLeftovers(paths, { env: process.env, now: deps.now });
+  const left = read();
+  if (left.error !== null) {
+    out.line("fail", left.error);
+    return 1;
+  }
+  const home = paths.home;
+  if (left.conversations.length + left.kept.length > 0) {
+    out.heading("Conversations of removed crew sessions, still in /resume");
+    for (const one of left.conversations)
+      out.line("info", `${one.record.name} \u2014 ${tildify(one.record.worktree, home)} \u2014 ${counted3(one.files, "file", "files")}`);
+    for (const one of left.kept)
+      out.line("info", `${one.record.name} stays: ${one.why}`);
+  }
+  if (left.emptyFolders.length > 0) {
+    out.heading("Empty project folders of removed crew sessions");
+    for (const folder of left.emptyFolders)
+      out.line("info", tildify(folder, home));
+  }
+  if (left.expired.length > 0) {
+    out.heading("Archived crew conversations past crew.archiveDays");
+    for (const one of left.expired)
+      out.line("info", `${one.name} \u2014 archived ${finishedAge(one.ageMs)}`);
+  }
+  const plan = [
+    left.conversations.length === 0 ? "" : `move ${counted3(left.conversations.length, "conversation", "conversations")} out of /resume into the kit's archive`,
+    left.emptyFolders.length === 0 ? "" : `remove ${counted3(left.emptyFolders.length, "empty project folder", "empty project folders")}`,
+    left.expired.length === 0 ? "" : `delete ${counted3(left.expired.length, "archive", "archives")} past crew.archiveDays`
+  ].filter((part) => part !== "");
+  if (plan.length === 0) {
+    if (left.kept.length === 0)
+      out.line("info", "No conversations of removed crew sessions are left in /resume.");
+    return 0;
+  }
+  if (!options.remove)
+    return 0;
+  if (!options.yes) {
+    const confirm = deps.confirm ?? ((question) => terminalPrompts(term)?.confirm(question) ?? false);
+    const question = joined(plan);
+    if (!confirm(`${question.charAt(0).toUpperCase()}${question.slice(1)}?`)) {
+      out.line("info", `Nothing moved. Use ${deps.command} sessions --finished --remove --yes to confirm without a terminal.`);
+      return 0;
+    }
+  }
+  const now = read();
+  if (now.error !== null) {
+    out.line("fail", now.error);
+    return 1;
+  }
+  let failed = false;
+  let neverTaken;
+  let running;
+  try {
+    neverTaken = sessionsNeverTaken(paths.stateDir, null);
+    running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+  } catch (error) {
+    out.line("fail", `Could not read whose sessions these are: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  for (const one of left.conversations) {
+    const current = now.conversations.find((two) => two.record.id === one.record.id && two.record.repo === one.record.repo);
+    if (current === undefined) {
+      out.line("info", `Kept ${one.record.name}: its conversation is no longer one to move.`);
+      continue;
+    }
+    const outcome = await archiveConversation({
+      neverTaken,
+      nowMs: deps.now,
+      paths,
+      record: current.record,
+      running
+    });
+    if (outcome.kind === "archived") {
+      out.line("removed", `Moved the conversation of ${one.record.name} (${counted3(outcome.files, "file", "files")}) into ${tildify(outcome.dir, home)}.`);
+    } else if (outcome.kind === "kept") {
+      out.line("info", `Kept ${one.record.name}: ${outcome.why}.`);
+    } else if (outcome.kind === "failed") {
+      failed = true;
+      out.line("fail", `Could not move the conversation of ${one.record.name}: ${outcome.why}`, {
+        fix: `Clear what the line says, then run ${deps.command} sessions --finished --remove again; what moved stays in the archive.`
+      });
+    }
+  }
+  for (const folder of left.emptyFolders) {
+    if (now.emptyFolders.includes(folder) && removeEmptyFolder(folder))
+      out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
+  }
+  const pruned = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, process.env), deps.now);
+  for (const one of pruned.pruned)
+    out.line("removed", `Deleted the archived conversation of ${one.name}.`);
+  for (const one of pruned.kept)
+    out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  return failed ? 1 : 0;
+}
+function finishedPart(paths, options, deps, cwd, out, term) {
   const context = sessionsClaudeDeps(paths, deps.platform, deps.which);
   const agents = deps.agents ?? (() => readSessionAgents(context, cwd));
   const read = () => readFinishedSessions(paths, { agents, now: deps.now });
@@ -47952,6 +48116,13 @@ Add --remove to remove that list with claude rm (asks once); --yes skips confirm
 A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
 A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
 --id limits removal to that exact eligible session; repeat it to name several.
+
+--finished also lists what removed crew sessions left in /resume: their conversations still in
+Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
+past crew.archiveDays (7 by default). --remove asks once more, then moves each conversation into
+the kit's archive (gzipped, deleted after crew.archiveDays), removes each empty folder and deletes
+each expired archive. A lead's session, a crew session still on the board, one a running Claude
+holds and one written after its removal are never taken. --id leaves this part out.
 Use --finished separately from --open and --dry-run.`;
 var WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 
@@ -48140,7 +48311,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync70, readdirSync as readdirSync29, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync25 } from "fs";
+import { existsSync as existsSync70, readdirSync as readdirSync30, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync20, statSync as statSync26 } from "fs";
 import { basename as basename16, dirname as dirname29, join as join82 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -48300,7 +48471,7 @@ var BOOKKEEPING_NAMES = [
 function foreignStateEntries(old) {
   if (!existsSync70(old.stateDir))
     return [];
-  return readdirSync29(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
+  return readdirSync30(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
 function oldPiecesPresent(paths, old, renamer) {
   if ([
@@ -48368,7 +48539,7 @@ function recordsNameOldPaths(stateDir, renamer) {
   }
   const backups = join82(stateDir, "backups");
   if (existsSync70(backups)) {
-    for (const folder of readdirSync29(backups)) {
+    for (const folder of readdirSync30(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
     }
@@ -48401,7 +48572,7 @@ function absorbStateFolder(from, to, dryRun) {
   if (!existsSync70(from))
     return 0;
   let moved = 0;
-  for (const name of readdirSync29(from)) {
+  for (const name of readdirSync30(from)) {
     const source = join82(from, name);
     const target = join82(to, name);
     if (!existsSync70(target)) {
@@ -48410,7 +48581,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync7(source, target);
       continue;
     }
-    if (statSync25(source).isDirectory() && statSync25(target).isDirectory()) {
+    if (statSync26(source).isDirectory() && statSync26(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync20(source, { recursive: true, force: true });
@@ -48419,7 +48590,7 @@ function absorbStateFolder(from, to, dryRun) {
     if (!dryRun)
       rmSync20(source, { recursive: true, force: true });
   }
-  if (!dryRun && readdirSync29(from).length === 0)
+  if (!dryRun && readdirSync30(from).length === 0)
     rmSync20(from, { recursive: true, force: true });
   return moved;
 }
@@ -48461,10 +48632,10 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   const backupsDir = join82(stateDir, "backups");
   if (!existsSync70(backupsDir))
     return { files, backups };
-  const folders = readdirSync29(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const folders = readdirSync30(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
     const folderPath = join82(backupsDir, folder);
-    for (const name of readdirSync29(folderPath)) {
+    for (const name of readdirSync30(folderPath)) {
       const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
@@ -48480,7 +48651,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
       continue;
     const target = join82(backupsDir, renamedFolder);
     if (existsSync70(target)) {
-      for (const name of readdirSync29(folderPath))
+      for (const name of readdirSync30(folderPath))
         renameSync7(join82(folderPath, name), join82(target, name));
       rmSync20(folderPath, { recursive: true, force: true });
     } else {
@@ -48520,7 +48691,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync25(file).mode;
+  const mode = statSync26(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -48588,7 +48759,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync25(file).mode & 4095;
+    const mode = statSync26(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -50123,7 +50294,7 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync73, readFileSync as readFileSync86, rmSync as rmSync23, statSync as statSync26, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync73, readFileSync as readFileSync86, rmSync as rmSync23, statSync as statSync27, writeFileSync as writeFileSync15 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
 import { basename as basename18, join as join87 } from "path";
 
@@ -50198,7 +50369,7 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync26(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync27(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -50609,7 +50780,7 @@ import { existsSync as existsSync74 } from "fs";
 import { join as join89 } from "path";
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync27, writeSync as writeSync2 } from "fs";
+import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync28, writeSync as writeSync2 } from "fs";
 import { join as join88 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
@@ -50666,7 +50837,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync27(path).uid;
+        return statSync28(path).uid;
       } catch {
         return null;
       }
@@ -50957,7 +51128,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync76(project) || !statSync28(project).isDirectory()) {
+      if (!existsSync76(project) || !statSync29(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;

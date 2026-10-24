@@ -209,6 +209,13 @@ Add --remove to remove that list with claude rm (asks once); --yes skips confirm
 A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
 A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
 --id limits removal to that exact eligible session; repeat it to name several.
+
+--finished also lists what removed crew sessions left in /resume: their conversations still in
+Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
+past crew.archiveDays (7 by default). --remove asks once more, then moves each conversation into
+the kit's archive (gzipped, deleted after crew.archiveDays), removes each empty folder and deletes
+each expired archive. A lead's session, a crew session still on the board, one a running Claude
+holds and one written after its removal are never taken. --id leaves this part out.
 Use --finished separately from --open and --dry-run.`;
 
 const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
