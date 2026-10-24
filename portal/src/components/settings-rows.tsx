@@ -1,7 +1,7 @@
 "use client";
 
 import { LockIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import type { SettingsRow, WorkflowSource } from "@/api/types";
 import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
-/** The card headings, in the design's words and order (`SETTINGS_CARDS`, `src/portal/settings.ts`). */
+/** The groups' headings, in the design's words and order (`SETTINGS_CARDS`, `src/portal/settings.ts`). */
 const CARDS: readonly { card: SettingsRow["card"]; title: string; about: string }[] = [
   { card: "flow", title: "Work flow", about: "What happens by itself once a step is finished." },
   { card: "alerts", title: "Alerts", about: "When the kit tells you something, and how." },
@@ -24,11 +24,31 @@ const CARDS: readonly { card: SettingsRow["card"]; title: string; about: string 
   },
 ];
 
+/** Where a value comes from, on its badge: the project's file, the person's defaults, the kit. */
 const SOURCE_WORDS: Record<WorkflowSource, string> = {
-  personal: "yours",
-  project: "this project",
-  default: "default",
+  personal: "Your default",
+  project: "This project",
+  default: "Built-in default",
 };
+
+/** The badge beside a setting's label: where its value comes from. */
+export function SourceBadge({ source }: { source: WorkflowSource }) {
+  return (
+    <Badge variant="outline" className="font-normal text-muted-foreground">
+      {SOURCE_WORDS[source]}
+    </Badge>
+  );
+}
+
+/** The rows of each group, in the groups' order; a group with no row is left out. */
+export function settingGroups(
+  rows: SettingsRow[],
+): { card: SettingsRow["card"]; title: string; about: string; rows: SettingsRow[] }[] {
+  return CARDS.map((card) => ({
+    ...card,
+    rows: rows.filter((row) => row.card === card.card),
+  })).filter((group) => group.rows.length > 0);
+}
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
@@ -37,7 +57,7 @@ function stringList(value: unknown): string[] {
 }
 
 /** A value changed on the page, and the server's value it was changed from. */
-type Draft = null | { base: unknown; value: unknown };
+export type Draft = null | { base: unknown; value: unknown };
 
 /** Two values the same, for a list too (`alerts.events`). */
 function sameValue(a: unknown, b: unknown): boolean {
@@ -45,10 +65,8 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * One setting's control, drawn from its kind. A change is saved at once through
- * `workflow.set`, the command line's own writer: a setting of the person's own straight away,
- * one the project owns after the page asks (it rewrites the project's committed file). A number
- * is saved when the field is left or Enter is pressed, not on every key.
+ * One setting's control, drawn from its kind. A change goes to `onSave` at once; a number when
+ * the field is left or Enter is pressed, not on every key.
  */
 function Control({
   row,
@@ -114,10 +132,13 @@ function Control({
         >
           {(row.choices ?? []).map((choice) => {
             const id = `${row.id}-${choice.value}`;
+            // The list holds at least one event (`parseWorkflowValue`): the last one stays.
+            const last = chosen.length === 1 && chosen[0] === choice.value;
             return (
               <span key={choice.value} className="flex items-center gap-2">
                 <Checkbox
                   id={id}
+                  title={last ? "At least one event stays chosen" : undefined}
                   checked={chosen.includes(choice.value)}
                   onCheckedChange={(on) =>
                     change(
@@ -126,7 +147,7 @@ function Control({
                         : chosen.filter((v) => v !== choice.value),
                     )
                   }
-                  disabled={disabled}
+                  disabled={disabled || last}
                 />
                 <label htmlFor={id} className="text-sm">
                   {choice.label}
@@ -170,29 +191,39 @@ function Control({
   }
 }
 
-function Row({ row }: { row: SettingsRow }) {
+/**
+ * One setting's line: its label, the badge for where its value comes from, its help, what its
+ * last change did (`children`), and its control. The row that draws it owns the draft and what a
+ * change does: This machine saves it, a project's Workflow card proposes it.
+ */
+export function SettingLine({
+  row,
+  draft,
+  setDraft,
+  onSave,
+  busy,
+  children,
+  confirm,
+}: {
+  row: SettingsRow;
+  draft: Draft;
+  setDraft: (draft: Draft) => void;
+  onSave: (value: unknown) => void;
+  busy: boolean;
+  /** Under the help: the change's progress and its result. */
+  children?: ReactNode;
+  /** The row's question before a change, when it asks one. */
+  confirm?: ReactNode;
+}) {
   const labelId = useId();
-  const [draft, setDraft] = useState<Draft>(null);
-  // A change that did not happen (a refusal) puts back what the server holds.
-  const { run, state, clear } = useAction("workflow.set", (result) => {
-    if (!result.ok) setDraft(null);
-  });
-  // A project-owned setting rewrites the project's committed file: the page asks first.
-  const [asking, setAsking] = useState<null | { value: unknown }>(null);
-  const save = (value: unknown) => {
-    if (row.where === "project") setAsking({ value });
-    else run({ key: row.key, value });
-  };
   return (
     <li className="grid gap-x-6 gap-y-2 border-b py-4 last:border-b-0 @3xl/main:grid-cols-[minmax(0,1fr)_auto]">
-      <div className="flex flex-col gap-1">
+      <div className="flex min-w-0 flex-col gap-1">
         <span className="flex flex-wrap items-center gap-2">
           <span id={labelId} className="font-medium">
             {row.label}
           </span>
-          <Badge variant="outline" className="font-normal text-muted-foreground">
-            {SOURCE_WORDS[row.source]}
-          </Badge>
+          <SourceBadge source={row.source} />
         </span>
         <p className="max-w-prose text-sm text-pretty text-muted-foreground">{row.help}</p>
         {row.readOnly && row.why !== null && (
@@ -201,37 +232,71 @@ function Row({ row }: { row: SettingsRow }) {
             Read-only here: {row.why}.
           </p>
         )}
-        <ActionResultLine state={state} />
+        {children}
       </div>
       <div className="flex items-start @3xl/main:justify-end">
         <Control
           row={row}
           labelId={labelId}
-          onSave={save}
-          busy={state.phase === "sending"}
+          onSave={onSave}
+          busy={busy}
           draft={draft}
           setDraft={setDraft}
         />
       </div>
-      <ConfirmDialog
-        open={asking !== null}
-        title={`Change ${row.label} for this project?`}
-        yes="Write it"
-        onCancel={() => {
-          setAsking(null);
-          setDraft(null);
-          clear();
-        }}
-        onYes={() => {
-          const value = asking?.value;
-          setAsking(null);
-          run({ confirm: true, key: row.key, value });
-        }}
-      >
-        It is the project's own setting: it is written into its .claude/cc-smart-dev-kit.json, for
-        everyone who works in it. The review gate reads it once that file is committed and pushed.
-      </ConfirmDialog>
+      {confirm}
     </li>
+  );
+}
+
+/**
+ * A row of This machine: a change is saved at once through `workflow.set`, the command line's
+ * own writer — a setting of the person's own straight away, one the project owns after the page
+ * asks (it rewrites the project's committed file).
+ */
+function Row({ row }: { row: SettingsRow }) {
+  const [draft, setDraft] = useState<Draft>(null);
+  const { run, state, clear } = useAction("workflow.set");
+  // A change that did not happen — a refusal, or no answer at all — puts back what the server holds.
+  useEffect(() => {
+    if (state.phase === "done" && !state.result.ok) setDraft(null);
+  }, [state]);
+  // A project-owned setting rewrites the project's committed file: the page asks first.
+  const [asking, setAsking] = useState<null | { value: unknown }>(null);
+  const save = (value: unknown) => {
+    if (row.where === "project") setAsking({ value });
+    else run({ key: row.key, value });
+  };
+  return (
+    <SettingLine
+      row={row}
+      draft={draft}
+      setDraft={setDraft}
+      onSave={save}
+      busy={state.phase === "sending"}
+      confirm={
+        <ConfirmDialog
+          open={asking !== null}
+          title={`Change ${row.label} for this project?`}
+          yes="Write it"
+          onCancel={() => {
+            setAsking(null);
+            setDraft(null);
+            clear();
+          }}
+          onYes={() => {
+            const value = asking?.value;
+            setAsking(null);
+            run({ confirm: true, key: row.key, value });
+          }}
+        >
+          It is the project's own setting: it is written into its .claude/cc-smart-dev-kit.json, for
+          everyone who works in it. The review gate reads it once that file is committed and pushed.
+        </ConfirmDialog>
+      }
+    >
+      <ActionResultLine state={state} />
+    </SettingLine>
   );
 }
 
@@ -239,25 +304,21 @@ function Row({ row }: { row: SettingsRow }) {
 export function SettingsCards({ rows }: { rows: SettingsRow[] }) {
   return (
     <>
-      {CARDS.map((card) => {
-        const inCard = rows.filter((row) => row.card === card.card);
-        if (inCard.length === 0) return null;
-        return (
-          <Card key={card.card}>
-            <CardHeader>
-              <CardTitle>{card.title}</CardTitle>
-              <CardDescription>{card.about}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ul>
-                {inCard.map((row) => (
-                  <Row key={row.id} row={row} />
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        );
-      })}
+      {settingGroups(rows).map((group) => (
+        <Card key={group.card}>
+          <CardHeader>
+            <CardTitle>{group.title}</CardTitle>
+            <CardDescription>{group.about}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul>
+              {group.rows.map((row) => (
+                <Row key={row.id} row={row} />
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ))}
     </>
   );
 }

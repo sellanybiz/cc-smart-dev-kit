@@ -12,7 +12,6 @@ import type {
   ProjectInitPlan,
   ProjectList,
   ProjectListRow,
-  SettingsData,
 } from "./types";
 import type {
   ActionName,
@@ -129,13 +128,11 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "crew.softHours", source: "default", value: 2 },
   { key: "crew.maxHours", source: "default", value: 4 },
   { key: "crew.tag", source: "project", value: "my-app" },
-  { key: "switches.statusLine", source: "personal", value: true },
   { key: "switches.sessionNames", source: "project", value: true },
   { key: "switches.jobRoute", source: "project", value: true },
-  { key: "switches.updateHold", source: "default", value: false },
 ];
 
-export function projectMocks(now: number, empty: boolean, settings: SettingsData): ProjectMocks {
+export function projectMocks(now: number, empty: boolean): ProjectMocks {
   const rows: ProjectListRow[] = empty
     ? []
     : [
@@ -245,7 +242,6 @@ export function projectMocks(now: number, empty: boolean, settings: SettingsData
               : null,
           checkedAt,
           project,
-          settings: mine ? settings : null,
           setup: { answers, error: null, planError: null },
         },
       ];
@@ -268,7 +264,9 @@ export function projectMocks(now: number, empty: boolean, settings: SettingsData
         project.id,
         {
           base: "main",
-          gh: project.source === "added" ? "missing" : "in",
+          // The current project can open a pull request; the other set-up one shows the card
+          // without a gh that can read its repository.
+          gh: project.current ? "in" : "out",
           note: null,
           settings: WORKFLOW_SETTINGS,
         },
@@ -282,6 +280,21 @@ export function projectMocks(now: number, empty: boolean, settings: SettingsData
         if (page === undefined) return { lines: ["Mock data: no such project."], ok: false };
         if (page.note !== null) return { lines: [page.note], ok: false };
         const setting = typeof body.setting === "string" ? body.setting : "";
+        if (!page.settings.some((one) => one.key === setting)) {
+          return {
+            lines: [`"${setting}" is not a setting the project's file can hold.`],
+            ok: false,
+          };
+        }
+        if (setting === "deleteBranch") {
+          // One refusal, so the card's refused state is seen in mock data too.
+          return {
+            lines: [
+              "gh pr create failed: HTTP 403 (mock). Check that gh is logged in (`gh auth login`) and that your account may open a pull request on this repository, then try again; the branch and its worktree were taken back.",
+            ],
+            ok: false,
+          };
+        }
         return {
           lines: [
             `+ ${setting} in .claude/cc-smart-dev-kit.json`,
