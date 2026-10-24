@@ -38,6 +38,7 @@ import {
   type Listed,
   listAllCrew,
   listCrew,
+  openQuestionIndex,
   readCrewEvents,
 } from "./store";
 import { usageFacts, usageUnreadLine } from "./usage-guard";
@@ -392,7 +393,9 @@ export function statusLines(
     label("brief", tildify(crewBriefFile(options.stateDir, record.repo, record.id), options.home)),
     label("report", record.reportPath === null ? "none yet" : record.reportPath),
   );
-  const open = record.questions.findLast((one) => one.answer === null);
+  // One open-question rule for every reader: a finished crew session's question is closed.
+  const openIndex = openQuestionIndex(record);
+  const open = openIndex === null ? undefined : record.questions[openIndex];
   if (open === undefined) {
     lines.push(label("question", "none open"));
   } else {

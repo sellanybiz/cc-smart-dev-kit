@@ -16,6 +16,7 @@ import {
   createCrew,
   crewRecordSchema,
   type NewCrew,
+  updateCrew,
   writeLead,
 } from "../../crew/store";
 import { localDay } from "../../gateway/safety-checks";
@@ -323,5 +324,24 @@ describe("Work from a folder that is no git project", () => {
       ["crew-A-1", "which base?"],
       ["crew-B-1", "which port?"],
     ]);
+  });
+
+  test("a finished crew session's question is no Need, and its page says none", async () => {
+    const w = world();
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-1", "lead-a"), NOW);
+    await addCrewQuestion(
+      w.paths.stateDir,
+      w.repoA,
+      "crew-A-1",
+      { options: ["a", "b"], question: "which base?", recommended: 1 },
+      NOW,
+    );
+    // The crew session handed off, and the lead merged its branch: the question was never
+    // answered, and it needs no answer now.
+    await updateCrew(w.paths.stateDir, w.repoA, "crew-A-1", { state: "merged" }, NOW + 1000);
+    expect((await needsAnswer(w.deps)).crew).toEqual([]);
+    const page = await crewAnswerFor(w.deps, "crew-A-1");
+    if (!("crew" in page)) throw new Error("the crew page did not find the record");
+    expect(page.crew.question).toBeNull();
   });
 });

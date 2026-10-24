@@ -267,6 +267,33 @@ export type CrewQuestion = z.infer<typeof crewQuestionFields>;
 export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recommended">;
 
 /**
+ * The states a crew session's phase is over in, so a question it left needs no answer: it handed
+ * back, the lead merged its work, it failed, or it was removed. **A `stopped` crew session is not
+ * one**: D35 stops a crew session that waits, and `crew answer` resumes it with the answer as its
+ * next prompt — its question still waits (`answer.ts`).
+ */
+export const QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"] as const;
+
+/** True when `state` ends the crew session's phase, closing every question it left open. */
+export function questionClosed(state: string): boolean {
+  return (QUESTION_CLOSED_STATES as readonly string[]).includes(state);
+}
+
+/**
+ * The index of the question the lead may still answer: the newest with no answer, while the crew
+ * session's phase is not over. Null when every question has its answer, or the phase is over: a
+ * question the crew session left behind at its end needs no answer, and every reader agrees
+ * (`crew answer`, `crew list`, `crew status`, the portal's Needs page and crew page).
+ */
+export function openQuestionIndex(record: CrewRecord): null | number {
+  if (questionClosed(record.state)) return null;
+  for (let index = record.questions.length - 1; index >= 0; index -= 1) {
+    if (record.questions[index]?.answer === null) return index;
+  }
+  return null;
+}
+
+/**
  * What a crew session waits for while it is `paused` (D42): the slot whose every target is
  * limited or down (the router holds its requests), Claude's own plan limit (no target can
  * answer), or nothing the router's state explains (a server error, an overloaded backend the

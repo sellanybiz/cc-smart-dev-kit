@@ -29,10 +29,13 @@
  *   one first, the others 30 s apart and only after the router answered a request since, never
  *   while a slot's breaker is open or a Claude limit is current (`src/crew/wait.ts`);
  * - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
- *   the conversation stays), and a `blocked` one that has idled past
- *   `workflow.crew.idleStopMinutes`;
- * - it marks a crew session **merged** when the lead merged its branch. The removal is `crew rm`'s
- *   work (W1c), and the line says so.
+ *   the conversation stays; the record keeps `done` or `failed`), and a `blocked` one that has
+ *   idled past `workflow.crew.idleStopMinutes`;
+ * - it marks a crew session **merged** when the lead merged its branch, and then **removes it**
+ *   (D62): the same steps `crew rm` runs (`runCrewRm`), never a second copy. A queued or starting
+ *   continuation that still needs the branch holds the removal back until it starts; a refusal —
+ *   a program still runs from the worktree, or work nobody committed — is said once and left for
+ *   the lead. A **stopped** record is never marked or removed: that is the lead's call (D62).
  *
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
@@ -46,9 +49,9 @@ import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { mergedIntoBase } from "./end";
-import { runCrewRm } from "./remove";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
+import { runCrewRm } from "./remove";
 import { startQueued } from "./start";
 import {
   type CrewEvent,
@@ -90,9 +93,11 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
 
 /**
  * The states a crew session's work is over in: the watch looks at the lead's merge for each of them,
- * because the merge can come after the crew session was stopped.
+ * because the merge can come after the crew session's turn ended. **`stopped` is not one (D62):**
+ * a crew session something stopped before its phase was over is the lead's call, and the watch
+ * neither marks it merged nor removes it — `crew rm` does, when the lead says so.
  */
-const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
+const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged"];
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -347,6 +352,16 @@ async function stopSession(record: CrewRecord, ctx: CrewContext): Promise<null |
 /** The one line the watch says when it ends the session of a crew session that failed (H101). */
 export function failedStopLine(record: CrewRecord): string {
   return `${record.name}: its session stopped — it failed; the record stays failed`;
+}
+
+/**
+ * The one line the watch says when it ends the session of a crew session whose turn ended (D35).
+ * **The record keeps `done`.** A `stopped` record means a crew session something stopped before
+ * its phase was over, and D62 leaves that one's removal to the lead: were a finished turn written
+ * `stopped`, every auto-removal below would be dead.
+ */
+export function doneStopLine(record: CrewRecord): string {
+  return `${record.name}: its session stopped — its turn ended; the record stays done`;
 }
 
 /**
@@ -676,7 +691,16 @@ export async function watchPass(
         news = line;
       }
     } else if (record.state === "done" && listed) {
-      refusal = await stopCrew(record, "stopped", "its turn ended", ctx, row);
+      // Its session ends; its record keeps `done` (D62: `stopped` is for a phase something
+      // stopped before it ended, and its removal is the lead's call). Stopped once: the mark
+      // in `said` remembers it while agent view catches up.
+      const line = doneStopLine(record);
+      if (said[stopKey] !== line) {
+        refusal = await stopSession(record, ctx);
+        if (refusal === null) news = line;
+      } else {
+        news = line;
+      }
     } else if (record.state === "blocked" && listed) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
       if (Number.isFinite(idle) && idle > resolved.crew.idleStopMinutes.value * 60_000) {

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
-import { runCrewAnswer } from "./answer";
+import { openQuestionIndex, runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
@@ -19,6 +19,7 @@ import {
   crewSettingsFile,
   listCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
   writeStoreFile,
 } from "./store";
@@ -191,11 +192,13 @@ describe("crew answer", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
-  test("D36: a crew session that is done takes no more answers", async () => {
+  test("D36: a crew session that is done takes no more answers, and its question needs none", async () => {
     const world = await askedWorld("done");
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
     expect(code).toBe(1);
-    expect(world.err[0]).toBe(`crew answer: ${NAME} is done, and it takes no more answers`);
+    expect(world.err[0]).toBe(
+      `crew answer: ${NAME} is finished (done), so its question needs no answer`,
+    );
   });
 
   test("D35: a stopped crew session is resumed with the answer as its next prompt, in its worktree, with its own files", async () => {
@@ -495,5 +498,52 @@ describe("crew answer", () => {
     expect(world.err[0]).toBe(
       "crew answer: this session was started in bypassPermissions mode, and a lead there acts on every crew session's message with no question",
     );
+  });
+});
+
+describe("a finished crew session's question is never open", () => {
+  /** The one question's open index of a record the store holds in `state`. */
+  async function indexIn(
+    world: Awaited<ReturnType<typeof askedWorld>>,
+    state: string,
+  ): Promise<null | number> {
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state }, T0 + 1000, "moved");
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    return record === undefined ? null : openQuestionIndex(record);
+  }
+
+  test("open on a working record, and closed on a merged, a handoff, a done, a failed and a removed one", async () => {
+    const world = await askedWorld("working");
+    expect(await indexIn(world, "working")).toBe(0);
+    for (const state of ["merged", "handoff", "done", "failed", "removed"]) {
+      expect([state, await indexIn(world, state)]).toEqual([state, null]);
+    }
+  });
+
+  test("open on a stopped record: D35's answer resumes it with the question still waiting", async () => {
+    const world = await askedWorld("stopped");
+    expect(await indexIn(world, "stopped")).toBe(0);
+  });
+
+  test("crew answer on a merged record says the session is finished, in one line", async () => {
+    const world = await askedWorld("working");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "merged" }, T0 + 1000);
+    const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (merged), so its question needs no answer`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("crew answer on a handoff record says the same", async () => {
+    const world = await askedWorld("working");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "handoff" }, T0 + 1000);
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (handoff), so its question needs no answer`,
+    ]);
   });
 });
