@@ -128,10 +128,8 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "crew.softHours", source: "default", value: 2 },
   { key: "crew.maxHours", source: "default", value: 4 },
   { key: "crew.tag", source: "project", value: "my-app" },
-  { key: "switches.statusLine", source: "personal", value: true },
   { key: "switches.sessionNames", source: "project", value: true },
   { key: "switches.jobRoute", source: "project", value: true },
-  { key: "switches.updateHold", source: "default", value: false },
 ];
 
 export function projectMocks(now: number, empty: boolean): ProjectMocks {

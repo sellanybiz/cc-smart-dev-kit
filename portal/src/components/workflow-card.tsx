@@ -109,13 +109,14 @@ function ProposeRow({ row, project, base }: { row: SettingsRow; project: string;
       ) : (
         <ActionResultLine state={state} />
       )}
-      {row.source === "project" && (
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Only the project's own value can be taken out, and only while a change can be made. */}
+      {row.source === "project" && !row.readOnly && (
+        <div>
           <Button
-            variant="ghost"
+            variant="link"
             size="sm"
-            className="h-7 px-2"
-            disabled={row.readOnly || sending}
+            className="h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
+            disabled={sending}
             aria-describedby={unsetHelpId}
             onClick={() => propose({ unset: true })}
           >
@@ -159,9 +160,9 @@ function GhNote({ gh }: { gh: Exclude<GhLoginState, "in"> }) {
 function OtherValues({ values }: { values: ProjectWorkflowValue[] }) {
   const titleId = useId();
   return (
-    <section aria-labelledby={titleId} className="flex flex-col gap-2">
+    <section aria-labelledby={titleId} className="flex flex-col gap-2 border-t pt-5">
       <div className="flex flex-col gap-0.5">
-        <h3 id={titleId} className="font-medium">
+        <h3 id={titleId} className="font-semibold">
           Other settings
         </h3>
         <p className="text-sm text-pretty text-muted-foreground">
@@ -282,8 +283,8 @@ function WorkflowGroup({
 }) {
   const titleId = useId();
   return (
-    <section aria-labelledby={titleId} className="flex flex-col">
-      <h3 id={titleId} className="font-medium">
+    <section aria-labelledby={titleId} className="flex flex-col border-t pt-5">
+      <h3 id={titleId} className="font-semibold">
         {title}
       </h3>
       <p className="text-sm text-pretty text-muted-foreground">{about}</p>
