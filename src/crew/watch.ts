@@ -48,7 +48,7 @@ import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
-import { mergedIntoBase } from "./end";
+import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
 import { runCrewRm } from "./remove";
@@ -678,6 +678,13 @@ export async function watchPass(
           captured.find((line) => line.startsWith("crew rm:")) ??
           captured.at(-1) ??
           "the removal refused";
+      }
+      // A removal that stopped the programs a finished turn left running says so once (D62):
+      // the lead needs to know, and the rest of the removal's own lines stay captured.
+      const stopped = captured.find((line) => line.includes(LEFTOVER_STOP_MARK));
+      if (code === 0 && stopped !== undefined && said[stopKey] !== stopped) {
+        say(stopped);
+        said[stopKey] = stopped;
       }
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a

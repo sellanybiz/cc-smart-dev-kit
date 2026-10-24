@@ -56,6 +56,7 @@ import {
   refuse,
   relative,
   sessionUnknown,
+  stopLeftoverProcesses,
   stopSession,
 } from "./end";
 import { appendCrewEvent } from "./store";
@@ -204,6 +205,18 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
     return refuse(refusal, ctx);
   };
 
+  // 5b. A finished crew session's own leftover programs are not a reason to keep it (D62):
+  // the check, the test run its turn left going. Only when every program there is its own —
+  // the session is gone or stopped, and each descends from it or started before its turn
+  // ended; one line says what went. A program that is not the session's stays, and the verdict
+  // below keeps the worktree with its reason, as before.
+  const leftovers = await stopLeftoverProcesses(record, ctx);
+  if (leftovers.line !== null) ctx.print(leftovers.line);
+  // The verdict judges the worktree by the programs left after the stop. A test hands in its
+  // own list; on the real machine the scan reads the processes again, after the signals.
+  const facts =
+    ctx.scanFacts === undefined ? undefined : { ...ctx.scanFacts, programs: leftovers.programs };
+
   // 6. and 7. The kit's own verdict and removal, judged against the lead's branch.
   if (listed !== undefined) {
     let judged: ReturnType<typeof scanWorktrees>[number] | undefined;
@@ -213,7 +226,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         env: ctx.env,
-        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+        ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
       }).find((one) => one.state !== "main" && samePath(one.listed.path, record.worktree));
     } catch (error) {
@@ -242,7 +255,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         deleteBranch: (_repo, branch) =>
           deleteBranchOnRef(repo, lead.sha, lead.label, branch, ctx.env),
         env: ctx.env,
-        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+        ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
       });
       for (const said of removal.said) ctx.print(said);

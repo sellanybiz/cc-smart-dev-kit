@@ -53,6 +53,12 @@ export interface RunningProgram {
    * own command line names it — from a program that uses it.
    */
   parentPid?: number;
+  /**
+   * When it was started (epoch ms), when the listing says: the removal tells a program a
+   * finished crew session left behind (started before its turn ended) from one the person
+   * started there later (`crew rm`, D62). Absent on Windows, whose probe does not read it.
+   */
+  startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
   cwd?: string;
 }
@@ -214,7 +220,7 @@ export function mentions(line: string, folder: string): boolean {
  * says — the chain one command runs in. A pid that appears twice ends the walk (a reused pid
  * is no descent), and a process the listing does not hold contributes nothing.
  */
-function lineage(programs: RunningProgram[], pid: number): Set<number> {
+export function lineage(programs: RunningProgram[], pid: number): Set<number> {
   const parents = new Map<number, number>();
   for (const program of programs) {
     if (program.parentPid !== undefined) parents.set(program.pid, program.parentPid);
@@ -232,9 +238,82 @@ function lineage(programs: RunningProgram[], pid: number): Set<number> {
 }
 
 /**
- * The programs that use `worktree`: one started from a file inside it (its command line names
- * it), or one whose working folder is inside it (Linux), each once, sorted by name. The tools
- * this scan runs itself are left out.
+ * True when `pid` is `ancestor` or was started by it, as far as the listing says: the chain a
+ * session's shell and the program it ran form. A dead session's orphans are reparented, so a
+ * listing read after the end often cannot prove this — a program's start time is the other
+ * witness (`crew rm`, D62).
+ */
+export function descendsFrom(programs: RunningProgram[], pid: number, ancestor: number): boolean {
+  return lineage(programs, pid).has(ancestor);
+}
+
+/**
+ * The seconds a process has been running, from `ps`: `etimes` prints whole seconds, and the
+ * older macOS `etime` prints `[[dd-]hh:]mm:ss`. Null when neither reads.
+ */
+export function parseElapsedSeconds(text: string): null | number {
+  const value = text.trim();
+  if (/^\d+$/.test(value)) return Number(value);
+  const parts = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(value);
+  if (parts === null) return null;
+  const days = Number(parts[1] ?? 0);
+  const hours = Number(parts[2] ?? 0);
+  const minutes = Number(parts[3] ?? 0);
+  const seconds = Number(parts[4] ?? 0);
+  return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+}
+
+/**
+ * When every running process started (epoch ms), by pid, from `ps -o pid=,etimes=`. macOS has no
+ * `etimes`; there `etime` gives the elapsed time in a form `parseElapsedSeconds` reads. A listing
+ * that cannot be read leaves every start unknown, and an unknown start never proves a program
+ * belongs to a finished session (`crew rm` keeps the worktree then).
+ */
+function startTimesMs(now: number): Map<number, number> {
+  const read = (format: string): Map<number, number> => {
+    const starts = new Map<number, number>();
+    let output: string;
+    try {
+      const run = Bun.spawnSync(["ps", "-o", `pid=,${format}=`], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+      });
+      if (run.exitCode !== 0) return starts;
+      output = run.stdout.toString();
+    } catch {
+      return starts;
+    }
+    for (const line of output.split(/\r?\n/)) {
+      const fields = line.trim().split(/\s+/);
+      const pid = Number(fields[0]);
+      const seconds = parseElapsedSeconds(fields[1] ?? "");
+      if (!Number.isInteger(pid) || pid <= 0 || seconds === null) continue;
+      starts.set(pid, now - seconds * 1000);
+    }
+    return starts;
+  };
+  const seconds = read("etimes");
+  return seconds.size > 0 ? seconds : read("etime");
+}
+
+/** The tools this scan runs itself: short-lived children that would otherwise keep a worktree. */
+const OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+
+/**
+ * The name a line prints for a program: the file it was started from, without its folder, or
+ * its pid when only its working folder is known.
+ */
+export function programName(program: RunningProgram): string {
+  const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
+  const base = file.replace(/^.*[\\/]/, "");
+  return base === "" ? `pid ${String(program.pid)}` : base;
+}
+
+/**
+ * The programs of the listing that use `worktree`: one started from a file inside it (its
+ * command line names it), or one whose working folder is inside it (Linux). The tools this scan
+ * runs itself are left out.
  *
  * So is `ownPid` — the process asking, this one by default — and every process that started
  * it: the command line of `cc-smart-dev-kit worktrees --remove <path>` names the worktree, and
@@ -246,18 +325,20 @@ function lineage(programs: RunningProgram[], pid: number): Set<number> {
  * with, while `/proc/<pid>/cwd` — and a command line written from it — holds the physical one.
  * So the working folder is compared as a real path on both sides, and a command line is
  * matched against BOTH forms of the worktree.
+ *
+ * One home for the matching rule: `programsInside` names them, and a crew session's removal
+ * asks which pids they are (`stopLeftoverProcesses`, `src/crew/end.ts`).
  */
-export function programsInside(
+export function programsUsing(
   programs: RunningProgram[],
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
-): string[] {
-  const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+): RunningProgram[] {
   const asking = lineage(programs, ownPid);
   const real = realPath(worktree);
   const forms = real === worktree ? [worktree] : [worktree, real];
-  const names = new Set<string>();
+  const found: RunningProgram[] = [];
   for (const program of programs) {
     const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
     const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
@@ -265,10 +346,22 @@ export function programsInside(
     // The chain that asked names the worktree only in its command line — unless one of them
     // works in it, and then `working` says so and it counts.
     if (!working && asking.has(program.pid)) continue;
-    const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
-    const base = file.replace(/^.*[\\/]/, "");
-    if (ours.has(base)) continue;
-    names.add(base === "" ? `pid ${String(program.pid)}` : base);
+    if (OUR_TOOLS.has(programName(program))) continue;
+    found.push(program);
+  }
+  return found;
+}
+
+/** The programs that use `worktree`, each once, sorted by name (`programsUsing`). */
+export function programsInside(
+  programs: RunningProgram[],
+  worktree: string,
+  ignoreCase = IGNORE_CASE,
+  ownPid = process.pid,
+): string[] {
+  const names = new Set<string>();
+  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid)) {
+    names.add(programName(program));
   }
   return [...names].sort();
 }
@@ -352,7 +445,9 @@ function procPids(): number[] {
  *
  * Linux reads both the command lines and each process's working folder; macOS reads the
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
- * folder a program's file is in cannot be renamed there.
+ * folder a program's file is in cannot be renamed there. Linux and macOS also read when each
+ * process started; Windows' probe does not, so there an unknown start never proves a program
+ * belongs to a finished session.
  */
 export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
   if (on === "win32") {
@@ -386,13 +481,21 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
     return "unknown";
   }
   const programs = parseCommandLines(lines);
-  if (on !== "linux") return programs;
-  for (const pid of procPids()) {
-    const cwd = cwdOf(pid);
-    if (cwd === undefined) continue;
-    const known = programs.find((program) => program.pid === pid);
-    if (known === undefined) programs.push({ cwd, path: null, pid });
-    else known.cwd = cwd;
+  if (on === "linux") {
+    for (const pid of procPids()) {
+      const cwd = cwdOf(pid);
+      if (cwd === undefined) continue;
+      const known = programs.find((program) => program.pid === pid);
+      if (known === undefined) programs.push({ cwd, path: null, pid });
+      else known.cwd = cwd;
+    }
+  }
+  // When each started, so a crew session's removal can tell the programs its finished turn left
+  // behind from one the person started there later (D62). One more `ps`, read once.
+  const starts = startTimesMs(Date.now());
+  for (const program of programs) {
+    const startedAt = starts.get(program.pid);
+    if (startedAt !== undefined) program.startedAt = startedAt;
   }
   return programs;
 }

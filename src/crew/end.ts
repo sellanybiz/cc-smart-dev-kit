@@ -25,9 +25,16 @@
  */
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
-import { isInside, runGit } from "../hooks/git";
+import { IGNORE_CASE, isInside, runGit } from "../hooks/git";
+import {
+  descendsFrom,
+  programName,
+  programsUsing,
+  type RunningProgram,
+  runningPrograms,
+} from "../worktrees/machine-facts";
 import { type WorkOnRef, workOnRef } from "../worktrees/scan";
-import { agentRows, claudeDeps } from "./agents";
+import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { CREW_NEVER_RUNS, REPORT_COMMAND } from "./brief";
@@ -36,7 +43,14 @@ import type { CrewContext } from "./context";
 import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
 import { callingSession, crewIdOf } from "./session";
-import { type CrewRecord, type LeadRecord, listLeads, readLead, updateCrew } from "./store";
+import {
+  type CrewRecord,
+  type LeadRecord,
+  listLeads,
+  readCrewEvents,
+  readLead,
+  updateCrew,
+} from "./store";
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
 
@@ -163,6 +177,115 @@ export async function stopSession(record: CrewRecord, ctx: CrewContext): Promise
   const text = gone ? "its session was gone already" : "stopped by the lead";
   const stored = running ? await markState(record, "stopped", text, ctx) : true;
   return { gone, ok: true, state: running ? "stopped" : record.state, stored };
+}
+
+/** How long a leftover program gets to end on SIGTERM before SIGKILL. */
+export const LEFTOVER_GRACE_MS = 3_000;
+
+/** The words of the one line a removal says when it stops a finished session's leftovers. */
+export const LEFTOVER_STOP_MARK = "stopped its own leftover programs";
+
+/** What stopping a finished crew session's leftover programs came to. */
+export interface LeftoversStopped {
+  /** The line to say, or null when nothing was stopped. */
+  line: null | string;
+  /** The programs as they are after the stop: the verdict judges the worktree by them. */
+  programs: "unknown" | RunningProgram[];
+}
+
+/** True while `pid` still has a process. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Sends `signal` to `pid`; false when there is no such process (or it is not ours). */
+function signal(pid: number, sig: NodeJS.Signals): boolean {
+  try {
+    process.kill(pid, sig);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The states whose event ends the crew session's turn: the work is over from then on. */
+const END_EVENT_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
+
+/**
+ * When the crew session's turn ended: the earliest `state` or `report` event of its own whose
+ * state is one of `END_EVENT_STATES`. The record's `updatedAt` stands in when the log cannot say
+ * (a store that cannot be read, or a record written before the log). Null when neither reads.
+ */
+export function sessionEndedAt(record: CrewRecord, ctx: CrewContext): null | number {
+  try {
+    let ended: null | number = null;
+    for (const event of readCrewEvents(ctx.paths.stateDir, record.repo, 0).events) {
+      if (event.crew !== record.id) continue;
+      if (event.type !== "state" && event.type !== "report") continue;
+      if (!END_EVENT_STATES.includes(event.state)) continue;
+      const at = Date.parse(event.at);
+      if (Number.isFinite(at) && (ended === null || at < ended)) ended = at;
+    }
+    if (ended !== null) return ended;
+  } catch {
+    // The log cannot be read: the record's own last change is the next best witness.
+  }
+  const at = Date.parse(record.updatedAt);
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * Stops the programs a finished crew session's own turn left running (D62): a `bun run check` or
+ * its `sh` and `bash`, still working in the worktree after the turn ended. It stops only when
+ * **every** program there belongs to the session:
+ *
+ * - the session's Claude process is gone or stopped (agent view, read the way `crew rm` reads
+ *   it) — a live one starts its own children, and stopping them would break it;
+ * - each program either descends from that session or started before its turn ended
+ *   (`sessionEndedAt`).
+ *
+ * A program that does not belong — a dev server or a container the person started there — is
+ * left alone, and the caller keeps refusing as before. SIGTERM first, `LEFTOVER_GRACE_MS`, then
+ * SIGKILL for what is still there: one line says what was stopped. A test hands in the programs
+ * (`ctx.scanFacts.programs`), and the pids are its own child processes, so no test signals a
+ * process it did not start.
+ */
+export async function stopLeftoverProcesses(
+  record: CrewRecord,
+  ctx: CrewContext,
+): Promise<LeftoversStopped> {
+  const programs = ctx.scanFacts?.programs ?? runningPrograms();
+  if (programs === "unknown") return { line: null, programs };
+  const inside = programsUsing(programs, record.worktree, IGNORE_CASE, ctx.pid);
+  if (inside.length === 0) return { line: null, programs };
+  // A live session is not a finished one: its children are the work it is doing now.
+  const rows = agentRows(ctx);
+  if (rows === null) return { line: null, programs };
+  const row = rowOf(rows, record);
+  if (isLiveRow(row)) return { line: null, programs };
+  const endedAt = sessionEndedAt(record, ctx);
+  const sessionPid = row?.pid ?? null;
+  const theirs = inside.every(
+    (program) =>
+      (sessionPid !== null && descendsFrom(programs, program.pid, sessionPid)) ||
+      (program.startedAt !== undefined && endedAt !== null && program.startedAt <= endedAt),
+  );
+  if (!theirs) return { line: null, programs };
+  const pids = [...new Set(inside.map((one) => one.pid))].filter((pid) => pid !== process.pid);
+  const signalled = new Set(pids.filter((pid) => signal(pid, "SIGTERM")));
+  if (signalled.size === 0) return { line: null, programs };
+  await ctx.sleep(LEFTOVER_GRACE_MS);
+  for (const pid of signalled) if (alive(pid)) signal(pid, "SIGKILL");
+  const names = [...new Set(inside.map((one) => programName(one)))].sort();
+  return {
+    line: `${record.name}: ${LEFTOVER_STOP_MARK} (${names.join(", ")})`,
+    programs: programs.filter((one) => !signalled.has(one.pid)),
+  };
 }
 
 /** `crew stop <name|id>`; the exit code. */

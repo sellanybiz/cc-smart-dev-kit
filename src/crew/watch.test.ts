@@ -124,6 +124,14 @@ function agentsJson(rows: Array<Record<string, unknown>>): string {
   return JSON.stringify(rows);
 }
 
+/**
+ * A real background program in `cwd`, as a crew session's own check outlives its turn: the
+ * removal signals this test's own child, never a process the test did not start.
+ */
+function startProgram(cwd: string): Bun.Subprocess {
+  return Bun.spawn(["sh", "-c", "sleep 60"], { cwd, stderr: "ignore", stdout: "ignore" });
+}
+
 /** One row for the crew session of the world. */
 function agentRowOf(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -716,6 +724,87 @@ describe("crew watch", () => {
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("D62: a merged one whose own stopped session left a check running is removed after it is stopped", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    const check = startProgram(worktree);
+    try {
+      const ctx = world.ctx({
+        scanFacts: {
+          containers: [],
+          programs: [
+            {
+              parentPid: 1,
+              path: join(worktree, "check.sh"),
+              pid: check.pid,
+              // Started before the turn ended (the record's own time): this session left it.
+              startedAt: T0 - 60_000,
+            },
+          ],
+          sessions: [],
+        },
+      });
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toContain(
+        "C my-app B6b portal-live: stopped its own leftover programs (check.sh)",
+      );
+      const [record] = listCrew(world.paths.stateDir, world.repo).records;
+      expect(record?.state).toBe("removed");
+      expect(existsSync(worktree)).toBe(false);
+    } finally {
+      if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a merged one with a program someone else started there is kept, with one line said once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    const server = startProgram(worktree);
+    try {
+      const ctx = world.ctx({
+        scanFacts: {
+          containers: [],
+          programs: [
+            {
+              cwd: worktree,
+              path: "/usr/bin/bun dev",
+              pid: server.pid,
+              // Started after the turn ended: the person's dev server, not the session's.
+              startedAt: T0 + 60_000,
+            },
+          ],
+          sessions: [],
+        },
+      });
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toContain(
+        "crew rm: .claude/worktrees/crew-B6b-portal-live is kept: a program runs from its files: bun",
+      );
+      const [record] = listCrew(world.paths.stateDir, world.repo).records;
+      expect(record?.state).toBe("merged");
+      expect(existsSync(worktree)).toBe(true);
+      expect(server.exitCode).toBeNull();
+      // The refusal is said once, not on every pass.
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toEqual([]);
+    } finally {
+      server.kill("SIGKILL");
+    }
   });
 
   test("D35: a merged one with uncommitted work is kept, with one line said once", async () => {
