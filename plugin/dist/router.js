@@ -6604,7 +6604,7 @@ function aliasError(name, to, config) {
     return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
   }
   if (isSlotKey(to)) {
-    return Object.hasOwn(config.slots, to) ? null : `alias "${name}" points at slot "${to}", which is not in slots`;
+    return Object.hasOwn(config.slots, to) || Object.hasOwn(config.kept ?? {}, to) || Object.hasOwn(FAMILY_SLOTS, to) || to === JUDGE_SLOT ? null : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
   }
   const parsed = parseTarget(to);
   if ("error" in parsed)
@@ -8694,6 +8694,17 @@ function createRouter(deps) {
     persist();
     return null;
   }
+  function knownLimit(target, nowMs) {
+    if (target.kind !== "anthropic")
+      return null;
+    const id = withoutContextSuffix(target.model);
+    const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
+    if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
+      return null;
+    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime()))
+      return null;
+    return { claim: limit.claim, resetsAt: limit.resetsAt };
+  }
   function noteFallback(slot, model, limit, outcome, profile) {
     const now = deps.now();
     const key = stateKeyFor(slot, profile);
@@ -9120,18 +9131,56 @@ function createRouter(deps) {
     const note = (label, status, reason, capacity, until = cooling.get(label) ?? deps.now()) => {
       records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
     };
-    const capacityOf = () => hold !== null && records.length > 0 && records.every((record) => record.capacity) ? records.map((record) => ({
-      reason: record.reason,
-      status: record.status,
-      target: record.target,
-      until: record.until
-    })) : undefined;
+    const tail = [];
+    const capacityOf = () => {
+      const all = [...records, ...tail];
+      return hold !== null && all.length > 0 && all.every((record) => record.capacity) ? all.map((record) => ({
+        reason: record.reason,
+        status: record.status,
+        target: record.target,
+        until: record.until
+      })) : undefined;
+    };
     let fallbacks = 0;
     let skipped = 0;
     let lastTimedOut = false;
-    for (const [index, target] of targets.entries()) {
-      const last = index === targets.length - 1;
+    const passMs = deps.now();
+    const atLimit = targets.map((target, index) => {
+      const limit = index === 0 ? null : knownLimit(target, passMs);
+      const until = cooling.get(formatTarget(target));
+      return limit === null || until === undefined || until <= passMs ? null : { limit, until };
+    });
+    let lastIndex = targets.length - 1;
+    while (lastIndex > 0 && atLimit[lastIndex] !== null)
+      lastIndex -= 1;
+    const skipAtLimit = (index) => {
+      const target = targets[index];
+      const skip = atLimit[index];
+      if (target === undefined || skip === null || skip === undefined)
+        return;
       const label = formatTarget(target);
+      const claim = printable(skip.limit.claim ?? "plan limit", 40);
+      failures.push(`${label}: at its plan usage limit`);
+      tail.push({
+        capacity: true,
+        reason: `at its plan usage limit (${claim})`,
+        status: 429,
+        target: label,
+        until: skip.until
+      });
+      skipped += 1;
+      if (hold?.holding === true)
+        return;
+      deps.log(`WARN ${name}: ${label} skipped: at its plan usage limit (${claim}, resets ${new Date(skip.limit.resetsAt * 1000).toISOString()}); asked again from ${new Date(skip.until).toISOString()}`);
+    };
+    for (const [index, target] of targets.entries()) {
+      if (index > lastIndex) {
+        skipAtLimit(index);
+        continue;
+      }
+      const last = index === lastIndex;
+      const label = formatTarget(target);
+      const askedAtLimit = targets.slice(0, index).some((before) => before.kind === "backend") && knownLimit(target, deps.now()) !== null;
       const restsUntil = cooling.get(label);
       const resting = restsUntil !== undefined && restsUntil > deps.now();
       if (resting && (!last || hold?.holding === true && target.kind === "backend")) {
@@ -9204,6 +9253,10 @@ function createRouter(deps) {
       const status = result.response.status;
       const decision = fallbackKind(status, target);
       if (decision === "stay" || last) {
+        if (decision !== "stay") {
+          for (let next = index + 1;next < targets.length; next += 1)
+            skipAtLimit(next);
+        }
         if (target.kind === "backend" && status >= 300 && status <= 399) {
           logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered a redirect (${status}); refused`);
           return {
@@ -9246,7 +9299,7 @@ function createRouter(deps) {
           skipped,
           target: label
         };
-        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+        if (last && hold !== null && (target.kind === "backend" || askedAtLimit) && isCapacityFailure(status)) {
           note(label, status, `HTTP ${status}`, true);
           const capacity = capacityOf();
           if (capacity !== undefined)
@@ -9259,7 +9312,7 @@ function createRouter(deps) {
       note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
-    const lastTarget = targets.at(-1);
+    const lastTarget = targets[lastIndex];
     const answered = failures.join("; ") || "no targets";
     const capacity = capacityOf();
     return {

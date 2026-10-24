@@ -52,6 +52,18 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
   when their target leaves, and show in `gateway status`, Slots data, the log and health's
   recent requests. Claude targets are never pinned. No router restart is needed.
+- **With the breaker on, a backend's hiccup no longer ends a session on Claude's plan limit.**
+  In a chain like `<backend> → claude-sonnet-…`, while Sonnet is at a plan limit the router
+  already knows, one failed answer from the backend became Sonnet's limit, and Claude Code
+  stopped for days. Now the router skips that Claude target while it rests, the last one too:
+  the breaker holds the request and Claude Code retries. It asks Claude again every 10 minutes
+  at most, so an early reset is still seen. With the breaker off, the backend's own answer goes
+  back while Claude rests, and Claude's 429 when it is asked again. A chain that starts with
+  Claude is unchanged.
+- **`gateway slot <slot> claude` works on a machine with old slot names.** An alias that
+  pointed at a slot (`migrate` writes them) made the move fail and write nothing, because a
+  slot in Claude mode is not in `slots`. An alias to a slot now stays valid in both modes; a
+  request under it while the slot is Claude gets the 400 that says what to do.
 
 - **claude-mem's route, key and fallback are yours to change — from the portal or your own
   terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every

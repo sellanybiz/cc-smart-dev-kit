@@ -29,6 +29,7 @@ import {
   type BackendEffort,
   claudeFamily,
   FALLBACK_OFF_BY_DEFAULT,
+  FAMILY_SLOTS,
   isBackendName,
   isProfileName,
   isSlotKey,
@@ -512,11 +513,20 @@ export function breakerWords(config: Pick<GatewayConfig, "breaker">, slot: strin
  * Why an alias cannot be used, or null when it can. An alias names a slot or a target,
  * never another alias: so the router resolves each name in one step, and a loop
  * (`a` → `b` → `a`, or `a` → `a`) cannot exist.
+ *
+ * A slot is one whether it is Custom or Claude: in `slots`, saved in `kept`, or one of the
+ * five, which exist with no chain at all. Moving a slot to Claude never breaks its aliases;
+ * a request under one then gets the answer a slot-named request for a Claude slot gets.
  */
 function aliasError(
   name: string,
   to: string,
-  config: { aliases: Record<string, string>; backends: Record<string, unknown>; slots: object },
+  config: {
+    aliases: Record<string, string>;
+    backends: Record<string, unknown>;
+    kept?: object | undefined;
+    slots: object;
+  },
 ): null | string {
   if (name.trim() === "" || /\s/.test(name)) return `alias "${name}" is not a model name`;
   if (withoutContextSuffix(name) !== name) {
@@ -531,9 +541,12 @@ function aliasError(
     return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
   }
   if (isSlotKey(to)) {
-    return Object.hasOwn(config.slots, to)
+    return Object.hasOwn(config.slots, to) ||
+      Object.hasOwn(config.kept ?? {}, to) ||
+      Object.hasOwn(FAMILY_SLOTS, to) ||
+      to === JUDGE_SLOT
       ? null
-      : `alias "${name}" points at slot "${to}", which is not in slots`;
+      : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
   }
   const parsed = parseTarget(to);
   if ("error" in parsed) return `alias "${name}": ${parsed.error}`;

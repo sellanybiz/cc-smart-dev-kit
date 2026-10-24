@@ -38,7 +38,9 @@
  *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
  *     exception: when every target failed for want of capacity and the last one is a
  *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
- *     429 that Claude Code retries by itself; Anthropic's own answers always pass.
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass. A Claude
+ *     target behind the first, resting at a plan limit the router knows, is not tried as the
+ *     last target (the owner's D65, `chain`).
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → the `cc-smart-dev-kit-judge` slot's tested targets when
@@ -1332,6 +1334,25 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
+   * The plan limit a chain's Claude target is known to be at now (D65): `limits` holds it,
+   * with its reset still ahead. A limit with no reset time is not one, nor one whose reset no
+   * date can hold (a header or a hand edit could say so): only the cooldown rules apply to it.
+   * Null for a backend, and for a model with no such limit.
+   */
+  function knownLimit(
+    target: Target,
+    nowMs: number,
+  ): null | { claim: null | string; resetsAt: number } {
+    if (target.kind !== "anthropic") return null;
+    const id = withoutContextSuffix(target.model);
+    const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
+    if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
+      return null;
+    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime())) return null;
+    return { claim: limit.claim, resetsAt: limit.resetsAt };
+  }
+
+  /**
    * A slot whose first target is a Claude model at its plan limit was answered by a next
    * target: one WARN when it starts, and the state file (the status line, the alert). Only
    * an answer below 400 makes the fallback active: a fallback that failed answered nothing,
@@ -1962,6 +1983,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * a breaker is open (`hold.holding`), a resting backend is not asked even as the last
    * target, and one request at a time asks each target. Anthropic's answer is always the
    * answer, however it failed, so the last target being Anthropic never sets `capacity`.
+   *
+   * The one exception (the owner's D65): a Claude target behind the first that is at its
+   * known plan limit (`knownLimit`) is not the chain's last word. While it rests it is
+   * skipped, the last one included, so the target before it is the last one asked, by that
+   * target's rules (the breaker's hold, or its own answer). Once its rest is over it is asked
+   * again, like any resting target (an early reset ends the limit); with a backend before it,
+   * a capacity failure then counts for the breaker like a backend's.
    */
   async function chain(
     req: Request,
@@ -2018,23 +2046,71 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ): void => {
       records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
     };
+    /** The Claude targets skipped at their plan limit after the last one asked (D65). */
+    const tail: AttemptRecord[] = [];
     /** Every target failed for want of capacity: each one's failure; undefined otherwise. */
-    const capacityOf = (): BreakerFailure[] | undefined =>
-      hold !== null && records.length > 0 && records.every((record) => record.capacity)
-        ? records.map((record) => ({
+    const capacityOf = (): BreakerFailure[] | undefined => {
+      const all = [...records, ...tail];
+      return hold !== null && all.length > 0 && all.every((record) => record.capacity)
+        ? all.map((record) => ({
             reason: record.reason,
             status: record.status,
             target: record.target,
             until: record.until,
           }))
         : undefined;
+    };
     let fallbacks = 0;
     let skipped = 0;
     /** The last target gave no headers by its deadline (only a safety check's judge has one). */
     let lastTimedOut = false;
-    for (const [index, target] of targets.entries()) {
-      const last = index === targets.length - 1;
+    // D65: the Claude targets at the chain's end that are at their known plan limit and rest
+    // are not asked, the last one included: the target before them is the last one asked.
+    // The first target never is one, so a chain that starts with Claude asks it.
+    const passMs = deps.now();
+    const atLimit = targets.map((target, index) => {
+      const limit = index === 0 ? null : knownLimit(target, passMs);
+      const until = cooling.get(formatTarget(target));
+      return limit === null || until === undefined || until <= passMs ? null : { limit, until };
+    });
+    let lastIndex = targets.length - 1;
+    while (lastIndex > 0 && atLimit[lastIndex] !== null) lastIndex -= 1;
+    /** Skip the target at `index`, after the last one asked: one line says why (D65). */
+    const skipAtLimit = (index: number): void => {
+      const target = targets[index];
+      const skip = atLimit[index];
+      if (target === undefined || skip === null || skip === undefined) return;
       const label = formatTarget(target);
+      const claim = printable(skip.limit.claim ?? "plan limit", 40);
+      failures.push(`${label}: at its plan usage limit`);
+      tail.push({
+        capacity: true,
+        reason: `at its plan usage limit (${claim})`,
+        status: 429,
+        target: label,
+        until: skip.until,
+      });
+      skipped += 1;
+      // While the breaker holds, its own lines name the target, once and not once a pass.
+      if (hold?.holding === true) return;
+      deps.log(
+        `WARN ${name}: ${label} skipped: at its plan usage limit (${claim}, resets ${new Date(skip.limit.resetsAt * 1000).toISOString()}); asked again from ${new Date(skip.until).toISOString()}`,
+      );
+    };
+    for (const [index, target] of targets.entries()) {
+      if (index > lastIndex) {
+        skipAtLimit(index);
+        continue;
+      }
+      const last = index === lastIndex;
+      const label = formatTarget(target);
+      /**
+       * A Claude target at its known plan limit, asked again, with a backend before it (D65):
+       * the breaker holds that backend's hiccup. A chain of Claude targets alone never holds.
+       */
+      const askedAtLimit =
+        targets.slice(0, index).some((before) => before.kind === "backend") &&
+        knownLimit(target, deps.now()) !== null;
       const restsUntil = cooling.get(label);
       const resting = restsUntil !== undefined && restsUntil > deps.now();
       // While a breaker is open, a resting backend is not asked even as the last target: the
@@ -2177,6 +2253,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const status = result.response.status;
       const decision = fallbackKind(status, target);
       if (decision === "stay" || last) {
+        // The chain would have moved on: the Claude targets after this one are skipped (D65).
+        if (decision !== "stay") {
+          for (let next = index + 1; next < targets.length; next += 1) skipAtLimit(next);
+        }
         if (target.kind === "backend" && status >= 300 && status <= 399) {
           // Claude Code could follow the `Location` with the person's own login.
           logErrorAnswer(
@@ -2266,8 +2346,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           target: label,
         };
         // The last backend failed for want of capacity: when every other target did too, the
-        // breaker decides what the request gets (Anthropic's answer is never held).
-        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+        // breaker decides what the request gets. Anthropic's answer is never held, but for a
+        // Claude target asked again at its known plan limit (D65).
+        if (
+          last &&
+          hold !== null &&
+          (target.kind === "backend" || askedAtLimit) &&
+          isCapacityFailure(status)
+        ) {
           note(label, status, `HTTP ${status}`, true);
           const capacity = capacityOf();
           if (capacity !== undefined) answer.capacity = capacity;
@@ -2285,7 +2371,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
-    const lastTarget = targets.at(-1);
+    // The last target that could be asked: a Claude target skipped after it answered nothing.
+    const lastTarget = targets[lastIndex];
     const answered = failures.join("; ") || "no targets";
     const capacity = capacityOf();
     return {

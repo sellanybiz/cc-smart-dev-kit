@@ -3494,8 +3494,8 @@ describe("aliases", () => {
       const parsed = parseConfig({ ...base, aliases });
       return "error" in parsed ? parsed.error : "no error";
     };
-    expect(error({ old: "cc-smart-dev-kit-worker" })).toContain(
-      'alias "old" points at slot "cc-smart-dev-kit-worker", which is not in slots',
+    expect(error({ old: "cc-smart-dev-kit-nowhere" })).toContain(
+      'alias "old" points at slot "cc-smart-dev-kit-nowhere", which is no slot: not in slots, not saved in kept, and none of the five',
     );
     expect(error({ old: "ollama:glm-5.3-flash" })).toContain(
       'alias "old" names backend "ollama", which is not in backends',
@@ -3513,6 +3513,36 @@ describe("aliases", () => {
       'alias "old[1m]": write it without [1m]; the router looks names up without it',
     );
     expect(error({ old: "omniroute:glm-5.3-flash", older: "claude-haiku-5-5" })).toBe("no error");
+  });
+
+  it("an alias to a slot in Claude mode loads: one of the five with no chain, or a machine's own slot whose chain is saved", () => {
+    const parsed = parseConfig({
+      aliases: {
+        "old-cheap": "cc-smart-dev-kit-cheap",
+        "old-judge": "cc-smart-dev-kit-judge",
+        "old-opus": "cc-smart-dev-kit-opus",
+        "old-worker": "cc-smart-dev-kit-worker",
+      },
+      backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://127.0.0.1:20128" } },
+      kept: { "cc-smart-dev-kit-cheap": { targets: ["omniroute:glm-5.3-flash"] } },
+      slots: {},
+      version: 1,
+    });
+    expect("error" in parsed ? parsed.error : "loaded").toBe("loaded");
+  });
+
+  it("a request under an alias to a slot in Claude mode gets the 400 a slot-named one gets; nothing is asked", async () => {
+    const cfg = aliased({ "old-worker": "cc-smart-dev-kit-worker" });
+    const { "cc-smart-dev-kit-worker": _claude, ...withoutWorker } = cfg.slots;
+    const { calls, handle } = router([], { config: { ...cfg, slots: withoutWorker } });
+    const res = await handle(clientRequest({ body: JSON.stringify(message("old-worker")) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string; type: string } };
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.message).toBe(
+      `cc-smart-dev-kit-router: cc-smart-dev-kit-worker is off (no chain in ${CONFIG_PATH}), and this request names the slot, not a Claude model: Claude Code's settings still send sonnet work to it. Run: cc-smart-dev-kit gateway on (it stops that), or give the slot a chain: cc-smart-dev-kit gateway slot worker <targets>`,
+    );
+    expect(calls).toEqual([]);
   });
 
   it("the plugin ships no aliases: a config without the field has none", () => {
@@ -6202,6 +6232,290 @@ describe("the breaker", () => {
     const b = await judge.handle(clientRequest({ body: check }));
     expect(b.status).toBe(400);
     expect(await b.text()).toBe('{"error":"bad check"}');
+  });
+
+  describe("D65: a Claude fallback at its known plan limit is skipped, the last one too", () => {
+    const SONNET = "claude-sonnet-5-5";
+    /** Unix seconds: the weekly limit's reset, four days after START (2026-10-19 10:00 UTC). */
+    const RESET = START / 1000 + 4 * 86_400;
+
+    /** The worker chain of the incident: a backend first, Sonnet itself behind it. */
+    function chainConfig(holdMs?: number): GatewayConfig {
+      const base = breakerConfig(holdMs);
+      return { ...base, slots: { ...base.slots, [WORKER]: ["omniroute:glm-5.3-flash", SONNET] } };
+    }
+
+    /** The backend's hiccup of the incident: one empty answer. */
+    const empty = () =>
+      new Response('{"error":{"message":"upstream_empty_response"}}', { status: 502 });
+    /**
+     * Sonnet at its weekly plan limit, as Anthropic answers it. Its `retry-after` is far above
+     * `COOLDOWN_MAX_SEC`, so Sonnet rests 600 s after it.
+     */
+    const weekly =
+      (reset: null | number, retryAfter = "345600") =>
+      () =>
+        new Response(
+          '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
+          {
+            headers: {
+              "anthropic-ratelimit-unified-representative-claim": "seven_day",
+              ...(reset === null ? {} : { "anthropic-ratelimit-unified-reset": String(reset) }),
+              "anthropic-ratelimit-unified-status": "rejected",
+              "retry-after": retryAfter,
+            },
+            status: 429,
+          },
+        );
+    const claudeAnswers = () => new Response('{"type":"message"}');
+
+    it("breaker off: the backend's own answer goes back; Claude is not asked; one line says why", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router([empty, weekly(RESET), empty], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      // The first request finds the limit: Claude is asked, and its 429 passes unchanged.
+      const found = await handle(sonnet());
+      expect(found.status).toBe(429);
+      expect(found.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      // The backend's own rest (30 s) is over, Sonnet's (600 s) is not.
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(502);
+      expect(await res.text()).toBe('{"error":{"message":"upstream_empty_response"}}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      expect(logs).toContain(
+        "WARN cc-smart-dev-kit-worker: claude-sonnet-5-5 skipped: at its plan usage limit (seven_day, resets 2026-10-19T10:00:00.000Z); asked again from 2026-10-15T10:10:00.000Z",
+      );
+      expect(logs.at(-1)).toBe(
+        "2026-10-15T10:01:00.000Z POST /v1/messages claude-sonnet-5-5 → omniroute:glm-5.3-flash 502 0ms fallbacks=0 skipped=1",
+      );
+    });
+
+    it("breaker on: the request is held, then gets the breaker's 429; Claude is not asked", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router(
+        byTarget({ [OMNI]: empty, [ANTHROPIC]: weekly(RESET) }),
+        { breaker: true, config: chainConfig(10_000), now: clock.now, sleep: clock.sleep },
+      );
+      const found = await drive(clock, handle(sonnet()));
+      expect(found.status).toBe(429);
+      expect(found.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      clock.advance(60_000 - (clock.now() - START));
+      const res = await drive(clock, handle(sonnet()));
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-should-retry")).toBe("true");
+      // The backend's rest ends 30 s after its 502, 10 s of hold ago: 20 s.
+      expect(res.headers.get("retry-after")).toBe("20");
+      expect([...res.headers.keys()].filter((name) => name.startsWith("anthropic-"))).toEqual([]);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toMatch(
+        /^cc-smart-dev-kit-router: every target of cc-smart-dev-kit-worker is limited or down since \d\d:\d\d \(omniroute:glm-5\.3-flash: HTTP 502, until \d\d:\d\d; claude-sonnet-5-5: at its plan usage limit \(seven_day\), until \d\d:\d\d\); change it: cc-smart-dev-kit gateway slot worker <targets>$/,
+      );
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      // One line for the pass that opened the breaker; the hold's passes say it in its lines.
+      expect(logs.filter((line) => line.includes(`${SONNET} skipped:`))).toHaveLength(1);
+    });
+
+    it("a limit whose reset has passed is not skipped: Claude is asked, as the last target is", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router([empty, weekly(START / 1000 + 120), empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      // 3 minutes on: the reset (2 minutes) has passed; Sonnet still rests (10 minutes).
+      clock.advance(180_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('{"type":"message"}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
+
+    it("a limit with no reset time is not skipped: Claude is asked, and its 429 passes", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router([empty, weekly(null), empty, weekly(null)], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+      expect(logs.filter((line) => line.includes("skipped:"))).toEqual([]);
+    });
+
+    it("Claude first in the chain is asked, at its limit too, and its 429 passes unchanged, never held", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(10_000);
+      const { calls, handle } = router([weekly(RESET), weekly(RESET)], {
+        breaker: true,
+        config: { ...cfg, slots: { ...cfg.slots, [WORKER]: [SONNET] } },
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(res.headers.get("anthropic-ratelimit-unified-reset")).toBe(String(RESET));
+      expect(res.headers.get("x-should-retry")).toBeNull();
+      expect(calls.map((call) => call.url)).toEqual([ANTHROPIC, ANTHROPIC]);
+    });
+
+    it("an early reset is seen: once its rest (COOLDOWN_MAX_SEC) is over, Claude is asked again, and a 200 ends the limit", async () => {
+      const clock = manualClock();
+      const states: string[] = [];
+      const { calls, handle, logs } = router([empty, weekly(RESET), empty, empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+        states,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      await handle(sonnet());
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      // 10:10:01: Sonnet's rest (600 s from 10:00) is over, so it is asked again.
+      clock.advance(541_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('{"type":"message"}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, OMNI, ANTHROPIC]);
+      expect(JSON.parse(states.at(-1) ?? "").limits).toEqual({});
+      expect(logs.filter((line) => line.includes(`${SONNET} skipped:`))).toHaveLength(1);
+    });
+
+    it("asked again and still at its limit: breaker on, the request is held, and Claude rests again; breaker off, its 429 passes", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router(byTarget({ [OMNI]: empty, [ANTHROPIC]: weekly(RESET) }), {
+        breaker: true,
+        config: chainConfig(10_000),
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+      await drive(clock, handle(sonnet()));
+      // 10:10:01: Sonnet's rest is over.
+      clock.advance(601_000 - (clock.now() - START));
+      const res = await drive(clock, handle(sonnet()));
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-should-retry")).toBe("true");
+      expect([...res.headers.keys()].filter((name) => name.startsWith("anthropic-"))).toEqual([]);
+      // Asked once in the first pass; the hold's passes skip it (it rests again) and the backend.
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+
+      const offClock = manualClock();
+      const off = router([empty, weekly(RESET), empty, weekly(RESET)], {
+        config: chainConfig(),
+        now: offClock.now,
+      });
+      await off.handle(sonnet());
+      offClock.advance(601_000);
+      const relayed = await off.handle(sonnet());
+      expect(relayed.status).toBe(429);
+      expect(relayed.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(off.calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
+
+    it("every Claude target at the chain's end is skipped: a backend that gave no answer gets the router's 502 naming each", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig();
+      const refused = () => {
+        throw new Error("connection refused");
+      };
+      const { calls, handle, logs } = router([empty, weekly(RESET), weekly(RESET), refused], {
+        config: {
+          ...cfg,
+          slots: {
+            ...cfg.slots,
+            [WORKER]: ["omniroute:glm-5.3-flash", "claude-opus-5-5", SONNET],
+          },
+        },
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toStartWith(
+        "cc-smart-dev-kit-router: no target for cc-smart-dev-kit-worker answered (omniroute:glm-5.3-flash: ",
+      );
+      expect(body.error.message).toEndWith(
+        "; claude-opus-5-5: at its plan usage limit; claude-sonnet-5-5: at its plan usage limit)",
+      );
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, ANTHROPIC, OMNI]);
+      expect(logs.at(-1)).toBe(
+        "2026-10-15T10:01:00.000Z POST /v1/messages claude-sonnet-5-5 → omniroute:glm-5.3-flash 502 0ms fallbacks=0 skipped=2",
+      );
+    });
+
+    it("a chain of Claude targets alone is never held: asked again at its limit, the last one's 429 passes", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(10_000);
+      const { calls, handle } = router([weekly(RESET), weekly(RESET, "60"), weekly(RESET, "60")], {
+        breaker: true,
+        config: { ...cfg, slots: { ...cfg.slots, [WORKER]: [SONNET, "claude-haiku-5-5"] } },
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      await handle(sonnet());
+      // Sonnet still rests (600 s); Haiku's rest (60 s) is over, so it is asked again.
+      clock.advance(120_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(res.headers.get("x-should-retry")).toBeNull();
+      expect(calls.map((call) => call.url)).toEqual([ANTHROPIC, ANTHROPIC, ANTHROPIC]);
+    });
+
+    it("a judge chain skips it too, and never holds: the backend's own answer judges", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(60_000);
+      const judged: GatewayConfig = {
+        ...cfg,
+        judgeTested: JUDGE_PROOFS,
+        slots: { ...cfg.slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash", SONNET] },
+      };
+      const check = () =>
+        clientRequest({
+          body: JSON.stringify({
+            max_tokens: 64,
+            messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
+            model: "claude-sonnet-5",
+            system: "You are a security monitor for autonomous AI coding agents.",
+          }),
+        });
+      const { calls, handle } = router([down, weekly(RESET), down], {
+        breaker: true,
+        config: judged,
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      const found = await handle(check());
+      expect(found.status).toBe(429);
+      clock.advance(60_000);
+      const res = await handle(check());
+      expect(res.status).toBe(503);
+      expect(await res.text()).toBe("down");
+      expect(calls.map((call) => call.url)).toEqual([OLLAMA, ANTHROPIC, OLLAMA]);
+    });
+
+    it("a reset no date can hold is not a known limit: Claude is asked, and nothing breaks", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router([empty, weekly(1e300), empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
   });
 });
 

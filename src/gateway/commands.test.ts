@@ -555,12 +555,39 @@ describe("setup, slot and models helpers", () => {
     ]);
   });
 
-  it("slot judge off is refused while an alias still points at the judge slot", () => {
-    const cfg = { ...config(), aliases: { "old-judge": "cc-smart-dev-kit-judge" } };
-    cfg.slots = { ...cfg.slots, "cc-smart-dev-kit-judge": ["omniroute:glm-5.3-flash"] };
-    const off = planSlotChange(cfg, "judge", "off", {});
-    expect("error" in off && off.error).toContain(
-      'alias "old-judge" points at slot "cc-smart-dev-kit-judge", which is not in slots',
+  it("an alias to a slot stays when the slot moves to Claude, and when it comes back to Custom", () => {
+    const aliases = {
+      "old-judge": "cc-smart-dev-kit-judge",
+      "old-scout": "cc-smart-dev-kit-scout",
+      "old-worker": "cc-smart-dev-kit-worker",
+    };
+    const cfg = { ...config(), aliases };
+    cfg.slots = { ...cfg.slots, "cc-smart-dev-kit-judge": ["claude-sonnet-5-5"] };
+    const plan = (from: GatewayConfig, slot: string, word: string): GatewayConfig => {
+      const result = planSlotChange(from, slot, word, {});
+      if ("error" in result) throw new Error(result.error);
+      return result.config;
+    };
+    const claude = plan(cfg, "worker", "claude");
+    expect(claude.slots["cc-smart-dev-kit-worker"]).toBeUndefined();
+    expect(claude.aliases).toEqual(aliases);
+    const back = plan(claude, "worker", "custom");
+    expect(back.slots["cc-smart-dev-kit-worker"]).toEqual(["claude-sonnet-5-5"]);
+    expect(back.aliases).toEqual(aliases);
+    expect(plan(cfg, "scout", "claude").aliases).toEqual(aliases);
+    expect(plan(cfg, "judge", "off").aliases).toEqual(aliases);
+    // Cleared, a slot of the five is still a slot: Claude, with no chain saved.
+    expect(plan(cfg, "worker", "clear").aliases).toEqual(aliases);
+  });
+
+  it("an alias to a machine's own slot stays while the slot is Claude with its chain saved, and blocks its clear", () => {
+    const cfg = { ...config(), aliases: { "old-cheap": "cc-smart-dev-kit-affordable" } };
+    const claude = planSlotChange(cfg, "affordable", "claude", {});
+    if ("error" in claude) throw new Error(claude.error);
+    expect(claude.config.aliases).toEqual({ "old-cheap": "cc-smart-dev-kit-affordable" });
+    const cleared = planSlotChange(claude.config, "affordable", "clear", {});
+    expect("error" in cleared && cleared.error).toContain(
+      'alias "old-cheap" points at slot "cc-smart-dev-kit-affordable", which is no slot: not in slots, not saved in kept, and none of the five',
     );
   });
 
