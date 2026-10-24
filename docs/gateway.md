@@ -163,7 +163,8 @@ http://127.0.0.1:20100/p/my-project
 - **Its chains and switches are the command line's**: `gateway profile <name> slot <slot>
   <targets>` sets the profile's own chain for a slot (`off`, or `claude`, turns it off there;
   `clear` forgets it, so the machine's chain applies again), `gateway profile <name> fallback
-  <slot> on|off` sets its fallback switch, and `gateway profile <name> remove` deletes it. Every
+  <slot> on|off` sets its fallback switch, `gateway profile <name> breaker <slot> on|off` its
+  breaker switch (not the judge's: it never holds), and `gateway profile <name> remove` deletes it. Every
   target is checked against its backend's live model list, exactly as `gateway slot` checks the
   machine's, and every change is checked as a whole config before it is saved. The first chain
   makes the profile: a name `gateway.json` does not have starts empty. A profile's **judge**

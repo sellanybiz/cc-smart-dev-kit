@@ -14,13 +14,16 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   every session there follows it: a personal file by default, or the team file with `--team`.
   `gateway project status` says what a project uses and which file says so, and `gateway projects`
   lists them all. A **profile** is a set of chains a project can use instead of the machine's
-  (`gateway profile <name> slot …`). Projects you never set keep the machine's gateway. A profile
-  needs this version's router: until `gateway setup` puts it in place, `--profile` (here and in
-  `launch`) is refused and `doctor` fails a project whose address names one. When every target
-  of a profile's slot is limited, the router's message, its reminder, the alert and the status
+  (`gateway profile <name> slot …`; its switches are `gateway profile <name> fallback <slot>
+  on|off` and `gateway profile <name> breaker <slot> on|off`). Projects you never set keep the
+  machine's gateway. A profile needs this version's router: until `gateway setup` puts it in
+  place, `--profile` (here and in `launch`) is refused and `doctor` fails a project whose address
+  names one. When every target of a profile's slot is limited, the router's message, its reminder, the alert and the status
   line name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
   `gateway slot …` too when the profile uses the machine's chain), not a hand edit of
-  `gateway.json`.
+  `gateway.json`. `gateway profile <name> slot judge off` no longer says Claude judges alone: the
+  profile's tested worker targets still judge while Claude cannot, unless its judge fallback is off.
+  A crew session in a profile project now waits on its profile's breaker, not the machine's.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and

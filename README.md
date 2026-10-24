@@ -792,6 +792,7 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | `cc-smart-dev-kit gateway projects [--folder <dir>]` | Every project the portal's Projects page lists — the same list — with its own state and the file it comes from. |
 | `cc-smart-dev-kit gateway profile <name> slot <slot> <targets>\|off\|clear` | A profile's own chain for a slot, checked against the live model list exactly as `gateway slot` checks the machine's; `off` (`claude`) is plain Claude there, `clear` forgets it so the machine's chain applies again. The first chain makes the profile. |
 | `cc-smart-dev-kit gateway profile <name> fallback <slot> on\|off` | The profile's fallback switch: may its next target answer when the one before it fails or rests? |
+| `cc-smart-dev-kit gateway profile <name> breaker <slot> on\|off` | The profile's breaker switch: may the router hold a request while every target the profile uses for that slot is limited or down? Not for the judge, which never holds. |
 | `cc-smart-dev-kit gateway profile <name> remove` | Deletes the profile. A project whose URL still names it answers as plain Claude. |
 | `cc-smart-dev-kit gateway serve` | Runs the router in the terminal. |
 
