@@ -214,8 +214,8 @@ up).
   which: its socket is open but no router answers (requests wait), or the router failed
   to start again and again, so systemd closed its socket (requests are refused at once).
   `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then `cc-smart-dev-kit gateway
-  setup` (it opens both again). Still down: `cc-smart-dev-kit gateway off`, then restart the
-  sessions.
+  setup` (it opens both again). Still down: `cc-smart-dev-kit gateway off` — running sessions
+  switch to Anthropic by themselves.
 - `doctor` says "a gateway setup did not finish": the router did not answer after a
   setup's restart. `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then
   `cc-smart-dev-kit gateway setup` again (it asks before the restart).

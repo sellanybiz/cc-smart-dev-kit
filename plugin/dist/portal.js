@@ -17489,7 +17489,7 @@ var FORBIDDEN_ENV_KEYS = [
   "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"
 ];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
@@ -17586,7 +17586,7 @@ function turnOff(options) {
     file: options.settingsFile,
     stateDir: options.stateDir,
     ...address.kind === "write" ? { set: [[BASE_URL_PATH, address.value]] } : {},
-    remove: REMOVED_ON_OFF.filter((key) => key !== BASE_URL_KEY).map(envPath),
+    remove: GATEWAY_ENV_KEYS_ALL.filter((key) => key !== BASE_URL_KEY).map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
@@ -19453,7 +19453,9 @@ Commands:
                          --save-unchecked: save a key the backend could not be asked about
                          (it is down, or answers something else).
   on                     Point Claude Code at the router (every session on this machine).
-  off                    Remove what "on" set. Restart the sessions afterwards.
+  off                    Point Claude Code back at Anthropic. The address key is set to
+                         Anthropic's own address, so running sessions switch by themselves.
+                         It stays owned, so "restore" takes it back later.
 ${PROJECT_HELP}
 ${PROJECTS_HELP}
 ${PROFILE_HELP}

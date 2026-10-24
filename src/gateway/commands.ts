@@ -12,7 +12,7 @@
  *             restarts it (after a yes) when one changed. For a machine an older version
  *             set up, it also drops 0.4.x's hidden Claude step from a default chain and
  *             takes out 0.4.3's model keys from Claude Code's settings (only its own).
- *   on / off  sets or removes the gateway env keys in Claude Code's settings.
+ *   on / off  sets the gateway's env keys, or points the address back at Anthropic.
  *
  * API keys are masked in every output. The design: docs/gateway.md.
  */
@@ -175,7 +175,9 @@ Commands:
                          --save-unchecked: save a key the backend could not be asked about
                          (it is down, or answers something else).
   on                     Point Claude Code at the router (every session on this machine).
-  off                    Remove what "on" set. Restart the sessions afterwards.
+  off                    Point Claude Code back at Anthropic. The address key is set to
+                         Anthropic's own address, so running sessions switch by themselves.
+                         It stays owned, so "restore" takes it back later.
 ${PROJECT_HELP}
 ${PROJECTS_HELP}
 ${PROFILE_HELP}

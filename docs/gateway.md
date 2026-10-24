@@ -221,11 +221,13 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   does, so stage 1 asks **every settings file cc-smart-dev-kit wrote** (each entry in the state
   folder's `changed.json` that holds owned JSON keys), not only the user's `settings.json`: while
   any of them still holds a gateway key of ours, stage 1 restores everything but the router and
-  says to restart the sessions; only once none is left does stage 2 stop and remove it
+  writes Anthropic's own address into each file's key, so running sessions switch by themselves;
+  only once none is left does stage 2 stop and remove it
   (`docs/gateway.md` § `cc-smart-dev-kit restore`). `restore` takes the project's key and its
   excluded line back like any other managed change.
-- **`gateway off` names the projects it does not turn off (GP4a).** `off` removes the machine's
-  keys; a project whose own file says `on` still sends its sessions to the router. So the command
+- **`gateway off` names the projects it does not turn off (GP4a).** `off` takes the machine's
+  keys back (the address set to Anthropic's own); a project whose own file says `on` still sends
+  its sessions to the router. So the command
   reads the portal's project list and prints one `!` line per such project — its state, the file
   it comes from, and `Fix: cc-smart-dev-kit gateway project off --folder <dir>` — with a warning
   verdict. A caller with no project list (the portal's own collector) prints none.
@@ -1603,7 +1605,8 @@ not installed".
 ## What `gateway on` writes
 
 Into the `env` of Claude Code's user `settings.json`, as **owned keys** (so `gateway off`
-and `restore` remove exactly them):
+and `restore` take them back: the address is set to Anthropic's own, and the other keys are
+removed):
 
 1. `ENABLE_TOOL_SEARCH` = `true`: Claude Code 2.1.304 and later keep tool search on behind a
    gateway by themselves, so this key is for an older version, which otherwise sent every MCP
@@ -1688,7 +1691,7 @@ waits for each session's next restart harmlessly.
 - **The relay** costs one extra local connection per client connection, inside the
   router's own process. It copies bytes and never reads or changes them.
 - If the router is down, every Claude Code request fails. The service restarts itself;
-  `gateway off` and a restart of the sessions is the way out.
+  `gateway off` is the way out, and running sessions switch to Anthropic by themselves.
 - **A model's context window can disagree** in three places: what Claude Code assumes for
   the Claude model it thinks it talks to (the window its status line reports, which
   `cc-smart-dev-kit statusline` records and `crew self-watch` measures a crew session
@@ -1722,7 +1725,7 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 
 | Symptom | Check | Fix |
 |---|---|---|
-| Every Claude request fails | `gateway status`; `systemctl --user status cc-smart-dev-kit-router.socket cc-smart-dev-kit-router`; `journalctl --user -u cc-smart-dev-kit-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
+| Every Claude request fails | `gateway status`; `systemctl --user status cc-smart-dev-kit-router.socket cc-smart-dev-kit-router`; `journalctl --user -u cc-smart-dev-kit-router` | Restart the unit. Still broken: `gateway off` — running sessions switch to Anthropic by themselves |
 | Every Claude request hangs | `doctor`: "the socket holds 127.0.0.1:N, but the router does not answer"; the socket is open but its router does not run: `systemctl --user status cc-smart-dev-kit-router`, and why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it goes on although the port does not answer), or `systemctl --user restart cc-smart-dev-kit-router`. A router that keeps failing stops being retried after 5 starts in 60 s, and the hang turns into the next row |
 | Every Claude request is refused at once, and the socket is `failed` | `doctor`: "the router failed to start again and again, so systemd closed its socket"; `systemctl --user show -p Result cc-smart-dev-kit-router.socket` says `service-start-limit-hit`; why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it clears the start limit with `reset-failed` and opens both again) |
 | `gateway setup`: "… failed … Starting cc-smart-dev-kit-router without its socket" | the socket could not open: `ss -ltnp` (another program on the port?), `journalctl --user -u cc-smart-dev-kit-router.socket -n 30` | the router runs and binds the port itself, but its restarts refuse requests: free the port, then `cc-smart-dev-kit gateway setup` again |

@@ -156,8 +156,11 @@ export const FORBIDDEN_ENV_KEYS = [
 /** Every env key `gateway on` sets. */
 export const GATEWAY_ENV_KEYS: readonly string[] = Object.keys(gatewayEnv(20100));
 
-/** Every env key `gateway off` removes: the ones `on` sets, and the ones it once set. */
-const REMOVED_ON_OFF: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+/**
+ * Every env key the gateway writes: the ones `on` sets, and the ones it once set. `turnOff`
+ * removes all of them but the address, which it sets to Anthropic's own instead (GP5).
+ */
+const GATEWAY_ENV_KEYS_ALL: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 
 /** Settings that move every agent launched without `model` onto one model. `status` warns. */
 const SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
@@ -251,12 +254,12 @@ export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): str
     // caller: it decides whether a running router may be stopped at once, and a key that is
     // there but cannot be read must keep every session working.
     const owned = ownedKeys(stateDir, realTarget(settingsFile));
-    return REMOVED_ON_OFF.filter((key) =>
+    return GATEWAY_ENV_KEYS_ALL.filter((key) =>
       owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
     );
   }
   const records = ownedRecords(stateDir, realTarget(settingsFile));
-  return REMOVED_ON_OFF.filter(
+  return GATEWAY_ENV_KEYS_ALL.filter(
     (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
 }
@@ -275,7 +278,7 @@ function currentSettings(settingsFile: string): null | Record<string, unknown> {
 
 /**
  * Throws ForeignKeyError when a gateway key is in the settings and cc-smart-dev-kit does not own
- * it, also when it already has the wanted value: then `gateway off` could not remove it,
+ * it, also when it already has the wanted value: then `gateway off` could not take it back,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
  * it (a project's migration does it for its machines). The value is masked.
  *
@@ -374,7 +377,7 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
     // The address key is **written, never removed** (GP5): its value is the switch, so a file
     // that already holds Anthropic's own address is left exactly as it is, and a key the person
     // set, changed or removed is theirs and stays theirs (`applyManagedJson` skips it).
-    remove: REMOVED_ON_OFF.filter((key) => key !== BASE_URL_KEY).map(envPath),
+    remove: GATEWAY_ENV_KEYS_ALL.filter((key) => key !== BASE_URL_KEY).map(envPath),
     // Gateway setup created the `env` these keys live in, when the settings had none: an
     // `env` this removal empties goes with them. One the person had stays.
     createdObject: createdObjects(options.stateDir, options.settingsFile),
