@@ -46,6 +46,7 @@ import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { mergedIntoBase } from "./end";
+import { runCrewRm } from "./remove";
 import { memoryMbOf } from "./memory";
 import { runningCrew, unmetWaits } from "./places";
 import { startQueued } from "./start";
@@ -91,7 +92,7 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
  * The states a crew session's work is over in: the watch looks at the lead's merge for each of them,
  * because the merge can come after the crew session was stopped.
  */
-const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "stopped"];
+const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -610,7 +611,8 @@ export async function watchPass(
 
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
-  for (const record of listCrew(ctx.paths.stateDir, repo).records) {
+  const allRecords = listCrew(ctx.paths.stateDir, repo).records;
+  for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
     const row = agents === null ? null : rowOf(agents, record);
     // Its session is in agent view and is neither stopped nor dead: it may still hold a process
@@ -621,18 +623,46 @@ export async function watchPass(
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
     if (OVER_STATES.includes(record.state) && branchMerged(record, ctx)) {
-      const reason = "the lead merged its branch; `crew rm` removes it";
-      if (listed) {
-        refusal = await stopCrew(record, "merged", reason, ctx, row);
-      } else {
-        await updateCrew(
-          ctx.paths.stateDir,
-          record.repo,
-          record.id,
-          { state: "merged" },
-          ctx.now(),
-          reason,
-        );
+      const reason = "the lead merged its branch; the watch removes it";
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { state: "merged" },
+        ctx.now(),
+        reason,
+      );
+      // A queued or starting continuation is cut from this branch when it starts: keep the branch
+      // until then, and say so once.
+      const continuations = allRecords.filter(
+        (one) =>
+          one.continues === record.id && (one.state === "queued" || one.state === "starting"),
+      );
+      if (continuations.length > 0) {
+        const line = `${record.name}: merged — waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to start`;
+        if (said[stopKey] !== line) {
+          say(line);
+          said[stopKey] = line;
+        }
+        continue;
+      }
+      // The watch removes it by itself, with the same steps `crew rm` runs.
+      const captured: string[] = [];
+      const capture = {
+        ...ctx,
+        error: (line: string) => {
+          captured.push(line);
+        },
+        print: (line: string) => {
+          captured.push(line);
+        },
+      };
+      const code = await runCrewRm(record.id, capture);
+      if (code !== 0 && refusal === null) {
+        refusal =
+          captured.find((line) => line.startsWith("crew rm:")) ??
+          captured.at(-1) ??
+          "the removal refused";
       }
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a

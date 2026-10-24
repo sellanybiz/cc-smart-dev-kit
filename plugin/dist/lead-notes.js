@@ -17300,7 +17300,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname10, isAbsolute as isAbsolute7, posix as posix2, relative, resolve as resolve8, win32 as win322 } from "path";
+import { dirname as dirname10, isAbsolute as isAbsolute7, posix as posix2, relative as relative2, resolve as resolve8, win32 as win322 } from "path";
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -17570,7 +17570,7 @@ function protectedNeedles(paths) {
   const settings = dirname10(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
-    const underHome = relative(paths.home, folder);
+    const underHome = relative2(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute7(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));

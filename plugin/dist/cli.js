@@ -2355,7 +2355,7 @@ function oldBunRefusal(command, version, path) {
 }
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync58, readFileSync as readFileSync69 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync59, readFileSync as readFileSync69 } from "fs";
 import { dirname as dirname22, join as join69 } from "path";
 
 // src/gateway/config.ts
@@ -22248,7 +22248,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync57, readFileSync as readFileSync68 } from "fs";
+import { existsSync as existsSync58, readFileSync as readFileSync68 } from "fs";
 import { join as join68 } from "path";
 
 // src/hooks/git.ts
@@ -33573,6 +33573,161 @@ function commitsNotOn(repo, lead, branch, env) {
   return count.ok && /^\d+$/.test(count.out) ? Number(count.out) : null;
 }
 
+// src/crew/remove.ts
+import { existsSync as existsSync53 } from "fs";
+function commits(count) {
+  return `${String(count)} commit${count === 1 ? "" : "s"}`;
+}
+async function runCrewRm(ref, ctx) {
+  const found = actOn(ref, "rm", ctx);
+  if (isRefusal(found))
+    return refuse2(found, ctx);
+  const { record } = found;
+  const { repo } = record;
+  const home = ctx.paths.home;
+  if (record.state === "removed") {
+    return refuse2(failure2(`crew rm: ${record.name} is removed already`), ctx);
+  }
+  if (record.state === "queued" && record.shortId === null) {
+    const stored = await markState(record, "removed", "removed before it started", ctx);
+    ctx.print(`removed ${record.name}; it had not started, so nothing else went`);
+    return stored ? 0 : 1;
+  }
+  const lead = leadRef(record, ctx);
+  if ("why" in lead)
+    return refuse2(failure2(`crew rm: ${lead.why}`), ctx);
+  const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS2).ok;
+  if (branchThere) {
+    const merged = mergedIntoBase(record, ctx);
+    if (merged === "unknown") {
+      return refuse2(failure2(`crew rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`, `Fix: merge it first (git merge ${record.branch}, in ${lead.folder}) so that it is an ancestor, then run crew rm again`), ctx);
+    }
+    if (merged === "missing") {
+      const count = commitsNotOn(repo, lead, record.branch, ctx.env);
+      if (count !== 0) {
+        const missing = count === null ? "some commits" : commits(count);
+        return refuse2(failure2(`crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`, `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`), ctx);
+      }
+    }
+  }
+  if (existsSync53(record.worktree) && hasChanges(record.worktree, ctx.env)) {
+    return refuse2(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, "Fix: commit or discard them there, then run crew rm again; it never forces"), ctx);
+  }
+  let listed;
+  try {
+    listed = listWorktrees(repo, ctx.env).find((one) => samePath3(one.path, record.worktree));
+  } catch (error) {
+    return refuse2(failure2(`crew rm: ${reasonOf4(error)}`), ctx);
+  }
+  const shown = relative3(repo, record.worktree);
+  const locked = listed?.locked === true;
+  if (locked && !(listed?.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX)) {
+    const why = listed?.lockReason === undefined ? "" : ` (${listed.lockReason})`;
+    return refuse2(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`), ctx);
+  }
+  if (record.shortId !== null && record.state !== "stopped") {
+    const stopped = await stopSession(record, ctx);
+    if (stopped.ok) {
+      ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
+    } else {
+      ctx.error(`note: ${stopped.why}; going on, the check below stops the removal if anything still works in its worktree`);
+    }
+  }
+  let releasedReason = null;
+  if (listed !== undefined && locked) {
+    const unlock = runGit(repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS2);
+    if (!unlock.ok) {
+      return refuse2(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand, then run crew rm again`), ctx);
+    }
+    releasedReason = listed.lockReason ?? "";
+    ctx.print(`unlocked ${shown}`);
+  }
+  const refuseKept = (refusal) => {
+    if (releasedReason !== null && listed !== undefined) {
+      const again = runGit(repo, ["worktree", "lock", "--reason", releasedReason, listed.path], ctx.env, GIT_TIMEOUT_MS2);
+      if (again.ok) {
+        ctx.print(`locked ${shown} again, with the same reason`);
+      } else {
+        ctx.error(`note: ${shown} could not be locked again (${lastLine2(again.err)}); lock it yourself if you mean to keep it: git worktree lock ${record.worktree}`);
+      }
+    }
+    return refuse2(refusal, ctx);
+  };
+  if (listed !== undefined) {
+    let judged;
+    try {
+      judged = scanWorktrees(repo, {
+        against: { label: lead.label, ref: lead.sha },
+        base: lead.label,
+        claudeConfigDir: ctx.paths.claudeConfigDir,
+        env: ctx.env,
+        ...ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts },
+        idleLimit: 0
+      }).find((one) => one.state !== "main" && samePath3(one.listed.path, record.worktree));
+    } catch (error) {
+      return refuseKept(failure2(`crew rm: ${reasonOf4(error)}`));
+    }
+    if (judged === undefined || judged.state === "main") {
+      return refuseKept(failure2(`crew rm: ${shown} is listed by git but could not be judged`));
+    }
+    if (judged.state === "gone") {
+      pruneWorktrees(repo, ctx.env);
+      ctx.print(`forgot ${shown} (its folder was already gone)`);
+    } else {
+      if (!judged.state.finished) {
+        return refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, "Fix: clear that, then run crew rm again; it never forces"));
+      }
+      const removal = removeWorktree(repo, judged.listed, {
+        against: { label: lead.label, ref: lead.sha },
+        base: lead.label,
+        claudeConfigDir: ctx.paths.claudeConfigDir,
+        deleteBranch: (_repo, branch) => deleteBranchOnRef(repo, lead.sha, lead.label, branch, ctx.env),
+        env: ctx.env,
+        ...ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts },
+        idleLimit: 0
+      });
+      for (const said of removal.said)
+        ctx.print(said);
+      if (removal.status !== "removed") {
+        return refuseKept(failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
+      }
+    }
+  }
+  if (existsSync53(record.worktree)) {
+    return refuse2(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know"), ctx);
+  }
+  const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS2).ok;
+  if (branchLeft()) {
+    ctx.print(deleteBranchOnRef(repo, lead.sha, lead.label, record.branch, ctx.env));
+  }
+  if (record.shortId !== null) {
+    const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
+    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    if (rm !== null && !goneAlready) {
+      const branchGone = !branchLeft();
+      ctx.error(`crew rm: ${rm}`);
+      ctx.error(`  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`);
+      try {
+        await appendCrewEvent(ctx.paths.stateDir, repo, {
+          lead: record.leadSessionId,
+          name: record.name,
+          state: record.state,
+          text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
+          type: "step",
+          crew: record.id
+        }, ctx.now());
+      } catch (error) {
+        ctx.error(`crew rm: the store could not record it: ${reasonOf4(error)}`);
+      }
+      return 1;
+    }
+    ctx.print(goneAlready ? `session ${record.shortId} was gone already` : `removed session ${record.shortId}`);
+  }
+  const stored = await markState(record, "removed", "removed", ctx);
+  ctx.print(`removed ${record.name}`);
+  return stored ? 0 : 1;
+}
+
 // src/crew/memory.ts
 import { readFileSync as readFileSync64 } from "fs";
 var VM_RSS = /^VmRSS:\s+(\d+)\s+kB$/m;
@@ -33590,16 +33745,16 @@ function memoryMbOf(pid) {
 }
 
 // src/crew/start.ts
-import { existsSync as existsSync54, readFileSync as readFileSync65 } from "fs";
+import { existsSync as existsSync55, readFileSync as readFileSync65 } from "fs";
 import { basename as basename10, join as join63, resolve as resolve8 } from "path";
 
 // src/worktrees/include.ts
-import { copyFileSync, existsSync as existsSync53, mkdirSync as mkdirSync23 } from "fs";
+import { copyFileSync, existsSync as existsSync54, mkdirSync as mkdirSync23 } from "fs";
 import { dirname as dirname20, join as join62 } from "path";
 var INCLUDE_TIMEOUT_MS = 60000;
 function copyWorktreeInclude(source, target, env) {
   const includeFile = join62(source, ".worktreeinclude");
-  if (!existsSync53(includeFile))
+  if (!existsSync54(includeFile))
     return [];
   const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, INCLUDE_TIMEOUT_MS);
   if (!listed.ok || listed.out === "")
@@ -33616,7 +33771,7 @@ function copyWorktreeInclude(source, target, env) {
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {
-    if (path === "" || existsSync53(join62(target, path)))
+    if (path === "" || existsSync54(join62(target, path)))
       continue;
     mkdirSync23(dirname20(join62(target, path)), { recursive: true });
     copyFileSync(join62(source, path), join62(target, path));
@@ -33976,7 +34131,7 @@ function reportBlock(report) {
 function holdsName(record) {
   if (record.state === "removed")
     return false;
-  return !(record.state === "failed" && record.shortId === null && !existsSync54(record.worktree));
+  return !(record.state === "failed" && record.shortId === null && !existsSync55(record.worktree));
 }
 function inUse(planned, records, ctx) {
   const { branch, caller, name, worktree } = planned;
@@ -33991,7 +34146,7 @@ function inUse(planned, records, ctx) {
   if (gitOut(caller.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env) !== null) {
     return refusal(`the branch ${branch} is there already, for ${name}`, "delete it, or pick another --slug");
   }
-  if (existsSync54(worktree)) {
+  if (existsSync55(worktree)) {
     return refusal(`the folder ${tildify(worktree, ctx.paths.home)} is there already`, "remove that worktree (git worktree remove), or pick another --slug");
   }
   return null;
@@ -34756,7 +34911,7 @@ function contextPercent(use, window) {
 // src/crew/watch.ts
 var WATCH_POLL_MS = 20000;
 var WORKTREE_CONFIRM_MS = 3 * 60000;
-var OVER_STATES = ["done", "failed", "handoff", "stopped"];
+var OVER_STATES = ["done", "failed", "handoff", "merged", "stopped"];
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -35007,7 +35162,8 @@ async function watchPass(state, ctx, scope) {
       }
     }
   }
-  for (const record of listCrew(ctx.paths.stateDir, repo).records) {
+  const allRecords = listCrew(ctx.paths.stateDir, repo).records;
+  for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId)
       continue;
     const row = agents === null ? null : rowOf(agents, record);
@@ -35016,11 +35172,30 @@ async function watchPass(state, ctx, scope) {
     let refusal = null;
     let news = null;
     if (OVER_STATES.includes(record.state) && branchMerged(record, ctx)) {
-      const reason = "the lead merged its branch; `crew rm` removes it";
-      if (listed) {
-        refusal = await stopCrew(record, "merged", reason, ctx, row);
-      } else {
-        await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "merged" }, ctx.now(), reason);
+      const reason = "the lead merged its branch; the watch removes it";
+      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "merged" }, ctx.now(), reason);
+      const continuations = allRecords.filter((one) => one.continues === record.id && (one.state === "queued" || one.state === "starting"));
+      if (continuations.length > 0) {
+        const line = `${record.name}: merged \u2014 waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to start`;
+        if (said[stopKey] !== line) {
+          say(line);
+          said[stopKey] = line;
+        }
+        continue;
+      }
+      const captured = [];
+      const capture = {
+        ...ctx,
+        error: (line) => {
+          captured.push(line);
+        },
+        print: (line) => {
+          captured.push(line);
+        }
+      };
+      const code = await runCrewRm(record.id, capture);
+      if (code !== 0 && refusal === null) {
+        refusal = captured.find((line) => line.startsWith("crew rm:")) ?? captured.at(-1) ?? "the removal refused";
       }
     } else if (record.state === "failed" && listed) {
       const line = failedStopLine(record);
@@ -37139,11 +37314,11 @@ var MACHINE_WIDE_HOOKS = [
 ];
 
 // src/cli/project-init.ts
-import { existsSync as existsSync56, readFileSync as readFileSync67 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync67 } from "fs";
 import { join as join67, relative as relative5 } from "path";
 
 // src/project/init.ts
-import { existsSync as existsSync55 } from "fs";
+import { existsSync as existsSync56 } from "fs";
 import { join as join66 } from "path";
 
 // src/workflow/clashes.ts
@@ -37480,7 +37655,7 @@ function applyProjectInit(plan, options) {
       wanted.push([settings.file, settings.text]);
   }
   return wanted.map(([file, text]) => {
-    const created = !existsSync55(file);
+    const created = !existsSync56(file);
     if (options.dryRun === true)
       return { file, created, backup: null };
     const backup = backupFile(options.stateDir, file);
@@ -37579,17 +37754,17 @@ function protectedFromGithub(runner, root) {
 }
 var FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"];
 function runnerOf2(root) {
-  if (existsSync56(join67(root, "bun.lock")) || existsSync56(join67(root, "bun.lockb")))
+  if (existsSync57(join67(root, "bun.lock")) || existsSync57(join67(root, "bun.lockb")))
     return "bun run";
-  if (existsSync56(join67(root, "pnpm-lock.yaml")))
+  if (existsSync57(join67(root, "pnpm-lock.yaml")))
     return "pnpm run";
-  if (existsSync56(join67(root, "yarn.lock")))
+  if (existsSync57(join67(root, "yarn.lock")))
     return "yarn run";
   return "npm run";
 }
 function defaultFastCheck(root) {
   const file = join67(root, "package.json");
-  if (!existsSync56(file))
+  if (!existsSync57(file))
     return null;
   let scripts;
   try {
@@ -37888,7 +38063,7 @@ function printPlan(plan, context) {
   return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText2(file) {
-  return existsSync56(file) ? readFileSync67(file, "utf8") : null;
+  return existsSync57(file) ? readFileSync67(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText2(file);
@@ -38044,7 +38219,7 @@ function renamedCommand(command) {
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
   const config = join68(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync57(config)) {
+  if (existsSync58(config)) {
     lines.push({
       ok: true,
       warn: true,
@@ -38052,7 +38227,7 @@ function oldNameLines(projectDir, sources, home) {
     });
   }
   const addons = join68(projectDir, ".claude", OLD_NAME);
-  if (existsSync57(addons)) {
+  if (existsSync58(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -38115,7 +38290,7 @@ function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync57(file))
+    if (!existsSync58(file))
       continue;
     try {
       const parsed = JSON.parse(readFileSync68(file, "utf8"));
@@ -38230,7 +38405,7 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   }
   let checkout;
   try {
-    checkout = existsSync57(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync58(cwd) ? locateCheckout(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -38282,7 +38457,7 @@ function coverGitLines(checkout, env) {
 var SETUP_FIX = `${COMMAND} setup`;
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync58(file))
+  if (!existsSync59(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -38310,7 +38485,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync58(install.installPath)) {
+  if (!existsSync59(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -38338,13 +38513,13 @@ function isExecutable(file) {
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync58(bun) : isExecutable(bun);
+  return platform === "win32" ? existsSync59(bun) : isExecutable(bun);
 }
 function checkLauncher(paths, platform) {
   const win = platform === "win32";
   const launcher = join69(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync58(launcher))
+  if (!existsSync59(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable(launcher)) {
     return [
@@ -38384,7 +38559,7 @@ function checkLauncher(paths, platform) {
 function checkLauncherCmd(paths, shLauncher) {
   const cmd = join69(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync58(cmd)) {
+  if (!existsSync59(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
@@ -38432,7 +38607,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync58(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync59(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -38693,7 +38868,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject15(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync58(join69(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync59(join69(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -38707,14 +38882,14 @@ function checkOldPlugin(settings, paths) {
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync58(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync59(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync58(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync59(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -38750,7 +38925,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync58(where.claudeMd) ? readFileSync69(where.claudeMd, "utf8") : "";
+  const text = existsSync59(where.claudeMd) ? readFileSync69(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -38808,7 +38983,7 @@ function checkProjectImports(paths, cwd) {
   for (let dir = cwd;; dir = dirname22(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join69(dir, name);
-      if (from === join69(paths.claudeConfigDir, "CLAUDE.md") || !existsSync58(from))
+      if (from === join69(paths.claudeConfigDir, "CLAUDE.md") || !existsSync59(from))
         continue;
       let text;
       try {
@@ -38826,7 +39001,7 @@ function checkProjectImports(paths, cwd) {
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync58(entry.file));
+  const missing = imports.filter((entry) => !existsSync59(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -39485,161 +39660,6 @@ async function runLeadTell(args, ctx) {
       type: "lead-tell"
     }, ctx.now());
   }, message, { error: ctx.error, print: ctx.print });
-}
-
-// src/crew/remove.ts
-import { existsSync as existsSync59 } from "fs";
-function commits(count) {
-  return `${String(count)} commit${count === 1 ? "" : "s"}`;
-}
-async function runCrewRm(ref, ctx) {
-  const found = actOn(ref, "rm", ctx);
-  if (isRefusal(found))
-    return refuse2(found, ctx);
-  const { record } = found;
-  const { repo } = record;
-  const home = ctx.paths.home;
-  if (record.state === "removed") {
-    return refuse2(failure2(`crew rm: ${record.name} is removed already`), ctx);
-  }
-  if (record.state === "queued" && record.shortId === null) {
-    const stored = await markState(record, "removed", "removed before it started", ctx);
-    ctx.print(`removed ${record.name}; it had not started, so nothing else went`);
-    return stored ? 0 : 1;
-  }
-  const lead = leadRef(record, ctx);
-  if ("why" in lead)
-    return refuse2(failure2(`crew rm: ${lead.why}`), ctx);
-  const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS2).ok;
-  if (branchThere) {
-    const merged = mergedIntoBase(record, ctx);
-    if (merged === "unknown") {
-      return refuse2(failure2(`crew rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`, `Fix: merge it first (git merge ${record.branch}, in ${lead.folder}) so that it is an ancestor, then run crew rm again`), ctx);
-    }
-    if (merged === "missing") {
-      const count = commitsNotOn(repo, lead, record.branch, ctx.env);
-      if (count !== 0) {
-        const missing = count === null ? "some commits" : commits(count);
-        return refuse2(failure2(`crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`, `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`), ctx);
-      }
-    }
-  }
-  if (existsSync59(record.worktree) && hasChanges(record.worktree, ctx.env)) {
-    return refuse2(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, "Fix: commit or discard them there, then run crew rm again; it never forces"), ctx);
-  }
-  let listed;
-  try {
-    listed = listWorktrees(repo, ctx.env).find((one) => samePath3(one.path, record.worktree));
-  } catch (error) {
-    return refuse2(failure2(`crew rm: ${reasonOf4(error)}`), ctx);
-  }
-  const shown = relative3(repo, record.worktree);
-  const locked = listed?.locked === true;
-  if (locked && !(listed?.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX)) {
-    const why = listed?.lockReason === undefined ? "" : ` (${listed.lockReason})`;
-    return refuse2(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`), ctx);
-  }
-  if (record.shortId !== null && record.state !== "stopped") {
-    const stopped = await stopSession(record, ctx);
-    if (stopped.ok) {
-      ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
-    } else {
-      ctx.error(`note: ${stopped.why}; going on, the check below stops the removal if anything still works in its worktree`);
-    }
-  }
-  let releasedReason = null;
-  if (listed !== undefined && locked) {
-    const unlock = runGit(repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS2);
-    if (!unlock.ok) {
-      return refuse2(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand, then run crew rm again`), ctx);
-    }
-    releasedReason = listed.lockReason ?? "";
-    ctx.print(`unlocked ${shown}`);
-  }
-  const refuseKept = (refusal) => {
-    if (releasedReason !== null && listed !== undefined) {
-      const again = runGit(repo, ["worktree", "lock", "--reason", releasedReason, listed.path], ctx.env, GIT_TIMEOUT_MS2);
-      if (again.ok) {
-        ctx.print(`locked ${shown} again, with the same reason`);
-      } else {
-        ctx.error(`note: ${shown} could not be locked again (${lastLine2(again.err)}); lock it yourself if you mean to keep it: git worktree lock ${record.worktree}`);
-      }
-    }
-    return refuse2(refusal, ctx);
-  };
-  if (listed !== undefined) {
-    let judged;
-    try {
-      judged = scanWorktrees(repo, {
-        against: { label: lead.label, ref: lead.sha },
-        base: lead.label,
-        claudeConfigDir: ctx.paths.claudeConfigDir,
-        env: ctx.env,
-        ...ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts },
-        idleLimit: 0
-      }).find((one) => one.state !== "main" && samePath3(one.listed.path, record.worktree));
-    } catch (error) {
-      return refuseKept(failure2(`crew rm: ${reasonOf4(error)}`));
-    }
-    if (judged === undefined || judged.state === "main") {
-      return refuseKept(failure2(`crew rm: ${shown} is listed by git but could not be judged`));
-    }
-    if (judged.state === "gone") {
-      pruneWorktrees(repo, ctx.env);
-      ctx.print(`forgot ${shown} (its folder was already gone)`);
-    } else {
-      if (!judged.state.finished) {
-        return refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, "Fix: clear that, then run crew rm again; it never forces"));
-      }
-      const removal = removeWorktree(repo, judged.listed, {
-        against: { label: lead.label, ref: lead.sha },
-        base: lead.label,
-        claudeConfigDir: ctx.paths.claudeConfigDir,
-        deleteBranch: (_repo, branch) => deleteBranchOnRef(repo, lead.sha, lead.label, branch, ctx.env),
-        env: ctx.env,
-        ...ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts },
-        idleLimit: 0
-      });
-      for (const said of removal.said)
-        ctx.print(said);
-      if (removal.status !== "removed") {
-        return refuseKept(failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
-      }
-    }
-  }
-  if (existsSync59(record.worktree)) {
-    return refuse2(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know"), ctx);
-  }
-  const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS2).ok;
-  if (branchLeft()) {
-    ctx.print(deleteBranchOnRef(repo, lead.sha, lead.label, record.branch, ctx.env));
-  }
-  if (record.shortId !== null) {
-    const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
-    const goneAlready = rm !== null && sessionUnknown(ctx, record);
-    if (rm !== null && !goneAlready) {
-      const branchGone = !branchLeft();
-      ctx.error(`crew rm: ${rm}`);
-      ctx.error(`  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`);
-      try {
-        await appendCrewEvent(ctx.paths.stateDir, repo, {
-          lead: record.leadSessionId,
-          name: record.name,
-          state: record.state,
-          text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
-          type: "step",
-          crew: record.id
-        }, ctx.now());
-      } catch (error) {
-        ctx.error(`crew rm: the store could not record it: ${reasonOf4(error)}`);
-      }
-      return 1;
-    }
-    ctx.print(goneAlready ? `session ${record.shortId} was gone already` : `removed session ${record.shortId}`);
-  }
-  const stored = await markState(record, "removed", "removed", ctx);
-  ctx.print(`removed ${record.name}`);
-  return stored ? 0 : 1;
 }
 
 // src/crew/step.ts
