@@ -143,9 +143,14 @@ An optional local router between Claude Code and the model providers
   plain unit cannot keep the port open (systemd will not open a socket while its service
   runs), and says so before it asks. Before anything, setup asks the port and stops when
   another program holds it; after the restart it waits for the health page.
-- A changed value reaches a running session within about a second, but a removed key does not:
-  the session keeps the router's address until it restarts (both proved 2026-10-23;
-  `claude-code-contract.md` § The gateway). So `restore` takes the gateway out in
+- A changed value reaches a running session within about a second, whatever the files below it
+  hold; a removed key reaches it only when another settings file still sets the key (it falls to
+  that file's value), and with none the session keeps the router's address until it restarts
+  (proved 2026-10-23, corrected on 2.1.310; `claude-code-contract.md` § The gateway, P6 and P7).
+  A worktree's own copy of the personal file, which Claude Code reads after the main root's, is
+  the case that bites: once the root's key goes, that session falls to the copy's router address.
+  The kit did not write the copy, so `restore`, `gateway project default` and `status` name it
+  and never change it. So `restore` takes the gateway out in
   two stages: first each settings file's address key is **written to Anthropic's own address**
   instead of being removed (GP5) — every running session switches by itself, and the key stays
   owned and tracked — and the rest is restored but the router; then, once no file points at the

@@ -16137,6 +16137,60 @@ var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
   return join27(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
+function ownPersonalFileOf(folder) {
+  return join27(folder, ".claude", PERSONAL_FILE);
+}
+function linkedWorktreePaths(listing, mainCheckout) {
+  const main = realFolder(mainCheckout);
+  const paths = [];
+  for (const block of listing.split(`
+
+`)) {
+    const lines = block.split(`
+`);
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main)
+      continue;
+    paths.push(path);
+  }
+  return paths;
+}
+function ownFilesOf(paths) {
+  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync24(file)).map((file) => settingsFileState(file, "personal"));
+}
+function linkedWorktreeFilesOf(mainCheckout) {
+  try {
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    return result.exitCode === 0 ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+async function linkedWorktreeFilesOfAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return code === 0 && child.signalCode === null ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+function gatewayCopiesAmong(files) {
+  return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
+}
 function teamFileOf(folder) {
   return join27(folder, ".claude", "settings.json");
 }
@@ -16208,13 +16262,19 @@ function readGatewayConfig(path) {
 }
 function decide2(files, routerUrl) {
   for (const file of files) {
-    if (file.problem !== null)
-      return { profile: null, source: file.kind, state: "unknown", url: null };
+    if (file.problem !== null) {
+      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
+    }
     if (file.url !== null) {
-      return { ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url };
+      return {
+        ...urlMeaning(file.url, routerUrl),
+        path: file.path,
+        source: file.kind,
+        url: file.url
+      };
     }
   }
-  return { profile: null, source: "none", state: "default", url: null };
+  return { path: null, profile: null, source: "none", state: "default", url: null };
 }
 function projectGatewayState(folder, options) {
   const asked = resolve4(folder);
@@ -16225,7 +16285,7 @@ function projectGatewayState(folder, options) {
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(asked, options, found, found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout));
 }
 async function projectGatewayStateAsync(folder, options) {
   const asked = resolve4(folder);
@@ -16236,7 +16296,7 @@ async function projectGatewayStateAsync(folder, options) {
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(asked, options, found, found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout));
 }
 function checkoutFound(located, tracked) {
   if (located === null || located.mainCheckout === null) {
@@ -16253,12 +16313,15 @@ function checkoutFound(located, tracked) {
     checkoutProblem: null
   };
 }
-function stateFrom(asked, options, { checkout, checkoutProblem }) {
+function stateFrom(asked, options, { checkout, checkoutProblem }, linkedFiles) {
   const { config, problem: configProblem } = readGatewayConfig(options.configPath);
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project = [];
   if (checkout !== null)
     project.push(settingsFileState(personalFileOf(checkout), "personal"));
+  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
+    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
+  }
   project.push(settingsFileState(teamFileOf(asked), "team"));
   const files = [...project, settingsFileState(options.settingsFile, "machine")];
   return {
@@ -16270,7 +16333,8 @@ function stateFrom(asked, options, { checkout, checkoutProblem }) {
     files,
     folder: realFolder(asked),
     profiles: config === null ? [] : profileNames(config),
-    routerUrl
+    routerUrl,
+    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path))
   };
 }
 function decisionWords(decision) {
@@ -27714,6 +27778,7 @@ function planProjectChange(view, options) {
   if (state !== "default") {
     const levels = [...view.files];
     if (kind === "personal") {
+      levels.push(...view.worktreeFiles);
       const rootTeam = teamFileOf(view.checkout.root);
       if (!levels.some((one) => one.path === rootTeam)) {
         levels.push(settingsFileState(rootTeam, "team"));
@@ -27770,7 +27835,12 @@ function portOf(view) {
 }
 function fileLine(file, home, routerUrl) {
   const kind = file.kind === "personal" ? "the personal file" : file.kind === "team" ? "the team file" : "the machine's settings";
-  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : decisionWords({ ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url });
+  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : decisionWords({
+    ...urlMeaning(file.url, routerUrl),
+    path: file.path,
+    source: file.kind,
+    url: file.url
+  });
   return `${kind} ${tildify(file.path, home)}: ${holds}`;
 }
 function subfolderTeamWarning(view, home) {
@@ -27783,10 +27853,21 @@ function subfolderTeamWarning(view, home) {
     return null;
   const held = decisionWords({
     ...urlMeaning(file.url, view.routerUrl),
+    path: rootTeam,
     source: "team",
     url: file.url
   });
   return `the project root's team file (${tildify(rootTeam, home)}) holds ${held}, and a session started in a subfolder does not read it: Claude Code reads .claude/settings.json in the folder a session starts in`;
+}
+function printWorktreeCopies(out, view, home) {
+  if (view.checkout === null)
+    return;
+  for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+    out.line("warn", `${tildify(copy.path, home)} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone`, {
+      fix: "remove the key from that copy (a .worktreeinclude makes it again in a new worktree), or take .claude/settings.local.json out of the list",
+      indent: 2
+    });
+  }
 }
 function markOf(decision) {
   if (decision.state === "on")
@@ -27800,11 +27881,12 @@ function markOf(decision) {
 function projectSourceWords(decision, home, view) {
   if (decision.source === "none")
     return "nothing in this project";
-  const file = view.files.find((one) => one.kind === decision.source);
+  const file = view.files.find((one) => decision.path === null ? one.kind === decision.source : one.path === decision.path);
   if (file === undefined)
     return "nothing in this project";
   if (file.kind === "personal") {
-    const shared = view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
+    const isRoot = view.checkout !== null && file.path === personalFileOf(view.checkout);
+    const shared = !isRoot ? "the folder's own, not the project root's" : view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
     return `the personal file ${tildify(file.path, home)} (${shared})`;
   }
   if (file.kind === "team") {
@@ -27828,16 +27910,17 @@ function projectStatus(ctx, folder) {
       });
       continue;
     }
-    if (file.kind === view.choice.source || file.url === null)
+    if (file.path === view.choice.path || file.url === null)
       continue;
     out.line("info", fileLine(file, paths.home, view.routerUrl), { indent: 2 });
   }
   if (view.checkout === null && view.checkoutProblem === null) {
-    out.line("info", "this folder is not in a git project: it has no personal file, and a project state is not written here", { indent: 2 });
+    out.line("info", "this folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, and a project state is not written", { indent: 2 });
   }
   const subfolder = subfolderTeamWarning(view, paths.home);
   if (subfolder !== null)
     out.line("warn", subfolder, { indent: 2 });
+  printWorktreeCopies(out, view, paths.home);
   if (effective.profile !== null && !view.profiles.includes(effective.profile)) {
     out.line("warn", `the router has no profile "${effective.profile}": its requests answer as plain Claude`, {
       detail: [`${COMMAND} gateway profile ${effective.profile} slot <slot> <targets>`],
@@ -27876,7 +27959,7 @@ function verdictLine(decision) {
 function savedStateLines(view, plan) {
   const lines = [decisionWords(view.effective)];
   if (plan.kind === "personal") {
-    lines.push("Every session of this project \u2014 the main checkout, its subfolders and its worktrees \u2014 reads it.");
+    lines.push(plan.value === null ? "A subfolder's or a worktree's own settings.local.json is still read after this one: it decides what this file no longer sets." : "Every session of this project \u2014 the main checkout, its subfolders and its worktrees \u2014 reads it first: a settings.local.json of their own sets only what this one does not.");
   } else {
     lines.push("The team file is committed with the project: commit it for your teammates.");
     lines.push("A session reads this file only when it starts in this same folder: one started in a subfolder does not.");
@@ -27888,7 +27971,11 @@ function savedStateLines(view, plan) {
     lines.push("Anthropic's own address keeps your own Claude login: turning the gateway off does not log you out.");
   }
   if (plan.value === null) {
-    lines.push("A session already running keeps the value it had until it restarts: a removed key never reaches a running session.");
+    if (view.effective.state === "unknown") {
+      lines.push("A settings file in the way cannot be read, so what a session already running here follows is not known.");
+    } else {
+      lines.push(view.effective.source === "none" ? "No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none)." : `A session already running here follows by itself, within a few seconds, to the next file that sets the address: ${decisionWords(view.effective)}. Nothing to restart.`);
+    }
   } else {
     lines.push("A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.");
   }
@@ -27943,6 +28030,9 @@ async function commandProject(ctx, args, usage) {
   }
   for (const line of savedStateLines(written.saved, written.plan))
     out.say(line, 2);
+  if (written.plan.kind === "personal" && written.plan.value === null) {
+    printWorktreeCopies(out, written.saved, paths.home);
+  }
   if (effective.source !== "none" && effective.source !== written.plan.kind) {
     out.line("warn", `${projectSourceWords(effective, paths.home, written.saved)} decides first: ${decisionWords(effective)}`, { indent: 2 });
   }
@@ -27993,7 +28083,8 @@ var PROJECT_HELP = `  project <status|on|off|default> [--team] [--profile <name>
                          default (no key: the machine's settings decide). The personal file
                          (.claude/settings.local.json, never committed) unless --team, which
                          writes .claude/settings.json and takes off or default only. A changed
-                         value reaches a running session; a removed one waits for a restart.
+                         value reaches a running session; a removed one falls to the next file
+                         that sets it, and only with none does the session keep its value.
                          Refused: another gateway's URL in the file, a login key or
                          apiKeyHelper anywhere in the chain (with on or off), a profile the
                          config does not have.`;
@@ -41407,6 +41498,15 @@ async function projectChecks(options, config, router = null) {
         continue;
       checks.push(...modelKeyWarnings(file, paths.home, backends));
     }
+    for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+      const where = tildify(copy.path, paths.home);
+      checks.push({
+        ok: true,
+        warn: true,
+        text: `${where} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone (${COMMAND} never writes or removes this copy)`,
+        fix: `remove env.ANTHROPIC_BASE_URL from ${where} by hand`
+      });
+    }
   }
   return checks;
 }
@@ -49861,7 +49961,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync74, rmSync as rmSync19 } from "fs";
-import { dirname as dirname27, join as join81 } from "path";
+import { basename as basename13, dirname as dirname27, join as join81 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -49976,6 +50076,18 @@ function fileUsesRouter(file, stateDir) {
     return true;
   }
 }
+function copyWarnings(settingsFiles, short) {
+  const lines = [];
+  for (const file of settingsFiles) {
+    const claudeDir = dirname27(file);
+    if (basename13(file) !== PERSONAL_FILE || basename13(claudeDir) !== ".claude")
+      continue;
+    for (const copy of gatewayCopiesAmong(linkedWorktreeFilesOf(dirname27(claudeDir)))) {
+      lines.push(`! ${short(copy.path)} holds ${shownValue(copy.url ?? "")}: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to that address once the root's key is gone. Fix: remove the key from that file by hand`);
+    }
+  }
+  return lines;
+}
 function offWrites(files, stateDir) {
   const writes = new Map;
   for (const file of files) {
@@ -50006,6 +50118,7 @@ async function runRestore(paths, options) {
   });
   const settingsFiles = Object.entries(changed).filter(([, entry]) => entry.kinds.includes("json-keys")).map(([file]) => file);
   const sessionsUseRouter = routerTracked && settingsFiles.some((file) => fileUsesRouter(file, paths.stateDir));
+  const copies = routerTracked ? copyWarnings(settingsFiles, short) : [];
   if (sessionsUseRouter && !options.now) {
     return withLock(paths.stateDir, async () => {
       await takeOverBack(paths);
@@ -50019,6 +50132,8 @@ async function runRestore(paths, options) {
         }
       });
       print(results, short);
+      for (const line of copies)
+        console.log(line);
       const removedRetired = results.some((result) => result.details.some((detail) => RETIRED_GATEWAY_ENV_KEYS.some((key) => detail.includes(key))));
       if (removedRetired) {
         console.log("  The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails.");
@@ -50035,6 +50150,8 @@ async function runRestore(paths, options) {
       return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
     }, { waitMs: 1e4 });
   }
+  for (const line of copies)
+    console.log(line);
   if (sessionsUseRouter) {
     if (!askFirst(options, NOW_WARNING, "Stop cc-smart-dev-kit-router and restore everything now?", `to do it now: ${COMMAND} restore --now --yes`)) {
       return 1;
@@ -50107,7 +50224,7 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync75, mkdirSync as mkdirSync29, rmSync as rmSync20 } from "fs";
-import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute9, join as join83, relative as relative8 } from "path";
+import { basename as basename14, delimiter, dirname as dirname28, isAbsolute as isAbsolute9, join as join83, relative as relative8 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join82 } from "path";
@@ -50569,7 +50686,7 @@ function pathStep(paths, platform, env) {
   const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute9(inHome);
   const shown = tildify(paths.binDir, paths.home);
   const why = `Add ${shown} to your PATH, so the ${COMMAND} command works`;
-  const shell = basename13(env.SHELL ?? "");
+  const shell = basename14(env.SHELL ?? "");
   if (shell === "fish") {
     return {
       text: `${why}: run this once, then open a new terminal:`,
@@ -51068,7 +51185,7 @@ function terminalQuestions(terminal, shown) {
 // src/hooks/notify.ts
 import { existsSync as existsSync76, readFileSync as readFileSync80, rmSync as rmSync21, statSync as statSync27, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir10 } from "os";
-import { basename as basename14, join as join85 } from "path";
+import { basename as basename15, join as join85 } from "path";
 
 // src/hooks/alert-sound.ts
 import { join as join84 } from "path";
@@ -51208,7 +51325,7 @@ function warpAgentSequence(alert, input) {
     event,
     session_id: typeof input.session_id === "string" ? input.session_id : "",
     cwd,
-    project: cwd === "" ? "" : basename14(cwd)
+    project: cwd === "" ? "" : basename15(cwd)
   };
   if (event === "stop" || event === "stop_failure")
     payload.response = alert.body;
@@ -51239,7 +51356,7 @@ function sessionLabel2(transcript, cwd) {
   }
   if (cwd === null)
     return null;
-  const folder = basename14(cwd);
+  const folder = basename15(cwd);
   return folder === "" || folder === "." ? null : cleanSessionName(folder);
 }
 function askAlert(input, ctx) {
@@ -51422,7 +51539,7 @@ function agentViewKey(session, message) {
 }
 function desktopTarget(deps, cwd, label, session) {
   return {
-    folder: cwd === null ? "" : basename14(cwd),
+    folder: cwd === null ? "" : basename15(cwd),
     name: label ?? "",
     program: deps.env.TERM_PROGRAM ?? "",
     session,
@@ -51751,10 +51868,10 @@ function realMachine(env, confirm) {
 // src/portal/api/projects.ts
 import { createHash as createHash8 } from "crypto";
 import { existsSync as existsSync79, mkdirSync as mkdirSync30, readFileSync as readFileSync82 } from "fs";
-import { basename as basename16, dirname as dirname29, join as join89, relative as relative9 } from "path";
+import { basename as basename17, dirname as dirname29, join as join89, relative as relative9 } from "path";
 
 // src/portal/facts.ts
-import { basename as basename15, join as join88 } from "path";
+import { basename as basename16, join as join88 } from "path";
 var SLOT_ORDER = ["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)];
 function projectFiles(root) {
   return {
@@ -51916,7 +52033,7 @@ async function summaryOf(found, world, currentRoot) {
     current: currentRoot !== null && samePath2(found.root, currentRoot),
     id: projectId(found.root),
     lastUsed: found.lastWrite > 0 ? new Date(found.lastWrite).toISOString() : null,
-    name: basename16(found.root),
+    name: basename17(found.root),
     root: found.root,
     set,
     source: found.source,
@@ -51985,10 +52102,10 @@ var CREW_BRANCH_STATES = new Set([
 var keptGhLogins = new Map;
 
 // src/worktrees/command.ts
-import { basename as basename18, resolve as resolve17 } from "path";
+import { basename as basename19, resolve as resolve17 } from "path";
 
 // src/worktrees/clean.ts
-import { basename as basename17 } from "path";
+import { basename as basename18 } from "path";
 
 // src/machine/hold-port.ts
 import { createServer } from "net";
@@ -52039,7 +52156,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const removal = removeWorktree(repo, worktree.listed, judged);
     for (const said of removal.said)
       say(`  ${said}`);
-    const name = basename17(worktree.listed.path);
+    const name = basename18(worktree.listed.path);
     if (removal.status === "removed") {
       removed.push({
         branch: worktree.listed.branch,
@@ -52078,7 +52195,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const { state } = worktree;
     if (typeof state === "object" && !state.finished) {
       kept.push({
-        name: basename17(worktree.listed.path),
+        name: basename18(worktree.listed.path),
         path: worktree.listed.path,
         why: state.why
       });
@@ -52115,7 +52232,7 @@ var CONSOLE_SINKS2 = {
 function show5(scanned, print) {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
-    const name = basename18(path).padEnd(30);
+    const name = basename19(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
     print(`  ${name} ${on} ${describe3(worktree)}`);
   }

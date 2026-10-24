@@ -255,6 +255,40 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     expect(existsSync(paths.routerCopy)).toBe(false);
   });
 
+  test("a worktree's copy of the personal file that holds the router is named in both stages, and never changed (P6, 2.1.310)", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    const root = project("gf1-restore-copy");
+    const personal = join(root, ".claude", "settings.local.json");
+    setGatewayBaseUrl({
+      file: personal,
+      stateDir: paths.stateDir,
+      value: "http://127.0.0.1:20999",
+    });
+    // A `.worktreeinclude` copy of that file in a linked worktree: the kit did not write it.
+    const worktree = join(tempDir("gf1-restore-copy-wt"), "wt");
+    git(root, "worktree", "add", "-q", worktree, "-b", "crew/copy");
+    const copy = join(worktree, ".claude", "settings.local.json");
+    mkdirSync(dirname(copy), { recursive: true });
+    const copyText = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20999" } }, null, 2)}\n`;
+    writeFileSync(copy, copyText);
+    const warning = `! ${copy.replace(paths.home, "~")} holds http://127.0.0.1:20999: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to that address once the root's key is gone. Fix: remove the key from that file by hand`;
+
+    // Stage 1 writes Anthropic's address into the root's file, which wins: the copy is named.
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(printed.join("\n")).toContain(warning);
+    expect(readFileSync(copy, "utf8")).toBe(copyText);
+
+    // Stage 2 removes the root's key and stops the router: the copy is named again, before.
+    printed.length = 0;
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(printed.join("\n")).toContain(warning);
+    expect(readFileSync(copy, "utf8")).toBe(copyText);
+  });
+
   test("a project set to off does not keep the router up: one pass, and no restart line", async () => {
     const { options, paths } = machine();
     writeManagedFile(paths.routerCopy, "// the router\n", {

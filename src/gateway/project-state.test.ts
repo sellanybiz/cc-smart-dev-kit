@@ -3,21 +3,24 @@
  * Code session started in a folder really gets, and which file decides it. The Claude Code
  * facts it follows are GP0's live proofs (`.claude/research/2026-10-23-r6-proofs.md`):
  * - P3, the settings order: local > the folder's `.claude/settings.json` > the user file;
- * - P6, the local file is read at the **main checkout's root** for every subfolder and every
- *   linked worktree, while `.claude/settings.json` is read from the **folder the session
- *   starts in** (so a subfolder does not read the checkout root's shared file);
+ * - P6 (re-proved on 2.1.310, `.claude/research/2026-10-25-r6-recheck.md`), the local file is
+ *   read at the **main checkout's root** for every subfolder and every linked worktree, and the
+ *   **starting folder's own** local file is read too: key by key the root's wins, then the
+ *   folder's own, before its shared file. `.claude/settings.json` is read from the **folder the
+ *   session starts in** only (so a subfolder does not read the checkout root's shared file);
  * - P1, an explicit `https://api.anthropic.com` is "off", and keeps the claude.ai login.
  *
  * Every file is in `tempDir()`; git runs through `git()` (`src/testing/temp.ts`), so the suite
  * sees no global config and no real repository.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { git, tempDir } from "../testing/temp";
 import { DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_PORT, type GatewayConfig, saveConfig } from "./config";
 import {
   decisionWords,
+  gatewayCopiesAmong,
   type ProjectStateOptions,
   projectGatewayState,
   projectGatewayStateAsync,
@@ -95,6 +98,7 @@ describe("what a URL means for a project", () => {
   test("an address with credentials in it is never shown whole", () => {
     expect(
       decisionWords({
+        path: "/home/user/app/.claude/settings.local.json",
         profile: null,
         source: "personal",
         state: "other",
@@ -145,6 +149,7 @@ for (const twin of TWINS) {
       // The port is the default one here: the config names none, so the router is on 20100.
       expect(state.routerUrl).toBe(`http://127.0.0.1:${DEFAULT_PORT}`);
       expect(state.choice).toEqual({
+        path: join(root, ".claude", "settings.local.json"),
         profile: null,
         source: "personal",
         state: "other",
@@ -164,13 +169,60 @@ for (const twin of TWINS) {
       mkdirSync(sub, { recursive: true });
       saveConfig(files.configPath, configOn(PORT));
       writeSettings(join(root, ".claude", "settings.local.json"), withUrl(ROUTER));
-      // The subfolder's own local file is ignored by Claude Code, and by this reader.
+      // The subfolder's own local file comes second: the root's wins key by key (P6, 2.1.310).
       writeSettings(join(sub, ".claude", "settings.local.json"), withUrl("http://127.0.0.1:1234"));
 
       const state = await stateOf(sub, files);
-      expect(state.choice).toEqual({ profile: null, source: "personal", state: "on", url: ROUTER });
-      expect(state.files[0]?.path).toBe(join(root, ".claude", "settings.local.json"));
+      expect(state.choice).toEqual({
+        path: join(root, ".claude", "settings.local.json"),
+        profile: null,
+        source: "personal",
+        state: "on",
+        url: ROUTER,
+      });
+      expect(state.files.map((one) => one.path)).toEqual([
+        join(root, ".claude", "settings.local.json"),
+        join(sub, ".claude", "settings.local.json"),
+        join(sub, ".claude", "settings.json"),
+        files.settingsFile,
+      ]);
       expect(state.checkout?.root).toBe(root);
+    });
+
+    test("a subfolder's own local file decides when the root's file does not set the key (P6)", async () => {
+      const files = machine();
+      const root = repo("gp2-subfolder-own");
+      const sub = join(root, "packages", "web");
+      mkdirSync(sub, { recursive: true });
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(files.settingsFile, withUrl("http://127.0.0.1:1111"));
+      // The root's file sets another env key but not the URL: the key falls to the folder's own.
+      writeSettings(join(root, ".claude", "settings.local.json"), {
+        env: { SOME_OTHER_KEY: "x" },
+      });
+      writeSettings(join(sub, ".claude", "settings.local.json"), withUrl(ROUTER));
+
+      const state = await stateOf(sub, files);
+      expect(state.choice).toEqual({
+        path: join(sub, ".claude", "settings.local.json"),
+        profile: null,
+        source: "personal",
+        state: "on",
+        url: ROUTER,
+      });
+      expect(state.effective.path).toBe(join(sub, ".claude", "settings.local.json"));
+    });
+
+    test("the starting folder's own local file beats its own shared file (P6)", async () => {
+      const files = machine();
+      const root = repo("gp2-own-over-team");
+      const sub = join(root, "packages");
+      mkdirSync(sub, { recursive: true });
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(join(sub, ".claude", "settings.local.json"), withUrl(ROUTER));
+      writeSettings(join(sub, ".claude", "settings.json"), withUrl(DEFAULT_ANTHROPIC_BASE_URL));
+
+      expect((await stateOf(sub, files)).choice).toMatchObject({ source: "personal", state: "on" });
     });
 
     test("a linked worktree reads the main checkout's personal file (P6)", async () => {
@@ -191,6 +243,31 @@ for (const twin of TWINS) {
       expect(state.checkout?.isWorktree).toBe(true);
       expect(state.checkout?.mainCheckout).toBe(root);
       expect(state.checkout?.commonDir).toBe(join(root, ".git"));
+    });
+
+    test("a linked worktree's own local file decides when the root's file does not set the key (P6)", async () => {
+      const files = machine();
+      const root = repo("gp2-worktree-own");
+      const worktree = join(tempDir("gp2-worktree-own-wt"), "wt");
+      git(root, "worktree", "add", "-q", worktree, "-b", "crew/own");
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(files.settingsFile, withUrl(DEFAULT_ANTHROPIC_BASE_URL));
+      // A copy of the personal file in the worktree (a `.worktreeinclude` makes one).
+      writeSettings(join(worktree, ".claude", "settings.local.json"), withUrl(ROUTER));
+
+      const state = await stateOf(worktree, files);
+      expect(state.choice).toMatchObject({
+        path: join(worktree, ".claude", "settings.local.json"),
+        source: "personal",
+        state: "on",
+        url: ROUTER,
+      });
+      expect(state.effective.state).toBe("on");
+      // The main checkout itself never reads the worktree's copy.
+      expect((await stateOf(root, files)).effective).toMatchObject({
+        source: "machine",
+        state: "off",
+      });
     });
 
     test("the team file is the starting folder's: a subfolder does not read the root's (P6)", async () => {
@@ -237,8 +314,15 @@ for (const twin of TWINS) {
       const files = machine();
       const root = repo("gp2-default");
       const state = await stateOf(root, files);
-      expect(state.choice).toEqual({ profile: null, source: "none", state: "default", url: null });
+      expect(state.choice).toEqual({
+        path: null,
+        profile: null,
+        source: "none",
+        state: "default",
+        url: null,
+      });
       expect(state.effective).toEqual({
+        path: null,
         profile: null,
         source: "none",
         state: "default",
@@ -246,15 +330,23 @@ for (const twin of TWINS) {
       });
     });
 
-    test("outside git there is no personal file; the folder's team file and the machine are read", async () => {
+    test("outside git, the folder's own local file, its team file and the machine are read (P6)", async () => {
       const files = machine();
       const plain = join(tempDir("gp2-plain"), "notes");
       mkdirSync(plain, { recursive: true });
       writeSettings(join(plain, ".claude", "settings.json"), withUrl(DEFAULT_ANTHROPIC_BASE_URL));
       const state = await stateOf(plain, files);
       expect(state.checkout).toBeNull();
-      expect(state.files.map((one) => one.kind)).toEqual(["team", "machine"]);
+      expect(state.files.map((one) => one.kind)).toEqual(["personal", "team", "machine"]);
       expect(state.choice).toMatchObject({ source: "team", state: "off" });
+
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(join(plain, ".claude", "settings.local.json"), withUrl(ROUTER));
+      expect((await stateOf(plain, files)).choice).toMatchObject({
+        path: join(plain, ".claude", "settings.local.json"),
+        source: "personal",
+        state: "on",
+      });
     });
 
     test("a project that chose default follows the machine, and the answer says which file", async () => {
@@ -265,6 +357,7 @@ for (const twin of TWINS) {
       const state = await stateOf(root, files);
       expect(state.choice.state).toBe("default");
       expect(state.effective).toEqual({
+        path: files.settingsFile,
         profile: null,
         source: "machine",
         state: "on",
@@ -364,4 +457,76 @@ for (const twin of TWINS) {
       expect(state.routerUrl).toBe(`http://127.0.0.1:${DEFAULT_PORT}`);
     });
   });
+
+  describe(`${twin.name}: the other worktrees' own local files (P6, 2.1.310)`, () => {
+    test("each linked worktree's own file is listed, the asked folder's and a missing file left out", async () => {
+      const files = machine();
+      const root = repo("gf1-wtfiles");
+      const one = join(tempDir("gf1-wtfiles-one"), "one");
+      const two = join(tempDir("gf1-wtfiles-two"), "two");
+      git(root, "worktree", "add", "-q", one, "-b", "crew/one");
+      git(root, "worktree", "add", "-q", two, "-b", "crew/two");
+      saveConfig(files.configPath, configOn(PORT));
+      writeSettings(join(one, ".claude", "settings.local.json"), withUrl(ROUTER));
+      // `two` has no file of its own: it is not listed.
+
+      const fromRoot = await stateOf(root, files);
+      expect(fromRoot.worktreeFiles.map((one) => [one.path, one.url])).toEqual([
+        [join(one, ".claude", "settings.local.json"), ROUTER],
+      ]);
+      // Asked from `one`, its own file is in `files`, so it is not listed twice.
+      const fromOne = await stateOf(one, files);
+      expect(fromOne.worktreeFiles).toEqual([]);
+      expect(fromOne.files.map((file) => file.path)).toContain(
+        join(one, ".claude", "settings.local.json"),
+      );
+    });
+
+    test("a worktree whose folder is gone, and a folder outside git, add none", async () => {
+      const files = machine();
+      const root = repo("gf1-wtgone");
+      const gone = join(tempDir("gf1-wtgone-wt"), "gone");
+      git(root, "worktree", "add", "-q", gone, "-b", "crew/gone");
+      writeSettings(join(gone, ".claude", "settings.local.json"), withUrl(ROUTER));
+      rmSync(gone, { force: true, recursive: true });
+      expect((await stateOf(root, files)).worktreeFiles).toEqual([]);
+      const plain = join(tempDir("gf1-wtplain"), "notes");
+      mkdirSync(plain, { recursive: true });
+      expect((await stateOf(plain, files)).worktreeFiles).toEqual([]);
+    });
+
+    test("a folder reached through a symlink to the main root does not list the root's file twice", async () => {
+      const files = machine();
+      const root = repo("gf1-symlink");
+      const link = join(tempDir("gf1-symlink-link"), "app-link");
+      symlinkSync(root, link);
+      writeSettings(join(root, ".claude", "settings.local.json"), withUrl(ROUTER));
+      const state = await stateOf(link, files);
+      expect(state.files.filter((file) => file.kind === "personal")).toHaveLength(1);
+    });
+  });
 }
+
+describe("which worktree files are copies that hold a gateway address", () => {
+  const file = (url: null | string, problem: null | string = null) => ({
+    kind: "personal" as const,
+    loginOverrides: [],
+    modelKeys: [],
+    path: "/home/user/wt/.claude/settings.local.json",
+    problem,
+    subagentOverrides: [],
+    url,
+  });
+
+  test("the router's address, a profile's and another gateway's are copies", () => {
+    for (const url of [ROUTER, `${ROUTER}/p/team`, "http://127.0.0.1:1234"]) {
+      expect(gatewayCopiesAmong([file(url)])).toHaveLength(1);
+    }
+  });
+
+  test("Anthropic's own address, no key, and a file that cannot be read are not", () => {
+    expect(gatewayCopiesAmong([file(DEFAULT_ANTHROPIC_BASE_URL)])).toEqual([]);
+    expect(gatewayCopiesAmong([file(null)])).toEqual([]);
+    expect(gatewayCopiesAmong([file(ROUTER, "is not valid JSON")])).toEqual([]);
+  });
+});

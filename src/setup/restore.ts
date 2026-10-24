@@ -196,10 +196,12 @@ function restorePartly(
  * still tracked. `setup --no-instructions` uses it for the instructions and their block.
  *
  * `writeInstead`: a key that must be **written again**, with this value, instead of being
- * removed — for a program that reads the file while it runs: a **changed** value reaches it,
- * a removed key never does (`docs/claude-code-contract.md` § The gateway). `restore`'s stage 1
- * uses it for the gateway's address, so running sessions stop using the router before the
- * router is stopped (GP5). The keys it writes are reported in `RestoreResult.written`.
+ * removed — for a program that reads the file while it runs: a **changed** value reaches it
+ * whatever the files below it in the chain hold, while a removed key reaches it only when a file
+ * below still sets the key, and otherwise never (`docs/claude-code-contract.md` § The gateway,
+ * P7). `restore`'s stage 1 uses it for the gateway's address, so running sessions stop using
+ * the router before the router is stopped (GP5), whichever file the key would fall to. The keys
+ * it writes are reported in `RestoreResult.written`.
  *
  * A removed file leaves no empty folder behind inside the state folder (the instructions'
  * folders); a folder outside it is never touched.

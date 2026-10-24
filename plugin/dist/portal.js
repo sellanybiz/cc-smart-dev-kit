@@ -18026,6 +18026,60 @@ var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
   return join30(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
+function ownPersonalFileOf(folder) {
+  return join30(folder, ".claude", PERSONAL_FILE);
+}
+function linkedWorktreePaths(listing, mainCheckout) {
+  const main = realFolder(mainCheckout);
+  const paths = [];
+  for (const block of listing.split(`
+
+`)) {
+    const lines = block.split(`
+`);
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main)
+      continue;
+    paths.push(path);
+  }
+  return paths;
+}
+function ownFilesOf(paths) {
+  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync28(file)).map((file) => settingsFileState(file, "personal"));
+}
+function linkedWorktreeFilesOf(mainCheckout) {
+  try {
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    return result.exitCode === 0 ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+async function linkedWorktreeFilesOfAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return code === 0 && child.signalCode === null ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+function gatewayCopiesAmong(files) {
+  return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
+}
 function teamFileOf(folder) {
   return join30(folder, ".claude", "settings.json");
 }
@@ -18097,13 +18151,19 @@ function readGatewayConfig(path) {
 }
 function decide(files, routerUrl) {
   for (const file of files) {
-    if (file.problem !== null)
-      return { profile: null, source: file.kind, state: "unknown", url: null };
+    if (file.problem !== null) {
+      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
+    }
     if (file.url !== null) {
-      return { ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url };
+      return {
+        ...urlMeaning(file.url, routerUrl),
+        path: file.path,
+        source: file.kind,
+        url: file.url
+      };
     }
   }
-  return { profile: null, source: "none", state: "default", url: null };
+  return { path: null, profile: null, source: "none", state: "default", url: null };
 }
 function projectGatewayState(folder, options) {
   const asked = resolve6(folder);
@@ -18114,7 +18174,7 @@ function projectGatewayState(folder, options) {
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(asked, options, found, found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout));
 }
 async function projectGatewayStateAsync(folder, options) {
   const asked = resolve6(folder);
@@ -18125,7 +18185,7 @@ async function projectGatewayStateAsync(folder, options) {
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(asked, options, found, found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout));
 }
 function checkoutFound(located, tracked) {
   if (located === null || located.mainCheckout === null) {
@@ -18142,12 +18202,15 @@ function checkoutFound(located, tracked) {
     checkoutProblem: null
   };
 }
-function stateFrom(asked, options, { checkout, checkoutProblem }) {
+function stateFrom(asked, options, { checkout, checkoutProblem }, linkedFiles) {
   const { config, problem: configProblem } = readGatewayConfig(options.configPath);
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project = [];
   if (checkout !== null)
     project.push(settingsFileState(personalFileOf(checkout), "personal"));
+  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
+    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
+  }
   project.push(settingsFileState(teamFileOf(asked), "team"));
   const files = [...project, settingsFileState(options.settingsFile, "machine")];
   return {
@@ -18159,7 +18222,8 @@ function stateFrom(asked, options, { checkout, checkoutProblem }) {
     files,
     folder: realFolder(asked),
     profiles: config === null ? [] : profileNames(config),
-    routerUrl
+    routerUrl,
+    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path))
   };
 }
 function decisionWords(decision) {
@@ -18297,6 +18361,7 @@ function planProjectChange(view, options) {
   if (state !== "default") {
     const levels = [...view.files];
     if (kind === "personal") {
+      levels.push(...view.worktreeFiles);
       const rootTeam = teamFileOf(view.checkout.root);
       if (!levels.some((one) => one.path === rootTeam)) {
         levels.push(settingsFileState(rootTeam, "team"));
@@ -18353,7 +18418,12 @@ function portOf(view) {
 }
 function fileLine(file, home, routerUrl) {
   const kind = file.kind === "personal" ? "the personal file" : file.kind === "team" ? "the team file" : "the machine's settings";
-  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : decisionWords({ ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url });
+  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : decisionWords({
+    ...urlMeaning(file.url, routerUrl),
+    path: file.path,
+    source: file.kind,
+    url: file.url
+  });
   return `${kind} ${tildify(file.path, home)}: ${holds}`;
 }
 function subfolderTeamWarning(view, home) {
@@ -18366,10 +18436,21 @@ function subfolderTeamWarning(view, home) {
     return null;
   const held = decisionWords({
     ...urlMeaning(file.url, view.routerUrl),
+    path: rootTeam,
     source: "team",
     url: file.url
   });
   return `the project root's team file (${tildify(rootTeam, home)}) holds ${held}, and a session started in a subfolder does not read it: Claude Code reads .claude/settings.json in the folder a session starts in`;
+}
+function printWorktreeCopies(out, view, home) {
+  if (view.checkout === null)
+    return;
+  for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+    out.line("warn", `${tildify(copy.path, home)} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone`, {
+      fix: "remove the key from that copy (a .worktreeinclude makes it again in a new worktree), or take .claude/settings.local.json out of the list",
+      indent: 2
+    });
+  }
 }
 function markOf(decision) {
   if (decision.state === "on")
@@ -18383,11 +18464,12 @@ function markOf(decision) {
 function projectSourceWords(decision, home, view) {
   if (decision.source === "none")
     return "nothing in this project";
-  const file = view.files.find((one) => one.kind === decision.source);
+  const file = view.files.find((one) => decision.path === null ? one.kind === decision.source : one.path === decision.path);
   if (file === undefined)
     return "nothing in this project";
   if (file.kind === "personal") {
-    const shared = view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
+    const isRoot = view.checkout !== null && file.path === personalFileOf(view.checkout);
+    const shared = !isRoot ? "the folder's own, not the project root's" : view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
     return `the personal file ${tildify(file.path, home)} (${shared})`;
   }
   if (file.kind === "team") {
@@ -18411,16 +18493,17 @@ function projectStatus(ctx, folder) {
       });
       continue;
     }
-    if (file.kind === view.choice.source || file.url === null)
+    if (file.path === view.choice.path || file.url === null)
       continue;
     out.line("info", fileLine(file, paths.home, view.routerUrl), { indent: 2 });
   }
   if (view.checkout === null && view.checkoutProblem === null) {
-    out.line("info", "this folder is not in a git project: it has no personal file, and a project state is not written here", { indent: 2 });
+    out.line("info", "this folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, and a project state is not written", { indent: 2 });
   }
   const subfolder = subfolderTeamWarning(view, paths.home);
   if (subfolder !== null)
     out.line("warn", subfolder, { indent: 2 });
+  printWorktreeCopies(out, view, paths.home);
   if (effective.profile !== null && !view.profiles.includes(effective.profile)) {
     out.line("warn", `the router has no profile "${effective.profile}": its requests answer as plain Claude`, {
       detail: [`${COMMAND} gateway profile ${effective.profile} slot <slot> <targets>`],
@@ -18459,7 +18542,7 @@ function verdictLine(decision) {
 function savedStateLines(view, plan) {
   const lines = [decisionWords(view.effective)];
   if (plan.kind === "personal") {
-    lines.push("Every session of this project \u2014 the main checkout, its subfolders and its worktrees \u2014 reads it.");
+    lines.push(plan.value === null ? "A subfolder's or a worktree's own settings.local.json is still read after this one: it decides what this file no longer sets." : "Every session of this project \u2014 the main checkout, its subfolders and its worktrees \u2014 reads it first: a settings.local.json of their own sets only what this one does not.");
   } else {
     lines.push("The team file is committed with the project: commit it for your teammates.");
     lines.push("A session reads this file only when it starts in this same folder: one started in a subfolder does not.");
@@ -18471,7 +18554,11 @@ function savedStateLines(view, plan) {
     lines.push("Anthropic's own address keeps your own Claude login: turning the gateway off does not log you out.");
   }
   if (plan.value === null) {
-    lines.push("A session already running keeps the value it had until it restarts: a removed key never reaches a running session.");
+    if (view.effective.state === "unknown") {
+      lines.push("A settings file in the way cannot be read, so what a session already running here follows is not known.");
+    } else {
+      lines.push(view.effective.source === "none" ? "No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none)." : `A session already running here follows by itself, within a few seconds, to the next file that sets the address: ${decisionWords(view.effective)}. Nothing to restart.`);
+    }
   } else {
     lines.push("A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.");
   }
@@ -18526,6 +18613,9 @@ async function commandProject(ctx, args, usage) {
   }
   for (const line of savedStateLines(written.saved, written.plan))
     out.say(line, 2);
+  if (written.plan.kind === "personal" && written.plan.value === null) {
+    printWorktreeCopies(out, written.saved, paths.home);
+  }
   if (effective.source !== "none" && effective.source !== written.plan.kind) {
     out.line("warn", `${projectSourceWords(effective, paths.home, written.saved)} decides first: ${decisionWords(effective)}`, { indent: 2 });
   }
@@ -18576,7 +18666,8 @@ var PROJECT_HELP = `  project <status|on|off|default> [--team] [--profile <name>
                          default (no key: the machine's settings decide). The personal file
                          (.claude/settings.local.json, never committed) unless --team, which
                          writes .claude/settings.json and takes off or default only. A changed
-                         value reaches a running session; a removed one waits for a restart.
+                         value reaches a running session; a removed one falls to the next file
+                         that sets it, and only with none does the session keep its value.
                          Refused: another gateway's URL in the file, a login key or
                          apiKeyHelper anywhere in the chain (with on or off), a profile the
                          config does not have.`;
@@ -21832,6 +21923,15 @@ async function projectChecks(options, config, router = null) {
       if (file.kind === "machine")
         continue;
       checks.push(...modelKeyWarnings(file, paths.home, backends));
+    }
+    for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+      const where = tildify(copy.path, paths.home);
+      checks.push({
+        ok: true,
+        warn: true,
+        text: `${where} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone (${COMMAND} never writes or removes this copy)`,
+        fix: `remove env.ANTHROPIC_BASE_URL from ${where} by hand`
+      });
     }
   }
   return checks;
@@ -39811,6 +39911,7 @@ function decisionOf(decision, view, home) {
 function fileOf(file, view, home) {
   const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : wordsOf2({
     ...urlMeaning(file.url, view.routerUrl),
+    path: file.path,
     source: file.kind,
     url: file.url
   });
@@ -39850,7 +39951,7 @@ function notesOf(view, config, home) {
     });
   } else if (view.checkout === null) {
     notes.push({
-      text: "This folder is not in a git project: it has no personal file, so its state cannot be set here.",
+      text: "This folder is not in a git project: only its own .claude/settings.local.json and settings.json are read here, so its state cannot be set.",
       tone: "info"
     });
   }

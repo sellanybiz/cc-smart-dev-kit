@@ -1852,7 +1852,7 @@ describe("the actions", () => {
       expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
       // And off points the address back at Anthropic instead of removing the key (GP5): a
       // running session follows a changed value within about a second, where a removed key
-      // would wait for its restart. The tool-search key is removed as before.
+      // reach it only if another file sets the key. The tool-search key is removed as before.
       const off = await world.post("switch", { name: "gateway", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
       const after = JSON.parse(readFileSync(world.paths.settingsFile, "utf8")) as {

@@ -87,14 +87,16 @@ export function gatewayRequest(answer: ProjectGatewayData, draft: GatewayDraft):
 }
 
 /**
- * What reaches a Claude Code session already running (GP0's P7, proved for a file that existed
- * when the session started): a changed address within about a second, a removed one never — so
- * default, which removes the key, waits for a restart. A file the session did not see at its
- * start is not proved to reach it, so the words say to restart then, as the command does.
+ * What reaches a Claude Code session already running (P7, re-proved on 2.1.310 for a file that
+ * existed when the session started): a changed address within about a second; a removed one
+ * falls to the next settings file that still sets it, also within seconds, and a session keeps
+ * its last address only when no file sets it. The page cannot know which of the two a project
+ * is in, so default says both. A file the session did not see at its start is not proved to
+ * reach it, so the words say to restart then, as the command does.
  */
 export function runningWords(state: GatewayChoice): string {
   return state === "default"
-    ? "Default removes the address, and a running session never sees a removal: restart a session already running in this project."
+    ? "Default removes the address. A session already running in this project follows by itself, within a few seconds, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts."
     : "A session already running in this project switches within about a second; restart it if the file did not exist when it started.";
 }
 
@@ -102,7 +104,7 @@ export function runningWords(state: GatewayChoice): string {
 export function personalFileWords(answer: ProjectGatewayData): string {
   return answer.personalTracked === true
     ? "Only you, by its name: .claude/settings.local.json in the main checkout. But git tracks it in this project, so what is written there is committed with it."
-    : "Only you: .claude/settings.local.json in the main checkout, never committed. Every worktree of the project reads it.";
+    : "Only you: .claude/settings.local.json in the main checkout, never committed. Every worktree of the project reads it first; a worktree's own copy of the file sets only what this one does not.";
 }
 
 /**

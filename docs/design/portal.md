@@ -625,9 +625,10 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   own choice and offers nothing until a change is chosen (so another gateway's address, or a
   file that cannot be read, is never "fixed" by an Apply nobody asked for). The personal file's
   words say it is committed when git tracks it. Apply asks first and says what reaches a running
-  session (GP0's P7, proved for a file that existed at the session's start: a changed address
-  within about a second — restart a session that started before the file existed — and a
-  removed one, Default, only after a restart). When the address names a profile, its slots are listed with what
+  session (P7, re-proved on 2.1.310 for a file that existed at the session's start: a changed
+  address within about a second — restart a session that started before the file existed — and
+  a removed one, Default, follows by itself to the next settings file that sets it, and keeps
+  its address until a restart only when no file does). When the address names a profile, its slots are listed with what
   answers each (its own chain, Claude in the profile, or this machine's chain) and the fallback
   switch; a slot's Change opens the Slots page's own `ChainEditor` (the model list is
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change

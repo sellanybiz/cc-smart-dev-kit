@@ -9,10 +9,12 @@
  * - **P3, the order for an `env` key**: a `--settings` file (not visible here), then the
  *   project's `settings.local.json`, then the starting folder's `.claude/settings.json`, then
  *   the user's own settings file, then the shell. The first file that sets the key decides.
- * - **P6, where each file is read**: `settings.local.json` at the **main checkout's root**,
- *   for the checkout, every subfolder and every linked worktree; `.claude/settings.json` from
- *   **the folder the session starts in** (a subfolder does not read the root's). A worktree
- *   reads a shared file only when it carries it (committed).
+ * - **P6, where each file is read** (re-proved on 2.1.310): `settings.local.json` at the **main
+ *   checkout's root**, for the checkout, every subfolder and every linked worktree, and the
+ *   **starting folder's own** `settings.local.json` after it (key by key the root's wins; outside
+ *   git the folder's own is the only one); `.claude/settings.json` from **the folder the
+ *   session starts in** only (a subfolder does not read the root's). A worktree reads a shared
+ *   file only when it carries it (committed).
  * - **P1, "off" is an explicit `https://api.anthropic.com`**: that value keeps the person's
  *   claude.ai login, so turning a project off never logs them out.
  *
@@ -62,7 +64,7 @@ export type SettingsLevel = "machine" | "personal" | "team";
 /** One settings file the reader looked at, in the order Claude Code applies them. */
 export interface SettingsFileState {
   kind: SettingsLevel;
-  /** The file as Claude Code reads it (`settings.local.json` at the main checkout's root). */
+  /** The file as Claude Code reads it (a project's personal file: the main root's or the folder's own). */
   path: string;
   /** The `env.ANTHROPIC_BASE_URL` it holds, exactly as written; null when it holds none. */
   url: null | string;
@@ -78,6 +80,11 @@ export interface SettingsFileState {
 
 /** What one stretch of the settings chain decides. */
 export interface GatewayDecision {
+  /**
+   * The file that decides, by path: a session reads two personal files (the main root's and its
+   * starting folder's own), so the level alone does not name one. Null when `source` is `none`.
+   */
+  path: null | string;
   /** The profile a router URL names; null when it names none. */
   profile: null | string;
   /** The file that decides; `none` when no file sets the key. */
@@ -174,6 +181,12 @@ export interface ProjectGatewayState {
   profiles: string[];
   /** This machine's router, `http://127.0.0.1:<port>`. */
   routerUrl: string;
+  /**
+   * The own `settings.local.json` of the project's other linked worktrees, the folder asked
+   * excluded (it is in `files`): not part of this folder's chain, but a session started in one
+   * reads it (P6), so the login-key refusal and the copy warnings ask them. Empty outside git.
+   */
+  worktreeFiles: SettingsFileState[];
 }
 
 export interface ProjectStateOptions {
@@ -192,6 +205,99 @@ export const PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 /** The personal file of a checkout: at the **main checkout's root**, for every worktree (P6). */
 export function personalFileOf(checkout: Pick<ProjectCheckout, "mainCheckout">): string {
   return join(checkout.mainCheckout, ".claude", PERSONAL_FILE);
+}
+
+/**
+ * The personal file of the folder a session starts in: Claude Code reads it after the main
+ * checkout's (P6, 2.1.310). In a linked worktree it is a copy a `.worktreeinclude` made, or the
+ * person's own; in a subfolder or a folder outside git, the folder's own.
+ */
+export function ownPersonalFileOf(folder: string): string {
+  return join(folder, ".claude", PERSONAL_FILE);
+}
+
+/**
+ * The linked worktrees' paths in `listing` (`git worktree list --porcelain`): the main checkout
+ * and a bare entry left out.
+ */
+function linkedWorktreePaths(listing: string, mainCheckout: string): string[] {
+  const main = realFolder(mainCheckout);
+  const paths: string[] = [];
+  for (const block of listing.split("\n\n")) {
+    const lines = block.split("\n");
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main) continue;
+    paths.push(path);
+  }
+  return paths;
+}
+
+/** The own personal files that exist, of these worktrees. */
+function ownFilesOf(paths: readonly string[]): SettingsFileState[] {
+  return paths
+    .map((path) => ownPersonalFileOf(path))
+    .filter((file) => existsSync(file))
+    .map((file) => settingsFileState(file, "personal"));
+}
+
+/**
+ * Every linked worktree's own `settings.local.json` of a repo, read (P6, 2.1.310): a project's
+ * `.worktreeinclude` makes them as copies of the main root's personal file. The main root's key
+ * wins key by key while it is there; once it is removed (`gateway project default`, `restore`), a
+ * session started in such a worktree reads its own file. Reads only. A repo git cannot list gives
+ * none: a warning's input, never a state.
+ */
+export function linkedWorktreeFilesOf(mainCheckout: string): SettingsFileState[] {
+  try {
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    return result.exitCode === 0
+      ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** `linkedWorktreeFilesOf`, without blocking (`Bun.spawn`): the portal's and doctor's twin. */
+export async function linkedWorktreeFilesOfAsync(
+  mainCheckout: string,
+): Promise<SettingsFileState[]> {
+  try {
+    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    // A timeout's kill ends with a signal: no answer, as the blocking twin reads it.
+    return code === 0 && child.signalCode === null
+      ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The worktree files among `files` that hold a gateway address (anything but Anthropic's own):
+ * the copies that send a session to a router, or another gateway, once the root's key is gone.
+ * The kit did not write them, so a command reports them and never changes them
+ * (`.claude/rules/setup-and-managed-files.md` § Never take what is not ours). A file that cannot
+ * be read is not a copy: it shows as a problem where it is read.
+ */
+export function gatewayCopiesAmong(files: readonly SettingsFileState[]): SettingsFileState[] {
+  return files.filter(
+    (file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url),
+  );
 }
 
 /** The team file of a folder: the one a session started there reads (P6). */
@@ -295,13 +401,19 @@ export function readGatewayConfig(path: string): {
  */
 function decide(files: readonly SettingsFileState[], routerUrl: string): GatewayDecision {
   for (const file of files) {
-    if (file.problem !== null)
-      return { profile: null, source: file.kind, state: "unknown", url: null };
+    if (file.problem !== null) {
+      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
+    }
     if (file.url !== null) {
-      return { ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url };
+      return {
+        ...urlMeaning(file.url, routerUrl),
+        path: file.path,
+        source: file.kind,
+        url: file.url,
+      };
     }
   }
-  return { profile: null, source: "none", state: "default", url: null };
+  return { path: null, profile: null, source: "none", state: "default", url: null };
 }
 
 /**
@@ -324,7 +436,12 @@ export function projectGatewayState(
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(
+    asked,
+    options,
+    found,
+    found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout),
+  );
 }
 
 /**
@@ -348,7 +465,12 @@ export async function projectGatewayStateAsync(
   } catch (error) {
     found = { checkout: null, checkoutProblem: messageOf(error) };
   }
-  return stateFrom(asked, options, found);
+  return stateFrom(
+    asked,
+    options,
+    found,
+    found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout),
+  );
 }
 
 /** The checkout the reader found, or why there is none: what the git reads gave. */
@@ -379,11 +501,18 @@ function stateFrom(
   asked: string,
   options: ProjectStateOptions,
   { checkout, checkoutProblem }: FoundCheckout,
+  linkedFiles: readonly SettingsFileState[],
 ): ProjectGatewayState {
   const { config, problem: configProblem } = readGatewayConfig(options.configPath);
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project: SettingsFileState[] = [];
   if (checkout !== null) project.push(settingsFileState(personalFileOf(checkout), "personal"));
+  // P6 (2.1.310): the starting folder's own local file is read too, after the main root's (key
+  // by key the root's wins) and before the folder's team file. In the main root it is the same
+  // file; outside git it is the only personal file there is.
+  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
+    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
+  }
   project.push(settingsFileState(teamFileOf(asked), "team"));
   const files = [...project, settingsFileState(options.settingsFile, "machine")];
 
@@ -397,6 +526,7 @@ function stateFrom(
     folder: realFolder(asked),
     profiles: config === null ? [] : profileNames(config),
     routerUrl,
+    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path)),
   };
 }
 

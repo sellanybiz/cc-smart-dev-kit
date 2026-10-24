@@ -155,20 +155,22 @@ describe("what the form may send", () => {
 });
 
 describe("what reaches a running session (P7)", () => {
-  test("a changed address reaches it; a removed one waits for a restart", () => {
+  test("a changed address reaches it; a removed one falls to the next file that sets it", () => {
     const changed =
       "A session already running in this project switches within about a second; restart it if the file did not exist when it started.";
     expect(runningWords("on")).toBe(changed);
     expect(runningWords("off")).toBe(changed);
     expect(runningWords("default")).toBe(
-      "Default removes the address, and a running session never sees a removal: restart a session already running in this project.",
+      "Default removes the address. A session already running in this project follows by itself, within a few seconds, to the next settings file that sets it (the machine's, say); only when no file sets it does the session keep the address it had until it restarts.",
     );
   });
 });
 
 describe("the personal file's words", () => {
   test("never committed, unless git tracks it in this project", () => {
-    expect(personalFileWords(answer())).toContain("never committed");
+    expect(personalFileWords(answer())).toBe(
+      "Only you: .claude/settings.local.json in the main checkout, never committed. Every worktree of the project reads it first; a worktree's own copy of the file sets only what this one does not.",
+    );
     expect(personalFileWords(answer({ personalTracked: true }))).toBe(
       "Only you, by its name: .claude/settings.local.json in the main checkout. But git tracks it in this project, so what is written there is committed with it.",
     );
