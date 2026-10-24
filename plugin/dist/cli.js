@@ -2,7 +2,7 @@
 // src/entries/cli.ts
 import { existsSync as existsSync80, statSync as statSync29 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join90, resolve as resolve17 } from "path";
+import { join as join90, resolve as resolve18 } from "path";
 
 // src/browser/check.ts
 import { existsSync as existsSync4, mkdtempSync, readdirSync as readdirSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -45473,6 +45473,9 @@ function packageScripts(folder) {
   return new Set(Object.keys(scripts));
 }
 
+// src/hooks/bash-judge.ts
+import { isAbsolute as isAbsolute6, resolve as resolve14 } from "path";
+
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
   "[",
@@ -45650,6 +45653,24 @@ function isWorkflowPropose(step) {
   const sub = words[at + 1];
   return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
+function proposalOf(step, moved) {
+  if (step.computed)
+    return { unread: "the program is worked out when the line runs" };
+  const words = kitWordsOf(step) ?? [];
+  const at = kitWordAt(words, step, "workflow");
+  if (words[at + 1] !== "propose") {
+    return { unread: "the subcommand is worked out when the line runs" };
+  }
+  const flag = words.indexOf("--folder", at + 2);
+  const folder = flag === -1 ? null : words[flag + 1] ?? "";
+  if (folder !== null && (folder === "" || isComputedWord(folder))) {
+    return { unread: "its --folder is worked out when the line runs" };
+  }
+  if (moved && (folder === null || !isAbsolute6(folder))) {
+    return { unread: "the line changes its folder before it" };
+  }
+  return { folder };
+}
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
     return args[1] === "list" || args[1] === "status";
@@ -45755,13 +45776,17 @@ function readBash(command, dialect = "bash") {
   let statusReadsInLoop = 0;
   let waits = state.loops;
   let workflowPropose = false;
+  const proposals = [];
+  const moved = steps.some((step) => CHANGE_DIR.has(step.program));
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
-    if (isWorkflowPropose(step))
+    if (isWorkflowPropose(step)) {
       workflowPropose = true;
+      proposals.push(proposalOf(step, moved));
+    }
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -45783,7 +45808,17 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits, workflowPropose };
+  return {
+    crewNeverRuns,
+    launches,
+    poll,
+    proposals,
+    statusReads,
+    steps,
+    top,
+    waits,
+    workflowPropose
+  };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -45823,6 +45858,79 @@ function crewProposeAnswer(crewId) {
     CREW_QUESTION_STEP
   ].join(`
 `);
+}
+function proposeActs(base) {
+  const into = base === null ? "the project's integration base (worktrees.base)" : `\`${base}\``;
+  return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
+}
+var APPROVE_IF_MEANT = "Approve it if you meant it.";
+function proposeQuestion(folder, context) {
+  const cannotTellProject = (why) => `${proposeActs(null)}
+${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+  let checkout;
+  let base;
+  try {
+    checkout = locateCheckout(folder, { env: context.env });
+    if (checkout === null)
+      return cannotTellProject(`${folder} is not in a git project`);
+    base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
+  } catch (error) {
+    return cannotTellProject(error instanceof Error ? error.message : String(error));
+  }
+  const acts = proposeActs(base);
+  try {
+    const read = resolveGate(context.paths, checkout, base, {
+      env: context.env,
+      timeoutMs: GUARD_GIT_TIMEOUT_MS
+    });
+    if (!read.ok) {
+      return `${acts}
+${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
+    }
+    const { autoPush, openPr } = read.gate.resolved;
+    const off = [];
+    if (!autoPush.value)
+      off.push(`autoPush is off (${sourceLabel(autoPush, base)})`);
+    if (openPr.value !== "ready") {
+      off.push(`openPr is ${openPr.value} (${sourceLabel(openPr, base)})`);
+    }
+    if (off.length === 0)
+      return null;
+    return `${acts}
+${off.join(", and ")}, so the push and the pull request are yours to approve. ${APPROVE_IF_MEANT}`;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return `${acts}
+${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow settings cannot be read (${why}). ${APPROVE_IF_MEANT}`;
+  }
+}
+function judgeProposals(proposals, context) {
+  const cwd = stringField(context.input.cwd);
+  let question = null;
+  for (const proposal of proposals) {
+    if ("unread" in proposal) {
+      question = `${proposeActs(null)}
+${COMMAND} cannot tell which project's workflow this line proposes into (${proposal.unread}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+    } else if (cwd === null) {
+      question = `${proposeActs(null)}
+${COMMAND} cannot tell which project's workflow this line proposes into (the call names no folder), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+    } else {
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve14(cwd, proposal.folder), context);
+    }
+    if (question !== null)
+      break;
+  }
+  if (question === null)
+    return null;
+  if (!isAttended(context.env)) {
+    return {
+      decision: "deny",
+      reason: `${question}
+Nobody answers a question in \`claude -p\`, so the proposal is refused.`,
+      why: "propose"
+    };
+  }
+  return { decision: "ask", reason: question, why: "propose" };
 }
 function pollReason() {
   return [
@@ -45872,6 +45980,12 @@ function judgeBash(reading, context) {
     return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
   }
   let ask = null;
+  if (reading.proposals.length > 0) {
+    const proposed = judgeProposals(reading.proposals, context);
+    if (proposed?.decision === "deny")
+      return proposed;
+    ask = proposed;
+  }
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
     if (verdict === null)
@@ -46141,13 +46255,13 @@ function leadNotesAnswer(input, event, paths, repo, env) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute6, resolve as resolve14 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve15 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute6(path) ? resolve14(path) : resolve14(cwd, path));
+  return realPath(isAbsolute7(path) ? resolve15(path) : resolve15(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -46655,7 +46769,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname24, isAbsolute as isAbsolute7, posix as posix3, relative as relative7, resolve as resolve15, win32 as win324 } from "path";
+import { dirname as dirname24, isAbsolute as isAbsolute8, posix as posix3, relative as relative7, resolve as resolve16, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -46871,7 +46985,7 @@ function protectedNeedles(paths) {
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative7(paths.home, folder);
-    if (!underHome.startsWith("..") && !isAbsolute7(underHome))
+    if (!underHome.startsWith("..") && !isAbsolute8(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
   }
@@ -47048,7 +47162,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute7(path) ? resolve15(path) : resolve15(cwd ?? "/", path);
+  const written = isAbsolute8(path) ? resolve16(path) : resolve16(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths, crew) {
@@ -49930,7 +50044,7 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync75, mkdirSync as mkdirSync29, rmSync as rmSync20 } from "fs";
-import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute8, join as join83, relative as relative8 } from "path";
+import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute9, join as join83, relative as relative8 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join82 } from "path";
@@ -50389,7 +50503,7 @@ function pathStep(paths, platform, env) {
     return `Add ${paths.binDir} to your PATH, so the ${COMMAND} command works: Windows Settings \u2192 System \u2192 About \u2192 Advanced system settings \u2192 Environment Variables \u2192 Path for your account. Then open a new terminal.`;
   }
   const inHome = relative8(paths.home, paths.binDir);
-  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute8(inHome);
+  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute9(inHome);
   const shown = tildify(paths.binDir, paths.home);
   const why = `Add ${shown} to your PATH, so the ${COMMAND} command works`;
   const shell = basename13(env.SHELL ?? "");
@@ -51808,7 +51922,7 @@ var CREW_BRANCH_STATES = new Set([
 var keptGhLogins = new Map;
 
 // src/worktrees/command.ts
-import { basename as basename18, resolve as resolve16 } from "path";
+import { basename as basename18, resolve as resolve17 } from "path";
 
 // src/worktrees/clean.ts
 import { basename as basename17 } from "path";
@@ -52040,7 +52154,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
     return 0;
   }
   const checkout = locateCheckout(cwd, { env });
-  const repo = checkout?.mainCheckout ?? resolve16(cwd);
+  const repo = checkout?.mainCheckout ?? resolve17(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
     print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.
@@ -52064,7 +52178,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 `);
     }
     if (options.remove !== null) {
-      const target = resolve16(options.remove);
+      const target = resolve17(options.remove);
       const judged = {
         base,
         claudeConfigDir: paths.claudeConfigDir,
@@ -52269,7 +52383,7 @@ async function main(argv) {
             console.error(usageError2("--project needs a folder", "setup"));
             return 2;
           }
-          project = resolve17(dir);
+          project = resolve18(dir);
           index += 1;
         } else if (!flags.includes(arg)) {
           unknown.push(arg);

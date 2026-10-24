@@ -34,7 +34,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   - **Gateway** shows that project's state, where it comes from, and the switch;
   - **Workflow** shows each workflow setting, its value and source. A change you make there
     becomes a pull request into the project's base branch (`workflow propose`), and its link
-    shows in place. A crew session cannot propose one.
+    shows in place. A crew session cannot propose one, and any other Claude Code session that
+    runs `workflow propose` asks you first while `autoPush` is off or `openPr` is short of
+    `ready`: it pushes and opens a pull request where the git and merge guards cannot see.
 - **The portal never waits on a slow command.** Its doctor pass and its project reads run off the
   server's loop, one CLI child serves every action, and its state folder follows
   `CLAUDE_CONFIG_DIR`.
