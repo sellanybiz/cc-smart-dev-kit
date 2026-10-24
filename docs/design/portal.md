@@ -8,10 +8,11 @@ each one follows them.
 
 **Settings and the Project card.** `/settings` shows every workflow setting — the flow after
 a finished step, the alerts, the switches, the crew caps — one row each, with the value now and where it
-came from (`yours`, `this project`, `default`). A change is one POST that runs the module's
+came from (`Your default`, `This project`, `Built-in default`). A change is one POST that runs the module's
 own `writePersonalSetting` (the two project switches go to `writeProjectSetting`), so the
 page and `cc-smart-dev-kit workflow show` can never disagree; a row the project sets is
-read-only here and links to the Project card, and a value outside its row's own set is
+read-only here, the page's first line says a project's own value wins and is changed on the
+project's page (its Workflow card, below), and a value outside its row's own set is
 refused in words. The Project card on Machine is about the repo the portal was started in:
 state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
 line's own detection (`detectFacts` + `defaultAnswers` — the default branch, GitHub's
@@ -520,6 +521,22 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 - **Settings**: the crew caps (`crew.perLead`, `crew.perLeadOpus`, `crew.max`,
   `crew.usagePercent`) are rows of the one table (`src/portal/settings.ts`), written by
   `writePersonalSetting` like every row; a number row names its unit there.
+- **Project, the Workflow card** (D57, `portal/src/components/workflow-card.tsx`): a set-up
+  project's page shows every setting of `projects/<id>/workflow` with the value its base
+  commits and a badge for where it comes from, grouped as This machine groups them. The rows'
+  words and controls are the Settings table's, read from `/api/settings` and merged by
+  `projectWorkflowOf` (`portal/src/api/adapt.ts`); the row and its control are
+  `settings-rows.tsx`'s own `SettingLine`, so the two pages never draw a setting two ways. A
+  key with no row in that table is listed under "Other settings" with its value and the
+  command that changes it. A change asks first — it opens a pull request into the base that
+  changes one line of the project's file, and counts once merged — then runs
+  `project.workflow.propose`; the row goes back to the base's value, and the pull request's
+  link (or the refusal, in the command's words) stays under it. A value the project sets can
+  also be taken out (`--unset`). Without a `gh` that can open a pull request (`missing` or
+  `out`) the values show, the controls are off, and one line names the command to run. A crew
+  session never reaches the card: the session-escape guard denies its call into the portal.
+  The current project's page no longer shows the portal folder's own settings rows: the
+  person's defaults are Settings → This machine's.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
