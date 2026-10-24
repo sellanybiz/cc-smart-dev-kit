@@ -28653,8 +28653,18 @@ var DISCARD_IGNORED_MAX_FILES = 256;
 var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
 // src/sessions/saved-sessions.ts
 import { join as join53 } from "path";
+var PROJECT_FOLDER_NAME_MAX = 200;
+function pathHash(path) {
+  let hash = 0;
+  for (let index = 0;index < path.length; index += 1) {
+    hash = (hash << 5) - hash + path.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
 function projectFolderName(path) {
-  return path.replace(/[^A-Za-z0-9]/g, "-");
+  const name = path.replace(/[^A-Za-z0-9]/g, "-");
+  return name.length <= PROJECT_FOLDER_NAME_MAX ? name : `${name.slice(0, PROJECT_FOLDER_NAME_MAX)}-${pathHash(path)}`;
 }
 function belongsToRepo(projectFolder, mainCheckout) {
   const main = projectFolderName(mainCheckout);
@@ -28731,15 +28741,6 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/archive.ts
 var DAY_MS = 24 * 60 * 60 * 1000;
-var manifestSchema = looseObject({
-  version: number2().int().min(1),
-  crew: string2().min(1),
-  name: string2().min(1),
-  repo: string2().min(1),
-  sessionId: string2().min(1),
-  projectFolder: string2().min(1),
-  archivedAt: exports_iso.datetime()
-});
 
 // src/worktrees/command.ts
 function crewRecordsOf(paths, repo) {

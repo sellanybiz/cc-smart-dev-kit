@@ -718,27 +718,84 @@ describe("AR1: a removed crew session's conversation in the kit's crew archive",
     return made;
   }
 
+  /** What the fixture session did, written by hand from its lines. */
+  function expectTheFixtureSession(report: ReturnType<typeof readFlow>): void {
+    expect(report.sessions).toHaveLength(1);
+    expect(report.sessions[0]?.session).toBe(SESSION);
+    // One reply holding two launches: both launches are parallel, and that reply is the one
+    // parallel reply.
+    expect(report.sessions[0]?.agents.launches).toBe(2);
+    expect(report.sessions[0]?.agents.launchesParallel).toBe(2);
+    expect(report.sessions[0]?.agents.repliesParallel).toBe(1);
+    expect(report.sessions[0]?.compactions).toEqual({
+      byTrigger: { auto: 1 },
+      count: 1,
+      tokens: { post: 40_000, pre: 150_000 },
+    });
+    // The one turn's own recorded minute.
+    expect(report.sessions[0]?.activeMs).toBe(60_000);
+  }
+
   it("counts the same after the move: read again from the copy once, never twice", () => {
     const { folder, paths } = crewSession();
     const before = readFlow(paths, options);
-    expect(before.sessions[0]?.agents.launches).toBe(2);
+    expectTheFixtureSession(before);
 
     archive(paths, folder);
     const after = readFlow(paths, options);
     const again = readFlow(paths, options);
 
+    expectTheFixtureSession(after);
+    expectTheFixtureSession(again);
     expect(after.sessions).toEqual(before.sessions);
     expect(again.sessions).toEqual(before.sessions);
     expect(again.totals).toEqual(before.totals);
   });
 
   it("a session first seen in the archive is counted", () => {
-    const fresh = crewSession();
-    const expected = readFlow(fresh.paths, options).sessions;
     const { folder, paths } = crewSession();
 
     archive(paths, folder);
 
-    expect(readFlow(paths, options).sessions).toEqual(expected);
+    expectTheFixtureSession(readFlow(paths, options));
+  });
+
+  it("a session in both places (a move that stopped halfway) is counted once, from projects", () => {
+    const { folder, paths } = crewSession();
+    // Copy to the archive but leave the original where it is.
+    const into = join(
+      paths.stateDir,
+      "crew-archive",
+      "0123456789abcdef",
+      "B1-help-1a2b3c",
+      "projects",
+      PROJECT,
+    );
+    for (const file of [`${SESSION}.jsonl`, join(SESSION, "subagents", "agent-1.jsonl")]) {
+      const to = join(into, `${file}.gz`);
+      mkdirSync(dirname(to), { recursive: true });
+      writeFileSync(to, gzipSync(readFileSync(join(folder, file))));
+    }
+
+    expectTheFixtureSession(readFlow(paths, options));
+  });
+
+  it("an archived copy that is not a whole gzip file is skipped: no crash, nothing counted from it", () => {
+    const { paths } = world();
+    const into = join(
+      paths.stateDir,
+      "crew-archive",
+      "0123456789abcdef",
+      "B1-help-1a2b3c",
+      "projects",
+      "-home-user-other-app",
+    );
+    mkdirSync(into, { recursive: true });
+    writeFileSync(join(into, `${SESSION}.jsonl.gz`), "this is not gzip");
+
+    const report = readFlow(paths, options);
+
+    expect(report.sessions).toEqual([]);
+    expect(report.totals.sessions).toBe(0);
   });
 });

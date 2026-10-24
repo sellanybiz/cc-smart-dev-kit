@@ -4,8 +4,9 @@
  *
  * **Where the transcript is.** Claude Code writes a session's conversation to
  * `<config>/projects/<project folder>/<session id>.jsonl`, and the project folder's name is the
- * folder's path with every character but a letter or a digit made a `-`
- * (`projectFolderName`, the one home). A crew session works in its own worktree, so its transcript is
+ * folder's path with every character but a letter or a digit made a `-`, cut at 200 characters
+ * and ended with a hash of the whole path when longer (`projectFolderName`, the one home). A crew
+ * session works in its own worktree, so its transcript is
  * under the worktree's folder. Once the kit removes the crew session, the transcript moves to the
  * kit's crew archive (`archive.ts`); this module reads only crew sessions that still run (the
  * self-watch's context gauge, the watch's quiet alert), so it never looks there: an archived

@@ -53,7 +53,8 @@ asks once more (or takes `--yes`), reads the lists again, then moves each conver
 crew archive with the code `crew rm` uses (`archive.ts`), removes each folder that holds nothing
 and deletes each expired archive. Listing moves nothing. Never listed or taken: a lead's session,
 a session any crew record still on the board names, one a running Claude holds, one written after
-its record was removed (the person resumed it), and any file the store does not name. A crew
+its removal event (the person resumed it; the event's time counts, not the record's last write),
+one whose archived copy has other bytes, and any file the store does not name. A crew
 store or lead record it cannot read fails closed. `--id` names finished background sessions
 only, so it leaves this part out. How the archive works: `docs/design/crew.md` § A removed crew
 session's conversation.

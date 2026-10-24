@@ -516,16 +516,27 @@ needs no change.
   hand-back report) and `projects/<project folder>/…` in **Claude Code's own layout, each file
   gzipped on its own** (`.jsonl.gz`) and keeping its last-write time. The project folder's name comes
   from `transcriptFile` (`transcript.ts`, over `projectFolderName`: the one home, with
-  `CLAUDE_CONFIG_DIR` honoured through `cliPaths`), never a second copy of the naming. Why not delete
+  `CLAUDE_CONFIG_DIR` honoured through `cliPaths`), never a second copy of the naming. That naming
+  includes Claude Code's cut for a long path: a name over 200 characters is cut there and ends with
+  `-` and a hash of the whole path (seen live, 2.1.310, § Lead and the crew of the contract); a
+  worktree path past 200 characters would otherwise find nothing. Why not delete
   at once: the conversation is the only record of why a crew session did what it did; the router's
   history is metadata only.
-- **How it moves.** Each file is written to a temporary name, synced and renamed into place, and only
-  then is the original deleted; the original is stat-ed before and after, and a file that grew while
-  it was archived stays where it is. A move that stops halfway leaves every file in one place or the
-  other (or, for a moment, both: the readers count it once) and the next removal or sweep finishes
-  it. **An archived copy is never overwritten**: a file that appeared again with other bytes (a
-  job that kept running after its files moved was seen to write a new one) stays where it is and is
-  reported; the same bytes are the earlier move's leftover, and finish it. Empty folders go with
+- **How it moves.** Every move and every prune holds one lock on the archive folder
+  (`withArchiveLock`), and a move reads the conversation again once it holds it: two removals of one
+  crew session (the watch's and a `crew rm`, the background clean and a sweep) take turns, and the
+  second finds nothing left. Each file is written to a temporary name, synced and renamed into
+  place, and only then is the original deleted; the original is stat-ed before and after, and a file
+  that grew while it was archived stays where it is and its copy goes. A source that is *gone* after
+  its copy was made keeps the copy (`sourceAfterCopy`): a copy is deleted only when its source is
+  still there and changed. A move that stops halfway leaves every file in one place or the other
+  (or, for a moment, both: the readers count it once) and the next removal or sweep finishes it.
+  **An archived copy is never overwritten**: when any file's archived copy has other bytes (a job
+  that kept running after its files moved was seen to write a new one) nothing of that conversation
+  moves, it stays where it is, and the line says why (`kept`, not a failure: there is nothing the
+  person can clear); the same bytes are the earlier move's leftover, and finish it. The archive's
+  `archivedAt` is written once, by the first try. A session folder that is itself a link is not
+  followed, and nothing under its target moves. Empty folders go with
   it, the project folder too once it holds nothing — Claude Code leaves an empty `memory/` folder in
   a project folder (seen live, 2.1.310), which counts as nothing; a note in it, a file, a link or
   another session's files keep the folder.
@@ -542,14 +553,20 @@ needs no change.
 - **After `workflow.crew.archiveDays` (7)** the archive is deleted. One setting, the only knob: a
   whole number of days, 1 or more, a project's file over the person's own (`workflow show` prints it).
   The prune runs when the kit archives (`pruneCrewArchives`) and when the sweep runs, so there is
-  no timer and no service. An archive's age counts from `archive.json`'s `archivedAt`; one whose
-  repository's setting cannot be read stays (and is said).
+  no timer and no service. An archive's age counts from `archive.json`'s `archivedAt`. A
+  repository whose folder is gone (moved or deleted) has no project file to read, so its archives
+  expire by the person's own days like any other; only a settings file that is there and cannot be
+  read keeps an archive (and is said). A prune that finds another run holding the archive fails
+  loudly in the sweep and with a `note:` after a removal, and never fails the removal.
 - **The sweep for what is already there** is `sessions --finished [--remove]` (`finished.ts`,
   `readCrewLeftovers`): it lists the conversations of removed crew records still in the projects
   folder, their worktrees' empty project folders and the archives past their days, and `--remove`
   asks once more (or `--yes`), reads them again, then moves, removes and deletes. A conversation
-  written after its record was removed (`updatedAt`) was resumed by the person since and stays,
-  with the reason. Listing moves nothing, and `--id` (finished background sessions only) leaves
+  written after its record was removed was resumed by the person since and stays, with the
+  reason; the time of the removal is the `removed` / `discarded` state event's, not the record's
+  `updatedAt`, which moves on whenever the record is touched again (the 30-day prune of a discard
+  archive does). A conversation whose archived copy differs is listed as staying, with that
+  reason. Listing moves nothing, and `--id` (finished background sessions only) leaves
   this part out.
 - **Who reads the archive.** One reader walks both folders (`archive-read.ts`, `transcriptTree`):
   - `cc-smart-dev-kit usage` counts an archived session's replies and says so on its line (a past

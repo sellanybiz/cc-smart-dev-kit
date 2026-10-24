@@ -1,10 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { cliPaths, tildify } from "../cli/paths";
 import { crewArchiveDir } from "../crew/archive";
-import { createCrew, crewFile, leadFile, type NewCrew, writeLead } from "../crew/store";
+import { createCrew, crewFile, leadFile, type NewCrew, updateCrew, writeLead } from "../crew/store";
 import { writeSessionRecord } from "../testing/crew-world";
 import { tempDir } from "../testing/temp";
 import { runSessions, type SessionsDeps, type SessionsOptions } from "./command";
@@ -606,6 +606,108 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     );
     expect(w.out).toContain("· C my-app T running stays: a running Claude session holds it");
     expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-stopped"))).toBe(false);
+  });
+
+  test("the removal time is the removal's own event, not the record's last write", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const REMOVED_AT = OLD - 30 * 60 * 1000;
+    // A crew session the kit removed at REMOVED_AT; a later write (the 30-day prune of a discard
+    // archive, say) moved the record's updatedAt past everything.
+    const worktree = join(w.repo, ".claude", "worktrees", "crew-T-late");
+    const project = join(w.paths.projectsDir, worktree.replace(/[^A-Za-z0-9]/g, "-"));
+    await createCrew(
+      w.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/T-late",
+        effort: "high",
+        files: [],
+        id: "crew-T-late",
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app plan",
+        leadSessionId: LEAD,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "claude-sonnet-5-5", slot: null, tier: null },
+        name: "C my-app T late",
+        permissionMode: "auto",
+        phase: "T",
+        plan: "plan",
+        pr: null,
+        questions: [],
+        reportPath: null,
+        repo: w.repo,
+        sessionId: CREW_SESSION,
+        shortId: "f00d0000",
+        slug: "late",
+        state: "working",
+        waitsFor: [],
+        worktree,
+      },
+      REMOVED_AT - 3_600_000,
+    );
+    await updateCrew(
+      w.paths.stateDir,
+      w.repo,
+      "crew-T-late",
+      { state: "removed" },
+      REMOVED_AT,
+      "removed",
+    );
+    // The person resumed the conversation after the removal, and the record was touched later still.
+    const file = conversation(project, CREW_SESSION, REMOVED_AT + 10 * 60 * 1000);
+    await updateCrew(w.paths.stateDir, w.repo, "crew-T-late", { lastLine: "pruned" }, OLD + DAY);
+
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+
+    expect(existsSync(file)).toBe(true);
+    expect(w.out).toContain(
+      "· C my-app T late stays: it was written after its crew session was removed",
+    );
+  });
+
+  test("a conversation whose archived copy differs is kept with the reason, exit 0, every run", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const { project } = await removedCrew(w);
+    const file = conversation(project);
+    // An earlier move archived this file; a job wrote a different one of the same name since.
+    const into = join(
+      crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-tests"),
+      "projects",
+      project.split("/").at(-1) ?? "",
+    );
+    mkdirSync(into, { recursive: true });
+    writeFileSync(join(into, `${CREW_SESSION}.jsonl.gz`), gzipSync('{"type":"first part"}\n'));
+
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+
+    expect(readFileSync(file, "utf8")).toBe('{"type":"assistant"}\n');
+    expect(w.out).toContain(
+      `· C my-app T tests stays: ${CREW_SESSION}.jsonl differs from its archived copy, so neither is overwritten`,
+    );
+    expect(w.out.join("\n")).not.toContain("Could not move");
+  });
+
+  test("a session that starts running while the question is open is not moved", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const { project, worktree } = await removedCrew(w);
+    const file = conversation(project);
+    w.deps.confirm = () => {
+      // The person resumes it in a terminal: Claude Code writes its record of a running session.
+      writeSessionRecord(w.paths, process.pid, CREW_SESSION, worktree);
+      return true;
+    };
+
+    expect(await w.run({ remove: true })).toBe(0);
+
+    expect(existsSync(file)).toBe(true);
+    expect(w.out).toContain("· Kept C my-app T tests: its conversation is no longer one to move.");
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-tests"))).toBe(false);
   });
 
   test("a crew record it cannot read fails closed: nothing is listed or moved", async () => {

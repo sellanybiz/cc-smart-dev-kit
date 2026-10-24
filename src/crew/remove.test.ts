@@ -9,10 +9,14 @@ import { existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
+import { withLock } from "../setup/lock";
 import { boardWorld, NOW } from "../testing/board-world";
+import { writeSessionRecord } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { ARCHIVE_MANIFEST, crewArchiveDir, DAY_MS } from "./archive";
+import { crewArchiveRoot } from "./archive-read";
 import { runCrew } from "./command";
+import { archiveAfterRemoval } from "./remove";
 import { readCrew, writeLead } from "./store";
 import { transcriptFile } from "./transcript";
 
@@ -31,6 +35,28 @@ function conversation(world: World, worktree: string): string {
   writeFileSync(join(dirname(file), SESSION, "subagents", "agent-1.jsonl"), "{}\n");
   writeFileSync(join(dirname(file), SESSION, "subagents", "agent-1.meta.json"), "{}");
   return dirname(file);
+}
+
+/** Holds the archive lock as another run would; the returned function lets it go. */
+async function holdArchiveLock(stateDir: string): Promise<() => void> {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let ready: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  void withLock(
+    crewArchiveRoot(stateDir),
+    async () => {
+      ready();
+      await held;
+    },
+    { waitMs: 1000 },
+  );
+  await started;
+  return release;
 }
 
 /** An archive of another crew session, archived `ageMs` before the world's now. */
@@ -162,6 +188,43 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     expect(world.err).toEqual([
       "note: the conversation of session a1b2c3d4 stays where it is: a running Claude session holds it",
     ]);
+    expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
+  });
+
+  test("a session that began running after the machine's facts were read still stays", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const project = conversation(world, record.worktree);
+    // The facts the removal was handed say no session runs; Claude Code's own record says one does.
+    writeSessionRecord(world.paths, process.pid, SESSION, record.worktree);
+
+    expect(
+      await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
+    ).toBe(0);
+
+    expect(world.err).toEqual([
+      "note: the conversation of session a1b2c3d4 stays where it is: a running Claude session holds it",
+    ]);
+    expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
+  });
+
+  test("an archive another run holds never fails the removal: both steps say so and go on", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "removed" });
+    const project = conversation(world, record.worktree);
+    const release = await holdArchiveLock(world.paths.stateDir);
+    try {
+      await archiveAfterRemoval(record, world.ctx(), { lockWaitMs: 0 });
+    } finally {
+      release();
+    }
+
+    expect(world.err).toHaveLength(2);
+    expect(world.err[0]).toStartWith(
+      "note: the conversation of session a1b2c3d4 stays in /resume: ",
+    );
+    expect(world.err[0]).toContain("is busy");
+    expect(world.err[1]).toStartWith("note: old crew archives could not be deleted now: ");
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
   });
 

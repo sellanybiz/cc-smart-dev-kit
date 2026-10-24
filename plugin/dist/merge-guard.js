@@ -1,32 +1,4 @@
 // @bun
-var __defProp = Object.defineProperty;
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, {
-      get: all[name],
-      enumerable: true,
-      configurable: true,
-      set: __exportSetter.bind(all, name)
-    });
-};
-
-// node_modules/zod/v4/classic/iso.js
-var exports_iso = {};
-__export(exports_iso, {
-  ZodISODate: () => ZodISODate,
-  ZodISODateTime: () => ZodISODateTime,
-  ZodISODuration: () => ZodISODuration,
-  ZodISOTime: () => ZodISOTime,
-  date: () => date2,
-  datetime: () => datetime2,
-  duration: () => duration2,
-  time: () => time2
-});
-
 // src/hooks/run.ts
 import { appendFileSync as appendFileSync3 } from "fs";
 
@@ -6107,19 +6079,6 @@ function refine(fn, _params = {}) {
 }
 function superRefine(fn, params) {
   return _superRefine(fn, params);
-}
-// node_modules/zod/v4/classic/iso.js
-function datetime2(params) {
-  return _isoDateTime(ZodISODateTime, params);
-}
-function date2(params) {
-  return _isoDate(ZodISODate, params);
-}
-function time2(params) {
-  return _isoTime(ZodISOTime, params);
-}
-function duration2(params) {
-  return _isoDuration(ZodISODuration, params);
 }
 // src/build-info/index.ts
 var info = {
@@ -16408,15 +16367,6 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/archive.ts
 var DAY_MS = 24 * 60 * 60 * 1000;
-var manifestSchema = looseObject({
-  version: number2().int().min(1),
-  crew: string2().min(1),
-  name: string2().min(1),
-  repo: string2().min(1),
-  sessionId: string2().min(1),
-  projectFolder: string2().min(1),
-  archivedAt: exports_iso.datetime()
-});
 
 // src/worktrees/command.ts
 function crewRecordsOf(paths, repo) {

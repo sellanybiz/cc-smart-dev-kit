@@ -634,14 +634,25 @@ export async function runCrewRm(
  * goes. Nothing here fails the removal: a conversation that stays says why, and
  * `sessions --finished --remove` moves it later.
  */
-async function archiveAfterRemoval(record: CrewRecord, ctx: CrewContext): Promise<void> {
+export async function archiveAfterRemoval(
+  record: CrewRecord,
+  ctx: CrewContext,
+  options: { lockWaitMs?: number } = {},
+): Promise<void> {
   const home = ctx.paths.home;
   const daysOf = archiveDaysOf(ctx.paths, ctx.env);
   const session = `session ${record.shortId ?? record.sessionId ?? record.name}`;
   let outcome: ArchiveOutcome;
   try {
-    const running = ctx.scanFacts?.sessions ?? liveSessions(ctx.paths.claudeConfigDir);
+    // The machine's facts were read before this removal began (the background clean reads them
+    // once for a whole pass), so a session that started since is only in Claude Code's own
+    // records now: both count.
+    const running = [
+      ...(ctx.scanFacts?.sessions ?? []),
+      ...liveSessions(ctx.paths.claudeConfigDir),
+    ];
     outcome = await archiveConversation({
+      ...(options.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
       neverTaken: sessionsNeverTaken(ctx.paths.stateDir, record.id),
       nowMs: ctx.now(),
       paths: ctx.paths,
@@ -669,13 +680,18 @@ async function archiveAfterRemoval(record: CrewRecord, ctx: CrewContext): Promis
       `note: the conversation of ${session} stays in /resume${moved}: ${outcome.why}; ${COMMAND} sessions --finished --remove moves it later`,
     );
   }
-  const pruned = pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now());
-  for (const one of pruned.pruned) {
-    ctx.print(
-      `deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`,
-    );
+  try {
+    const pruned = await pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now(), options);
+    for (const one of pruned.pruned) {
+      ctx.print(
+        `deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`,
+      );
+    }
+    for (const one of pruned.kept) ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
+  } catch (error) {
+    // The removal is done: an archive another run holds is deleted at the next removal or sweep.
+    ctx.error(`note: old crew archives could not be deleted now: ${reasonOf(error)}`);
   }
-  for (const one of pruned.kept) ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
 }
 
 /** What a pass over a repository's moved-aside folders came to: the ones that stayed, and why. */

@@ -541,10 +541,23 @@ async function crewLeftoversPart(
     if (now.emptyFolders.includes(folder) && removeEmptyFolder(folder))
       out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
   }
-  const pruned = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, process.env), deps.now);
-  for (const one of pruned.pruned)
-    out.line("removed", `Deleted the archived conversation of ${one.name}.`);
-  for (const one of pruned.kept) out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  try {
+    const pruned = await pruneCrewArchives(
+      paths.stateDir,
+      archiveDaysOf(paths, process.env),
+      deps.now,
+    );
+    for (const one of pruned.pruned)
+      out.line("removed", `Deleted the archived conversation of ${one.name}.`);
+    for (const one of pruned.kept) out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  } catch (error) {
+    failed = true;
+    out.line(
+      "fail",
+      `Could not delete the old crew archives: ${error instanceof Error ? error.message : String(error)}`,
+      { fix: `Run ${deps.command} sessions --finished --remove again in a moment.` },
+    );
+  }
   return failed ? 1 : 0;
 }
 

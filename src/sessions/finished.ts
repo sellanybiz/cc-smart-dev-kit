@@ -10,15 +10,16 @@ import {
   ARCHIVED_STATES,
   archiveDaysOf,
   conversationOf,
+  differingArchivedCopy,
+  expiredArchives,
   holdsNothing,
   type PrunedArchive,
-  pruneCrewArchives,
   sessionsNeverTaken,
 } from "../crew/archive";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
 import type { Env } from "../crew/context";
 import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
-import { type CrewRecord, listAllCrew, listAllLeads } from "../crew/store";
+import { type CrewRecord, listAllCrew, listAllLeads, readCrewEvents } from "../crew/store";
 import { liveSessions } from "../hooks/sessions";
 import { isSessionId } from "./saved-sessions";
 
@@ -202,6 +203,37 @@ export interface CrewLeftovers {
 }
 
 /**
+ * When each crew record was removed, from the event that removed it (the store's own log, read
+ * once per repository when first asked), else from the record's last write. The last write moves
+ * on whenever the record is touched again (the prune of an old discard archive does), and a
+ * conversation the person resumed after the removal must stay theirs.
+ */
+function removalTimes(stateDir: string): { at: (record: CrewRecord) => number } {
+  const byRepo = new Map<string, Map<string, number>>();
+  return {
+    at(record) {
+      let events = byRepo.get(record.repo);
+      if (events === undefined) {
+        events = new Map();
+        try {
+          for (const event of readCrewEvents(stateDir, record.repo).events) {
+            if (event.type !== "state" || !ARCHIVED_STATES.includes(event.state)) continue;
+            const at = Date.parse(event.at);
+            const first = events.get(event.crew);
+            if (Number.isFinite(at) && (first === undefined || at < first))
+              events.set(event.crew, at);
+          }
+        } catch {
+          // A log that cannot be read: every record falls back to its own last write.
+        }
+        byRepo.set(record.repo, events);
+      }
+      return events.get(record.id) ?? Date.parse(record.updatedAt);
+    },
+  };
+}
+
+/**
  * Reads what removed crew sessions left: only records the store marks removed or discarded,
  * never a lead's session, one a record still on the board names, or one a running Claude holds;
  * a conversation written after its record was removed was resumed by the person since, and is
@@ -224,6 +256,7 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
     const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
     const out = none("");
     out.error = null;
+    const removals = removalTimes(paths.stateDir);
     for (const record of crew.records) {
       if (!ARCHIVED_STATES.includes(record.state) || record.sessionId === null) continue;
       if (!isSessionId(record.sessionId) || neverTaken.has(record.sessionId)) continue;
@@ -237,7 +270,15 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
         out.kept.push({ record, why: "a running Claude session holds it" });
         continue;
       }
-      const removedAt = Date.parse(record.updatedAt);
+      const differing = differingArchivedCopy(paths, record, found);
+      if (differing !== null) {
+        out.kept.push({
+          record,
+          why: `${differing} differs from its archived copy, so neither is overwritten`,
+        });
+        continue;
+      }
+      const removedAt = removals.at(record);
       const newest = Math.max(
         ...found.files.map((file) => statSync(join(found.projectDir, file)).mtimeMs),
       );
@@ -251,12 +292,7 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
         record,
       });
     }
-    out.expired = pruneCrewArchives(
-      paths.stateDir,
-      archiveDaysOf(paths, deps.env),
-      deps.now,
-      true,
-    ).pruned;
+    out.expired = expiredArchives(paths.stateDir, archiveDaysOf(paths, deps.env), deps.now).pruned;
     return out;
   } catch (error) {
     return none(

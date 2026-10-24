@@ -34872,8 +34872,18 @@ import { createGzip, gunzipSync as gunzipSync2 } from "zlib";
 
 // src/sessions/saved-sessions.ts
 import { join as join64 } from "path";
+var PROJECT_FOLDER_NAME_MAX = 200;
+function pathHash(path) {
+  let hash = 0;
+  for (let index = 0;index < path.length; index += 1) {
+    hash = (hash << 5) - hash + path.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
 function projectFolderName(path) {
-  return path.replace(/[^A-Za-z0-9]/g, "-");
+  const name = path.replace(/[^A-Za-z0-9]/g, "-");
+  return name.length <= PROJECT_FOLDER_NAME_MAX ? name : `${name.slice(0, PROJECT_FOLDER_NAME_MAX)}-${pathHash(path)}`;
 }
 function belongsToRepo(projectFolder, mainCheckout) {
   const main = projectFolderName(mainCheckout);
@@ -35235,10 +35245,16 @@ var DAY_MS = 24 * 60 * 60 * 1000;
 var ARCHIVE_MANIFEST = "archive.json";
 var ARCHIVE_REPORT = "report.json";
 var ARCHIVED_STATES = ["removed", "discarded"];
+var ARCHIVE_LOCK_WAIT_MS = 30000;
 function crewArchiveDir(stateDir, repo, crewId) {
   return join67(crewArchiveRoot(stateDir), repoKey(repo), crewId);
 }
-var manifestSchema = looseObject({
+async function withArchiveLock(stateDir, work, waitMs = ARCHIVE_LOCK_WAIT_MS) {
+  const root = crewArchiveRoot(stateDir);
+  mkdirSync24(root, { mode: 448, recursive: true });
+  return await withLock(root, work, { waitMs });
+}
+var manifestSchema = () => looseObject({
   version: number2().int().min(1),
   crew: string2().min(1),
   name: string2().min(1),
@@ -35249,7 +35265,7 @@ var manifestSchema = looseObject({
 });
 function readArchiveManifest(dir) {
   try {
-    const parsed = manifestSchema.safeParse(JSON.parse(readFileSync69(join67(dir, ARCHIVE_MANIFEST), "utf8")));
+    const parsed = manifestSchema().safeParse(JSON.parse(readFileSync69(join67(dir, ARCHIVE_MANIFEST), "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -35279,7 +35295,8 @@ function regularFiles(folder) {
 function conversationOf(projectsDir, worktree, sessionId) {
   const file = transcriptFile(projectsDir, worktree, sessionId);
   const projectDir = dirname22(file);
-  const files = regularFiles(join67(projectDir, sessionId)).map((one) => join67(sessionId, one));
+  const sessionDir = join67(projectDir, sessionId);
+  const files = lstatSync6(sessionDir, { throwIfNoEntry: false })?.isDirectory() ? regularFiles(sessionDir).map((one) => join67(sessionId, one)) : [];
   if (lstatSync6(file, { throwIfNoEntry: false })?.isFile())
     files.push(basename11(file));
   return { projectDir, files };
@@ -35312,17 +35329,16 @@ function holdsNothing(folder) {
   }
 }
 function removeEmptyTree(folder) {
+  if (!lstatSync6(folder, { throwIfNoEntry: false })?.isDirectory())
+    return;
   let names;
   try {
     names = readdirSync25(folder);
   } catch {
     return;
   }
-  for (const name of names) {
-    const path = join67(folder, name);
-    if (lstatSync6(path, { throwIfNoEntry: false })?.isDirectory())
-      removeEmptyTree(path);
-  }
+  for (const name of names)
+    removeEmptyTree(join67(folder, name));
   try {
     rmdirSync3(folder);
   } catch {}
@@ -35348,9 +35364,21 @@ async function gzipInto(from, to) {
     throw error;
   }
 }
+function sourceAfterCopy(after, before) {
+  if (after === undefined)
+    return "gone";
+  return after.size === before.size && after.mtimeMs === before.mtimeMs ? "same" : "changed";
+}
 function changedSince(from, before) {
-  const after = lstatSync6(from, { throwIfNoEntry: false });
-  return after === undefined || after.size !== before.size || after.mtimeMs !== before.mtimeMs;
+  return sourceAfterCopy(lstatSync6(from, { throwIfNoEntry: false }), before) !== "same";
+}
+function removeFile(path) {
+  try {
+    unlinkSync6(path);
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  }
 }
 function sameAsArchived(from, to) {
   try {
@@ -35361,6 +35389,15 @@ function sameAsArchived(from, to) {
 }
 function reasonOf5(error) {
   return error instanceof Error ? error.message : String(error);
+}
+function differingArchivedCopy(paths, record, found) {
+  const into = join67(crewArchiveDir(paths.stateDir, record.repo, record.id), ARCHIVE_PROJECTS, basename11(found.projectDir));
+  for (const file of found.files) {
+    const to = `${join67(into, file)}.gz`;
+    if (existsSync54(to) && !sameAsArchived(join67(found.projectDir, file), to))
+      return file;
+  }
+  return null;
 }
 async function archiveConversation(input) {
   const { paths, record } = input;
@@ -35376,26 +35413,47 @@ async function archiveConversation(input) {
   if (input.running.has(sessionId)) {
     return { kind: "kept", why: "a running Claude session holds it" };
   }
+  try {
+    const first = conversationOf(paths.projectsDir, record.worktree, sessionId);
+    if (first.files.length === 0) {
+      return { folderGone: removeEmptyFolder(first.projectDir), kind: "nothing" };
+    }
+    return await withArchiveLock(paths.stateDir, () => moveConversation(input, sessionId), input.lockWaitMs);
+  } catch (error) {
+    return { kind: "failed", moved: 0, why: reasonOf5(error) };
+  }
+}
+async function moveConversation(input, sessionId) {
+  const { paths, record } = input;
   let moved = 0;
   try {
     const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
     if (found.files.length === 0) {
       return { folderGone: removeEmptyFolder(found.projectDir), kind: "nothing" };
     }
+    const differing = differingArchivedCopy(paths, record, found);
+    if (differing !== null) {
+      return {
+        kind: "kept",
+        why: `${differing} differs from its archived copy, so neither is overwritten`
+      };
+    }
     const dir = crewArchiveDir(paths.stateDir, record.repo, record.id);
     const into = join67(dir, ARCHIVE_PROJECTS, basename11(found.projectDir));
     mkdirSync24(into, { mode: 448, recursive: true });
-    const manifest = {
-      archivedAt: new Date(input.nowMs).toISOString(),
-      crew: record.id,
-      name: record.name,
-      projectFolder: basename11(found.projectDir),
-      repo: record.repo,
-      sessionId,
-      version: CREW_ARCHIVE_VERSION
-    };
-    writeStoreFile(join67(dir, ARCHIVE_MANIFEST), `${JSON.stringify(manifest, null, 2)}
+    if (readArchiveManifest(dir) === null) {
+      const manifest = {
+        archivedAt: new Date(input.nowMs).toISOString(),
+        crew: record.id,
+        name: record.name,
+        projectFolder: basename11(found.projectDir),
+        repo: record.repo,
+        sessionId,
+        version: CREW_ARCHIVE_VERSION
+      };
+      writeStoreFile(join67(dir, ARCHIVE_MANIFEST), `${JSON.stringify(manifest, null, 2)}
 `);
+    }
     if (record.reportPath !== null && existsSync54(record.reportPath)) {
       copyFileSync2(record.reportPath, join67(dir, ARCHIVE_REPORT));
     }
@@ -35409,16 +35467,17 @@ async function archiveConversation(input) {
           return {
             kind: "failed",
             moved,
-            why: `${file} differs from its archived copy, so neither is overwritten`
+            why: `${file} changed while it was checked against its archived copy, so it stays where it is`
           };
         }
-        unlinkSync6(from);
+        removeFile(from);
         moved += 1;
         continue;
       }
       await gzipInto(from, to);
       utimesSync2(to, before.atime, before.mtime);
-      if (changedSince(from, before)) {
+      const verdict = sourceAfterCopy(lstatSync6(from, { throwIfNoEntry: false }), before);
+      if (verdict === "changed") {
         rmSync17(to, { force: true });
         return {
           kind: "failed",
@@ -35426,7 +35485,7 @@ async function archiveConversation(input) {
           why: `${file} was written while it was archived, so it stays where it is`
         };
       }
-      unlinkSync6(from);
+      removeFile(from);
       moved += 1;
     }
     removeEmptyTree(join67(found.projectDir, sessionId));
@@ -35435,44 +35494,52 @@ async function archiveConversation(input) {
     return { kind: "failed", moved, why: reasonOf5(error) };
   }
 }
-function pruneCrewArchives(stateDir, daysOf, nowMs, dryRun = false) {
+function foldersUnder(dir) {
+  try {
+    return readdirSync25(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join67(dir, entry.name)).sort();
+  } catch {
+    return [];
+  }
+}
+function expiredArchives(stateDir, daysOf, nowMs) {
   const outcome = { kept: [], pruned: [] };
-  const root = crewArchiveRoot(stateDir);
-  const folders = (dir) => {
-    try {
-      return readdirSync25(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join67(dir, entry.name)).sort();
-    } catch {
-      return [];
-    }
-  };
-  for (const repoDir of folders(root)) {
-    for (const dir of folders(repoDir)) {
+  for (const repoDir of foldersUnder(crewArchiveRoot(stateDir))) {
+    for (const dir of foldersUnder(repoDir)) {
       const manifest = readArchiveManifest(dir);
       const days = daysOf(manifest?.repo ?? null);
       if (days === null) {
         outcome.kept.push({ dir, why: "its repository's crew.archiveDays cannot be read" });
         continue;
       }
-      const at = manifest === null ? lstatSync6(dir).mtimeMs : Date.parse(manifest.archivedAt);
+      const changed = lstatSync6(dir, { throwIfNoEntry: false })?.mtimeMs;
+      const at = manifest === null ? changed : Date.parse(manifest.archivedAt);
+      if (at === undefined)
+        continue;
       const ageMs = nowMs - at;
-      if (!(ageMs > days * DAY_MS))
-        continue;
-      const pruned = { ageMs, dir, name: manifest?.name ?? basename11(dir) };
-      if (dryRun) {
-        outcome.pruned.push(pruned);
-        continue;
-      }
-      try {
-        rmSync17(dir, { force: true, recursive: true });
-        outcome.pruned.push(pruned);
-      } catch (error) {
-        outcome.kept.push({ dir, why: reasonOf5(error) });
-      }
+      if (ageMs > days * DAY_MS)
+        outcome.pruned.push({ ageMs, dir, name: manifest?.name ?? basename11(dir) });
     }
-    if (!dryRun)
-      removeEmptyFolder(repoDir);
   }
   return outcome;
+}
+async function pruneCrewArchives(stateDir, daysOf, nowMs, options = {}) {
+  if (!existsSync54(crewArchiveRoot(stateDir)))
+    return { kept: [], pruned: [] };
+  return await withArchiveLock(stateDir, () => {
+    const found = expiredArchives(stateDir, daysOf, nowMs);
+    const outcome = { kept: found.kept, pruned: [] };
+    for (const one of found.pruned) {
+      try {
+        rmSync17(one.dir, { force: true, recursive: true });
+        outcome.pruned.push(one);
+      } catch (error) {
+        outcome.kept.push({ dir: one.dir, why: reasonOf5(error) });
+      }
+    }
+    for (const repoDir of foldersUnder(crewArchiveRoot(stateDir)))
+      removeEmptyFolder(repoDir);
+    return outcome;
+  }, options.lockWaitMs);
 }
 function archiveDaysOf(paths, env) {
   const known = new Map;
@@ -35482,7 +35549,7 @@ function archiveDaysOf(paths, env) {
       return had;
     let days;
     try {
-      const checkout = repo === null ? null : locateCheckout(repo, { env });
+      const checkout = repo === null || !existsSync54(repo) ? null : locateCheckout(repo, { env });
       const config = checkout === null ? null : loadProjectConfig(checkout).config;
       days = resolveWorkflow(paths, config).crew.archiveDays.value;
     } catch {
@@ -35788,14 +35855,18 @@ async function runCrewRm(ref, ctx, options = {}) {
   ctx.print(`${state} ${record.name}`);
   return stored ? 0 : 1;
 }
-async function archiveAfterRemoval(record, ctx) {
+async function archiveAfterRemoval(record, ctx, options = {}) {
   const home = ctx.paths.home;
   const daysOf = archiveDaysOf(ctx.paths, ctx.env);
   const session = `session ${record.shortId ?? record.sessionId ?? record.name}`;
   let outcome;
   try {
-    const running = ctx.scanFacts?.sessions ?? liveSessions(ctx.paths.claudeConfigDir);
+    const running = [
+      ...ctx.scanFacts?.sessions ?? [],
+      ...liveSessions(ctx.paths.claudeConfigDir)
+    ];
     outcome = await archiveConversation({
+      ...options.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs },
       neverTaken: sessionsNeverTaken(ctx.paths.stateDir, record.id),
       nowMs: ctx.now(),
       paths: ctx.paths,
@@ -35815,12 +35886,16 @@ async function archiveAfterRemoval(record, ctx) {
     const moved = outcome.moved === 0 ? "" : ` (${String(outcome.moved)} of its files moved before it stopped)`;
     ctx.error(`note: the conversation of ${session} stays in /resume${moved}: ${outcome.why}; ${COMMAND} sessions --finished --remove moves it later`);
   }
-  const pruned = pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now());
-  for (const one of pruned.pruned) {
-    ctx.print(`deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`);
+  try {
+    const pruned = await pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now(), options);
+    for (const one of pruned.pruned) {
+      ctx.print(`deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`);
+    }
+    for (const one of pruned.kept)
+      ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
+  } catch (error) {
+    ctx.error(`note: old crew archives could not be deleted now: ${reasonOf4(error)}`);
   }
-  for (const one of pruned.kept)
-    ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
 }
 async function finishParkedWorktrees(repo, ctx, base, say, facts = ctx.scanFacts) {
   const lock = await holdCleanLock();
@@ -42772,7 +42847,7 @@ because nothing else went. In this order, stopping at the first refusal:
      whether the lead had merged it before the removal;
   6. last, the session's conversation, which claude rm leaves in /resume, moves out of Claude
      Code's projects folder into the kit's crew archive (gzipped, deleted after
-     workflow.crew.archiveDays, 7 by default). A lead's session, one a running Claude holds and any
+     workflow.crew.archiveDays, ${workflowDefaults.crew.archiveDays} by default). A lead's session, one a running Claude holds and any
      file the kit does not know stay where they are. A move that cannot happen says why and never
      fails the removal: sessions --finished --remove moves it later.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
@@ -47301,6 +47376,29 @@ function readFinishedSessions(paths, deps) {
     };
   }
 }
+function removalTimes(stateDir) {
+  const byRepo = new Map;
+  return {
+    at(record) {
+      let events = byRepo.get(record.repo);
+      if (events === undefined) {
+        events = new Map;
+        try {
+          for (const event of readCrewEvents(stateDir, record.repo).events) {
+            if (event.type !== "state" || !ARCHIVED_STATES.includes(event.state))
+              continue;
+            const at = Date.parse(event.at);
+            const first = events.get(event.crew);
+            if (Number.isFinite(at) && (first === undefined || at < first))
+              events.set(event.crew, at);
+          }
+        } catch {}
+        byRepo.set(record.repo, events);
+      }
+      return events.get(record.id) ?? Date.parse(record.updatedAt);
+    }
+  };
+}
 function readCrewLeftovers(paths, deps) {
   const none = (error) => ({
     conversations: [],
@@ -47317,6 +47415,7 @@ function readCrewLeftovers(paths, deps) {
     const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
     const out = none("");
     out.error = null;
+    const removals = removalTimes(paths.stateDir);
     for (const record of crew.records) {
       if (!ARCHIVED_STATES.includes(record.state) || record.sessionId === null)
         continue;
@@ -47332,7 +47431,15 @@ function readCrewLeftovers(paths, deps) {
         out.kept.push({ record, why: "a running Claude session holds it" });
         continue;
       }
-      const removedAt = Date.parse(record.updatedAt);
+      const differing = differingArchivedCopy(paths, record, found);
+      if (differing !== null) {
+        out.kept.push({
+          record,
+          why: `${differing} differs from its archived copy, so neither is overwritten`
+        });
+        continue;
+      }
+      const removedAt = removals.at(record);
       const newest = Math.max(...found.files.map((file) => statSync24(join78(found.projectDir, file)).mtimeMs));
       if (newest > removedAt) {
         out.kept.push({ record, why: "it was written after its crew session was removed" });
@@ -47344,7 +47451,7 @@ function readCrewLeftovers(paths, deps) {
         record
       });
     }
-    out.expired = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, deps.env), deps.now, true).pruned;
+    out.expired = expiredArchives(paths.stateDir, archiveDaysOf(paths, deps.env), deps.now).pruned;
     return out;
   } catch (error) {
     return none(`Could not read what removed crew sessions left: ${error instanceof Error ? error.message : String(error)}`);
@@ -47639,11 +47746,16 @@ async function crewLeftoversPart(paths, options, deps, out, term) {
     if (now.emptyFolders.includes(folder) && removeEmptyFolder(folder))
       out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
   }
-  const pruned = pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, process.env), deps.now);
-  for (const one of pruned.pruned)
-    out.line("removed", `Deleted the archived conversation of ${one.name}.`);
-  for (const one of pruned.kept)
-    out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  try {
+    const pruned = await pruneCrewArchives(paths.stateDir, archiveDaysOf(paths, process.env), deps.now);
+    for (const one of pruned.pruned)
+      out.line("removed", `Deleted the archived conversation of ${one.name}.`);
+    for (const one of pruned.kept)
+      out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
+  } catch (error) {
+    failed = true;
+    out.line("fail", `Could not delete the old crew archives: ${error instanceof Error ? error.message : String(error)}`, { fix: `Run ${deps.command} sessions --finished --remove again in a moment.` });
+  }
   return failed ? 1 : 0;
 }
 function finishedPart(paths, options, deps, cwd, out, term) {
@@ -48209,7 +48321,7 @@ A refusal is reported, later eligible rows are attempted, and any failure return
 
 --finished also lists what removed crew sessions left in /resume: their conversations still in
 Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
-past crew.archiveDays (7 by default). --remove asks once more, then moves each conversation into
+past crew.archiveDays (${workflowDefaults.crew.archiveDays} by default). --remove asks once more, then moves each conversation into
 the kit's archive (gzipped, deleted after crew.archiveDays), removes each empty folder and deletes
 each expired archive. A lead's session, a crew session still on the board, one a running Claude
 holds and one written after its removal are never taken. --id leaves this part out.

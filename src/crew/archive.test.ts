@@ -9,6 +9,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   utimesSync,
@@ -17,16 +18,20 @@ import {
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { cliPaths } from "../cli/paths";
+import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
 import {
   ARCHIVE_MANIFEST,
   archiveConversation,
+  archiveDaysOf,
   conversationOf,
   crewArchiveDir,
   DAY_MS,
+  expiredArchives,
   pruneCrewArchives,
   sessionsNeverTaken,
+  sourceAfterCopy,
 } from "./archive";
 import { crewArchiveRoot, transcriptBytes, transcriptTree } from "./archive-read";
 import type { CrewRecord } from "./store";
@@ -98,6 +103,28 @@ function world() {
     ...over,
   });
   return { conversation, home, input, paths, project, record, repo, worktree, write };
+}
+
+/** Holds the archive lock as another run would; the returned function lets it go. */
+async function holdArchiveLock(stateDir: string): Promise<() => void> {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let ready: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  void withLock(
+    crewArchiveRoot(stateDir),
+    async () => {
+      ready();
+      await held;
+    },
+    { waitMs: 1000 },
+  );
+  await started;
+  return release;
 }
 
 const gunzipped = (file: string) => gunzipSync(readFileSync(file)).toString("utf8");
@@ -233,6 +260,10 @@ describe("archiveConversation", () => {
     expect(second).toMatchObject({ files: 1, folderGone: true, kind: "archived" });
     expect(existsSync(w.project)).toBe(false);
     const dir = crewArchiveDir(w.paths.stateDir, w.repo, "B1-help-1a2b3c");
+    // Finishing a move does not make the archive younger: it began at the first run.
+    expect(JSON.parse(readFileSync(join(dir, ARCHIVE_MANIFEST), "utf8")).archivedAt).toBe(
+      "2026-10-25T10:00:00.000Z",
+    );
     const into = join(dir, "projects", w.project.split("/").at(-1) ?? "");
     expect(gunzipped(join(into, `${SESSION}.jsonl.gz`))).toBe(
       '{"type":"user"}\n{"type":"assistant"}\n',
@@ -249,21 +280,92 @@ describe("archiveConversation", () => {
       '{"type":"user"}\n{"type":"assistant"}\n{"type":"late"}\n',
     );
 
+    // Another file of the session is there too: nothing moves while one of them differs.
+    const other = w.write(`${SESSION}/subagents/agent-2.jsonl`, '{"type":"assistant"}\n');
+
     const second = await archiveConversation(w.input({ nowMs: NOW + 60_000 }));
 
     expect(second).toEqual({
-      kind: "failed",
-      moved: 0,
+      kind: "kept",
       why: `${SESSION}.jsonl differs from its archived copy, so neither is overwritten`,
     });
     expect(readFileSync(again, "utf8")).toBe(
       '{"type":"user"}\n{"type":"assistant"}\n{"type":"late"}\n',
     );
+    expect(readFileSync(other, "utf8")).toBe('{"type":"assistant"}\n');
     const dir = crewArchiveDir(w.paths.stateDir, w.repo, "B1-help-1a2b3c");
     const into = join(dir, "projects", w.project.split("/").at(-1) ?? "");
     expect(gunzipped(join(into, `${SESSION}.jsonl.gz`))).toBe(
       '{"type":"user"}\n{"type":"assistant"}\n',
     );
+    // The archive keeps the day it began: a later try does not make it younger.
+    expect(JSON.parse(readFileSync(join(dir, ARCHIVE_MANIFEST), "utf8")).archivedAt).toBe(
+      "2026-10-25T10:00:00.000Z",
+    );
+  });
+
+  test("a session folder that is itself a link is not followed: nothing under its target moves", async () => {
+    const w = world();
+    w.write(`${SESSION}.jsonl`, '{"type":"user"}\n');
+    const target = join(w.home, "someone-elses-folder");
+    mkdirSync(join(target, "empty"), { recursive: true });
+    writeFileSync(join(target, "notes.txt"), "the person's own notes\n");
+    symlinkSync(target, join(w.project, SESSION));
+
+    const outcome = await archiveConversation(w.input());
+
+    expect(outcome).toMatchObject({ files: 1, folderGone: false, kind: "archived" });
+    expect(readFileSync(join(target, "notes.txt"), "utf8")).toBe("the person's own notes\n");
+    // Not even the empty folder in it was taken, and the link stays where it was.
+    expect(existsSync(join(target, "empty"))).toBe(true);
+    expect(readdirSync(w.project)).toEqual([SESSION]);
+  });
+
+  test("two archives of one record at once end with every file in the archive, once", async () => {
+    const w = world();
+    w.conversation();
+
+    const outcomes = await Promise.all([
+      archiveConversation(w.input()),
+      archiveConversation(w.input()),
+    ]);
+
+    expect(outcomes.map((one) => one.kind).sort()).toEqual(["archived", "nothing"]);
+    expect(existsSync(w.project)).toBe(false);
+    const dir = crewArchiveDir(w.paths.stateDir, w.repo, "B1-help-1a2b3c");
+    const into = join(dir, "projects", w.project.split("/").at(-1) ?? "");
+    expect(gunzipped(join(into, `${SESSION}.jsonl.gz`))).toBe(
+      '{"type":"user"}\n{"type":"assistant"}\n',
+    );
+    expect(gunzipped(join(into, SESSION, "tool-results", "out-1.txt.gz"))).toBe("tool output\n");
+    expect(readdirSync(join(into, SESSION, "subagents")).sort()).toEqual([
+      "agent-1.jsonl.gz",
+      "agent-1.meta.json.gz",
+    ]);
+  });
+
+  test("an archive another run holds waits its turn, and says so when the wait ends", async () => {
+    const w = world();
+    w.conversation();
+    const release = await holdArchiveLock(w.paths.stateDir);
+    try {
+      const outcome = await archiveConversation(w.input({ lockWaitMs: 0 }));
+      expect(outcome.kind).toBe("failed");
+      expect(outcome).toMatchObject({ moved: 0 });
+      expect(existsSync(join(w.project, `${SESSION}.jsonl`))).toBe(true);
+    } finally {
+      release();
+    }
+    // Once the other run is done, the same call moves it.
+    expect(await archiveConversation(w.input())).toMatchObject({ kind: "archived" });
+  });
+
+  test("a source that is gone after its copy was made keeps the copy; one that changed loses it", () => {
+    const before = { mtimeMs: 1000, size: 10 };
+    expect(sourceAfterCopy(undefined, before)).toBe("gone");
+    expect(sourceAfterCopy({ mtimeMs: 1000, size: 10 }, before)).toBe("same");
+    expect(sourceAfterCopy({ mtimeMs: 2000, size: 10 }, before)).toBe("changed");
+    expect(sourceAfterCopy({ mtimeMs: 1000, size: 11 }, before)).toBe("changed");
   });
 
   test("an archive folder it cannot make: it fails, and the files stay", async () => {
@@ -365,12 +467,12 @@ describe("pruneCrewArchives", () => {
     return dir;
   }
 
-  test("an archive goes after its days, and not before", () => {
+  test("an archive goes after its days, and not before", async () => {
     const w = world();
     const young = archived(w, "young", 7 * DAY_MS - 60_000);
     const old = archived(w, "old", 7 * DAY_MS + 60_000);
 
-    const outcome = pruneCrewArchives(w.paths.stateDir, () => 7, NOW);
+    const outcome = await pruneCrewArchives(w.paths.stateDir, () => 7, NOW);
 
     expect(outcome).toEqual({
       kept: [],
@@ -380,32 +482,36 @@ describe("pruneCrewArchives", () => {
     expect(existsSync(young)).toBe(true);
   });
 
-  test("each repository's own days; a dry run deletes nothing; an empty repository folder goes", () => {
+  test("each repository's own days; a look deletes nothing; an empty repository folder goes", async () => {
     const w = world();
     const other = join(w.home, "code", "other-app");
     const mine = archived(w, "mine", 4 * DAY_MS);
     const theirs = archived(w, "theirs", 4 * DAY_MS, other);
     const days = (repo: null | string) => (repo === other ? 3 : 7);
 
-    expect(
-      pruneCrewArchives(w.paths.stateDir, days, NOW, true).pruned.map((one) => one.dir),
-    ).toEqual([theirs]);
+    expect(expiredArchives(w.paths.stateDir, days, NOW).pruned.map((one) => one.dir)).toEqual([
+      theirs,
+    ]);
     expect(existsSync(theirs)).toBe(true);
 
-    pruneCrewArchives(w.paths.stateDir, days, NOW);
+    await pruneCrewArchives(w.paths.stateDir, days, NOW);
     expect(existsSync(theirs)).toBe(false);
     expect(existsSync(dirname(theirs))).toBe(false);
     expect(existsSync(mine)).toBe(true);
   });
 
-  test("days it cannot read keep the archive; an archive with no archive.json counts from its folder's time", () => {
+  test("days it cannot read keep the archive; an archive with no archive.json counts from its folder's time", async () => {
     const w = world();
     const kept = archived(w, "kept", 30 * DAY_MS);
     const nameless = crewArchiveDir(w.paths.stateDir, w.repo, "nameless");
     mkdirSync(nameless, { recursive: true });
     utimesSync(nameless, (NOW - 8 * DAY_MS) / 1000, (NOW - 8 * DAY_MS) / 1000);
 
-    const outcome = pruneCrewArchives(w.paths.stateDir, (repo) => (repo === null ? 7 : null), NOW);
+    const outcome = await pruneCrewArchives(
+      w.paths.stateDir,
+      (repo) => (repo === null ? 7 : null),
+      NOW,
+    );
 
     expect(outcome.kept).toEqual([
       { dir: kept, why: "its repository's crew.archiveDays cannot be read" },
@@ -413,6 +519,57 @@ describe("pruneCrewArchives", () => {
     expect(outcome.pruned.map((one) => one.name)).toEqual(["nameless"]);
     expect(existsSync(kept)).toBe(true);
     expect(existsSync(nameless)).toBe(false);
+  });
+
+  test("an archive whose repository folder is gone expires by the person's own days, not never", async () => {
+    const w = world();
+    const gone = join(w.home, "code", "moved-away-app");
+    const old = archived(w, "old", 8 * DAY_MS, gone);
+    const young = archived(w, "young", 6 * DAY_MS, gone);
+    const days = archiveDaysOf(w.paths, {});
+
+    expect(days(gone)).toBe(7);
+    expect(days(null)).toBe(7);
+    await pruneCrewArchives(w.paths.stateDir, days, NOW);
+
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(young)).toBe(true);
+  });
+
+  test("a folder that is not a git project still reads the person's days", () => {
+    const w = world();
+    mkdirSync(w.repo, { recursive: true });
+    expect(archiveDaysOf(w.paths, {})(w.repo)).toBe(7);
+  });
+
+  test("an archive folder that vanishes while the prune runs does not stop it", async () => {
+    const w = world();
+    const nameless = crewArchiveDir(w.paths.stateDir, w.repo, "nameless");
+    mkdirSync(nameless, { recursive: true });
+    const outcome = await pruneCrewArchives(
+      w.paths.stateDir,
+      (repo) => {
+        // The first look at its days is the moment another run deletes the folder.
+        rmSync(nameless, { force: true, recursive: true });
+        return repo === null ? 7 : null;
+      },
+      NOW,
+    );
+    expect(outcome).toEqual({ kept: [], pruned: [] });
+  });
+
+  test("the prune and an archive take turns", async () => {
+    const w = world();
+    archived(w, "old", 8 * DAY_MS);
+    const release = await holdArchiveLock(w.paths.stateDir);
+    try {
+      await expect(
+        pruneCrewArchives(w.paths.stateDir, () => 7, NOW, { lockWaitMs: 0 }),
+      ).rejects.toThrow("is busy");
+    } finally {
+      release();
+    }
+    expect((await pruneCrewArchives(w.paths.stateDir, () => 7, NOW)).pruned).toHaveLength(1);
   });
 });
 
