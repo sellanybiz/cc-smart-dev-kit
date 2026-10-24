@@ -30,7 +30,9 @@ searched the 2.1.310 binary and found none).
    \"auto\""). With no value, or `"auto"`, measure against `context_window_size`, and find what
    `"auto"` means before you pick. Claude Code's `context_window_size` is the model's full window
    (1M), which is not the point that matters to the owner.
-   - Read Claude Code's settings **read-only**, through the kit's existing readers if one fits
+   - Read Claude Code's settings **read-only**, through HO1's reader (1.2.0: it reads
+     `autoCompactWindow` for the crew hand-off, and proved what `--autocompact auto` does; reuse
+     it, never a second one), or the kit's existing readers if one fits
      (`src/cli/paths.ts`, `CLAUDE_CONFIG_DIR`); never write them outside `src/setup/`.
    - Match the model by the input's `model.id` the way `context-window.ts` keys it; a `[1m]`
      suffix or an alias must not miss the entry (find how Claude Code itself keys it).

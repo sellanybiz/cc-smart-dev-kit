@@ -1,4 +1,4 @@
-# LH1 — a start waits for the CPU, a hand-off at a token cap, a crew session installs its own dependencies (1.2.1)
+# LH1 — a start waits for the CPU, a crew session installs its own dependencies (1.2.1)
 
 ## Goal, and why
 
@@ -37,29 +37,18 @@ seen failing first.
   frame works for any project.
 - **Tests:** the frame holds the step; with a project's install command, it names it.
 
-## 3. A hand-off at a token cap, beside the percent
+## 3. (Moved) The hand-off token cap
 
-- **The owner's concern (2026-10-25):** the owner set `crew.handoffPercent` to 40 in the personal
-  file, so a crew session on Opus's 1M window hands off near 400k tokens (it matches the owner's
-  own `/autocompact 400000`). But the hand-off is a percent of the window: 40 % of a 200k-window
-  model is 80k, barely past a crew session's start-up reading.
-- **Where:** `src/crew/self-watch.ts` computes `contextPercent` against the window that
-  `context-window.ts` gives (find it); `crew.handoffPercent` in `src/workflow/schema.ts` and
-  `resolve.ts`.
-- **Fix:** an optional `crew.handoffTokens` (a whole number above zero, unset by default): a crew
-  session hands off at whichever comes first, the percent or the token count. Measured where the
-  percent is measured, never a second reader of the context. Where the frame or the crew skill
-  tells a crew session when to hand off, it names both (find each place). `README.md` (the
-  workflow fields) and `workflow show`.
-- **Tests:** the cap reached before the percent (hand-off), the percent before the cap, the cap
-  unset (today's behaviour), a 200k and a 1M window.
+The owner moved it into 1.2.0 (2026-10-25): HO1 (`briefs/ho1.md`) adds `crew.handoffTokens`
+(default 400000) beside `crew.handoffPercent` (70), whichever comes first, always before the
+session's real auto-compact point. Your branch has it already: do not build it again.
 
 ## Files (change nothing else)
 
 `src/crew/places.ts`, `src/crew/start.ts` (the start gate only), `src/crew/brief.ts`,
-`src/crew/self-watch.ts`, `src/workflow/schema.ts`, `src/workflow/resolve.ts`, `src/machine/` (the
-load reading only), the crew skill's hand-off line if it names the percent
-(`plugin/skills/crew/SKILL.md`), their tests, `README.md` (the new fields), `docs/design/crew.md`,
+`src/workflow/schema.ts`, `src/workflow/resolve.ts`, `src/machine/` (the
+load reading only),
+their tests, `README.md` (the new fields), `docs/design/crew.md`,
 `plugin/dist/*.js`. **`plugin.json` stays as it is.** Other 1.2.1 phases change `start.ts` (NM1:
 the continuation; WN1: the clash line): keep your change to the gate.
 
