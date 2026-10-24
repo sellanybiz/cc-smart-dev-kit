@@ -15695,6 +15695,35 @@ async function checkBranch(world, target) {
   };
 }
 
+// src/crew/skills.ts
+var CREW_SKILL = `${PLUGIN}:crew`;
+var LEAD_SKILL = `${PLUGIN}:lead`;
+
+// src/crew/brief.ts
+var REPORT_COMMAND = `${COMMAND} crew report`;
+var CREW_NEVER_DOES = {
+  answer: "answers its lead's questions",
+  lead: "leads",
+  "lead tell": "tells another lead",
+  resume: "stops, removes or resumes crew sessions",
+  start: "starts crew sessions",
+  watch: "watches its lead's crew sessions"
+};
+var CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch
+};
+var CREW_NEVER_PROPOSES = "proposes a workflow change";
+function firstPrompt(crewName, leadName, briefFile) {
+  return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
+}
+
 // src/worktrees/machine-facts.ts
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
@@ -26126,34 +26155,6 @@ function stateSince(record, events) {
 }
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 
-// src/crew/skills.ts
-var CREW_SKILL = `${PLUGIN}:crew`;
-var LEAD_SKILL = `${PLUGIN}:lead`;
-
-// src/crew/brief.ts
-var REPORT_COMMAND = `${COMMAND} crew report`;
-var CREW_NEVER_DOES = {
-  answer: "answers its lead's questions",
-  lead: "leads",
-  "lead tell": "tells another lead",
-  resume: "stops, removes or resumes crew sessions",
-  start: "starts crew sessions",
-  watch: "watches its lead's crew sessions"
-};
-var CREW_NEVER_RUNS = {
-  answer: CREW_NEVER_DOES.answer,
-  lead: CREW_NEVER_DOES.lead,
-  "lead tell": CREW_NEVER_DOES["lead tell"],
-  resume: CREW_NEVER_DOES.resume,
-  rm: CREW_NEVER_DOES.resume,
-  start: CREW_NEVER_DOES.start,
-  stop: CREW_NEVER_DOES.resume,
-  watch: CREW_NEVER_DOES.watch
-};
-function firstPrompt(crewName, leadName, briefFile) {
-  return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
-}
-
 // src/crew/answer.ts
 function openQuestionIndex(record) {
   for (let index = record.questions.length - 1;index >= 0; index -= 1) {
@@ -31193,6 +31194,58 @@ function packageScripts(folder) {
   return new Set(Object.keys(scripts));
 }
 
+// src/hooks/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+
 // src/hooks/bash-judge.ts
 var CLAUDE_VALUED = [
   "--add-dir",
@@ -31277,15 +31330,46 @@ function claudeLaunch(step) {
     prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
   };
 }
+function kitWordsOf(step) {
+  if (!step.computed)
+    return kitArguments(step.program, withoutRedirections(step.args));
+  return withoutRedirections(step.words);
+}
+function kitWordAt(words, step, word) {
+  if (words[0] === word)
+    return 0;
+  return step.computed ? words.indexOf(word) : -1;
+}
+function asksHelp(words) {
+  for (const word of words) {
+    if (word === "--")
+      return false;
+    if (word === "-h" || word === "--help")
+      return true;
+  }
+  return false;
+}
 function crewNeverRunOf(step) {
-  if (step.args[0] !== "crew")
+  const words = kitWordsOf(step);
+  if (words === null)
     return null;
-  if (!step.computed && step.program !== COMMAND)
+  const at = kitWordAt(words, step, "crew");
+  if (at === -1)
     return null;
-  if (step.args.includes("--help") || step.args.includes("-h"))
+  if (asksHelp(words.slice(at + 1)))
     return null;
-  const sub = step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : step.args[1] ?? "";
+  const sub = words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : words[at + 1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
+}
+function isWorkflowPropose(step) {
+  const words = kitWordsOf(step);
+  if (words === null)
+    return false;
+  const at = kitWordAt(words, step, "workflow");
+  if (at === -1 || asksHelp(words.slice(at + 1)))
+    return false;
+  const sub = words[at + 1];
+  return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
@@ -31391,11 +31475,14 @@ function readBash(command, dialect = "bash") {
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
+  let workflowPropose = false;
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
+    if (isWorkflowPropose(step))
+      workflowPropose = true;
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat)
@@ -31417,7 +31504,7 @@ function readBash(command, dialect = "bash") {
       launches.push(launch);
   }
   const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits, workflowPropose };
 }
 function sleepsIn(steps) {
   return steps.some((step) => WAIT_PROGRAMS.has(step.program));
@@ -31448,6 +31535,13 @@ function crewNeverRunsAnswer(crewId, command) {
   return [
     `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`
+  ].join(`
+`);
+}
+function crewProposeAnswer(crewId) {
+  return [
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_PROPOSES}: \`${COMMAND} workflow propose\` pushes a branch and opens a pull request in children no hook sees.`,
+    CREW_QUESTION_STEP
   ].join(`
 `);
 }
@@ -31494,6 +31588,9 @@ function judgeBash(reading, context) {
   if (crew !== null && never !== undefined) {
     return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
+  if (crew !== null && reading.workflowPropose) {
+    return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
+  }
   let ask = null;
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
@@ -31520,7 +31617,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
+  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll || reading.workflowPropose;
 }
 
 // src/hooks/job-route.ts
@@ -31681,6 +31778,8 @@ function routeFacts(input, context) {
     facts.launches = reading.launches.map((one) => one.form);
   if (reading.crewNeverRuns.length > 0)
     facts.crew_commands = reading.crewNeverRuns;
+  if (reading.workflowPropose)
+    facts.workflow_propose = true;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;
@@ -32583,56 +32682,6 @@ var RESETTERS = new Set([
   "sudo",
   "systemd-run"
 ]);
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
 var ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");
 var ENV_VALUED_LONG = ["--chdir", "--split-string"];
 function prefixDrop(prefix, program) {

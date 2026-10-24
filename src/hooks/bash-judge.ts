@@ -10,7 +10,7 @@
  * project's file says. A session must not be able to switch off the limits on its own launches
  * by editing a file it owns (the same reason `session-escape-guard` is always on).
  *
- * Four things a line does are judged, and nothing else:
+ * Five things a line does are judged, and nothing else:
  *   - **a raw background session** — `claude --bg` / `--background` — asks the person in an
  *     attended session, and is refused where nobody answers (`claude -p`). Both answers show
  *     the `crew start` line: that launch is recorded in the store, gets its own worktree and
@@ -29,6 +29,10 @@
  *     a crew session hands the need to its lead (D36, D45), in the launcher's own words
  *     (`CREW_NEVER_RUNS`). The hook's environment is the session's own, so a line that unsets
  *     the variable itself (`env -u CC_SMART_DEV_KIT_CREW …`) does not get past it.
+ *   - **a crew session running `workflow propose`** (the same variable) is denied (D24): the
+ *     command pushes a branch and opens a pull request in children no hook sees, so the guards
+ *     that deny the session's own `git push` and `gh pr create` never see them. The same
+ *     environment rule holds.
  *   - **polling** — a `crew list` / `crew status` read or a `claude agents --json` read that
  *     repeats over time: inside a `while`/`until`/`do` loop (bash, its condition included) or a
  *     PowerShell `while`/`do`, or a `watch`, or next to a `sleep`/`Start-Sleep` — is denied: a
@@ -50,23 +54,31 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CREW_NEVER_RUNS, type CrewNeverRun, REPORT_COMMAND } from "../crew/brief";
-import { crewIdOf } from "../crew/session";
+import {
+  CREW_NEVER_PROPOSES,
+  CREW_NEVER_RUNS,
+  type CrewNeverRun,
+  REPORT_COMMAND,
+} from "../crew/brief";
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
 import {
   CHANGE_DIR,
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isComputedWord,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
   shellSteps,
+  withoutRedirections,
   wordsOf,
 } from "../shell/command";
 import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
+import { kitArguments } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -110,6 +122,8 @@ export interface BashReading {
   top: Step[];
   /** True for a loop keyword (`while`, `until`, `for`, `foreach`, `do`) or a `sleep`, anywhere in the line (the hook log). */
   waits: boolean;
+  /** The line runs `workflow propose`, which a crew session never runs (`isWorkflowPropose`). */
+  workflowPropose: boolean;
 }
 
 /**
@@ -218,24 +232,86 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
 }
 
 /**
+ * The words that name what the kit's own command runs, or null when the step runs none of it.
+ *
+ * A named program is read by the argv the command itself gets: `kitArguments`
+ * (`./kit-invocation`, the one recogniser `session-escape-guard` uses too) knows the kit by its
+ * name, by a path to the launcher, and by its bundle behind another program — `bun
+ * …/dist/cli.js workflow …, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`
+ * — and never a program that only reads its arguments. Redirections are dropped: the command
+ * never sees them (`withoutRedirections`), so `cc-smart-dev-kit 2>/dev/null workflow propose` is
+ * read as the command it really runs, and a redirect target (`… > -h`) is not read as a flag.
+ *
+ * A program the line works out when it runs (`$BIN crew answer …`, `$(command -v …) crew …`)
+ * cannot be named, and the reader splits a substitution at its spaces, so nothing after it lines
+ * up: its own words are all the judge has (`computedInvocationRisk`'s rule, `after-merge.ts`).
+ */
+function kitWordsOf(step: Step): null | string[] {
+  if (!step.computed) return kitArguments(step.program, withoutRedirections(step.args));
+  return withoutRedirections(step.words);
+}
+
+/**
+ * Where the words the kit's command runs say `word`, or -1. A named program's argv is
+ * positional: its first word is the subcommand. A program the line works out when it runs hands
+ * the judge its own words, where the word may sit anywhere (`$(command -v cc-smart-dev-kit) crew
+ * answer …` reaches the judge as the words `$(command`, `-v`, `cc-smart-dev-kit)`, `crew`, …).
+ */
+function kitWordAt(words: readonly string[], step: Step, word: string): number {
+  if (words[0] === word) return 0;
+  return step.computed ? words.indexOf(word) : -1;
+}
+
+/**
+ * True when these words ask for help: `-h` or `--help` before a `--`, the rule the dispatcher
+ * reads them with (`asksForHelp`, `src/cli/help.ts`). The judge keeps its own four lines rather
+ * than import the CLI's help table, which drags every command into a hook bundle.
+ */
+function asksHelp(words: readonly string[]): boolean {
+  for (const word of words) {
+    if (word === "--") return false;
+    if (word === "-h" || word === "--help") return true;
+  }
+  return false;
+}
+
+/**
  * The `crew` subcommand a step runs that a crew session never runs (`CREW_NEVER_RUNS`), or
  * null: `cc-smart-dev-kit crew start|answer|stop|rm|resume|watch|lead|lead tell …`, whatever
- * path the launcher is named by. A crew session's own commands (`step`, `report`, `tell`,
- * `self-watch`, the board reads) are not in the map, so they pass.
- *
- * A program the line works out when it runs (`$BIN crew answer …`) is read from its own
- * words, as the launches are: a crew session's lead command is denied whatever runs it, and
- * a line that names one in a crew session is refused rather than let through.
+ * path the launcher is named by, and whichever program carries it. A crew session's own commands
+ * (`step`, `report`, `tell`, `self-watch`, the board reads) are not in the map, so they pass.
  */
 function crewNeverRunOf(step: Step): CrewNeverRun | null {
-  if (step.args[0] !== "crew") return null;
-  if (!step.computed && step.program !== COMMAND) return null;
+  const words = kitWordsOf(step);
+  if (words === null) return null;
+  const at = kitWordAt(words, step, "crew");
+  if (at === -1) return null;
   // `crew answer --help` only prints the help (`runCrew` reads the flag before the command):
   // reading a lead command's help is no act of leading, so a crew session may.
-  if (step.args.includes("--help") || step.args.includes("-h")) return null;
+  if (asksHelp(words.slice(at + 1))) return null;
   const sub =
-    step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : (step.args[1] ?? "");
+    words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : (words[at + 1] ?? "");
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;
+}
+
+/**
+ * True when a step runs the kit's `workflow propose`. A crew session never runs it (D24): the
+ * command pushes a branch and opens a pull request in children no hook sees, so the guards that
+ * deny the session's own `git push` and `gh pr create` never see them.
+ *
+ * `--help` prints the usage and proposes nothing (the dispatcher answers it before any command
+ * runs), so reading it is no act, as for a lead command's help. A subcommand the judge cannot
+ * read — a word the line works out when it runs (`workflow $SUB`), or none at all (`echo propose
+ * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
+ * than let through.
+ */
+function isWorkflowPropose(step: Step): boolean {
+  const words = kitWordsOf(step);
+  if (words === null) return false;
+  const at = kitWordAt(words, step, "workflow");
+  if (at === -1 || asksHelp(words.slice(at + 1))) return false;
+  const sub = words[at + 1];
+  return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
 
 /** True for a crew-status read: `crew list`, `crew status`, or `claude agents --json`. */
@@ -398,10 +474,12 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
+  let workflowPropose = false;
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null) crewNeverRuns.push(never);
+    if (isWorkflowPropose(step)) workflowPropose = true;
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat) statusReadsInLoop++;
@@ -423,7 +501,7 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   // A status read repeats over time, or sits next to a wait: a `for`/`foreach` over a fixed
   // list with no wait is neither, so a `for id in a b; do … status …; done` passes (F2a-6).
   const poll = statusReadsInLoop > 0 || (sleepsIn(steps) && statusReads > 0);
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
+  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits, workflowPropose };
 }
 
 /** True when the line runs a program that waits (`sleep`, `Start-Sleep`). */
@@ -453,7 +531,7 @@ export function backgroundFor(top: readonly Step[]): Background | null {
 export interface BashVerdict {
   decision: "ask" | "deny";
   reason: string;
-  /** A short word for the hook log: `bg`, `print`, `crew-command`, `poll`. */
+  /** A short word for the hook log: `bg`, `print`, `crew-command`, `crew-propose`, `poll`. */
   why: string;
 }
 
@@ -480,6 +558,17 @@ function crewNeverRunsAnswer(crewId: string, command: CrewNeverRun): string {
   return [
     `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`,
+  ].join("\n");
+}
+
+/**
+ * The words a crew session gets when it runs `workflow propose`: the command's own refusal
+ * (`src/workflow/propose.ts`) says the same, so the two belts read as one rule.
+ */
+function crewProposeAnswer(crewId: string): string {
+  return [
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_PROPOSES}: \`${COMMAND} workflow propose\` pushes a branch and opens a pull request in children no hook sees.`,
+    CREW_QUESTION_STEP,
   ].join("\n");
 }
 
@@ -543,6 +632,10 @@ export function judgeBash(reading: BashReading, context: JudgeContext): BashVerd
   if (crew !== null && never !== undefined) {
     return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
+  // `workflow propose` is no `crew` subcommand, but a crew session never runs it either (D24).
+  if (crew !== null && reading.workflowPropose) {
+    return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
+  }
   let ask: BashVerdict | null = null;
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
@@ -569,7 +662,15 @@ export function commandOf(input: HookInput): null | string {
   return stringField((fields as Record<string, unknown>).command);
 }
 
-/** True when the judge judges this line: a launch, a lead command or a poll — its crash domain. */
+/**
+ * True when the judge judges this line: a launch, a lead command, `workflow propose` or a poll —
+ * its crash domain.
+ */
 export function judgedDomain(reading: BashReading): boolean {
-  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
+  return (
+    reading.crewNeverRuns.length > 0 ||
+    reading.launches.length > 0 ||
+    reading.poll ||
+    reading.workflowPropose
+  );
 }

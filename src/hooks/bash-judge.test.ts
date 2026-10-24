@@ -5,6 +5,8 @@
  * - `claude -p` is judged by the launch policy every Agent launch meets: no model denies, the
  *   `opus` tier at `max` asks, the `fable` tier with its reason line asks;
  * - a crew session's `crew start` is denied;
+ * - a crew session's `workflow propose` is denied, however the line is spelled, and the rest of
+ *   the command passes;
  * - a polling loop over `crew list|status` or `claude agents --json` is denied, a single read
  *   passes;
  * - the judge runs with `jobs.route` off, with no project file, with a broken one, and outside
@@ -267,6 +269,12 @@ describe("a crew session running a lead's command", () => {
     ],
     // A program the line works out when it runs is read from its own words, as a launch is.
     ["$BIN crew answer C-x 'yes'", "answers its lead's questions"],
+    ["$(command -v cc-smart-dev-kit) crew answer C-x 'yes'", "answers its lead's questions"],
+    // The kit's own spellings, through the one recogniser both guards read (`kit-invocation`).
+    [
+      "bun $HOME/.claude/plugins/cache/cc-smart-dev-kit/1.0.0/dist/cli.js crew answer C-x 'yes'",
+      "answers its lead's questions",
+    ],
     ["cc-smart-dev-kit crew watch", "watches its lead's crew sessions"],
     ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
     ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
@@ -319,6 +327,131 @@ describe("a crew session running a lead's command", () => {
     );
     expect(answer.decision).toBe("deny");
     expect(answer.reason).toContain("answers its lead's questions");
+  });
+});
+
+describe("a crew session proposing a workflow change", () => {
+  // `workflow propose` pushes a branch and opens a pull request in children no hook sees, so
+  // the guards that deny the session's own `git push` and `gh pr create` (D24) never see them.
+  // The hook's environment is the session's own, so a line that unsets the variable itself is
+  // still this crew session's; the reader steps over the wrappers and the inner shells, so
+  // every spelling of the line meets the same denial.
+  const denied: [string, string][] = [
+    ["cc-smart-dev-kit workflow propose autoCommit true", "the plain line"],
+    [
+      "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow propose autoCommit true",
+      "the variable unset on the line itself",
+    ],
+    ["timeout 60 cc-smart-dev-kit workflow propose autoCommit true", "`timeout`"],
+    ["nohup setsid cc-smart-dev-kit workflow propose autoCommit true", "`nohup` and `setsid`"],
+    ["sudo -u me cc-smart-dev-kit workflow propose autoCommit true", "`sudo`"],
+    ["bash -c 'cc-smart-dev-kit workflow propose autoCommit true'", "an inner shell"],
+    ["eval 'cc-smart-dev-kit workflow propose autoCommit true'", "`eval`"],
+    ["$KIT workflow propose autoCommit true", "a computed program"],
+    ["$(command -v cc-smart-dev-kit) workflow propose autoCommit true", "a computed program"],
+    ["cc-smart-dev-kit workflow propose autoMerge --unset", "an `--unset`"],
+    // The kit under every spelling its own guards recognise (`kit-invocation`): its bundle
+    // behind a runner, the launcher behind `sh`, and a program that runs its arguments.
+    [
+      "bun $HOME/.claude/plugins/cache/cc-smart-dev-kit/1.0.0/dist/cli.js workflow propose autoCommit true",
+      "the bundle behind `bun`",
+    ],
+    [
+      "sh $HOME/.local/bin/cc-smart-dev-kit workflow propose autoCommit true",
+      "the launcher behind `sh`",
+    ],
+    [
+      "find . -maxdepth 0 -exec cc-smart-dev-kit workflow propose autoCommit true ;",
+      "`find -exec`",
+    ],
+    [
+      "watch -n 600 env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow propose autoCommit true",
+      "`watch`",
+    ],
+    // The argv the command itself gets: a redirect before the subcommand is not an argument,
+    // and a redirect's target is not a flag (`> -h` used to pass for a help read).
+    ["cc-smart-dev-kit 2>/dev/null workflow propose autoCommit true", "a redirect before it"],
+    ["cc-smart-dev-kit workflow propose autoCommit true > -h", "a redirect target"],
+    ["cc-smart-dev-kit workflow propose autoCommit true 2> --help", "a redirect target"],
+    // A subcommand the judge cannot read may be `propose`.
+    [
+      "P=propose; env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow $P autoCommit true",
+      "a computed subcommand",
+    ],
+    // A `--help` after a `--` is the command's own word (`asksForHelp`'s rule): the line is no
+    // help read, and the command refuses the `--` itself.
+    ["cc-smart-dev-kit workflow propose -- -h", "a `--help` after a `--`"],
+    ["echo propose autoCommit true | xargs cc-smart-dev-kit workflow", "no subcommand at all"],
+  ];
+  for (const [command, what] of denied) {
+    test(`denied: ${what} — ${command}`, async () => {
+      const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain("a crew session never proposes a workflow change");
+      expect(answer.reason).toContain("cc-smart-dev-kit crew report --question");
+    });
+  }
+
+  test("the deny is the hook's own: no file, a broken file and ownHooks cannot soften it", async () => {
+    for (const config of [
+      undefined,
+      { ownHooks: ["job-route"] },
+      { worktree: {} },
+      { requires: ">=99" },
+    ]) {
+      const { env, repo } = project(config);
+      const answer = await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", {
+        ...env,
+        CC_SMART_DEV_KIT_CREW: CREW_ID,
+      });
+      expect({ config, decision: answer.decision }).toEqual({ config, decision: "deny" });
+    }
+  });
+
+  test("in PowerShell it is denied too", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit workflow propose autoCommit true",
+      { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("a crew session never proposes a workflow change");
+  });
+
+  test("the rest of the workflow command passes: reading it, and changing this checkout's policy", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "cc-smart-dev-kit workflow show",
+      "cc-smart-dev-kit workflow set autoCommit true --project",
+      "cc-smart-dev-kit workflow unset autoCommit --project",
+      "cc-smart-dev-kit workflow merge-check 5",
+      "cc-smart-dev-kit workflow review-done --sha abc1234",
+      // Reading the usage proposes nothing, as for a lead command's help: both spellings, and
+      // a `--help` after a `--` is the command's own word, not the dispatcher's.
+      "cc-smart-dev-kit workflow propose --help",
+      "cc-smart-dev-kit workflow propose -h",
+      // A crew session's own command that merely names it: the words are read, and they are not
+      // the words of a command the line runs.
+      "cc-smart-dev-kit crew report --question 'workflow propose' --option a --option b",
+      "$KIT crew report --question 'workflow propose' --option a --option b",
+      // A path that only holds the kit's name in a test file's own name is no kit command, and
+      // a program that runs no argument of its own (`git commit -m …`) never is.
+      "bun test src/workflow/propose.test.ts",
+      "git commit -m 'workflow propose: the deny'",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("the same line in a plain session is the command's own check to make: silent", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    expect(
+      (await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", env)).decision,
+    ).toBeUndefined();
   });
 });
 

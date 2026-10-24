@@ -94,6 +94,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
+import { isKitWord, kitArguments } from "./kit-invocation";
 
 /** The shell tools, and the tools that edit a file. */
 export const ESCAPE_SHELL_TOOLS: readonly string[] = ["Bash", "PowerShell"];
@@ -130,69 +131,9 @@ const RESETTERS: ReadonlySet<string> = new Set([
   "systemd-run",
 ]);
 
-/**
- * Programs that only read, search or move their arguments, never run them: a path to the kit
- * command after `ls` or `grep` is text, not a command. Everything else that has the kit
- * command among its arguments may run it (`find . -exec …`, `watch …`, `parallel …`).
- */
-const INERT: ReadonlySet<string> = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which",
-]);
-
-/** A bundle that is the kit's command or its portal, run by path (`bun …/dist/cli.js`). */
-const KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-
-/** True when a word names the kit command: the launcher by name or path, or its bundle. */
-function isKitWord(word: string): boolean {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-
-/**
- * The arguments of the kit command a program runs, or null when it runs none: the program
- * is the kit command, or has it among its arguments (`bun …/dist/cli.js workflow …`,
- * `find . -exec cc-smart-dev-kit … \;`) and is not one that only reads its arguments.
- */
-function kitArguments(program: string, args: readonly string[]): string[] | null {
-  if (programName(program) === COMMAND) return [...args];
-  if (INERT.has(program)) return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
+// The kit's own command, under every spelling it runs by, has one recogniser
+// (`./kit-invocation`): the escape guard and the shell judge both ask what a step runs, and a
+// spelling that gets past one must not get past the other.
 
 const ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");
 

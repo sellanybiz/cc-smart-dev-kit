@@ -384,6 +384,7 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
   if (reading.crewNeverRuns.length > 0) facts.crew_commands = reading.crewNeverRuns;
+  if (reading.workflowPropose) facts.workflow_propose = true;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;
