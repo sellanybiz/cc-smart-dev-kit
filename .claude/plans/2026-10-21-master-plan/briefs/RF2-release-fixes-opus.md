@@ -1,6 +1,6 @@
 # RF2 — the 1.2.0 release review's findings, a fresh start (1.2.0)
 
-Your task is `.claude/plans/briefs/rf1.md` on your branch: all six findings, its file list, its
+Your task is `.claude/plans/2026-10-21-master-plan/briefs/RF1-release-fixes.md` on your branch: all six findings, its file list, its
 done-check. Read it first, and read it whole.
 
 Two sessions tried it before you and both failed with nothing committed. Their lessons:

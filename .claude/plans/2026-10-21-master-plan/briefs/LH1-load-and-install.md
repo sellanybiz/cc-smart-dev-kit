@@ -39,7 +39,7 @@ seen failing first.
 
 ## 3. (Moved) The hand-off token cap
 
-The owner moved it into 1.2.0 (2026-10-25): HO1 (`briefs/ho1.md`) adds `crew.handoffTokens`
+The owner moved it into 1.2.0 (2026-10-25): HO1 (`briefs/HO1-handoff-tokens.md`) adds `crew.handoffTokens`
 (default 400000) beside `crew.handoffPercent` (70), whichever comes first, always before the
 session's real auto-compact point. Your branch has it already: do not build it again.
 

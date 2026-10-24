@@ -20,7 +20,7 @@ hand back at about 150k?" What the lead found:
 
 **The owner's choice:** a crew session hands off at **400k tokens or 70 % of its window, whichever
 comes first, and always before the session's real auto-compact point.** A 1M model hands off at
-400k, a 200k model at 140k. This takes LH1's `crew.handoffTokens` (1.2.1, `briefs/lh1.md` § 3) into
+400k, a 200k model at 140k. This takes LH1's `crew.handoffTokens` (1.2.1, `briefs/LH1-load-and-install.md` § 3) into
 1.2.0, with 400000 as its default.
 
 ## The change
@@ -44,7 +44,7 @@ comes first, and always before the session's real auto-compact point.** A 1M mod
    step 1's reserve, named once). When `--autocompact auto` wins, say so, and the guard is the
    model's own compaction point. Read Claude Code's settings **read-only**, through one reader
    (`src/cli/paths.ts` gives the folder; `CLAUDE_CONFIG_DIR`); 1.2.1's SL1 (the status line against
-   `autoCompactWindow`, `briefs/sl1.md`) will reuse that reader, so name its home in your report.
+   `autoCompactWindow`, `briefs/SL1-statusline-context.md`) will reuse that reader, so name its home in your report.
    Match the model the way `context-window.ts` keys it (`[1m]`, an alias).
 4. **The words:** where the crew frame (`src/crew/brief.ts`), the crew skill
    (`plugin/skills/crew/SKILL.md`) or the lead skill (§ 8) tells when a crew session hands off,
