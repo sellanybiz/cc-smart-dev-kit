@@ -1094,7 +1094,12 @@ describe("a project's Workflow card (D57)", () => {
     settings: [
       { key: "switches.sessionNames", source: "project", value: true },
       { key: "autoCommit", source: "project", value: true },
-      { key: "crew.tag", source: "default", value: null },
+      {
+        key: "crew.tag",
+        source: "default",
+        unsetWords: "(the main checkout's folder name)",
+        value: null,
+      },
     ],
   };
 
@@ -1114,7 +1119,14 @@ describe("a project's Workflow card (D57)", () => {
     // The portal folder's own reason for a read-only row is not this project's.
     expect(data.rows[1]?.why).toBe(null);
     // A setting with no row of its own is still shown, with its value.
-    expect(data.others).toEqual([{ key: "crew.tag", source: "default", value: null }]);
+    expect(data.others).toEqual([
+      {
+        key: "crew.tag",
+        source: "default",
+        unsetWords: "(the main checkout's folder name)",
+        value: null,
+      },
+    ]);
   });
 
   test("without a gh login every control is read-only; the card says why once", () => {
@@ -1177,5 +1189,10 @@ describe("a project's Workflow card (D57)", () => {
     expect(workflowValueText(["a", "b"])).toBe("a, b");
     expect(workflowValueText([])).toBe("nothing");
     expect(workflowValueText(null)).toBe("not set");
+    // The words `workflow show` prints for an unset key that something stands in for.
+    expect(workflowValueText(null, "(the main checkout's folder name)")).toBe(
+      "(the main checkout's folder name)",
+    );
+    expect(workflowValueText("my-app", "(the main checkout's folder name)")).toBe("my-app");
   });
 });

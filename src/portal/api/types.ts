@@ -250,6 +250,11 @@ export interface ProjectWorkflowSetting {
    */
   key: string;
   source: WorkflowSource;
+  /**
+   * Only for a null `crew.tag` or `crew.maxOpus`: what `workflow show` prints in place of the
+   * unset value (`showValue`), so the card and the command word it the same way.
+   */
+  unsetWords?: string;
   /** What the resolver holds for it: a boolean, a number, a string, a list, or null. */
   value: unknown;
 }

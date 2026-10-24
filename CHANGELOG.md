@@ -9,6 +9,12 @@ The gateway per project and per session, a project's workflow from the portal, c
 kit, and the effort pin. It also carries everything 1.1.3 was to ship (below), which never went out
 on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
 
+- **The portal's project cards are quieter and truer.** A proposal from the Workflow card is
+  refused when it names no project, instead of running in the portal's own folder. The Workflow
+  and Gateway cards no longer read again at every crew event. An unset crew tag or opus count
+  reads as `workflow show` words it. Two controls running one action no longer show each other's
+  progress line, and the Gateway form keeps the state you applied until the page's new answer
+  arrives.
 - **The gateway per project.** `gateway project on|off|default [--team] [--profile <name>]` turns
   the gateway on or off for one project only. The kit writes it to that project's own settings, so
   every session there follows it: a personal file by default, or the team file with `--team`.

@@ -306,9 +306,12 @@ export function proposeValueText(value: unknown): string {
   return Array.isArray(value) ? value.map(String).join(",") : String(value);
 }
 
-/** A value as the card shows it in words: a switch as on or off, a list as words. */
-export function workflowValueText(value: unknown): string {
-  if (value === null || value === undefined) return "not set";
+/**
+ * A value as the card shows it in words: a switch as on or off, a list as words. An unset value
+ * is worded as `workflow show` words it when the server sent those words (`unsetWords`).
+ */
+export function workflowValueText(value: unknown, unsetWords?: string): string {
+  if (value === null || value === undefined) return unsetWords ?? "not set";
   if (typeof value === "boolean") return value ? "on" : "off";
   if (Array.isArray(value)) return value.length === 0 ? "nothing" : value.map(String).join(", ");
   return String(value);

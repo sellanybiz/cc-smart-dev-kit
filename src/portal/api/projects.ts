@@ -55,7 +55,7 @@ import {
 } from "../../workflow/merge-check";
 import { type GhLoginState, ghLoginState } from "../../workflow/propose";
 import { type GateRead, resolvedValueOf, resolveGateAsync } from "../../workflow/resolve";
-import { isProjectKey, WORKFLOW_KEYS } from "../../workflow/schema";
+import { isProjectKey, showValue, WORKFLOW_KEYS } from "../../workflow/schema";
 import { projectCardData, projectFiles } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import type {
@@ -811,10 +811,13 @@ export async function projectWorkflowAnswerFor(
       base,
       gh,
       note: null,
-      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => ({
-        key,
-        ...resolvedValueOf(read.gate.resolved, key),
-      })),
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => {
+        const resolved = resolvedValueOf(read.gate.resolved, key);
+        // What `workflow show` prints for an unset key that something stands in for; any other
+        // key prints its plain value, and the card words that one itself.
+        const unsetWords = resolved.value === null ? showValue(key, null) : "null";
+        return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
+      }),
     };
   } catch (error) {
     // A broken workflow.json of the person's own, or git that cannot run: a note, as the

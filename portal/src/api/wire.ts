@@ -541,6 +541,8 @@ export interface ProjectWorkflowSetting {
   /** One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): the page labels it. */
   key: string;
   source: "project" | "personal" | "default";
+  /** Only for a null `crew.tag` or `crew.maxOpus`: what `workflow show` prints in its place. */
+  unsetWords?: string;
   value: unknown;
 }
 

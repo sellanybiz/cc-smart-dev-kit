@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useId, useState } from "react";
 import { useResource } from "@/api/hooks";
-import { PROJECT_REFRESH } from "@/api/refresh";
+import { GATEWAY_CARD_REFRESH } from "@/api/refresh";
 import type {
   ProjectGatewayData,
   ProjectGatewayNote,
@@ -18,6 +18,7 @@ import type {
   ProjectProfileSlot,
 } from "@/api/types";
 import { ActionResultLine, useAction } from "@/components/action-button";
+import { appliedEdit, type Edit, liveEdit, shownDraft } from "@/components/applied-edit";
 import { ChainEditor, type ChainItem } from "@/components/chain-editor";
 import { ChoiceSwitch } from "@/components/choice-switch";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -166,19 +167,36 @@ function changeTitle(name: string, draft: GatewayDraft): string {
  * form starts from the project's choice; Apply asks first, then the command line's own
  * `gateway project` runs and its result shows in place.
  */
-function ChangeForm({ data, project }: { data: ProjectGatewayData; project: ProjectListRow }) {
-  const [edited, setEdited] = useState<GatewayDraft | null>(null);
+function ChangeForm({
+  data,
+  project,
+  reread,
+}: {
+  data: ProjectGatewayData;
+  project: ProjectListRow;
+  /** Reads the card's answer again: asked at a success, so the new state never waits on the stream. */
+  reread: () => void;
+}) {
+  const [edited, setEdited] = useState<Edit<GatewayDraft, ProjectGatewayData> | null>(null);
   const [asking, setAsking] = useState(false);
+  // On success the applied edit stays on show until the re-read answer replaces `data`: the
+  // old answer must not flash back, with its "this is the state now" words, in between.
   const { run, state } = useAction("project.gateway.set", (result) => {
-    if (result.ok) setEdited(null);
+    if (!result.ok) return;
+    setEdited((before) => appliedEdit(before, data));
+    reread();
   });
-  const draft = edited ?? gatewayDraftOf(data);
+  const draft = shownDraft(edited, data, gatewayDraftOf);
+  // Applied, and the re-read answer is not there yet: the draft is the state now.
+  const live = liveEdit(edited, data);
+  const waitingForRead = live?.applied === true;
   const request = gatewayRequest(data, draft);
   const sending = state.phase === "sending";
   const fileId = useId();
   const profileId = useId();
   const blockedId = useId();
-  const edit = (next: Partial<GatewayDraft>) => setEdited({ ...draft, ...next });
+  const edit = (next: Partial<GatewayDraft>) =>
+    setEdited({ applied: false, draft: { ...draft, ...next } });
   // Each option says why the command would refuse it in the file chosen, in its own words; the
   // team file's refusal of on is the one structural rule, said short.
   const refusals = data.refusals[draft.team ? "team" : "personal"];
@@ -277,7 +295,7 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
         <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
-            disabled={request.kind !== "send" || sending}
+            disabled={request.kind !== "send" || sending || waitingForRead}
             aria-busy={sending}
             aria-describedby={request.kind === "blocked" ? blockedId : undefined}
             onClick={() => setAsking(true)}
@@ -294,13 +312,13 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
           <Button
             size="sm"
             variant="ghost"
-            disabled={edited === null || sending}
+            disabled={live === null || sending || waitingForRead}
             onClick={() => setEdited(null)}
           >
             Discard
           </Button>
           <p className="text-xs text-muted-foreground" aria-live="polite">
-            {request.kind === "same" ? "This is the project's state now." : ""}
+            {request.kind === "same" || waitingForRead ? "This is the project's state now." : ""}
           </p>
         </div>
         {request.kind === "blocked" && (
@@ -587,7 +605,7 @@ export function GatewayCard({ project }: { project: ProjectListRow }) {
   const gateway = useResource(
     (client) => client.projectGateway(project.id),
     project.id,
-    PROJECT_REFRESH,
+    GATEWAY_CARD_REFRESH,
   );
   return (
     <Card>
@@ -630,7 +648,9 @@ export function GatewayCard({ project }: { project: ProjectListRow }) {
             {gateway.data.notes.map((note) => (
               <NoteLine key={note.text} note={note} />
             ))}
-            {gateway.data.writable && <ChangeForm data={gateway.data} project={project} />}
+            {gateway.data.writable && (
+              <ChangeForm data={gateway.data} project={project} reread={gateway.refresh} />
+            )}
             <ProfileSection data={gateway.data} />
           </>
         )}

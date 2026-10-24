@@ -56,7 +56,7 @@ import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { NO_SESSION_RECORDS, projectId } from "./api/projects";
-import { API_READS } from "./api/routes";
+import { API_READS, PROJECT_PARTS } from "./api/routes";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -903,7 +903,10 @@ describe("every answer", () => {
         ...Object.keys(API_READS),
         "/api/crew/crew-K-contracts",
         `/api/projects/${projectId(world.cwd)}`,
-        `/api/projects/${projectId(world.cwd)}/gateway`,
+        // Every part a card reads, from the table itself: the next part cannot be missed.
+        ...Object.keys(PROJECT_PARTS).map(
+          (part) => `/api/projects/${projectId(world.cwd)}/${part}`,
+        ),
       ];
       for (const path of reads) {
         const answer = await world.call(path);

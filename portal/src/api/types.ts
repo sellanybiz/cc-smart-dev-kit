@@ -553,6 +553,8 @@ export type GhLoginState = "in" | "missing" | "out";
 export interface ProjectWorkflowValue {
   key: string;
   source: WorkflowSource;
+  /** What `workflow show` prints for an unset value, when the server sent it (`unsetWords`). */
+  unsetWords?: string;
   value: unknown;
 }
 

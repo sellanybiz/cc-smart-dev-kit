@@ -14068,6 +14068,8 @@ var workflowDefaults = {
     tag: null
   }
 };
+var CREW_TAG_UNSET = "the main checkout's folder name";
+var CREW_MAX_OPUS_UNSET = "no machine-wide opus count";
 var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
 var POLICY_KEYS = [
   "autoCommit",
@@ -14187,6 +14189,15 @@ function parseWorkflowValue(key, text) {
   if (value === "true" || value === "false")
     return { ok: true, value: value === "true" };
   return { ok: false, why: `${key} is true or false` };
+}
+function showValue(key, value) {
+  if (key === "crew.tag" && value === null)
+    return `(${CREW_TAG_UNSET})`;
+  if (key === "crew.maxOpus" && value === null)
+    return `(${CREW_MAX_OPUS_UNSET})`;
+  if (Array.isArray(value))
+    return value.length === 0 ? "(nothing)" : value.join(", ");
+  return String(value);
 }
 
 // src/project/version-range.ts
@@ -37507,6 +37518,9 @@ async function setWorkflowSetting(action, body) {
 async function projectWorkflowPropose(action, body) {
   if (body.confirm !== true)
     return notConfirmed("proposed");
+  const unnamed = projectNotNamed(body, "a proposal never runs in the portal's own folder");
+  if (unnamed !== null)
+    return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
@@ -37561,14 +37575,9 @@ async function gatewayCliAction(action, name, args, cwd) {
 async function projectGatewaySet(action, body) {
   if (body.confirm !== true)
     return notConfirmed("changed");
-  if (typeof body.project !== "string" || body.project.trim() === "") {
-    return {
-      lines: [
-        "Name the project by its id: a gateway state is never written to the portal's own folder."
-      ],
-      ok: false
-    };
-  }
+  const unnamed = projectNotNamed(body, "a gateway state is never written to the portal's own folder");
+  if (unnamed !== null)
+    return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target)
     return { lines: [target.why], ok: false };
@@ -37719,6 +37728,11 @@ function projectsWorld(action) {
     now: action.portal.now,
     paths: action.portal.paths
   };
+}
+function projectNotNamed(body, why) {
+  if (typeof body.project === "string" && body.project.trim() !== "")
+    return null;
+  return { lines: [`Name the project by its id: ${why}.`], ok: false };
 }
 async function projectTarget(action, body) {
   const named = body.project;
@@ -39425,10 +39439,11 @@ async function projectWorkflowAnswerFor(deps, id) {
       base,
       gh,
       note: null,
-      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => ({
-        key,
-        ...resolvedValueOf(read.gate.resolved, key)
-      }))
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => {
+        const resolved = resolvedValueOf(read.gate.resolved, key);
+        const unsetWords = resolved.value === null ? showValue(key, null) : "null";
+        return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
+      })
     };
   } catch (error) {
     return {

@@ -357,7 +357,9 @@ project's policy; the ref is as fresh as the last fetch, so after a merge on Git
 shows the old value until the checkout fetches, exactly as the gate does. A project with no
 file, no base, or no committed file, or a file (or a personal `workflow.json`) that cannot be
 read, is a `note` and no settings — never a `default` for a value the project really sets. The change itself is `project.workflow.propose`:
-the page asks first (`confirm`), then `runCliChild` runs the CLI's own `workflow propose` in a
+the page asks first (`confirm`), the request must name its project by id (a body with none is
+refused in words, because the command pushes a branch and opens a pull request, and "no project"
+must never mean the portal's own folder — `project.gateway.set` has the same rule), then `runCliChild` runs the CLI's own `workflow propose` in a
 child in the project's folder — a branch, a worktree, a commit and a push never run in the
 server's process. The child gets at least the command's own worst case (`PROPOSE_WORST_CASE_MS`,
 the sum of its step limits): its limits fire, and the take-back after a failed step runs, before
@@ -605,7 +607,15 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   changes one line of the project's file, and counts once merged — then runs
   `project.workflow.propose`; the row goes back to the base's value, and the pull request's
   link (or the refusal, in the command's words) stays under it. One proposal runs at a time
-  across the card, because an action's progress lines name only the action. A value the project
+  across the card, because an action's progress lines name only the action (a control that
+  shares its action with another running control in the same tab, such as two slots of a
+  profile saved at once, shows "Working…" and no line, since the line could be either's; two
+  tabs are not told apart). An unset `crew.tag` or
+  `crew.maxOpus` carries `unsetWords`, what `workflow show` prints in its place, so the card and
+  the command word it alike. The Workflow card reads again for a `workflow.*` or
+  `project.*` result (the Gateway card also for a `slot.*` or `switch` result), never for a
+  crew event (a project's branch verdicts do depend on one, so the project's page keeps that):
+  each read costs the server a few git children. A value the project
   sets can also be taken out (`--unset`), and the alert events keep at least one chosen (the
   parser's own rule). Without a `gh` that can open a pull request (`missing` or
   `out`) the values show, the controls are off, and one line names the command to run; the
@@ -628,7 +638,10 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   session (P7, re-proved on 2.1.310 for a file that existed at the session's start: a changed
   address within about a second — restart a session that started before the file existed — and
   a removed one, Default, follows by itself to the next settings file that sets it, and keeps
-  its address until a restart only when no file does). When the address names a profile, its slots are listed with what
+  its address until a restart only when no file does). After a successful Apply the form keeps the
+  state just applied, Apply and Discard off, until the card's answer is read again (the success
+  asks for that read itself, not through the stream); it never snaps back to the old answer. When
+  the address names a profile, its slots are listed with what
   answers each (its own chain, Claude in the profile, or this machine's chain) and the fallback
   switch; a slot's Change opens the Slots page's own `ChainEditor` (the model list is
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change

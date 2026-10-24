@@ -920,6 +920,8 @@ async function projectWorkflowPropose(
   body: Record<string, unknown>,
 ): Promise<ActionResult> {
   if (body.confirm !== true) return notConfirmed("proposed");
+  const unnamed = projectNotNamed(body, "a proposal never runs in the portal's own folder");
+  if (unnamed !== null) return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
   const setting = typeof body.setting === "string" ? body.setting.trim() : "";
@@ -1008,14 +1010,11 @@ async function projectGatewaySet(
   body: Record<string, unknown>,
 ): Promise<ActionResult> {
   if (body.confirm !== true) return notConfirmed("changed");
-  if (typeof body.project !== "string" || body.project.trim() === "") {
-    return {
-      lines: [
-        "Name the project by its id: a gateway state is never written to the portal's own folder.",
-      ],
-      ok: false,
-    };
-  }
+  const unnamed = projectNotNamed(
+    body,
+    "a gateway state is never written to the portal's own folder",
+  );
+  if (unnamed !== null) return unnamed;
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
   const state = PROJECT_GATEWAY_STATES.find((one) => one === body.state);
@@ -1227,6 +1226,16 @@ function projectsWorld(action: ActionContext): ProjectsWorld {
     now: action.portal.now,
     paths: action.portal.paths,
   };
+}
+
+/**
+ * The refusal for an action that writes or pushes: it must name its project by id, because
+ * `projectTarget` answers the portal's own folder (the home folder) for a body with none.
+ * Null when the body names one.
+ */
+function projectNotNamed(body: Record<string, unknown>, why: string): ActionResult | null {
+  if (typeof body.project === "string" && body.project.trim() !== "") return null;
+  return { lines: [`Name the project by its id: ${why}.`], ok: false };
 }
 
 /**

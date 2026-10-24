@@ -122,7 +122,12 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "crew.keep", source: "default", value: [] },
   { key: "crew.idleStopMinutes", source: "default", value: 10 },
   { key: "crew.max", source: "default", value: 24 },
-  { key: "crew.maxOpus", source: "default", value: null },
+  {
+    key: "crew.maxOpus",
+    source: "default",
+    unsetWords: "(no machine-wide opus count)",
+    value: null,
+  },
   { key: "crew.memoryGb", source: "default", value: 2 },
   { key: "crew.perLead", source: "default", value: 4 },
   { key: "crew.perLeadOpus", source: "default", value: 2 },
