@@ -1148,6 +1148,62 @@ describe("MS1: the take-over, and what restore puts back", () => {
     });
   });
 
+  test("MS2: the take-over records exactly the keys the card names, and no other", async () => {
+    // A Claude route with an OpenRouter fallback set by hand: no choice writes the OpenRouter
+    // three on this route, so the card names the fallback provider alone, and asks for that one.
+    const w = machine({
+      settings: {
+        ...SEEDED,
+        CLAUDE_MEM_OPENROUTER_API_KEY: OWN_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: `${BACKEND_URL}/v1`,
+        CLAUDE_MEM_OPENROUTER_MODEL: "their-model",
+        CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "openrouter",
+      },
+    });
+    expect(readClaudeMemFacts(w.paths).handKeys).toEqual(["CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER"]);
+    const taken = await takeOver(w.paths);
+    expect(taken.lines.slice(0, 2)).toEqual([
+      "The take-over recorded one value of claude-mem's as cc-smart-dev-kit's: each stays exactly as it is until you pick another.",
+      '  ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "openrouter"',
+    ]);
+    // On a backend route the OpenRouter three are the fallback's to write: named then, still
+    // the person's until they are asked for again.
+    expect(
+      await chooseRoute(
+        w.paths,
+        { backend: "omniroute", kind: "backend", model: "glm/flash" },
+        w.check(),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(readClaudeMemFacts(w.paths).handKeys).toEqual([
+      "CLAUDE_MEM_OPENROUTER_BASE_URL",
+      "CLAUDE_MEM_OPENROUTER_MODEL",
+      "CLAUDE_MEM_OPENROUTER_API_KEY",
+    ]);
+    expect(
+      (
+        await chooseFallback(
+          w.paths,
+          { backend: "omniroute", kind: "backend", model: "glm/flash" },
+          w.check(),
+        )
+      ).ok,
+    ).toBe(false);
+    expect(w.settings().CLAUDE_MEM_OPENROUTER_API_KEY).toBe(OWN_KEY);
+  });
+
+  test("MS2: a key setup wrote and the person removed is claude-mem's default, not by hand", () => {
+    const w = machine({ settings: SEEDED, gateway: "scout" });
+    w.setup();
+    const settings = { ...w.settings() };
+    delete settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY;
+    writeFileSync(w.paths.claudeMemSettingsFile, JSON.stringify(settings, null, 2));
+    const facts = readClaudeMemFacts(w.paths);
+    expect(facts.handKeys).toEqual([]);
+    expect(facts.current?.key).toMatchObject({ refusedByHand: false, source: "default" });
+    expect(facts.current?.route.refusedByHand).toBe(false);
+  });
+
   test("MS1: a take-over writes nothing when claude-mem cannot be set at all", async () => {
     const w = machine({ installed: false });
     expect(await takeOver(w.paths)).toEqual({
