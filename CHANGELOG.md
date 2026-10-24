@@ -5,6 +5,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.2.0
 
+- **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
+  tests the level before saving it. A pin wins over the effort Claude Code sends, even when
+  thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
+  when their target leaves, and show in `gateway status`, Slots data, the log and health's
+  recent requests. Claude targets are never pinned. No router restart is needed.
+
 - **claude-mem's route, key and fallback are yours to change — from the portal or your own
   terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every
   change was refused, because the kit never overwrites a value it did not write. The

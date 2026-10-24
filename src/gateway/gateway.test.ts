@@ -592,6 +592,142 @@ describe("affordable backends never see the Claude login", () => {
 
 // ─── Fallback ───────────────────────────────────────────────────────────────────
 
+describe("D64: backend effort pins", () => {
+  for (const input of ["max", "low", undefined, "off"] as const) {
+    it(`the pin wins over ${input ?? "no effort"}, including thinking off`, async () => {
+      const cfg = config();
+      cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+      const r = router([() => Response.json({ content: [] })], { config: cfg });
+      const body = {
+        ...message("cc-smart-dev-kit-scout"),
+        output_config: {
+          format: { type: "json_schema" },
+          ...(input === undefined || input === "off" ? {} : { effort: input }),
+        },
+        ...(input === "off" ? { thinking: { type: "disabled" } } : {}),
+      };
+      await r.handle(clientRequest({ body: JSON.stringify(body) }));
+      expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({
+        effort: "xhigh",
+        format: { type: "json_schema" },
+      });
+      const publicBody: Record<string, unknown> = { ...body };
+      delete publicBody.metadata;
+      expect(JSON.parse(r.calls[0]?.body ?? "{}")).toEqual({
+        ...publicBody,
+        model: "glm-5.3-flash",
+        output_config: { ...body.output_config, effort: "xhigh" },
+      });
+      expect(r.logs.at(-1)).toContain("effort=xhigh pinned");
+      const health = await r.handle(
+        clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }),
+      );
+      expect(await health.json()).toMatchObject({
+        recent: [{ effort: "xhigh", effortPinned: true }],
+      });
+    });
+  }
+
+  it("the judge's backend pin wins over the safety check's implicit none", async () => {
+    const cfg = config();
+    cfg.slots["cc-smart-dev-kit-judge"] = ["omniroute:glm-5.3-flash"];
+    cfg.judgeTested = JUDGE_PROOFS;
+    cfg.effort = { "cc-smart-dev-kit-judge": { "omniroute:glm-5.3-flash": "high" } };
+    const r = router([() => Response.json({})], { config: cfg });
+    await r.handle(
+      clientRequest({
+        body: JSON.stringify({
+          ...message("claude-sonnet-5-5"),
+          system: "You are a security monitor for autonomous AI coding agents.",
+        }),
+      }),
+    );
+    expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+  });
+
+  it("a profile uses the machine pin only while that slot and target remain in its chain", async () => {
+    const cfg = config();
+    cfg.profiles = {
+      same: {},
+      other: { slots: { "cc-smart-dev-kit-scout": ["ollama:deepseek-v4.1-flash"] } },
+    };
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "high" } };
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    for (const profile of ["same", "other"])
+      await r.handle(
+        clientRequest({
+          path: `/p/${profile}/v1/messages`,
+          body: JSON.stringify({
+            ...message("cc-smart-dev-kit-scout"),
+            output_config: { effort: "low" },
+          }),
+        }),
+      );
+    expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+    expect(JSON.parse(r.calls[1]?.body ?? "{}").output_config).toEqual({ effort: "low" });
+  });
+
+  it("a Claude target and the safety check's Claude route never get the backend pin", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+    cfg.slots["cc-smart-dev-kit-scout"] = ["claude-haiku-5-5", "omniroute:glm-5.3-flash"];
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    const body = { ...message("claude-haiku-5-5"), output_config: { effort: "low" } };
+    const sent = JSON.stringify(body);
+    await r.handle(clientRequest({ body: sent }));
+    expect(r.calls[0]?.body).toBe(sent);
+    const guard = {
+      ...body,
+      system: "You are a security monitor for autonomous AI coding agents.",
+      stop_sequences: ["</block>"],
+    };
+    await r.handle(clientRequest({ body: JSON.stringify(guard) }));
+    expect(r.calls[1]?.body).toBe(JSON.stringify(guard));
+    expect(r.logs.some((line) => line.includes(" pinned"))).toBe(false);
+  });
+
+  it("a later backend uses its own pin after fallback; live changes apply on the next request", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "ollama:deepseek-v4.1-flash": "none" } };
+    const r = router(
+      [
+        () => new Response("busy", { status: 503 }),
+        () => Response.json({}),
+        () => Response.json({}),
+      ],
+      { config: cfg },
+    );
+    await r.handle(
+      clientRequest({
+        body: JSON.stringify({
+          ...message("cc-smart-dev-kit-scout"),
+          output_config: { effort: "max" },
+        }),
+      }),
+    );
+    expect(JSON.parse(r.calls[1]?.body ?? "{}").output_config).toEqual({ effort: "none" });
+    cfg.effort["cc-smart-dev-kit-scout"] = { "ollama:deepseek-v4.1-flash": "high" };
+    await r.handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }));
+    expect(JSON.parse(r.calls[2]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+  });
+
+  it("no pin changes nothing; another slot's pin and an explicit target do not apply", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    for (const model of ["cc-smart-dev-kit-affordable", "omniroute:glm-5.3-flash"]) {
+      await r.handle(
+        clientRequest({
+          body: JSON.stringify({ ...message(model), output_config: { effort: "low" } }),
+        }),
+      );
+    }
+    for (const call of r.calls)
+      expect(JSON.parse(call.body ?? "{}").output_config).toEqual({ effort: "low" });
+    expect(r.logs.some((line) => line.includes(" pinned"))).toBe(false);
+  });
+});
+
 describe("fallback", () => {
   const scout = () => clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) });
   const mixed = () => clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-mixed")) });

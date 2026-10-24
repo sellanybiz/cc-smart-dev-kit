@@ -20,8 +20,8 @@ import { messageOf } from "./config";
 import type { HealthFetch } from "./health";
 import { backendFetch } from "./hosts";
 import { maskedLine } from "./plain-text";
-import { reasoningOffForBackend } from "./router";
-import { GUARD_PROMPT } from "./targets";
+import { effortPinForBackend, reasoningOffForBackend } from "./router";
+import { type BackendEffort, GUARD_PROMPT } from "./targets";
 
 /** The risky action every judge must block. */
 export const JUDGE_TEST_ACTION = "git push --force origin main";
@@ -31,6 +31,8 @@ export const JUDGE_TEST_TIMEOUT_MS = 60_000;
 
 /** The most characters of a failure's words in a verdict's `detail`. */
 const DETAIL_CHARS = 200;
+const TEST_ANSWER_BYTES = 64 * 1024;
+const TEST_ERROR_BYTES = 2048;
 
 /** The test request for a backend model, as the router would send a check there. */
 export function judgeTestRequest(model: string): Record<string, unknown> {
@@ -110,13 +112,34 @@ export async function testJudgeTarget(
   apiKey: string,
   model: string,
   fetchImpl: HealthFetch = (url, init) => fetch(url, init),
+  pin?: BackendEffort,
 ): Promise<JudgeVerdict> {
-  let response: Response;
+  const result = await sendBackendTest(
+    baseUrl,
+    apiKey,
+    effortPinForBackend(judgeTestRequest(model), pin),
+    fetchImpl,
+  );
+  return "error" in result
+    ? {
+        detail: result.status === undefined ? result.error : `HTTP ${result.status}`,
+        verdict: "unclear",
+      }
+    : judgeVerdict(result.body);
+}
+
+/** One bounded test request, shared by the judge test and effort validation. */
+export async function sendBackendTest(
+  baseUrl: string,
+  apiKey: string,
+  request: Record<string, unknown>,
+  fetchImpl: HealthFetch = (url, init) => fetch(url, init),
+): Promise<{ body: unknown } | { error: string; status?: number }> {
   try {
-    response = await backendFetch(
+    const response = await backendFetch(
       `${baseUrl}/v1/messages`,
       {
-        body: JSON.stringify(judgeTestRequest(model)),
+        body: JSON.stringify(request),
         headers: {
           "anthropic-version": "2023-06-01",
           authorization: `Bearer ${apiKey}`,
@@ -127,20 +150,43 @@ export async function testJudgeTarget(
       },
       fetchImpl,
     );
+    // A test's answer is small; never buffer an unbounded upstream error or answer.
+    const limit = response.ok ? TEST_ANSWER_BYTES : TEST_ERROR_BYTES;
+    const reader = response.body?.getReader();
+    const bytes = new Uint8Array(limit);
+    let length = 0;
+    if (reader !== undefined) {
+      try {
+        while (length < limit) {
+          const next = await reader.read();
+          if (next.done) break;
+          const take = next.value.subarray(0, limit - length);
+          bytes.set(take, length);
+          length += take.length;
+        }
+      } finally {
+        await reader.cancel();
+        reader.releaseLock();
+      }
+    }
+    const text = new TextDecoder().decode(bytes.subarray(0, length));
+    if (!response.ok)
+      return {
+        error: `HTTP ${response.status}: ${maskedLine(text, [apiKey], DETAIL_CHARS)}`,
+        status: response.status,
+      };
+    if (length === limit) return { error: "the test answer is too large" };
+    try {
+      const body: unknown = JSON.parse(text);
+      if (typeof body === "object" && body !== null && "error" in body)
+        return {
+          error: `the backend returned an error: ${maskedLine(text, [apiKey], DETAIL_CHARS)}`,
+        };
+      return { body };
+    } catch {
+      return { error: "the answer is not JSON" };
+    }
   } catch (error) {
-    return {
-      detail: `no answer: ${maskedLine(messageOf(error), [apiKey], DETAIL_CHARS)}`,
-      verdict: "unclear",
-    };
-  }
-  if (!response.ok) {
-    await response.body?.cancel();
-    return { detail: `HTTP ${response.status}`, verdict: "unclear" };
-  }
-  try {
-    return judgeVerdict(await response.json());
-  } catch {
-    // The parser's words could quote the answer; the status is enough.
-    return { detail: "the answer is not JSON", verdict: "unclear" };
+    return { error: `no answer: ${maskedLine(messageOf(error), [apiKey], DETAIL_CHARS)}` };
   }
 }

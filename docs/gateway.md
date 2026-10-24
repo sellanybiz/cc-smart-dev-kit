@@ -44,7 +44,7 @@ The rules for changing it: `.claude/rules/gateway.md`.
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read, and reads it back when it starts (§ The limit state, the
   status line, the alert).
-- **No prompt text is ever changed.** An affordable backend gets two named format translations
+- **No prompt text is ever changed.** An affordable backend gets the named format translations
   and nothing else (§ What an affordable backend sees).
 - Only this machine can reach the router (§ Local only).
 - It runs from a copy in `~/.local/share/cc-smart-dev-kit/`: as a systemd user unit behind
@@ -414,6 +414,48 @@ The words, each one command (`gateway slot <slot> …`):
   its slot parts (a backup is made first), and it stays on disk one release so a rollback to
   0.5.x still finds it. That is the bug B0 fixes at its root — two homes that disagreed, and a
   slot change that sometimes did not save.
+
+## A backend target's effort pin (D64)
+
+`cc-smart-dev-kit gateway effort <slot> <backend>:<model> <level>` fixes that target's
+reasoning effort in that slot. Levels are `none`, `low`, `medium`, `high`, `xhigh`, `max`;
+`off` removes the pin and follows Claude Code again. The target must already be in the
+slot's active chain. A `claude-…` target is refused: its request still gets only the fields
+that model refuses changed.
+
+Before saving, the command sends one test request through the judge test's shared sender,
+at the chosen effort and with only the backend's key. A refusal shows the backend's reason,
+masked and on one line, and saves nothing. An accepted request proves the backend accepts
+that level, not that every provider honors it without mapping. The router uses the pin from
+its next request; no restart is needed. A judge target must still block the safety test
+at the pinned effort; an answer that allows it saves nothing. Removing a judge pin also tests
+its unpinned effort before saving. Other slots' `off` does not make a request. The test has a
+1,024-token answer budget and a 60-second deadline; it proves one short check, not every
+real safety check's budget or latency.
+
+The config's loose top level holds `effort: { "<slot key>": { "<backend>:<model>": "xhigh" } }`.
+The pin runs through `effortPinForBackend`, after `reasoningOffForBackend`: it wins over
+`max`, `low`, a missing effort, and the `none` added for thinking off. Only
+`output_config.effort` changes; prompts, messages and tools do not. No pin changes an
+explicit one-off target request, an Anthropic route, or a safety check's route to Claude.
+A backend on the judge's own chain uses that judge slot's pin. Machine pins also apply in
+a profile when the same slot and target are still in its effective chain. The worker's tested
+targets that stand in while Claude cannot judge use the judge's unpinned effort, not worker
+pins: those requests belong to the judge slot.
+
+A pin above `none` turns reasoning back on even for short thinking-off calls. A backend may
+spend their small output budget on reasoning and return no visible answer. That is the pin's
+trade-off, not a reason for the router to ignore it.
+
+`slot <slot> claude` saves the pins with the chain in `kept`; `custom` restores them.
+`clear` deletes them, and replacing a chain drops a pin for each target that leaves it.
+An older loose-schema router preserves the new fields but does not apply pins. If its writer
+changes a chain and leaves stale pins, a newer reader ignores and prunes those pins instead
+of rejecting the chain change; the next save removes them from the file.
+`gateway status` shows `[effort xhigh]` beside a pinned target, in active and saved chains.
+The Slots API carries the optional `SlotTarget.effort`. A pinned request's log ends in
+`effort=xhigh pinned`; the health answer's `recent` row has `effort` and `effortPinned: true`.
+These are metadata only; no prompt or answer is logged.
 
 ## The fallback switch
 
@@ -1291,7 +1333,7 @@ The router builds a **new** request for an affordable backend:
   `src/build-info/bun.ts`): the router does not start on an older Bun, `gateway setup`
   does not install it there, and `doctor` skips the gateway checks there
   (`src/gateway/proxy.test.ts`; `docs/design/parts.md` § The Bun it needs).
-- **Prompt text exactly as sent.** Only three named translations, each tested:
+- **Prompt text exactly as sent.** Only the named translations, each tested:
   - `toolSearchForBackend`: with tool search on (the default behind a custom base URL since
     2.1.304; `ENABLE_TOOL_SEARCH=true` forces it), Claude Code marks most tools
     `defer_loading` and answers its `ToolSearch` with `tool_reference` blocks. Anthropic
@@ -1302,6 +1344,8 @@ The router builds a **new** request for an affordable backend:
     `output_config.effort: "none"`, which OmniRoute passes on as `reasoning_effort`.
     Without it, a model that reasons by default spent a 64-token answer on reasoning and
     came back empty. A model in a slot must accept `"none"`.
+  - `effortPinForBackend`: after the thinking-off translation, a slot's backend target gets
+    its pinned `output_config.effort`, whatever Claude Code sent (§ A backend target's effort pin).
   - `thinkingForBackend`: a thinking block the router marked in a backend's answer (§ Model
     slots) gets back the signature that backend wrote; a bare mark loses its `signature`
     field. Nothing else in the body changes.

@@ -55,6 +55,55 @@ function parsed(text: Record<string, unknown>) {
   return result.config;
 }
 
+describe("D64: effort pins", () => {
+  it("accepts none and rejects malformed targets, Claude targets and invalid levels", () => {
+    expect(parseConfig(raw({ effort: { [SCOUT]: { "omniroute:m1": "none" } } }))).toHaveProperty(
+      "config",
+    );
+    for (const effort of [
+      { [SCOUT]: { "omniroute:m1": "turbo" } },
+      { [SCOUT]: { "not-a-target": "high" } },
+      { [SCOUT]: { "claude-sonnet-5-5": "high" } },
+      { "invalid-slot": { "omniroute:m1": "high" } },
+    ])
+      expect(parseConfig(raw({ effort }))).toHaveProperty("error");
+  });
+
+  it("an older writer can turn a pinned slot off or replace its target without invalidating the config", () => {
+    for (const slots of [{}, { [SCOUT]: ["omniroute:m2"] }]) {
+      const cfg = parsed(raw({ slots, effort: { [SCOUT]: { "omniroute:m1": "xhigh" } } }));
+      expect(cfg.slots).toEqual(slots);
+      expect(cfg.effort).toBeUndefined();
+      const file = join(tempDir("old-effort-writer"), "gateway.json");
+      saveConfig(file, cfg);
+      expect(JSON.parse(readFileSync(file, "utf8"))).not.toHaveProperty("effort");
+    }
+    const cfg = parsed(
+      raw({ effort: { [SCOUT]: { "omniroute:m1": "high", "omniroute:gone": "max" } } }),
+    );
+    expect(cfg.effort).toEqual({ [SCOUT]: { "omniroute:m1": "high" } });
+  });
+
+  it("keeps future loose fields while saving active and kept effort pins", () => {
+    const file = join(tempDir("effort-config"), "gateway.json");
+    const cfg = parsed(
+      raw({
+        effort: { [SCOUT]: { "omniroute:m1": "xhigh" } },
+        kept: {
+          "cc-smart-dev-kit-extra": {
+            effort: { "omniroute:m2": "none" },
+            future: true,
+            targets: ["omniroute:m2"],
+          },
+        },
+        future: { untouched: true },
+      }),
+    );
+    saveConfig(file, cfg);
+    expect(loadConfigFile(file)).toEqual(cfg);
+  });
+});
+
 describe("the numbers", () => {
   it("a streaming request is held 240 s at most, a request that does not stream 60 s", () => {
     expect(BREAKER_HOLD_CEILING_MS).toBe(240_000);

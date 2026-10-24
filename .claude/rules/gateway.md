@@ -36,11 +36,13 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
   reaches it with only `model` changed, and only D6's marked blocks gone (the router skips
   the translation when `guard` is set). On the opt-in judge route to an affordable backend, the check gets that backend's named
-  translations (`reasoningOffForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
+  translations (`reasoningOffForBackend`, `effortPinForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
   any request there.
 - An affordable backend gets only the **named format translations**: `toolSearchForBackend`
   (tool search made plain), `reasoningOffForBackend` ("no reasoning" in a form the backend
-  reads) and `thinkingForBackend` (each router-marked thinking block gets back the signature
+  reads), `effortPinForBackend` (a slot/backend pin, after the thinking-off translation; it wins
+  even over `none`, never on a Claude route; `gateway.test.ts` › "D64: backend effort pins")
+  and `thinkingForBackend` (each router-marked thinking block gets back the signature
   its backend wrote; § Answers another target gives for a Claude model). **A new translation, or a new row in a translation's table, needs its
   own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
@@ -109,7 +111,9 @@ safety checks), their ids in § Names. One rule set for all of them:
   cannot). A chain a slot is not using lives in `kept[key]` — saved, never used — and the top
   level stays a loose object, so a 0.5.x router or CLI reads a new config right and writes
   `kept` back untouched. `slot <slot> claude` (or the old `off`) moves the chain and its
-  fallback switch to `kept`; `custom` moves both back; `clear` deletes them. A rollback can
+  fallback switch and backend effort pins to `kept`; `custom` moves them back; `clear` deletes them.
+  A target that leaves a chain loses its pin. `gateway effort` tests a backend's level before
+  saving it, through the judge test's shared sender; a refusal saves nothing. A rollback can
   never turn a switched-off model back on.
 - **No chain = Claude = plain Claude**: the request goes to Anthropic byte for byte, the id it
   carried included. A slot-named request for a Claude slot gets a 400 that says what to do;

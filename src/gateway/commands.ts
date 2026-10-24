@@ -49,6 +49,7 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_FIRST_BYTE_MS,
   DEFAULT_PORT,
+  effortPin,
   fallbackOn,
   type GatewayConfig,
   historyRetentionDays,
@@ -78,11 +79,17 @@ import {
   historySeries,
   historyWords,
 } from "./history-read";
-import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
+import {
+  JUDGE_TEST_ACTION,
+  judgeTestRequest,
+  judgeVerdict,
+  sendBackendTest,
+  testJudgeTarget,
+} from "./judge-test";
 import { formatLimitState, parseLimitState } from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { decisionWords, type ProjectGatewayState } from "./project-state";
-import { startRouter } from "./router";
+import { effortPinForBackend, startRouter } from "./router";
 import {
   checkRouterPort,
   type InstallOptions,
@@ -108,6 +115,8 @@ import {
 } from "./settings";
 import { askSetupQuestions, type SetupAnswers } from "./setup-questions";
 import {
+  BACKEND_EFFORT_LEVELS,
+  type BackendEffort,
   FAMILY_SLOTS,
   formatTarget,
   isModelSlot,
@@ -158,6 +167,9 @@ Commands:
                          rests? Off: only the first answers, and the rest stay saved.
                          On by default for scout, worker and judge; off for opus, fable.
                          "fallback judge off": Claude alone judges.
+  effort <slot> <target> <level>|off
+                         Pin a backend target's effort (${BACKEND_EFFORT_LEVELS.join(", ")}).
+                         Tests the target before saving; off follows Claude Code again.
   breaker <slot> on|off  When every target of a slot is limited or down, may the router hold
                          the request for a while and then ask Claude Code to retry? Off: the
                          last answer goes back at once. On by default for scout, worker,
@@ -703,6 +715,21 @@ function withSwitch(
   return next;
 }
 
+/** Pins travel with their chain; omit empty records when a target leaves. */
+function withEffort(
+  config: GatewayConfig,
+  slot: string,
+  pins: Record<string, BackendEffort> | undefined,
+): GatewayConfig {
+  const effort = { ...config.effort };
+  delete effort[slot];
+  if (pins !== undefined && Object.keys(pins).length > 0) effort[slot] = pins;
+  const next = { ...config };
+  if (Object.keys(effort).length === 0) delete next.effort;
+  else next.effort = effort;
+  return next;
+}
+
 /** The config with every switch of `slot` back at its default: a slot with no chain has none. */
 function withoutSwitches(config: GatewayConfig, slot: string): GatewayConfig {
   return SWITCH_FIELDS.reduce((next, field) => withSwitch(next, field, slot, null), config);
@@ -962,6 +989,8 @@ export interface SlotPlan {
    * chain of their own for it): the config refuses a switch on a slot with no chain.
    */
   profiles?: string[];
+  oldEffort?: Record<string, BackendEffort>;
+  removedEffort?: Record<string, BackendEffort>;
 }
 
 /** The planned config, checked as a whole (an alias that still points at the slot, say). */
@@ -1014,7 +1043,25 @@ export function planSlotChange(
   const old = current.slots[key] ?? [];
   const kept = keptChain(current, key);
   const name = slotName(key);
-  const base = withoutModelSlot(current, key);
+  const pins = current.effort?.[key] ?? kept?.effort;
+  const base = withEffort(withoutModelSlot(current, key), key, undefined);
+  const plan = (
+    change: Omit<SlotPlan, "config">,
+    config: GatewayConfig,
+  ): SlotPlan | { error: string } => {
+    const after = config.effort?.[key] ?? keptChain(config, key)?.effort ?? {};
+    const removed = Object.fromEntries(
+      Object.entries(pins ?? {}).filter(([target]) => !Object.hasOwn(after, target)),
+    );
+    return checkedPlan(
+      {
+        ...change,
+        ...(current.effort?.[key] === undefined ? {} : { oldEffort: current.effort[key] }),
+        ...(Object.keys(removed).length === 0 ? {} : { removedEffort: removed }),
+      },
+      config,
+    );
+  };
 
   if (SLOT_WORDS.claude.includes(word)) {
     if (old.length === 0) {
@@ -1022,32 +1069,40 @@ export function planSlotChange(
         error:
           kept === null
             ? `${key} is already Claude`
-            : `${key} is already Claude; its chain is saved, not in use: ${kept.targets.join(" → ")} (to use it: ${COMMAND} gateway slot ${name} custom)`,
+            : `${key} is already Claude; its chain is saved, not in use: ${chainWithEffort(kept.targets, kept.effort)} (to use it: ${COMMAND} gateway slot ${name} custom)`,
       };
     }
     // The judge's fallback switch stays: with no judge chain it still says whether the
     // worker's tested targets stand in while Claude is limited or down (D44). Every other
     // slot's switch travels with the chain, into `kept`.
     if (key === JUDGE_SLOT) {
-      return checkedPlan(
+      return plan(
         { key, kind: "claude", next: [], old },
-        withKept(withoutSlot(base, key), key, { targets: old }),
+        withKept(withoutSlot(base, key), key, {
+          targets: old,
+          ...(pins === undefined ? {} : { effort: pins }),
+        }),
       );
     }
     const fallback = setFallback(current, key);
-    const saved: KeptChain = { targets: old, ...(fallback === undefined ? {} : { fallback }) };
+    const saved: KeptChain = {
+      targets: old,
+      ...(fallback === undefined ? {} : { fallback }),
+      ...(pins === undefined ? {} : { effort: pins }),
+    };
     const orphaned = withoutOrphanProfileSwitches(
       withKept(withoutSwitches(withoutSlot(base, key), key), key, saved),
       key,
     );
-    return checkedPlan(
+    return plan(
       { key, kind: "claude", next: [], old, profiles: orphaned.profiles },
       orphaned.config,
     );
   }
 
   if (SLOT_WORDS.custom.includes(word)) {
-    if (old.length > 0) return { error: `${key} is already Custom: ${old.join(" → ")}` };
+    if (old.length > 0)
+      return { error: `${key} is already Custom: ${chainWithEffort(old, current.effort?.[key])}` };
     if (kept === null) {
       return {
         error: `${key} has no saved chain, so it stays Claude. Give it one: ${COMMAND} gateway slot ${name} <targets>`,
@@ -1058,11 +1113,11 @@ export function planSlotChange(
       return { error: `${key}'s saved chain cannot be used: ${problem}` };
     }
     const back = withKept(
-      { ...base, slots: { ...base.slots, [key]: [...kept.targets] } },
+      withEffort({ ...base, slots: { ...base.slots, [key]: [...kept.targets] } }, key, kept.effort),
       key,
       null,
     );
-    return checkedPlan(
+    return plan(
       { key, kind: "custom", next: [...kept.targets], old },
       key === JUDGE_SLOT || kept.fallback === undefined
         ? back
@@ -1083,7 +1138,7 @@ export function planSlotChange(
       ),
       key,
     );
-    return checkedPlan(
+    return plan(
       { key, kind: "clear", next: [], old, profiles: orphaned.profiles },
       orphaned.config,
     );
@@ -1099,9 +1154,13 @@ export function planSlotChange(
     kept?.fallback !== undefined && setFallback(replaced, key) === undefined
       ? withSwitch(replaced, "fallback", key, kept.fallback)
       : replaced;
-  return checkedPlan(
+  return plan(
     { key, kind: "chain", next, old },
-    { ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } },
+    withEffort(
+      { ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } },
+      key,
+      Object.fromEntries(Object.entries(pins ?? {}).filter(([target]) => next.includes(target))),
+    ),
   );
 }
 
@@ -1187,7 +1246,7 @@ function claudeWords(config: GatewayConfig, key: string): string {
 /** A chain saved, not in use, in words, with the command that uses it again. */
 function keptWords(key: string, kept: KeptChain): string {
   const fallback = kept.fallback ?? fallbackOn({}, key);
-  return `saved, not in use: ${kept.targets.join(" → ")}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
+  return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
 /** The trade-off of a judge other than Claude, said wherever one is set or shown. */
@@ -1271,7 +1330,9 @@ function printSlots(config: GatewayConfig, out: Out, print: (line: string) => vo
           : "your own judge: it judges the checks in this order",
       );
     }
-    print(`  ${key.padEnd(16)} Custom: ${targets.join(" → ")}  (${notes.join("; ")})`);
+    print(
+      `  ${key.padEnd(16)} Custom: ${chainWithEffort(targets, config.effort?.[key])}  (${notes.join("; ")})`,
+    );
     if (key === JUDGE_SLOT) out.line("warn", JUDGE_WARNING, { indent: 4 });
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
@@ -1418,15 +1479,21 @@ function dropFallbackRecord(statePath: string, slot: string): void {
 /** What a saved slot change did, in the lines `gateway slot` prints first. */
 function slotChangeLines(plan: SlotPlan): string[] {
   const before =
-    plan.old.length > 0 ? plan.old.join(" → ") : plan.kind === "chain" ? "(new)" : "Claude";
+    plan.old.length > 0
+      ? chainWithEffort(plan.old, plan.oldEffort)
+      : plan.kind === "chain"
+        ? "(new)"
+        : "Claude";
   const now =
     plan.next.length > 0
-      ? `${plan.next.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`
+      ? `${chainWithEffort(plan.next, plan.config.effort?.[plan.key])}  (${fallbackWords(plan.config, plan.key)})`
       : claudeWords(plan.config, plan.key);
   const lines = [`${plan.key}: ${before}`, `  now: ${now}`];
   const savedChain = keptChain(plan.config, plan.key);
   if (savedChain !== null) lines.push(`  ${keptWords(plan.key, savedChain)}`);
   if (plan.kind === "clear") lines.push("  No chain is saved for it now.");
+  for (const [target, effort] of Object.entries(plan.removedEffort ?? {}))
+    lines.push(`  ${target}: effort ${effort} removed (the target left the chain)`);
   return lines;
 }
 
@@ -1487,6 +1554,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         backend.apiKey,
         parsed.target.model,
         ctx.apiFetch,
+        effortPin(first.config, first.key, text),
       );
       if (result.verdict !== "block") {
         throw new Error(
@@ -1609,12 +1677,101 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
   } else {
     printSlotChange(out, [
       change,
-      `  ${targets.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`,
+      `  ${chainWithEffort(targets, plan.config.effort?.[plan.key])}  (${fallbackWords(plan.config, plan.key)})`,
       plan.now
         ? "  The next target answers when the one before it fails or rests."
         : "  Only the first target answers; when it fails, its error goes back to Claude Code.",
     ]);
   }
+  out.verdict("ok", ROUTER_TAKES_IT);
+  return 0;
+}
+
+/** The chain's display, shared by status and an effort change. */
+export function chainWithEffort(
+  targets: readonly string[],
+  pins: Readonly<Record<string, BackendEffort>> = {},
+): string {
+  return targets
+    .map((target) => `${target}${Object.hasOwn(pins, target) ? ` [effort ${pins[target]}]` : ""}`)
+    .join(" → ");
+}
+
+/** Refuse before any network request or write. */
+function effortTarget(config: GatewayConfig, slot: string, target: string) {
+  const key = slotKeyFromArg(slot);
+  if (key === null) throw new Error(notSlotName(slot));
+  const parsed = parseTarget(target);
+  if ("error" in parsed) throw new Error(parsed.error);
+  if (parsed.target.kind === "anthropic")
+    throw new Error(
+      "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed",
+    );
+  if (!Object.hasOwn(config.slots, key) || !config.slots[key]?.includes(target))
+    throw new Error(`${target} is not in ${key}'s chain`);
+  const backend = config.backends[parsed.target.backend];
+  if (backend === undefined) throw new Error(`backend ${parsed.target.backend} is not configured`);
+  return { backend, key, model: parsed.target.model };
+}
+
+async function commandEffort(ctx: GatewayContext, args: string[]): Promise<number> {
+  const [slot, target, level, ...extra] = args;
+  if (slot === undefined || target === undefined || level === undefined || extra.length > 0) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  const parsed = z.enum(BACKEND_EFFORT_LEVELS).safeParse(level);
+  if (level !== "off" && !parsed.success)
+    throw new Error(`effort must be ${BACKEND_EFFORT_LEVELS.join(", ")}, or off`);
+  const pin = parsed.success ? parsed.data : undefined;
+  const path = ctx.paths.gatewayConfigFile;
+  const before = loadConfigFile(path);
+  const checked = effortTarget(before, slot, target);
+  if (pin !== undefined || checked.key === JUDGE_SLOT) {
+    const result = await sendBackendTest(
+      checked.backend.baseUrl,
+      checked.backend.apiKey,
+      effortPinForBackend(judgeTestRequest(checked.model), pin),
+      ctx.apiFetch,
+    );
+    if ("error" in result)
+      throw new Error(
+        `${target} refused effort ${pin ?? "none (unpinned)"}: ${result.error}. Nothing was saved.`,
+      );
+    if (checked.key === JUDGE_SLOT && judgeVerdict(result.body).verdict !== "block")
+      throw new Error(
+        `${target} did not block the judge test at effort ${pin ?? "none (unpinned)"} (${judgeVerdict(result.body).detail}). Nothing was saved.`,
+      );
+  }
+  const now = await withLock(
+    ctx.paths.stateDir,
+    () => {
+      const config = loadConfigFile(path);
+      const current = effortTarget(config, slot, target);
+      if (
+        current.backend.baseUrl !== checked.backend.baseUrl ||
+        current.backend.apiKey !== checked.backend.apiKey ||
+        JSON.stringify(config.slots[current.key]) !== JSON.stringify(before.slots[checked.key]) ||
+        effortPin(config, current.key, target) !== effortPin(before, checked.key, target)
+      ) {
+        throw new Error(
+          "the backend, chain or effort changed while testing. Nothing was saved; try again.",
+        );
+      }
+      const pins = { ...config.effort?.[current.key] };
+      if (pin === undefined) delete pins[target];
+      else pins[target] = pin;
+      const next = withEffort(config, current.key, pins);
+      saveConfig(path, next);
+      return next;
+    },
+    { waitMs: 10_000 },
+  );
+  const out = gatewayOut(ctx);
+  out.line(
+    "ok",
+    `${checked.key}: ${chainWithEffort(now.slots[checked.key] ?? [], now.effort?.[checked.key])}`,
+  );
   out.verdict("ok", ROUTER_TAKES_IT);
   return 0;
 }
@@ -1641,7 +1798,7 @@ async function commandBreaker(ctx: GatewayContext, args: string[]): Promise<numb
   const out = gatewayOut(ctx);
   printSlotChange(out, [
     `${plan.key}: breaker ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`,
-    `  ${targets.join(" → ")}  (${breakerWords(plan.config, plan.key) ?? ""})`,
+    `  ${chainWithEffort(targets, plan.config.effort?.[plan.key])}  (${breakerWords(plan.config, plan.key) ?? ""})`,
     plan.now
       ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry."
       : "  While every target is limited or down, the last answer goes back to Claude Code at once.",
@@ -2607,6 +2764,8 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return commandSlot(ctx, rest);
     case "fallback":
       return commandFallback(ctx, rest);
+    case "effort":
+      return commandEffort(ctx, rest);
     case "breaker":
       return commandBreaker(ctx, rest);
     case "status":

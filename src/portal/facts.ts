@@ -38,6 +38,7 @@ import { judgeDefaultWords } from "../gateway/commands";
 import {
   breakerOn,
   DEFAULT_PORT,
+  effortPin,
   fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
@@ -402,6 +403,8 @@ export async function routerLog(
 // ── Slots ───────────────────────────────────────────────────────────────────────
 
 export interface SlotTarget {
+  /** The backend's pinned effort, absent while following Claude Code. */
+  effort?: string;
   /** The target as the config spells it. */
   target: string;
   /** `Claude login`, or the backend's name. */
@@ -503,10 +506,22 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
     const on = targets !== undefined;
-    const targetRow = (target: string): SlotTarget => {
+    const targetRow = (target: string, saved = false): SlotTarget => {
+      const kept = keptChain(config, key);
+      const pin = effortPin(
+        saved && kept !== null
+          ? {
+              slots: { [key]: kept.targets },
+              effort: kept.effort === undefined ? {} : { [key]: kept.effort },
+            }
+          : config,
+        key,
+        target,
+      );
       const parsed = parseTarget(target);
       const known = "target" in parsed ? parsed.target : null;
       return {
+        ...(pin === undefined ? {} : { effort: pin }),
         from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
         restingFor: resting.get(target) ?? null,
         target,
@@ -524,7 +539,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
           : {
               // The switch saved with the chain, else the slot's own default.
               fallback: kept.fallback ?? fallbackOn({}, key),
-              targets: kept.targets.map(targetRow),
+              targets: kept.targets.map((target) => targetRow(target, true)),
             },
       key,
       kind: on ? meta.kind : "off",
@@ -533,7 +548,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
       note: slotNote(config, key),
       role: meta.kind,
       stamp: slotStamp(config, key),
-      targets: (targets ?? []).map(targetRow),
+      targets: (targets ?? []).map((target) => targetRow(target)),
     });
   }
   return rows;

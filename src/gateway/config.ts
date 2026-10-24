@@ -25,6 +25,8 @@ import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
 import { HISTORY_MAX_RETENTION_DAYS, HISTORY_RETENTION_DAYS } from "./history";
 import {
+  BACKEND_EFFORT_LEVELS,
+  type BackendEffort,
   claudeFamily,
   FALLBACK_OFF_BY_DEFAULT,
   isBackendName,
@@ -86,6 +88,7 @@ const backendSchema = z.looseObject({
  * every target before the chain is used again.
  */
 const keptChainSchema = z.looseObject({
+  effort: z.record(z.string(), z.enum(BACKEND_EFFORT_LEVELS)).optional(),
   fallback: z.boolean().optional(),
   targets: z.array(z.string().min(1)).min(1),
 });
@@ -134,6 +137,8 @@ export const gatewayConfigSchema = z
      * migration writes them, so a machine's old names keep working while it moves.
      */
     aliases: z.record(z.string(), z.string()).default({}),
+    /** Per slot and backend target; kept by older loose-schema readers. */
+    effort: z.record(z.string(), z.record(z.string(), z.enum(BACKEND_EFFORT_LEVELS))).optional(),
     // Only Anthropic: Claude requests carry the person's own login, so no config edit may
     // point them anywhere else. (Tests inject a fake through the router.)
     anthropicBaseUrl: z.literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
@@ -229,6 +234,14 @@ export const gatewayConfigSchema = z
     version: z.literal(1),
   })
   .superRefine((config, ctx) => {
+    for (const [slot, pins] of Object.entries(config.effort ?? {})) {
+      if (!isSlotKey(slot))
+        ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+      effortIssues(pins, ["effort", slot], ctx);
+    }
+    for (const [slot, saved] of Object.entries(config.kept ?? {})) {
+      effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
+    }
     for (const slot of Object.keys(config.slots)) {
       if (!isSlotKey(slot))
         ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
@@ -354,6 +367,39 @@ function chainIssues(
       });
     }
   });
+}
+
+/** A pin names only a valid backend target; stale chain membership is pruned on read. */
+function effortIssues(
+  pins: Record<string, BackendEffort>,
+  path: (number | string)[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const target of Object.keys(pins)) {
+    const parsed = parseTarget(target);
+    const error =
+      "error" in parsed
+        ? parsed.error
+        : parsed.target.kind === "anthropic"
+          ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed"
+          : null;
+    if (error !== null) ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
+  }
+}
+
+/** The effective slot's pin, never one for a Claude target or a target outside its chain. */
+export function effortPin(
+  config: Pick<GatewayConfig, "effort" | "slots">,
+  slot: string,
+  target: string,
+): BackendEffort | undefined {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed) || parsed.target.kind !== "backend") return undefined;
+  if (!Object.hasOwn(config.slots, slot) || !config.slots[slot]?.includes(target)) return undefined;
+  const pins = config.effort;
+  if (pins === undefined || !Object.hasOwn(pins, slot)) return undefined;
+  const own = pins[slot];
+  return own !== undefined && Object.hasOwn(own, target) ? own[target] : undefined;
 }
 
 /** One profile as the config holds it. */
@@ -679,7 +725,32 @@ export class ConfigError extends Error {
 /** Check a parsed value against the schema; the reason in words when it fails. */
 export function parseConfig(raw: unknown): { config: GatewayConfig } | { error: string } {
   const result = gatewayConfigSchema.safeParse(raw);
-  return result.success ? { config: result.data } : { error: z.prettifyError(result.error) };
+  if (!result.success) return { error: z.prettifyError(result.error) };
+  const config = result.data;
+  // An older loose-schema writer preserves pins while changing chains. Ignore and prune
+  // those stale entries, never reject the new chain and keep routing on an old one.
+  if (config.effort !== undefined) {
+    const effort = Object.fromEntries(
+      Object.entries(config.effort).flatMap(([slot, pins]) => {
+        const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+        const active = Object.fromEntries(
+          Object.entries(pins).filter(([target]) => chain?.includes(target)),
+        );
+        return Object.keys(active).length === 0 ? [] : [[slot, active]];
+      }),
+    );
+    if (Object.keys(effort).length === 0) delete config.effort;
+    else config.effort = effort;
+  }
+  for (const saved of Object.values(config.kept ?? {})) {
+    if (saved.effort === undefined) continue;
+    const pins = Object.fromEntries(
+      Object.entries(saved.effort).filter(([target]) => saved.targets.includes(target)),
+    );
+    if (Object.keys(pins).length === 0) delete saved.effort;
+    else saved.effort = pins;
+  }
+  return { config };
 }
 
 /**

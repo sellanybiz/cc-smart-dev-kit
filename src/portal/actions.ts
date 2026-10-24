@@ -45,6 +45,7 @@ import {
 } from "../gateway/commands";
 import { notSlotName } from "../gateway/commands-chains";
 import {
+  effortPin,
   type GatewayConfig,
   keptChain,
   loadConfigFile,
@@ -334,7 +335,13 @@ async function testTargets(
       continue;
     }
     if (judge) {
-      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      const result = await testJudgeTarget(
+        backend.baseUrl,
+        backend.apiKey,
+        parsed.target.model,
+        undefined,
+        effortPin(config, slot, text),
+      );
       const detail = shownDetail(result.detail, keys);
       results.push({
         detail,

@@ -11824,6 +11824,7 @@ var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
 var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/targets.ts
+var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "cc-smart-dev-kit-";
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
@@ -11929,6 +11930,7 @@ var backendSchema = looseObject({
   baseUrl
 });
 var keptChainSchema = looseObject({
+  effort: record(string2(), _enum(BACKEND_EFFORT_LEVELS)).optional(),
   fallback: boolean2().optional(),
   targets: array(string2().min(1)).min(1)
 });
@@ -11945,6 +11947,7 @@ var profileSchema = looseObject({
 });
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
+  effort: record(string2(), record(string2(), _enum(BACKEND_EFFORT_LEVELS))).optional(),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
@@ -11964,6 +11967,14 @@ var gatewayConfigSchema = looseObject({
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
+  for (const [slot, pins] of Object.entries(config.effort ?? {})) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+    effortIssues(pins, ["effort", slot], ctx);
+  }
+  for (const [slot, saved] of Object.entries(config.kept ?? {})) {
+    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
+  }
   for (const slot of Object.keys(config.slots)) {
     if (!isSlotKey(slot))
       ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
@@ -12068,6 +12079,14 @@ function chainIssues(config, targets, path, ctx) {
     }
   });
 }
+function effortIssues(pins, path, ctx) {
+  for (const target of Object.keys(pins)) {
+    const parsed = parseTarget(target);
+    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
+    if (error !== null)
+      ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
+  }
+}
 function profileSlotChain(config, profile, slot) {
   const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
   if (own === "claude")
@@ -12138,7 +12157,30 @@ class ConfigError extends Error {
 }
 function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
-  return result.success ? { config: result.data } : { error: prettifyError(result.error) };
+  if (!result.success)
+    return { error: prettifyError(result.error) };
+  const config = result.data;
+  if (config.effort !== undefined) {
+    const effort = Object.fromEntries(Object.entries(config.effort).flatMap(([slot, pins]) => {
+      const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+      const active = Object.fromEntries(Object.entries(pins).filter(([target]) => chain?.includes(target)));
+      return Object.keys(active).length === 0 ? [] : [[slot, active]];
+    }));
+    if (Object.keys(effort).length === 0)
+      delete config.effort;
+    else
+      config.effort = effort;
+  }
+  for (const saved of Object.values(config.kept ?? {})) {
+    if (saved.effort === undefined)
+      continue;
+    const pins = Object.fromEntries(Object.entries(saved.effort).filter(([target]) => saved.targets.includes(target)));
+    if (Object.keys(pins).length === 0)
+      delete saved.effort;
+    else
+      saved.effort = pins;
+  }
+  return { config };
 }
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;

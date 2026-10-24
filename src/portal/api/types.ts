@@ -125,7 +125,7 @@ export interface OverviewAnswer extends NotSetUp, OverviewData {
   jobs: { budgetGb: number; heldGb: number; waiting: number };
 }
 
-/** `GET /api/slots`: the Slots page, with the switches the page draws. */
+/** `GET /api/slots`: the Slots page, its switches and each backend target's optional effort pin. */
 export interface SlotsAnswer extends NotSetUp, SlotsData {
   switches: SwitchFacts;
 }

@@ -82,6 +82,36 @@ import {
 } from "./settings";
 import { isAutoModeGuard } from "./targets";
 
+describe("D64: a chain carries its effort pins", () => {
+  it("Claude saves them, custom restores them, replacement prunes them and clear removes them", () => {
+    const key = "cc-smart-dev-kit-scout";
+    const cfg: GatewayConfig = {
+      ...config(),
+      effort: {
+        [key]: { "omniroute:glm-5.3-flash": "xhigh", "ollama:deepseek-v4.1-flash": "none" },
+      },
+    };
+    const take = (result: ReturnType<typeof planSlotChange>) => {
+      if ("error" in result) throw new Error(result.error);
+      return result.config;
+    };
+    const saved = take(planSlotChange(cfg, "scout", "claude", {}));
+    expect(saved.effort).toBeUndefined();
+    expect(saved.kept?.[key]?.effort).toEqual({
+      "omniroute:glm-5.3-flash": "xhigh",
+      "ollama:deepseek-v4.1-flash": "none",
+    });
+    const listed = { omniroute: ["glm-5.3-flash"], ollama: ["deepseek-v4.1-flash"] };
+    const back = take(planSlotChange(saved, "scout", "custom", listed));
+    expect(back.effort).toEqual(cfg.effort);
+    const changed = take(planSlotChange(back, "scout", "omniroute:glm-5.3-flash", listed));
+    expect(changed.effort).toEqual({ [key]: { "omniroute:glm-5.3-flash": "xhigh" } });
+    const cleared = take(planSlotChange(changed, "scout", "clear", {}));
+    expect(cleared.effort).toBeUndefined();
+    expect(take(planSlotChange(saved, "scout", "clear", {})).kept).toBeUndefined();
+  });
+});
+
 const NO_POSIX_MODES = process.platform === "win32";
 
 /** A made-up port for the fake probes: never the default one, where a real router may run. */
