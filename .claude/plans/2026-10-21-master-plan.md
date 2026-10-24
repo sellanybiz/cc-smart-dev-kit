@@ -597,6 +597,22 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   AR1 (the archive, started at once from CL2B), JW1 (the project file's layout) and LH1's
   `crew.handoffTokens` were added to 1.2.1; LH1's three load-only tests became LT1.
 
+- 2026-10-25: **GW1 passed the gate** (head `a551fcf`): D65 as an "effective last index" (a
+  trailing Claude target at a known limit and resting is dropped from `last`), and the alias fix
+  (`aliasError`: an alias to a slot in Claude mode, `custom` or `clear` stays valid); full check
+  6,489 pass, 0 fail, both validates; its Opus `xhigh` review: no High, one Medium and four Lows
+  fixed. **The lead's calls on its two open choices (within D65; the owner may overrule):** (1)
+  a re-ask of a limited Claude fallback that still answers 429, with a backend before it, counts
+  for the breaker (held with the breaker on), because D65 promises the breaker's 429 there and a
+  re-ask every 10 minutes would otherwise bring the incident back; (2) a judge chain skips the
+  same way and still never holds ("every slot the same way"; the owner's judge is Claude alone
+  today). **For the 1.2.0 PR body:** version skew — an older router or CLI refuses a config the
+  1.2.0 CLI wrote after `slot <x> claude` with an alias to that slot; `gateway setup` restarts the
+  router onto 1.2.0. **For the split review (router area):** `noteFallback` (~1374) has the same
+  `toISOString` RangeError on a reset no date can hold (root fix: bound the reset in
+  `planUsageLimit` and the limit state's schema); the `lastTimedOut` comment is stale (the
+  breaker's `lastWaitMs` sets it too).
+
 ### For the owner in the morning
 
 1. **C1 first (it is not merged):** read `.claude/worktrees/crew-C1-core-trim/plugin/instructions/core.md` (128 lines) and its report's list of rules moved and **deleted** (`~/.claude/cc-smart-dev-kit/crew/<repo>/reports/C1-core-trim-*.json`). The deleted ones are yours: say which come back. Then, in a normal terminal, `cd <the repo>/.claude/worktrees/crew-C1-core-trim && bun run evals fast` (no `--save-baseline`): no case may score below today's baseline. Then the lead merges C1 and opens the PR. Read **Decided overnight** below too.
