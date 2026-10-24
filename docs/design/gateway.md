@@ -143,8 +143,12 @@ An optional local router between Claude Code and the model providers
 - A changed value reaches a running session within about a second, but a removed key does not:
   the session keeps the router's address until it restarts (both proved 2026-10-23;
   `claude-code-contract.md` § The gateway). So `restore` takes the gateway out in
-  two stages: first the env keys (the router keeps running), then, after the sessions
-  restarted, the router (asked first). **Stage 1 counts the keys in every settings file
+  two stages: first each settings file's address key is **written to Anthropic's own address**
+  instead of being removed (GP5) — every running session switches by itself, and the key stays
+  owned and tracked — and the rest is restored but the router; then, once no file points at the
+  router, the router is stopped and removed (asked first), and the address keys are taken back
+  with a plain removal. The stop waits for a second run because nothing proves a request in
+  flight is safe when the router stops; the sessions themselves need no restart. **Stage 1 counts the keys in every settings file
   cc-smart-dev-kit wrote** (`changed.json`'s entries that hold owned JSON keys), a project's own
   `ANTHROPIC_BASE_URL` included (GP4a): a project set to `on` keeps its sessions on the router
   too, so the stop waits for them the same way. Stage 1 also puts back the launcher, and when it had

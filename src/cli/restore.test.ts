@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import { setGatewayBaseUrl } from "../gateway/settings";
 import { CHOICES_FILE, TODO_TOOLS_KEY } from "../machine/claude-mem";
@@ -175,14 +176,19 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     });
 
     expect(await runRestore(paths, options(true))).toBe(0);
-    // Stage 1: the key is taken back (the personal file, which the kit created, goes with its
-    // last key), and the router stays for the sessions that still use it.
-    expect(existsSync(personal)).toBe(false);
+    // Stage 1 (GP5): the file's address is written to Anthropic's own instead of removed, so
+    // the sessions running in that project switch by themselves within about a second. The
+    // address key stays (owned), and so does the file the kit created for it; the router stays
+    // up until the second run.
+    expect(JSON.parse(readFileSync(personal, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    expect(printed.join("\n")).toContain("Every running Claude session switches to Anthropic");
     expect(existsSync(paths.routerCopy)).toBe(true);
-    expect(printed.join("\n")).toContain("Restart every running Claude session");
-    // Stage 2, after those sessions restarted: no such key is left in any file, so the
-    // router goes.
+    // Stage 2, once that change has had its second: nothing of ours points at the router any
+    // more, so the address key is taken back with the rest, and the file goes with its last key.
     expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(personal)).toBe(false);
     expect(existsSync(paths.routerCopy)).toBe(false);
   });
 
@@ -205,6 +211,8 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
 
     expect(await runRestore(paths, options(true))).toBe(0);
     expect(existsSync(paths.routerCopy)).toBe(false);
-    expect(printed.join("\n")).not.toContain("Restart every running Claude session");
+    // Nothing switches here: no session of that project ever pointed at the router once the
+    // project was off with Anthropic's own address (GP4a), and stage 1 has nothing to write.
+    expect(printed.join("\n")).not.toContain("switches to Anthropic by itself");
   });
 });

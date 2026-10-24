@@ -19,6 +19,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
+import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { createHistoryWriter } from "../gateway/history";
@@ -1410,27 +1411,33 @@ describe("cc-smart-dev-kit gateway setup: the port", () => {
 });
 
 describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
-  const STAGE_1_KEYS =
+  const STAGE_1_KEYS = `~ ~/.claude/settings.json: set env.ANTHROPIC_BASE_URL to ${DEFAULT_ANTHROPIC_BASE_URL}, removed env.ENABLE_TOOL_SEARCH; everything else kept`;
+
+  /**
+   * `--now` takes both stages in one run, so nothing is written first: every key of ours is
+   * removed plainly (`env` goes with its last one, which the kit created).
+   */
+  const NOW_KEYS =
     "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env; everything else kept";
 
   /**
    * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
    * names the `bun --no-env-file …` form the README's install step uses.
    */
-  const STAGE_1_AGAIN = `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
+  const STAGE_1_AGAIN = `Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
 
   test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
     const home = tempDir("stage-one");
     const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     // No launcher (setup created it, and the first restore removed it): the bun line.
     expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
-      `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=/plugin/bunfig.toml' '/plugin/dist/cli.js' restore`,
+      `Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=/plugin/bunfig.toml' '/plugin/dist/cli.js' restore`,
     );
     // A launcher of the person's own, put back by the restore: the plain command works.
     mkdirSync(paths.binDir, { recursive: true });
     writeFileSync(join(paths.binDir, "cc-smart-dev-kit"), "#!/bin/sh\n");
     expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
-      "Restart every running Claude session (they still use the router), then run `cc-smart-dev-kit restore` again to stop and remove the router.",
+      "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run `cc-smart-dev-kit restore` again to stop and remove the router.",
     );
   });
 
@@ -1461,8 +1468,13 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(m.calls().slice(before.length)).toBe("");
     expect(existsSync(m.paths.copy)).toBe(true);
     expect(existsSync(m.paths.unit)).toBe(true);
-    // `env` went with its last key: the settings file before the gateway was set up.
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
+    // The address was set, not removed (GP5): a running session follows a changed value
+    // within about a second, where a removed key would wait for its restart. The key stays
+    // owned, so the second run takes it back.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
 
     // Stage 2: no gateway key left. Stopping a running router still asks first.
     const refused = await m.run(["restore"]);
@@ -1599,7 +1611,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(done.stdout).toStartWith(
       `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
-    expect(done.stdout).toContain(`${STAGE_1_KEYS}\n`);
+    expect(done.stdout).toContain(`${NOW_KEYS}\n`);
     // The warning above is the question: no `is-active --quiet` first. Changed on purpose:
     // the stop asks the unit's state (no --quiet), to wait only for its own port.
     expect(m.calls().slice(before.length)).toBe(
@@ -1757,7 +1769,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
 });
 
 describe("cc-smart-dev-kit gateway on / off", () => {
-  test("on sets the env keys as owned keys; off removes them again", async () => {
+  test("on sets the env keys as owned keys; off writes Anthropic's own address instead of removing it (GP5)", async () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port);
@@ -1779,20 +1791,68 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     const off = await m.run(["gateway", "off"]);
     expect(off.stdout).toBe(
       [
+        `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> "${DEFAULT_ANTHROPIC_BASE_URL}"`,
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: "true" -> (none)',
-        `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> (none)`,
-        "~ ~/.claude/settings.json: env: {} -> (none)",
         "✓ Done. The gateway is off.",
+        "Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.",
         "Next steps:",
-        "  1. Restart each Claude session: removing a setting needs a restart.",
+        "  1. env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing.",
         "",
       ].join("\n"),
     );
+    // The address stays in the file, owned by cc-smart-dev-kit and holding Anthropic's own
+    // value: `restore` takes it back, and a running session follows the change at once (P7).
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
+    // Off again: nothing to change.
     expect((await m.run(["gateway", "off"])).stdout).toBe(
-      "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.\n",
+      "✓ Nothing to change: the gateway is already off.\n",
     );
-    // `env` went with its last key: the settings file as it was before the gateway wrote there.
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
+    // On again: the same owned key goes back to the router's address.
+    const again = await m.run(["gateway", "on"]);
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).toBe(
+      [
+        '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
+        `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "${DEFAULT_ANTHROPIC_BASE_URL}" -> "http://127.0.0.1:${server.port}"`,
+        "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
+        "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
+        "",
+      ].join("\n"),
+    );
+    // And out again: the third state is the second.
+    expect((await m.run(["gateway", "off"])).stdout).toContain(
+      `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> "${DEFAULT_ANTHROPIC_BASE_URL}"\n`,
+    );
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
+  });
+
+  test("a person's own Anthropic address is already off: off leaves it and never takes it", async () => {
+    const m = machine();
+    // Their own value: cc-smart-dev-kit never wrote this key, so it is theirs (`owned.json`
+    // knows nothing of it). It says the same thing as the address `off` writes (GP5).
+    const settings = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL } }, null, 2)}\n`;
+    writeFileSync(m.paths.settings, settings);
+    const off = await m.runHere(["gateway", "off"]);
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toBe(
+      [
+        "· env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it, and it already points at Anthropic",
+        "✓ Nothing to change: the gateway is already off.",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
+    // `restore` leaves it too: only keys in `owned.json` go.
+    expect((await m.run(["restore"])).stdout).toBe(
+      "Nothing to restore: cc-smart-dev-kit has nothing in any file.\n",
+    );
+    expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
   });
 
   test("off leaves a gateway key someone else set, and says the gateway is not all off", async () => {
@@ -1819,7 +1879,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(off.stdout).toBe(
       [
         "· env.ENABLE_TOOL_SEARCH stays: cc-smart-dev-kit did not set it, and it routes nothing",
-        "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
+        "✓ Nothing to change: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
         "",
       ].join("\n"),
     );

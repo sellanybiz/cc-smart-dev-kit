@@ -17450,6 +17450,30 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
+function offAddressOf(file, stateDir) {
+  let settings;
+  try {
+    settings = readSettings(file);
+  } catch {
+    return { kind: "same" };
+  }
+  const records = ownedRecords(stateDir, realTarget(file));
+  const current = getKey(settings, BASE_URL_PATH);
+  const ours = ownership(records, BASE_URL_PATH, current) === "ours";
+  if (!current.found) {
+    return ours ? { kind: "same" } : { kind: "theirs", present: false };
+  }
+  if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
+    return ours ? { kind: "same" } : { kind: "theirs", present: true };
+  }
+  return ours ? { kind: "write", value: DEFAULT_ANTHROPIC_BASE_URL } : { kind: "theirs", present: true };
+}
 var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -17557,15 +17581,24 @@ function retireOldModelKeys(options) {
 }
 function turnOff(options) {
   const env = readSettings(options.settingsFile).env;
+  const address = offAddressOf(options.settingsFile, options.stateDir);
   const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: REMOVED_ON_OFF.map(envPath),
+    ...address.kind === "write" ? { set: [[BASE_URL_PATH, address.value]] } : {},
+    remove: REMOVED_ON_OFF.filter((key) => key !== BASE_URL_KEY).map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key));
-  return { result, foreign };
+  const foreign = [
+    ...result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key)),
+    ...address.kind === "theirs" && address.present ? [BASE_URL_KEY] : []
+  ];
+  return {
+    foreign,
+    result,
+    switched: address.kind === "write" && result.changes.some((change) => change.after !== undefined)
+  };
 }
 function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
@@ -17603,7 +17636,8 @@ function settingsReport(settingsPath) {
     subagentOverrides
   };
 }
-var BASE_URL_PATH = ["env", "ANTHROPIC_BASE_URL"];
+var BASE_URL_KEY = "ANTHROPIC_BASE_URL";
+var BASE_URL_PATH = ["env", BASE_URL_KEY];
 function setGatewayBaseUrl(options) {
   return applyManagedJson({
     file: options.file,
@@ -17651,9 +17685,9 @@ function profileUrlOf(routerUrl, name) {
 function urlMeaning(url, routerUrl) {
   if (url === null)
     return { profile: null, state: "default" };
-  const clean = url.replace(/\/+$/, "");
-  if (clean === DEFAULT_ANTHROPIC_BASE_URL)
+  if (!baseUrlPointsAtGateway(url))
     return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
   if (clean === routerUrl)
     return { profile: null, state: "on" };
   const prefix = profileUrlOf(routerUrl, "");
@@ -20306,10 +20340,11 @@ async function commandStatus(ctx) {
     printSlots(config, out, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
+  const pointsAtGateway = baseUrlPointsAtGateway(report.baseUrl);
   out.blank();
-  out.line("info", `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
+  out.line("info", `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${pointsAtGateway ? `gateway ON \u2192 ${report.baseUrl}` : `gateway OFF (${report.baseUrl === null ? "no ANTHROPIC_BASE_URL" : report.baseUrl})`}`);
   const routerUrl = gatewayEnv(port).ANTHROPIC_BASE_URL;
-  const pointsElsewhere = config !== null && report.baseUrl !== null && report.baseUrl !== routerUrl;
+  const pointsElsewhere = config !== null && pointsAtGateway && report.baseUrl !== routerUrl;
   if (pointsElsewhere) {
     out.line("warn", `that is not this router's address (${routerUrl})`, {
       detail: [`${COMMAND} gateway on`],
@@ -20334,7 +20369,7 @@ async function commandStatus(ctx) {
     out.verdict("warn", "Claude Code points at another address than this router.");
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
-  } else if (report.baseUrl === null) {
+  } else if (!pointsAtGateway) {
     out.verdict("info", "The router answers, and Claude Code does not use it.");
     out.next([
       {
@@ -20663,7 +20698,7 @@ async function commandSetup(ctx, args) {
 `));
         ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
-      if (settingsReport(paths.settingsFile).baseUrl === null && answers?.turnOn !== true) {
+      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) && answers?.turnOn !== true) {
         ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
       }
       return 0;
@@ -20717,7 +20752,7 @@ function setupFacts(ctx) {
       const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
       return "error" in plan ? plan.error : null;
     },
-    gatewayOn: settingsReport(ctx.paths.settingsFile).baseUrl !== null,
+    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
     pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print
@@ -20858,11 +20893,21 @@ async function projectsStillOn(ctx) {
 }
 async function commandOff(ctx) {
   const { paths } = ctx;
-  const { result, foreign } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
+  const { result, foreign, switched } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH");
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
   for (const key of foreign) {
+    if (key === BASE_URL_KEY && !ownAddressRoutes) {
+      out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it already points at Anthropic`);
+      continue;
+    }
     if (!routing.includes(key)) {
       out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it routes nothing`);
       continue;
@@ -20880,12 +20925,17 @@ async function commandOff(ctx) {
   } else if (staying.length > 0) {
     out.verdict("warn", `The gateway is off on this machine; ${plural(staying.length, "project still points", "projects still point")} at the router (above).`);
   } else if (result.changes.length === 0) {
-    out.verdict("ok", `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`);
+    out.verdict("ok", settingsReport(paths.settingsFile).baseUrl === null ? `Nothing to change: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.` : "Nothing to change: the gateway is already off.");
   } else {
     out.verdict("ok", "Done. The gateway is off.");
-  }
-  if (result.changes.length > 0) {
-    out.next(["Restart each Claude session: removing a setting needs a restart."]);
+    if (switched) {
+      out.say("Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.");
+    }
+    if (result.changes.some((change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH")) {
+      out.next([
+        "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing."
+      ]);
+    }
   }
   return 0;
 }
@@ -23498,7 +23548,7 @@ function switchFacts(ctx, config) {
   }
   const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
   return {
-    gateway: report.baseUrl !== null,
+    gateway: baseUrlPointsAtGateway(report.baseUrl),
     judge: judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
     models: modelSlotsOn(config).length > 0,
@@ -25924,7 +25974,7 @@ function sessionModelOf(input, env) {
 }
 function gatewayOnOf(paths) {
   try {
-    return settingsReport(paths.settingsFile).baseUrl !== null;
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     return false;
   }

@@ -6651,6 +6651,12 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
 var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -7808,7 +7814,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   }
   let gatewayOn = false;
   try {
-    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
+    gatewayOn = baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     gatewayOn = false;
   }

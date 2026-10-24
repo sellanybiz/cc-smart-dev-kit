@@ -1542,12 +1542,15 @@ and `gateway setup` opens both again. One crash is still retried after 2 s.
 
 ### `cc-smart-dev-kit restore`
 
-It undoes the service in **two stages** while the gateway is on. A changed value reaches a
-running session within about a second, but a **removed** key never does: a session keeps the
-`ANTHROPIC_BASE_URL` it last had, so it still points at the router after the keys are gone.
-Stopping the router before those sessions restart would make every one of them fail. That is
-why the two stages stay (`claude-code-contract.md` § The gateway, the row "A running session
-applies a changed `env` value within about a second …").
+It undoes the service in **two stages** while the gateway is on. A running session follows a
+**changed** `ANTHROPIC_BASE_URL` within about a second, but a **removed** key never reaches it:
+a session keeps the address it last had, so it still points at the router after the key is gone.
+So stage 1 **writes Anthropic's own address into each file instead of removing the key**, and
+every running session switches by itself (`claude-code-contract.md` § The gateway, the row "A
+running session applies a changed `env` value within about a second …"). The key stays owned and
+its file stays tracked; stage 2 takes it back with the rest. The router keeps running until
+stage 2 because nothing proves a request in flight is safe when it stops — the second run is for
+the stop, not for restarts.
 "Still there" means a
 gateway env key that **still holds cc-smart-dev-kit's value** (`ownedGatewayEnvKeys`: a key path
 in `owned.json` whose value in the file is the one cc-smart-dev-kit wrote; a record from before
@@ -1561,12 +1564,14 @@ keeps that project's sessions on the router just as the machine's key does. So t
 each file in the state folder's `changed.json` that holds owned JSON keys — `settings.json`,
 each project file — and stage 1 waits while any of them still holds one.
 
-1. **Stage 1** (such a key is in one of those files): everything is
-   restored but the router's copy and units, the env keys included — the projects' keys too,
-   whose files it takes back like any other managed change; the router keeps
-   running. It says: restart every running Claude session, then run `restore` again.
-   A key the person changed stays in the file, and its ownership is given up with it.
-2. **Stage 2** (no such key left): it asks the service's state (`systemctl --user
+1. **Stage 1** (such a key is in one of those files): everything is restored but the router's
+   copy and units, and each file's `env.ANTHROPIC_BASE_URL` is **written to Anthropic's own
+   address** instead of being removed — the projects' files too. Every running session switches
+   by itself, within about a second: nothing to restart. The key stays owned and its file stays
+   tracked, so stage 2 takes it back. A key the person changed stays in the file, and its
+   ownership is given up with it. It says the sessions switch by themselves, and that a second
+   run stops and removes the router.
+2. **Stage 2** (no such key left — every file's address is Anthropic's now): it asks the service's state (`systemctl --user
    is-active`), disables both units, and stops both in **one** call, `systemctl --user stop
    --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service` (asking first when it runs;
    `--yes` skips the question): in one call, no connection reopens the router in between.
@@ -1577,7 +1582,9 @@ each project file — and stage 1 waits while any of them still holds one.
    `deactivating` (a crash loop because another program holds the port, say), or the
    port answers but not as this router (a `404`, another program), it prints one note
    and goes on. This router still answering after 15 s stops restore with an error,
-   nothing else restored. Then it removes the copy and the units, reloads systemd,
+   nothing else restored. Then it removes the copy and the units, takes back each file's
+   address key with a plain removal (the key's value is Anthropic's now, so nothing routes
+   to the router), reloads systemd,
    clears the restart-pending marker, and removes the router's limit state
    (`~/.local/state/cc-smart-dev-kit/gateway-state.json`), so no status line or alert reads a
    stale fallback from it. With an unusable `gateway.json` the port is
@@ -1585,7 +1592,8 @@ each project file — and stage 1 waits while any of them still holds one.
    router's port too, but it can only be asked on a port already known.)
 
 `restore --now` does both at once, after the warning that every running Claude session
-fails until it restarts (asked, or `--yes`). On Windows stage 2 stops the Scheduled Task
+fails until it restarts (asked, or `--yes`). It writes nothing first: every key of ours is
+removed plainly. On Windows stage 2 stops the Scheduled Task
 (`Stop-ScheduledTask`), waits for the port the same way, then unregisters the task — an entry
 left behind would start the router at every logon (`docs/windows-gateway.md` § Commands).
 Restore leaves `gateway.json`, which holds
@@ -1628,7 +1636,12 @@ every slot off.
 Saving `settings.json` switches every running session at once, within about a second (proved
 2026-10-23). Removing keys needs a restart of each session: a removed key never reaches a running
 session (`claude-code-contract.md` § The gateway); stop the router only after every session
-restarted.
+restarted. **`gateway off` writes instead of removing** (GP5): the owned `ANTHROPIC_BASE_URL` is
+set to Anthropic's own address, so every running session switches to Anthropic by itself within
+about a second and nothing needs a restart. The key stays owned (its value is the one `off`
+wrote), so `restore` takes it back later. A key the person set or changed since is theirs: `off`
+never writes it. `ENABLE_TOOL_SEARCH` is removed as before — it routes nothing, and its removal
+waits for each session's next restart harmlessly.
 
 ## Known limits
 

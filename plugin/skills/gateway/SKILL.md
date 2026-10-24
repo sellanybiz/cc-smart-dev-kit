@@ -288,8 +288,13 @@ A profile is a named set of chains and switches over the machine's, reached by t
 
 ## Turn it off
 
-`cc-smart-dev-kit gateway off` removes exactly the keys `on` set. Running sessions need a
-restart. Stop the router only after every session restarted, or they fail.
+`cc-smart-dev-kit gateway off` sets the owned `ANTHROPIC_BASE_URL` to Anthropic's own address
+instead of removing it, so every running session switches to Anthropic by itself within about a
+second: nothing needs a restart. `ENABLE_TOOL_SEARCH` is removed, which routes nothing. The key
+stays owned (its value is the one `off` wrote), so `restore` takes it back later. A key the person
+set or changed since is theirs and stays. A project that set its own `on` keeps pointing at the
+router, so `off` names each one with the command that turns it off too. Stop the router only
+after no file points at it any more (`restore`'s second stage does that), or its sessions fail.
 
 **Remote Control is off while the gateway is on.** `claude remote-control` needs
 `api.anthropic.com` (it answers "Remote Control is only available when using Claude via

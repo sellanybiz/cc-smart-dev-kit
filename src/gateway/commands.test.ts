@@ -34,7 +34,12 @@ import {
   withoutRetiredDefaultClaude,
   withPortalChains,
 } from "./commands";
-import { type GatewayConfig, loadConfigFile, saveConfig } from "./config";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  type GatewayConfig,
+  loadConfigFile,
+  saveConfig,
+} from "./config";
 import type { HealthProbe } from "./health";
 import { judgeTestRequest, judgeVerdict } from "./judge-test";
 import {
@@ -280,22 +285,34 @@ describe("Claude Code settings: on / off", () => {
     ]);
   });
 
-  it("off: removes exactly our keys; everything else stays (CLAUDE_CODE_SUBAGENT_MODEL too)", () => {
+  it("off: writes Anthropic's own address, takes our other keys out; everything else stays", () => {
     const { file, stateDir } = seed();
     turnOn({ settingsFile: file, stateDir, port: 20100 });
-    const { result, foreign } = turnOff({ settingsFile: file, stateDir });
+    const { result, foreign, switched } = turnOff({ settingsFile: file, stateDir });
+    // Two changes: the address is set (GP5), the tool-search key is removed.
     expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
       "ENABLE_TOOL_SEARCH",
     ]);
+    expect(switched).toBe(true);
     expect(foreign).toEqual([]);
+    // The address key stays, holding Anthropic's own value: a running session follows a
+    // changed value within about a second, where a removed key would wait for its restart.
     // Changed by the move: the old `off` also removed CLAUDE_CODE_SUBAGENT_MODEL. It is not
     // the gateway's key, so it stays.
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(original);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ...original.env, ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+      permissions: { allow: ["Bash(ls:*)"] },
+    });
+    // A second `off` has nothing to change, and says so.
+    const twice = turnOff({ settingsFile: file, stateDir });
+    expect(twice.result.changes).toEqual([]);
+    expect(twice.switched).toBe(false);
     expect([...GATEWAY_ENV_KEYS].sort()).toEqual(["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"]);
   });
 
-  it("off takes out the model keys an older version wrote too", () => {
+  it("off takes out the model keys an older version wrote too, and keeps the address key", () => {
     const { file, stateDir } = seed({ model: "opus" });
     applyManagedJson({
       file,
@@ -315,22 +332,33 @@ describe("Claude Code settings: on / off", () => {
       "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     ]);
     turnOff({ settingsFile: file, stateDir });
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ model: "opus" });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
   });
 
-  it("off: an env our setup created goes with its last key; one the person had stays", () => {
-    // No `env` of the person's: `gateway setup` made that object, so `off` takes it back out.
+  it("off leaves the env holding Anthropic's address, ours or the person's", () => {
+    // No `env` of the person's: `gateway setup` made that object. The address key stays in it
+    // (GP5), so the object does too — it is not ours to take while the key is in it.
     const bare = seed({ model: "opus" });
     turnOn({ settingsFile: bare.file, stateDir: bare.stateDir, port: 20100 });
     expect(JSON.parse(readFileSync(bare.file, "utf8")).env).toEqual(ON_ENV);
     turnOff({ settingsFile: bare.file, stateDir: bare.stateDir });
-    expect(JSON.parse(readFileSync(bare.file, "utf8"))).toEqual({ model: "opus" });
+    expect(JSON.parse(readFileSync(bare.file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
 
-    // An `env` that was there before us, even an empty one, is the person's and stays.
+    // An `env` that was there before us, even an empty one, is the person's: it stays, and the
+    // address goes into it like any other.
     const theirs = seed({ env: {}, model: "opus" });
     turnOn({ settingsFile: theirs.file, stateDir: theirs.stateDir, port: 20100 });
     turnOff({ settingsFile: theirs.file, stateDir: theirs.stateDir });
-    expect(JSON.parse(readFileSync(theirs.file, "utf8"))).toEqual({ env: {}, model: "opus" });
+    expect(JSON.parse(readFileSync(theirs.file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
   });
 
   it("every write keeps its own backup; the first, with the earlier values, is never replaced", () => {
@@ -339,9 +367,11 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const afterOn = readFileSync(file, "utf8");
     turnOff({ settingsFile: file, stateDir });
+    const afterOff = readFileSync(file, "utf8");
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const backups = listBackups(stateDir, file).map((backup) => readFileSync(backup.path, "utf8"));
-    expect(backups).toEqual([first, afterOn, first]);
+    expect(backups).toEqual([first, afterOn, afterOff]);
+    expect(afterOff).toContain(`"ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"`);
   });
 
   it("off with nothing of ours: writes nothing, and names a gateway key someone else set", () => {

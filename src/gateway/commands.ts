@@ -94,8 +94,11 @@ import {
 } from "./service";
 import { scheduledTaskService } from "./service-windows";
 import {
+  BASE_URL_KEY,
+  baseUrlPointsAtGateway,
   gatewayEnv,
   maskKey,
+  readGatewaySettings,
   retireOldModelKeys,
   settingsReport,
   shownValue,
@@ -1720,16 +1723,23 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     printSlots(config, out, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
+  // `gateway off` leaves Anthropic's own address in the file (GP5), so "the key is set" is not
+  // the question: `baseUrlPointsAtGateway` answers whether Claude Code goes through a gateway.
+  const pointsAtGateway = baseUrlPointsAtGateway(report.baseUrl);
   out.blank();
   out.line(
     "info",
-    `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON → ${report.baseUrl}`}`,
+    `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${
+      pointsAtGateway
+        ? `gateway ON → ${report.baseUrl}`
+        : `gateway OFF (${report.baseUrl === null ? "no ANTHROPIC_BASE_URL" : report.baseUrl})`
+    }`,
   );
   // A base URL that is not this router's (a port moved, a value set by hand) fails every
-  // session that uses it, while the router itself answers.
+  // session that uses it, while the router itself answers. Anthropic's own address is not one
+  // of those: it is a session that uses plain Claude, on the person's own login.
   const routerUrl = gatewayEnv(port).ANTHROPIC_BASE_URL;
-  const pointsElsewhere =
-    config !== null && report.baseUrl !== null && report.baseUrl !== routerUrl;
+  const pointsElsewhere = config !== null && pointsAtGateway && report.baseUrl !== routerUrl;
   if (pointsElsewhere) {
     out.line("warn", `that is not this router's address (${routerUrl})`, {
       detail: [`${COMMAND} gateway on`],
@@ -1756,7 +1766,7 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     out.verdict("warn", "Claude Code points at another address than this router.");
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
-  } else if (report.baseUrl === null) {
+  } else if (!pointsAtGateway) {
     out.verdict("info", "The router answers, and Claude Code does not use it.");
     out.next([
       {
@@ -2171,7 +2181,10 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
           );
         }
-        if (settingsReport(paths.settingsFile).baseUrl === null && answers?.turnOn !== true) {
+        if (
+          !baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) &&
+          answers?.turnOn !== true
+        ) {
           ctx.print(
             `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
           );
@@ -2241,7 +2254,7 @@ function setupFacts(ctx: GatewayContext): Parameters<typeof askSetupQuestions>[1
       const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
       return "error" in plan ? plan.error : null;
     },
-    gatewayOn: settingsReport(ctx.paths.settingsFile).baseUrl !== null,
+    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
     pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print,
@@ -2477,16 +2490,34 @@ async function projectsStillOn(ctx: GatewayContext): Promise<StayingProject[]> {
 
 async function commandOff(ctx: GatewayContext): Promise<number> {
   const { paths } = ctx;
-  const { result, foreign } = await withLock(
+  const { result, foreign, switched } = await withLock(
     paths.stateDir,
     () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }),
     { waitMs: 10_000 },
   );
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
+  // A key of the person's own that already holds Anthropic's address sends every session
+  // exactly where `off` would: it routes nothing, and "the gateway is not all off" would be
+  // untrue (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
   // ENABLE_TOOL_SEARCH routes nothing, and many people set it themselves: theirs to keep.
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH");
+  const routing = foreign.filter(
+    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+  );
   for (const key of foreign) {
+    if (key === BASE_URL_KEY && !ownAddressRoutes) {
+      out.line(
+        "info",
+        `env.${key} stays: ${COMMAND} did not set it, and it already points at Anthropic`,
+      );
+      continue;
+    }
     if (!routing.includes(key)) {
       out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it routes nothing`);
       continue;
@@ -2516,15 +2547,31 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
       `The gateway is off on this machine; ${plural(staying.length, "project still points", "projects still point")} at the router (above).`,
     );
   } else if (result.changes.length === 0) {
+    // Nothing moved: this machine was never on, or it is off already (the address key holds
+    // Anthropic's own value — the very thing `off` writes, GP5).
     out.verdict(
       "ok",
-      `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`,
+      settingsReport(paths.settingsFile).baseUrl === null
+        ? `Nothing to change: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`
+        : "Nothing to change: the gateway is already off.",
     );
   } else {
     out.verdict("ok", "Done. The gateway is off.");
-  }
-  if (result.changes.length > 0) {
-    out.next(["Restart each Claude session: removing a setting needs a restart."]);
+    if (switched) {
+      out.say(
+        "Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.",
+      );
+    }
+    // The one removal a running session does not follow: it keeps whatever it started with.
+    if (
+      result.changes.some(
+        (change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH",
+      )
+    ) {
+      out.next([
+        "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing.",
+      ]);
+    }
   }
   return 0;
 }

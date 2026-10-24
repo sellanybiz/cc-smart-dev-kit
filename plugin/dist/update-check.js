@@ -1831,6 +1831,18 @@ function removeManagedLines(options) {
 }
 
 // src/setup/restore.ts
+function writeEach(file, keys, options) {
+  const remove = [];
+  const write = [];
+  for (const key of keys) {
+    const instead = options.writeInstead?.(file, key);
+    if (instead === undefined)
+      remove.push(key);
+    else
+      write.push([key, instead.value]);
+  }
+  return { remove, write };
+}
 function createdByUs(entry) {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
@@ -1863,19 +1875,27 @@ function isEmpty(file) {
   const text = readFileSync12(file, "utf8").trim();
   return text === "" || text === "{}";
 }
-function restorePartly(file, entry, stateDir) {
+function restorePartly(file, entry, stateDir, options) {
   const details = [];
+  const written = [];
   let savedAs = null;
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
+      const { remove, write } = writeEach(file, keys, options);
       const result = applyManagedJson({
         file,
         stateDir,
-        remove: keys,
+        ...write.length > 0 && { set: write },
+        remove,
         createdObject: createdObjects(stateDir, file)
       });
-      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      for (const change of result.changes) {
+        if (change.after === undefined)
+          details.push(formatKeyPath(change.path));
+        else
+          written.push({ path: formatKeyPath(change.path), value: change.after });
+      }
       savedAs ??= result.backup;
     }
   }
@@ -1900,9 +1920,16 @@ function restorePartly(file, entry, stateDir) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0)
-    return { file, action: "unchanged", details };
-  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
+  if (details.length === 0) {
+    return written.length === 0 ? { file, action: "unchanged", details } : { file, action: "cleaned", details, written, ...savedAs && { savedAs } };
+  }
+  return {
+    file,
+    action: "cleaned",
+    details,
+    ...written.length > 0 && { written },
+    ...savedAs && { savedAs }
+  };
 }
 function restore(stateDir, options = {}) {
   const except = new Set(options.except ?? []);
@@ -1910,7 +1937,7 @@ function restore(stateDir, options = {}) {
   const hooks = new Map(removeAllManagedHooks(stateDir, { except, only }).map((result) => [result.file, result]));
   const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
   const results = entries.map(([file, entry]) => {
-    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
+    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir, options);
     const hook = hooks.get(file);
     if (hook !== undefined) {
       hooks.delete(file);
@@ -1921,7 +1948,8 @@ function restore(stateDir, options = {}) {
       if (result.action === "unchanged" && hook.removed.length > 0)
         result.action = "cleaned";
     }
-    if (result.action !== "no-backup")
+    const holdsWritten = (result.written ?? []).length > 0;
+    if (result.action !== "no-backup" && !holdsWritten)
       forgetChange(stateDir, file);
     if (result.action === "removed")
       removeEmptyFolders(file, stateDir);

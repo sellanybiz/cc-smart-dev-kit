@@ -4,7 +4,13 @@ import { isStrictlyInside } from "../path-compare";
 import { removeAllOwnedEntries } from "./managed-entries";
 import { readOwnedFolders, removeManagedFolder } from "./managed-folder";
 import { removeAllManagedHooks } from "./managed-hook";
-import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
+import {
+  applyManagedJson,
+  createdObjects,
+  formatKeyPath,
+  type KeyPath,
+  ownedKeys,
+} from "./managed-json";
 import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
@@ -32,6 +38,38 @@ export interface RestoreResult {
   details: string[];
   /** The backup of the file's state just before this restore changed it. */
   savedAs?: string;
+  /** Keys this restore **wrote again** instead of removing them (`RestoreOptions.writeInstead`). */
+  written?: { path: string; value: unknown }[];
+}
+
+export interface RestoreOptions {
+  /** Files (real paths) left as they are and still tracked: the router's, in stage 1. */
+  except?: string[];
+  /** Restore just these files (real paths); the rest stays as it is and still tracked. */
+  only?: string[];
+  /** A key to write again, with this value, instead of removing it (stage 1, GP5). */
+  writeInstead?: (file: string, path: KeyPath) => undefined | WrittenInstead;
+}
+
+/** `RestoreOptions.writeInstead`: the value a key must hold instead of being removed. */
+export interface WrittenInstead {
+  value: unknown;
+}
+
+/** A restored file's keys, split by what the managed write did to each one. */
+function writeEach(
+  file: string,
+  keys: readonly KeyPath[],
+  options: RestoreOptions,
+): { remove: KeyPath[]; write: (readonly [KeyPath, unknown])[] } {
+  const remove: KeyPath[] = [];
+  const write: (readonly [KeyPath, unknown])[] = [];
+  for (const key of keys) {
+    const instead = options.writeInstead?.(file, key);
+    if (instead === undefined) remove.push(key);
+    else write.push([key, instead.value]);
+  }
+  return { remove, write };
 }
 
 /** The baseline is an `.absent` marker: the file did not exist before cc-smart-dev-kit. */
@@ -67,8 +105,14 @@ function isEmpty(file: string): boolean {
   return text === "" || text === "{}";
 }
 
-function restorePartly(file: string, entry: ChangedEntry, stateDir: string): RestoreResult {
+function restorePartly(
+  file: string,
+  entry: ChangedEntry,
+  stateDir: string,
+  options: RestoreOptions,
+): RestoreResult {
   const details: string[] = [];
+  const written: { path: string; value: unknown }[] = [];
   let savedAs: string | null = null;
 
   if (entry.kinds.includes("json-keys")) {
@@ -76,13 +120,19 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
     if (keys.length > 0) {
       // `createdObject`: an object cc-smart-dev-kit created and this removal emptied (the `env`
       // its own keys made, say) goes with its last key; one the person had stays.
+      const { remove, write } = writeEach(file, keys, options);
       const result = applyManagedJson({
         file,
         stateDir,
-        remove: keys,
+        ...(write.length > 0 && { set: write }),
+        remove,
         createdObject: createdObjects(stateDir, file),
       });
-      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      // A key set again is not "taken out": it is named on its own (`written`).
+      for (const change of result.changes) {
+        if (change.after === undefined) details.push(formatKeyPath(change.path));
+        else written.push({ path: formatKeyPath(change.path), value: change.after });
+      }
       savedAs ??= result.backup;
     }
   }
@@ -109,8 +159,18 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0) return { file, action: "unchanged", details };
-  return { file, action: "cleaned", details, ...(savedAs && { savedAs }) };
+  if (details.length === 0) {
+    return written.length === 0
+      ? { file, action: "unchanged", details }
+      : { file, action: "cleaned", details, written, ...(savedAs && { savedAs }) };
+  }
+  return {
+    file,
+    action: "cleaned",
+    details,
+    ...(written.length > 0 && { written }),
+    ...(savedAs && { savedAs }),
+  };
 }
 
 /**
@@ -135,13 +195,16 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
  * `only`: restore just these files (real paths); every other file stays as it is and
  * still tracked. `setup --no-instructions` uses it for the instructions and their block.
  *
+ * `writeInstead`: a key that must be **written again**, with this value, instead of being
+ * removed — for a program that reads the file while it runs: a **changed** value reaches it,
+ * a removed key never does (`docs/claude-code-contract.md` § The gateway). `restore`'s stage 1
+ * uses it for the gateway's address, so running sessions stop using the router before the
+ * router is stopped (GP5). The keys it writes are reported in `RestoreResult.written`.
+ *
  * A removed file leaves no empty folder behind inside the state folder (the instructions'
  * folders); a folder outside it is never touched.
  */
-export function restore(
-  stateDir: string,
-  options: { except?: string[]; only?: string[] } = {},
-): RestoreResult[] {
+export function restore(stateDir: string, options: RestoreOptions = {}): RestoreResult[] {
   const except = new Set(options.except ?? []);
   const only = options.only === undefined ? null : new Set(options.only);
   // The managed hook entries have their own record (`owned-hooks.json`), never a
@@ -156,7 +219,7 @@ export function restore(
   const results = entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file")
       ? restoreWholeFile(file, entry, stateDir)
-      : restorePartly(file, entry, stateDir);
+      : restorePartly(file, entry, stateDir, options);
     const hook = hooks.get(file);
     if (hook !== undefined) {
       hooks.delete(file);
@@ -164,7 +227,11 @@ export function restore(
       if (hook.backup !== null) result.savedAs ??= hook.backup;
       if (result.action === "unchanged" && hook.removed.length > 0) result.action = "cleaned";
     }
-    if (result.action !== "no-backup") forgetChange(stateDir, file);
+    // A file whose key was **written again** (`writeInstead`) still holds one of ours: it stays
+    // tracked, so the run that takes that key back finds it (a restore's stage 2). Every other
+    // file is forgotten here, so a second restore changes nothing in it.
+    const holdsWritten = (result.written ?? []).length > 0;
+    if (result.action !== "no-backup" && !holdsWritten) forgetChange(stateDir, file);
     if (result.action === "removed") removeEmptyFolders(file, stateDir);
     return result;
   });

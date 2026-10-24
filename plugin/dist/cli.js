@@ -14550,6 +14550,30 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
+function offAddressOf(file, stateDir) {
+  let settings;
+  try {
+    settings = readSettings(file);
+  } catch {
+    return { kind: "same" };
+  }
+  const records = ownedRecords(stateDir, realTarget(file));
+  const current = getKey(settings, BASE_URL_PATH);
+  const ours = ownership(records, BASE_URL_PATH, current) === "ours";
+  if (!current.found) {
+    return ours ? { kind: "same" } : { kind: "theirs", present: false };
+  }
+  if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
+    return ours ? { kind: "same" } : { kind: "theirs", present: true };
+  }
+  return ours ? { kind: "write", value: DEFAULT_ANTHROPIC_BASE_URL } : { kind: "theirs", present: true };
+}
 var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -14673,15 +14697,24 @@ function retireOldModelKeys(options) {
 }
 function turnOff(options) {
   const env = readSettings(options.settingsFile).env;
+  const address = offAddressOf(options.settingsFile, options.stateDir);
   const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: REMOVED_ON_OFF.map(envPath),
+    ...address.kind === "write" ? { set: [[BASE_URL_PATH, address.value]] } : {},
+    remove: REMOVED_ON_OFF.filter((key) => key !== BASE_URL_KEY).map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key));
-  return { result, foreign };
+  const foreign = [
+    ...result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key)),
+    ...address.kind === "theirs" && address.present ? [BASE_URL_KEY] : []
+  ];
+  return {
+    foreign,
+    result,
+    switched: address.kind === "write" && result.changes.some((change) => change.after !== undefined)
+  };
 }
 function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
@@ -14719,7 +14752,8 @@ function settingsReport(settingsPath) {
     subagentOverrides
   };
 }
-var BASE_URL_PATH = ["env", "ANTHROPIC_BASE_URL"];
+var BASE_URL_KEY = "ANTHROPIC_BASE_URL";
+var BASE_URL_PATH = ["env", BASE_URL_KEY];
 function setGatewayBaseUrl(options) {
   return applyManagedJson({
     file: options.file,
@@ -14767,9 +14801,9 @@ function profileUrlOf(routerUrl, name) {
 function urlMeaning(url, routerUrl) {
   if (url === null)
     return { profile: null, state: "default" };
-  const clean = url.replace(/\/+$/, "");
-  if (clean === DEFAULT_ANTHROPIC_BASE_URL)
+  if (!baseUrlPointsAtGateway(url))
     return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
   if (clean === routerUrl)
     return { profile: null, state: "on" };
   const prefix = profileUrlOf(routerUrl, "");
@@ -17324,10 +17358,11 @@ async function commandStatus(ctx) {
     printSlots(config, out, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
+  const pointsAtGateway = baseUrlPointsAtGateway(report.baseUrl);
   out.blank();
-  out.line("info", `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
+  out.line("info", `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${pointsAtGateway ? `gateway ON \u2192 ${report.baseUrl}` : `gateway OFF (${report.baseUrl === null ? "no ANTHROPIC_BASE_URL" : report.baseUrl})`}`);
   const routerUrl = gatewayEnv(port).ANTHROPIC_BASE_URL;
-  const pointsElsewhere = config !== null && report.baseUrl !== null && report.baseUrl !== routerUrl;
+  const pointsElsewhere = config !== null && pointsAtGateway && report.baseUrl !== routerUrl;
   if (pointsElsewhere) {
     out.line("warn", `that is not this router's address (${routerUrl})`, {
       detail: [`${COMMAND} gateway on`],
@@ -17352,7 +17387,7 @@ async function commandStatus(ctx) {
     out.verdict("warn", "Claude Code points at another address than this router.");
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
-  } else if (report.baseUrl === null) {
+  } else if (!pointsAtGateway) {
     out.verdict("info", "The router answers, and Claude Code does not use it.");
     out.next([
       {
@@ -17681,7 +17716,7 @@ async function commandSetup(ctx, args) {
 `));
         ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
-      if (settingsReport(paths.settingsFile).baseUrl === null && answers?.turnOn !== true) {
+      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) && answers?.turnOn !== true) {
         ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
       }
       return 0;
@@ -17735,7 +17770,7 @@ function setupFacts(ctx) {
       const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
       return "error" in plan ? plan.error : null;
     },
-    gatewayOn: settingsReport(ctx.paths.settingsFile).baseUrl !== null,
+    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
     pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print
@@ -17876,11 +17911,21 @@ async function projectsStillOn(ctx) {
 }
 async function commandOff(ctx) {
   const { paths } = ctx;
-  const { result, foreign } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
+  const { result, foreign, switched } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH");
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
   for (const key of foreign) {
+    if (key === BASE_URL_KEY && !ownAddressRoutes) {
+      out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it already points at Anthropic`);
+      continue;
+    }
     if (!routing.includes(key)) {
       out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it routes nothing`);
       continue;
@@ -17898,12 +17943,17 @@ async function commandOff(ctx) {
   } else if (staying.length > 0) {
     out.verdict("warn", `The gateway is off on this machine; ${plural(staying.length, "project still points", "projects still point")} at the router (above).`);
   } else if (result.changes.length === 0) {
-    out.verdict("ok", `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`);
+    out.verdict("ok", settingsReport(paths.settingsFile).baseUrl === null ? `Nothing to change: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.` : "Nothing to change: the gateway is already off.");
   } else {
     out.verdict("ok", "Done. The gateway is off.");
-  }
-  if (result.changes.length > 0) {
-    out.next(["Restart each Claude session: removing a setting needs a restart."]);
+    if (switched) {
+      out.say("Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.");
+    }
+    if (result.changes.some((change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH")) {
+      out.next([
+        "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing."
+      ]);
+    }
   }
   return 0;
 }
@@ -22373,6 +22423,18 @@ function removeAllManagedHooks(stateDir, options = {}) {
 }
 
 // src/setup/restore.ts
+function writeEach(file, keys, options) {
+  const remove = [];
+  const write = [];
+  for (const key of keys) {
+    const instead = options.writeInstead?.(file, key);
+    if (instead === undefined)
+      remove.push(key);
+    else
+      write.push([key, instead.value]);
+  }
+  return { remove, write };
+}
 function createdByUs(entry) {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
@@ -22405,19 +22467,27 @@ function isEmpty(file) {
   const text = readFileSync36(file, "utf8").trim();
   return text === "" || text === "{}";
 }
-function restorePartly(file, entry, stateDir) {
+function restorePartly(file, entry, stateDir, options) {
   const details = [];
+  const written = [];
   let savedAs = null;
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
+      const { remove, write } = writeEach(file, keys, options);
       const result = applyManagedJson({
         file,
         stateDir,
-        remove: keys,
+        ...write.length > 0 && { set: write },
+        remove,
         createdObject: createdObjects(stateDir, file)
       });
-      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      for (const change of result.changes) {
+        if (change.after === undefined)
+          details.push(formatKeyPath(change.path));
+        else
+          written.push({ path: formatKeyPath(change.path), value: change.after });
+      }
       savedAs ??= result.backup;
     }
   }
@@ -22442,9 +22512,16 @@ function restorePartly(file, entry, stateDir) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0)
-    return { file, action: "unchanged", details };
-  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
+  if (details.length === 0) {
+    return written.length === 0 ? { file, action: "unchanged", details } : { file, action: "cleaned", details, written, ...savedAs && { savedAs } };
+  }
+  return {
+    file,
+    action: "cleaned",
+    details,
+    ...written.length > 0 && { written },
+    ...savedAs && { savedAs }
+  };
 }
 function restore(stateDir, options = {}) {
   const except = new Set(options.except ?? []);
@@ -22452,7 +22529,7 @@ function restore(stateDir, options = {}) {
   const hooks = new Map(removeAllManagedHooks(stateDir, { except, only }).map((result) => [result.file, result]));
   const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
   const results = entries.map(([file, entry]) => {
-    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
+    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir, options);
     const hook = hooks.get(file);
     if (hook !== undefined) {
       hooks.delete(file);
@@ -22463,7 +22540,8 @@ function restore(stateDir, options = {}) {
       if (result.action === "unchanged" && hook.removed.length > 0)
         result.action = "cleaned";
     }
-    if (result.action !== "no-backup")
+    const holdsWritten = (result.written ?? []).length > 0;
+    if (result.action !== "no-backup" && !holdsWritten)
       forgetChange(stateDir, file);
     if (result.action === "removed")
       removeEmptyFolders2(file, stateDir);
@@ -29232,7 +29310,7 @@ function sessionModelOf(input, env) {
 }
 function gatewayOnOf(paths) {
   try {
-    return settingsReport(paths.settingsFile).baseUrl !== null;
+    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     return false;
   }
@@ -41983,7 +42061,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   }
   let gatewayOn = false;
   try {
-    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
+    gatewayOn = baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
   } catch {
     gatewayOn = false;
   }
@@ -47768,8 +47846,13 @@ function describe2(result, short) {
       return `~ ${file}: back as it was before cc-smart-dev-kit`;
     case "removed":
       return `- ${file}: removed (cc-smart-dev-kit had created it)`;
-    case "cleaned":
-      return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
+    case "cleaned": {
+      const parts = [
+        ...(result.written ?? []).map((one) => `set ${one.path} to ${shownValue(one.value)}`),
+        ...result.details.length === 0 ? [] : [`removed ${result.details.join(", ")}`]
+      ];
+      return `~ ${file}: ${parts.join(", ")}; everything else kept`;
+    }
     case "unchanged":
       return `  ${file}: nothing of cc-smart-dev-kit left in it`;
     case "no-backup":
@@ -47780,13 +47863,14 @@ var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
+  const switched = "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run.";
   const launcher = join80(paths.binDir, LAUNCHER_NAME);
   if (existsSync72(launcher)) {
-    return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+    return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
   const bunfig = bunConfigPath(dirname27(dirname27(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
-  return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
+  return `${switched} Then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
 function serviceFile(paths, service) {
   if (service === "scheduled-task")
@@ -47853,10 +47937,20 @@ function fileUsesRouter(file, stateDir) {
   if (ownedGatewayEnvKeys(file, stateDir).length === 0)
     return false;
   try {
-    return readGatewaySettings(file).baseUrl !== DEFAULT_ANTHROPIC_BASE_URL;
+    const url = readGatewaySettings(file).baseUrl;
+    return url !== null && baseUrlPointsAtGateway(url);
   } catch {
     return true;
   }
+}
+function offWrites(files, stateDir) {
+  const writes = new Map;
+  for (const file of files) {
+    const address = offAddressOf(file, stateDir);
+    if (address.kind === "write")
+      writes.set(realTarget(file), address.value);
+  }
+  return writes;
 }
 async function runRestore(paths, options) {
   const short = (path) => tildify(path, paths.home);
@@ -47877,10 +47971,18 @@ async function runRestore(paths, options) {
     runner: options.runner,
     service: options.service
   });
-  const sessionsUseRouter = routerTracked && Object.entries(changed).some(([file, entry]) => entry.kinds.includes("json-keys") && fileUsesRouter(file, paths.stateDir));
+  const settingsFiles = Object.entries(changed).filter(([, entry]) => entry.kinds.includes("json-keys")).map(([file]) => file);
+  const sessionsUseRouter = routerTracked && settingsFiles.some((file) => fileUsesRouter(file, paths.stateDir));
   if (sessionsUseRouter && !options.now) {
+    const addresses = offWrites(settingsFiles, paths.stateDir);
     return withLock(paths.stateDir, () => {
-      const results = restore(paths.stateDir, { except: routerFiles });
+      const results = restore(paths.stateDir, {
+        except: routerFiles,
+        writeInstead: (file, path) => {
+          const address = addresses.get(file);
+          return samePath(path, BASE_URL_PATH) && address !== undefined ? { value: address } : undefined;
+        }
+      });
       print(results, short);
       const mcp = removeMcp(paths, options, short);
       for (const line of mcp.lines)

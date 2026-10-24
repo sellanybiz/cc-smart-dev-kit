@@ -58,7 +58,7 @@ import {
 import { maskedLine } from "../gateway/plain-text";
 import { routerServiceKind, SOCKET_NAME, UNIT_NAME } from "../gateway/service";
 import { TASK_NAME } from "../gateway/service-windows";
-import { settingsReport, shownBackendUrl } from "../gateway/settings";
+import { baseUrlPointsAtGateway, settingsReport, shownBackendUrl } from "../gateway/settings";
 import {
   FAMILY_SLOTS,
   isClaudeModelId,
@@ -736,7 +736,8 @@ export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFa
   }
   const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
   return {
-    gateway: report.baseUrl !== null,
+    // `gateway off` leaves Anthropic's own address in the settings (GP5): that is off, not on.
+    gateway: baseUrlPointsAtGateway(report.baseUrl),
     judge:
       judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
