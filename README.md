@@ -964,31 +964,24 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 
 ### The usage limit: the alert, the status line, and `usage`
 - **The alert.** When a turn stops at your plan's usage limit, the plugin's StopFailure
-  hook shows a desktop notification about your session's model (only once the gateway is
-  set up). On Linux it offers "Use <target> until it resets", which turns on the fallback of
-  your model's slot: `gateway slot <slot> <model>,<targets>` (the model first; then, when only
-  that model's own window ran out, a Claude target of another family from your own chains;
-  then the affordable targets of your worker chain, then your scout's), then
-  `gateway fallback <slot> on`. If the slot already has your chain with its fallback off, only
-  the second command runs. "Wait" does nothing; after "Use", send a message in Claude Code to
-  go on. The plugin names no model of its own: with no affordable target in your chains, the
-  alert offers nothing and points at `gateway models`. On macOS and Windows it names the
-  commands (a Windows toast has no action button). It judges the gateway your session really
-  runs on — its own `ANTHROPIC_BASE_URL`, so a project you turned off or on counts — and a
-  session on a profile gets that profile's own commands
-  (`gateway profile <name> slot …`, then `gateway profile <name> fallback <slot> on`).
-  It needs a desktop to show the alert on: where there is none
-  (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
+  hook shows a plain desktop notification about your session's model (only once the gateway is
+  set up). It says what happened and nothing else: which limit was hit and when it resets, and
+  that Claude Code goes on by itself after the reset. It offers no model, no chain, no fallback
+  switch and no `gateway on`, and it has no button — whatever your session runs on. The one
+  thing it adds is a plain fact when a stop should not have happened: the slot that answers the
+  model has a backend first in its chain, or its fallback is on, and the turn stopped anyway.
+  Change a chain or a fallback yourself with `gateway slot …` and `gateway fallback …`
+  ([docs/gateway.md](docs/gateway.md)). It needs a desktop to show the alert on: where there is
+  none (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
   announces the stopped turn instead. A short rate limit is not the plan's limit: Claude Code
   retries it, and the `notify` hook announces the turn only if it dies then.
 - **The breaker's alert.** When every target of a slot is limited or down, the router holds
   the request for a while and then answers a 429 Claude Code retries
   ([docs/gateway.md](docs/gateway.md) § The breaker). If a turn still stops, the same hook
-  says so once per breaker opening: the slot, since when, each target and why it rests, and,
-  on Linux, "Use <target>" runs `gateway slot <slot> <the backend targets of your other
-  chains>`. It names no model of its own: with none, it points at `gateway models`. The text
-  ends with "then send a message to go on", or "Claude Code goes on by itself" while its
-  retry watchdog is on
+  says so once per breaker opening: the slot, since when, and each target and why it rests. It
+  is a plain notification too, with no button; the router's own message names the command that
+  changes the chain. The text ends with "then send a message to go on", or "Claude Code goes on
+  by itself" while its retry watchdog is on
   ([Waiting at a limit](#waiting-at-a-limit-claude-codes-retry-watchdog)).
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
   `cc-smart-dev-kit statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %,

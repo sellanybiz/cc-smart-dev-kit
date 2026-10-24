@@ -985,49 +985,30 @@ and for a short rate limit alike. The hook tells them apart by Claude Code's own
 ("You've hit your limit …" against "… (not your usage limit) …", which wins) or by a
 plan limit the router saw in the last two minutes. It acts only once the gateway is set
 up (`gateway.json` exists); a `gateway.json` that cannot be read still gives the plain
-alert, with no action, and says `cc-smart-dev-kit doctor` tells why. Which model hit the limit:
-the session's own (the last `claude-…` model in the transcript the input's
-`transcript_path` names) when the state file has a limit for it; else the freshest limit
-of a Claude model whose family has a slot (`familySlotFor`). The hook starts a detached
-worker through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, so the half hour
-it may wait runs from the installed version, never from the hook's version folder) and exits
-at once; with no launcher, a plain notification with no action.
+alert. Which model hit the limit: the session's own (the last `claude-…` model in the
+transcript the input's `transcript_path` names) when the state file has a limit for it; else
+the freshest limit of a Claude model whose family has a slot (`familySlotFor`).
 
-**Which gateway it judges** is the session's own (RF1-2, `sessionGatewayOf`, shared with the
-Agent guard): the session's effective `ANTHROPIC_BASE_URL`, which Claude Code hands the hook in
-its environment (`docs/claude-code-contract.md` § Hooks). No URL or Anthropic's own address is
-off (the action becomes words: turn the gateway on first); `…/p/<name>` reads that profile's
-chains (`profileView`, or `plainClaudeView` for a name the config lacks), and its commands are
-the profile's own — `gateway profile <name> slot <slot> <targets>` and `gateway profile <name>
-fallback <slot> on` — since a machine `gateway slot` would not reach a session on a profile.
+**The alert says what happened and nothing else** (owner, 2026-10-25): which limit was hit
+and when it resets, and that Claude Code continues by itself after the reset. It offers no
+model, no chain, no fallback switch and no `gateway on`, and it has no button — whatever the
+session runs on (the machine's gateway, a project that is off, a profile, a launch). So the
+hook shows the platform's plain notification itself (`plainNotification`: `notify-send`,
+`osascript` or a toast, started detached) and starts no worker; the `alert-worker` command
+stays for the notifier's own alerts that wait for a click (`docs/design/hooks.md` § The
+notifier).
 
-- **What it offers** is that family's slot with its fallback switch on, from the person's
-  own config only (`offerFor`, `src/hooks/stop-failure.ts`); the plugin names no model:
-  - the slot has no chain, or one `claude-…` target: that target (else the model that hit
-    the limit) first; then, when only that family's window ran out (`seven_day_opus`), the
-    first `claude-…` target of another family in the person's chains, which the rest of the
-    plan still answers; then every `<backend>:<model>` target of the person's worker chain,
-    then the scout's, then the other slots' (never the judge's), each once. An
-    account-wide limit (`five_hour`, `seven_day`) stops every Claude model, so no Claude
-    model follows. The action runs `cc-smart-dev-kit gateway slot <slot> <targets>`, then
-    `cc-smart-dev-kit gateway fallback <slot> on`: in that order (the switch needs a chain),
-    and both always (a click may come half an hour later);
-  - the slot has a chain of two or more with its switch off: the person's own chain, and
-    the action only runs `gateway fallback <slot> on`;
-  - no backend target anywhere in the person's chains: no action; the text gives both
-    commands with `<backend>:<model>` and points at `gateway models`.
-- Linux: `notify-send` with two actions. "Use <target> until it resets" runs the commands
-  above through the launcher, in order, stopping at the first that fails; a second
-  notification says whether it worked ("… Send a message in Claude Code to go on now":
-  Claude Code waits for the reset otherwise), or gives the commands to run by hand; "Wait"
-  does nothing. A `notify-send` without `--action` gets a plain notification with the
-  commands. The fallback ends by itself: the model rests after its 429 (§ Model slots),
-  is asked again, and answers first once it can.
-- macOS: a plain notification that names the commands (`osascript`).
-- No action when the model's id names no family, the slot's chain starts with a backend
-  (Claude was not its first answer), the slot's fallback is on already (`fallbackOn`: the
-  0.5.0 `fallback` field, or a 0.4.x `modelSlots` entry), or the gateway is off; the text
-  then says what to do (with the gateway off: `gateway on`, then the commands).
+The one thing it adds is a plain fact about the slot that answers the model, when that fact
+explains a stop that should not have happened (`slotFact`): the slot's chain starts with a
+backend (Claude was not its first answer), or the chain holds two targets or more and its
+fallback is on (`fallbackOn`: the 0.5.0 `fallback` field, or a 0.4.x `modelSlots` entry). It
+points at `gateway status` and stops there. The fact is read only for a session a slot
+answers: **which gateway it judges** is the session's own (RF1-2, `sessionGatewayOf`, shared
+with the Agent guard), the session's effective `ANTHROPIC_BASE_URL`, which Claude Code hands the
+hook in its environment (`docs/claude-code-contract.md` § Hooks). No URL, or Anthropic's own
+address (what `gateway off` and `gateway project off` write): no slot answers that session,
+so it gets the plain line. `…/p/<name>` reads that profile's own chains (`profileView`, or
+`plainClaudeView` for a name the config lacks); any other address reads the machine's.
 - In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
   (seen live, 2.1.300); in the interactive `claude` it runs to the end.
 
@@ -1038,14 +1019,11 @@ under a subscription), so the slot is read wherever they sit. With a fresh break
 that slot (`currentBreakers`) the hook alerts **once per opening**: the record's `since` is
 kept in `~/.claude/cc-smart-dev-kit/breaker-alerted.json`, so a second stop of the same
 opening hears nothing, a new opening alerts again, and a record the router stopped touching
-15 minutes ago alerts nothing. The alert names the slot, when the breaker opened, and each
-target with why it rests. On Linux its action runs
-`gateway slot <slot> <the backend targets of the person's other chains>` (`standInChains`;
-never a model the plugin picked); with none it offers no action and points at
-`gateway models`. A profile's breaker names the profile and offers no action: its chain is the
-profile's, not the one `gateway slot` changes. The last words say "Then send a message to go on",
-or "Claude Code goes on by itself" when the retry watchdog's key is in the settings
-(`src/setup/retry-watchdog.ts`).
+15 minutes ago alerts nothing. The alert names the slot (and the profile, for a profile's
+breaker), when the breaker opened, and each target with why it rests. It is facts only, with
+no button: the router's own message already names the command that changes the chain. The last
+words say "Then send a message to go on", or "Claude Code goes on by itself" when the retry
+watchdog's key is in the settings (`src/setup/retry-watchdog.ts`).
 While the opening is marked, the notifier stays out of a breaker stop too: the StopFailure
 hook owns every one of them (`stopFailureWillAlert`), so a marked stop never becomes the
 notifier's "the turn stopped" line.

@@ -93,8 +93,13 @@ Claude Code is attached to, found from its pid (`src/hooks/terminal.ts`) — nev
 A hook about the person, not a project (the StopFailure usage-limit alert) reads no
 `cc-smart-dev-kit.json`. Its opt-in is the gateway: it acts only when `gateway.json` exists, so a
 person who never set the gateway up does not notice it. It replaces nothing a project
-wires, so it has no `ownHooks` step. Work that waits (a notification with buttons) runs in a
-detached worker started through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`),
-never from the plugin's version folder, which an update may delete while it waits; the
-hook itself exits at once. A `claude -p` run may exit before the hook finishes and cut
-it off (seen live, 2.1.300): keep the hook's own work short.
+wires, so it has no `ownHooks` step. **The StopFailure alert says what happened and nothing
+else** (owner, 2026-10-25): which limit was hit and when it resets. It has no button, runs no
+command and starts no worker: it offers no model, no chain, no fallback switch and no `gateway
+on`, whatever the session is on, and the hook shows the platform's plain notification itself
+(`plainNotification`, started detached, `src/entries/stop-failure.ts`). Work that waits (the
+notifier's own notification with buttons) runs in a detached worker started through the
+launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, started by `notify.ts` only), never
+from the plugin's version folder, which an update may delete while it waits; the hook itself
+exits at once. A `claude -p` run may exit before the hook finishes and cut it off (seen live,
+2.1.300): keep the hook's own work short.

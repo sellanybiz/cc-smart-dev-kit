@@ -47,11 +47,10 @@ usage-limit alert (`src/hooks/stop-failure.ts`) and the update hook all use it.
   hook there; what is waited for there is the trampoline's own start (a few milliseconds),
   never the toast.
 
-The usage-limit alert names the command, as macOS already does: a toast with a button ("Use
-<target> until it resets") needs an activation callback and a registered protocol, so the
-action stays Linux-only for now. On Windows the StopFailure hook also skips the detached
-worker (`usesAlertWorker`): the worker exists to wait for a click, and Windows has no click
-to wait for — the hook shows the plain toast itself.
+The usage-limit alert is a plain toast, as on every platform: it says which limit was hit and
+when it resets, and it has no button (a toast with one needs an activation callback and a
+registered protocol, and the alert offers nothing to click). The StopFailure hook starts the
+toast itself and no detached worker: there is nothing to wait for.
 
 ## A detached child must outlive its hook: the `cmd /c start` trampoline
 

@@ -270,8 +270,9 @@ run on:
    while the machine is off, and `launch --settings` are each judged as the session runs. No
    URL or Anthropic's own address is off; `…/p/<name>` reads that profile's chains
    (`profileView`), and a name the config lacks reads as plain Claude (`plainClaudeView`), as
-   the router answers it. The StopFailure alert reads the same facts, and a session on a
-   profile is offered that profile's own commands (`gateway profile <name> slot|fallback …`);
+   the router answers it. The StopFailure alert reads the same facts, but only to say a plain
+   fact about the slot that answers the session (a session off the gateway gets the plain line,
+   and no alert offers a command: `docs/gateway.md` § The alert);
 2. a full Claude id goes through its family's slot the same way; a slot key or
    `<backend>:<model>` is resolved as itself (a slot's first target answers); **any other name** (`best`, `opusplan`,
    `default`, `inherit`, a name no rule knows) is resolved the strictest way — the rule for a
@@ -758,8 +759,9 @@ alert's sound off (an urgent one sounds anyway, as XFCE shows those under Do Not
 too). These are the desktop behaviours of the older notification script this replaces,
 ported so a machine that moves to the plugin loses nothing.
 
-Everything that waits runs in a detached worker — the `alert-worker` the usage-limit alert
-already uses, through the launcher, never in the hook — and each extra runs only where its
+Everything that waits runs in a detached worker — the notifier's `alert-worker`, through the
+launcher, never in the hook (the usage-limit alert has no button and starts no worker: it says
+which limit was hit and when it resets, and offers nothing) — and each extra runs only where its
 tool is on PATH: `xdotool` to raise a window (the terminal's `WINDOWID`, or a VS Code or
 Warp window found by its class and title); `gdbus`, the notification server itself, for the
 notification's id — the minute and the one-per-session rule need it, and `notify-send`
