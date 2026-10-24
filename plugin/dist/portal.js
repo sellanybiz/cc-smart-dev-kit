@@ -17467,7 +17467,7 @@ function offAddressOf(file, stateDir) {
   const current = getKey(settings, BASE_URL_PATH);
   const ours = ownership(records, BASE_URL_PATH, current) === "ours";
   if (!current.found) {
-    return ours ? { kind: "same" } : { kind: "theirs", present: false };
+    return { kind: "theirs", present: false };
   }
   if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
     return ours ? { kind: "same" } : { kind: "theirs", present: true };
@@ -20933,9 +20933,15 @@ async function commandOff(ctx) {
     if (switched) {
       out.say("Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.");
     }
-    if (result.changes.some((change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH")) {
+    const removed = result.changes.filter((change) => change.after === undefined);
+    if (removed.some((change) => change.path[1] === "ENABLE_TOOL_SEARCH")) {
       out.next([
         "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing."
+      ]);
+    }
+    if (removed.some((change) => RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1]))) {
+      out.next([
+        "The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails."
       ]);
     }
   }

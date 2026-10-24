@@ -9,6 +9,7 @@ import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
+import { PERSONAL_EXCLUDE_LINE } from "../gateway/project-state";
 import {
   type RouterServiceKind,
   type Runner,
@@ -22,6 +23,7 @@ import {
   baseUrlPointsAtGateway,
   offAddressOf,
   ownedGatewayEnvKeys,
+  RETIRED_GATEWAY_ENV_KEYS,
   readGatewaySettings,
   shownValue,
 } from "../gateway/settings";
@@ -89,10 +91,14 @@ export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Cl
 export function stageOneDone(
   paths: CliPaths,
   cliBundle: string,
+  wrote = false,
   bunPath: string = process.execPath,
 ): string {
-  const switched =
-    "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run.";
+  // The switch sentence only when an address was really written: a file whose address is the
+  // person's keeps its value, so its running sessions still use the router until they restart.
+  const switched = wrote
+    ? "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run."
+    : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (existsSync(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -266,7 +272,11 @@ function fileUsesRouter(file: string, stateDir: string): boolean {
   try {
     // The one reader of a settings file's own gateway facts (`project-state.ts` reads it too).
     const url = readGatewaySettings(file).baseUrl;
-    return url !== null && baseUrlPointsAtGateway(url);
+    // An absent address key with another owned key still routes running sessions to the router
+    // (a removed key never reaches them, P7): keep the old answer. A set address is "on" only
+    // when it points at a gateway, not at Anthropic's own.
+    if (url === null) return true;
+    return baseUrlPointsAtGateway(url);
   } catch {
     return true;
   }
@@ -354,12 +364,28 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   if (sessionsUseRouter && !options.now) {
     // Stage 1: nothing stops, so nothing is asked. Every file still pointing at the router gets
     // the explicit address written into it (GP5), so its running sessions switch by themselves.
-    const addresses = offWrites(settingsFiles, paths.stateDir);
     return withLock(
       paths.stateDir,
       () => {
+        // Inside the lock: the settings can change while the lock waits (a `gateway on`, a hand
+        // edit), so the address each file gets is read now, not before the wait.
+        const addresses = offWrites(settingsFiles, paths.stateDir);
+        // A personal file kept for stage 2 must keep its `.git/info/exclude` line too: the line
+        // is a separate `file-line` entry, and removing it here would let git see the file
+        // (holding Anthropic's address) and commit it to the team. So the exclusion lines stay
+        // tracked while any address is written; stage 2 removes them with the personal files.
+        const excludeFiles =
+          addresses.size === 0
+            ? []
+            : Object.entries(changed)
+                .filter(
+                  ([, entry]) =>
+                    entry.kinds.includes("file-line") &&
+                    entry.lines?.includes(PERSONAL_EXCLUDE_LINE),
+                )
+                .map(([file]) => file);
         const results = restore(paths.stateDir, {
-          except: routerFiles,
+          except: [...routerFiles, ...excludeFiles],
           writeInstead: (file, path) => {
             const address = addresses.get(file);
             return samePath(path, BASE_URL_PATH) && address !== undefined
@@ -368,6 +394,19 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           },
         });
         print(results, short);
+        // A retired model key is removed in this same write: a running session keeps the slot
+        // name and now sends it to Anthropic, which does not know it, so it fails until it
+        // restarts. Say so; the address key's change needs no restart.
+        const removedRetired = results.some((result) =>
+          result.details.some((detail) =>
+            RETIRED_GATEWAY_ENV_KEYS.some((key) => detail.includes(key)),
+          ),
+        );
+        if (removedRetired) {
+          console.log(
+            "  The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails.",
+          );
+        }
         const mcp = removeMcp(paths, options, short);
         for (const line of mcp.lines) console.log(line);
         for (const line of removeBrowser(paths, browserRecord, options.runner).lines) {
@@ -375,7 +414,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         }
         forgetInstructionChoice(paths.stateDir, short);
         forgetClaudeMemChoice(paths.stateDir, short);
-        console.log(stageOneDone(paths, options.cliBundle));
+        console.log(stageOneDone(paths, options.cliBundle, addresses.size > 0));
         return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
       { waitMs: 10_000 },

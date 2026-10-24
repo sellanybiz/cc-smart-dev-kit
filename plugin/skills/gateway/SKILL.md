@@ -298,12 +298,14 @@ after no file points at it any more (`restore`'s second stage does that), or its
 
 **Remote Control is off while the gateway is on.** `claude remote-control` needs
 `api.anthropic.com` (it answers "Remote Control is only available when using Claude via
-api.anthropic.com"), and `gateway on` points every session at the router. `gateway off`, or a
+api.anthropic.com"), and `gateway on` points every session at the router. `restore`, or a
 session started without the base URL, is the way back.
 
 `cc-smart-dev-kit restore` takes the gateway out in two stages for the same reason: the first run
-removes the env keys (and everything else but the router) and says to restart every
-session; the second run stops and removes the router (it asks first). `restore --now`
+writes Anthropic's own address into each settings file's address key instead of removing it —
+every running session switches to Anthropic by itself within about a second — and restores
+everything else but the router; the second run, once no file points at the router, stops and
+removes the router and takes the address keys back (it asks first). `restore --now`
 does both at once, and every running session fails until it restarts: only with the
 person's yes.
 

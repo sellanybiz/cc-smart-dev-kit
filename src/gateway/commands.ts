@@ -98,6 +98,7 @@ import {
   baseUrlPointsAtGateway,
   gatewayEnv,
   maskKey,
+  RETIRED_GATEWAY_ENV_KEYS,
   readGatewaySettings,
   retireOldModelKeys,
   settingsReport,
@@ -2564,14 +2565,18 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
         "Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.",
       );
     }
-    // The one removal a running session does not follow: it keeps whatever it started with.
-    if (
-      result.changes.some(
-        (change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH",
-      )
-    ) {
+    // Removals a running session does not follow: it keeps whatever it started with. The
+    // tool-search key routes nothing; a retired model key sends the old slot name to Anthropic,
+    // which does not know it, so the session fails until it restarts.
+    const removed = result.changes.filter((change) => change.after === undefined);
+    if (removed.some((change) => change.path[1] === "ENABLE_TOOL_SEARCH")) {
       out.next([
         "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing.",
+      ]);
+    }
+    if (removed.some((change) => RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1] as string))) {
+      out.next([
+        "The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails.",
       ]);
     }
   }

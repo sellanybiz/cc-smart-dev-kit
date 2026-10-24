@@ -1426,18 +1426,26 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
    */
   const STAGE_1_AGAIN = `Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
 
+  /** The same run when nothing was written: the address is the person's, so sessions keep the router. */
+  const STAGE_1_UNWRITTEN = `Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
+
   test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
     const home = tempDir("stage-one");
     const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     // No launcher (setup created it, and the first restore removed it): the bun line.
-    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+    expect(stageOneDone(paths, "/plugin/dist/cli.js", true)).toBe(
       `Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=/plugin/bunfig.toml' '/plugin/dist/cli.js' restore`,
     );
     // A launcher of the person's own, put back by the restore: the plain command works.
     mkdirSync(paths.binDir, { recursive: true });
     writeFileSync(join(paths.binDir, "cc-smart-dev-kit"), "#!/bin/sh\n");
-    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+    expect(stageOneDone(paths, "/plugin/dist/cli.js", true)).toBe(
       "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run `cc-smart-dev-kit restore` again to stop and remove the router.",
+    );
+    // A file whose address is the person's: nothing was written, so the sessions still use the
+    // router until they restart.
+    expect(stageOneDone(paths, "/plugin/dist/cli.js", false)).toBe(
+      "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it. Then run `cc-smart-dev-kit restore` again to stop and remove the router.",
     );
   });
 
@@ -1562,7 +1570,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(first.stdout).toContain(
       "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH; everything else kept\n",
     );
-    expect(first.stdout).toContain(`${STAGE_1_AGAIN}\n`);
+    expect(first.stdout).toContain(`${STAGE_1_UNWRITTEN}\n`);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
       env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
       model: "opus",

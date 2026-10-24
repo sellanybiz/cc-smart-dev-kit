@@ -110,9 +110,9 @@ export function offAddressOf(file: string, stateDir: string): OffAddress {
   const current = getKey(settings, BASE_URL_PATH);
   const ours = ownership(records, BASE_URL_PATH, current) === "ours";
   if (!current.found) {
-    // A key that is not in the file any more is the person's: never put back (a record with no
-    // value, from before values were kept, still counts as ours — `ownership` reads it that way).
-    return ours ? { kind: "same" } : { kind: "theirs", present: false };
+    // A key that is not in the file any more is the person's: never put back. `ownership`
+    // answers "changed" for a missing key whatever the record says, so this is always theirs.
+    return { kind: "theirs", present: false };
   }
   if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
     return ours ? { kind: "same" } : { kind: "theirs", present: true };
@@ -243,8 +243,8 @@ export function shownValue(value: unknown): string {
  * wrote: a key the person changed or removed since is theirs (the record holds a value, and
  * the file holds another one, or no key at all), and `restore` leaves it. A record with no
  * value (an `owned.json` from before values were kept, or the claim written just before a
- * write) counts as ours, whatever the key holds. While there is one, running Claude sessions
- * may still send every request to the router.
+ * write) counts as ours, whatever the key holds. While one of them points at the router
+ * (`baseUrlPointsAtGateway`), running Claude sessions may still send every request to it.
  */
 export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
   const settings = currentSettings(settingsFile);

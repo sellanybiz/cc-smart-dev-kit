@@ -1654,8 +1654,12 @@ waits for each session's next restart harmlessly.
   `ANTHROPIC_BASE_URL` points anywhere else, and the docs say to unset that variable;
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` or `DISABLE_GROWTHBOOK` also turn Remote Control
   off. `gateway on` writes that base URL into user settings, so every session has it: Remote
-  Control is off while the gateway is on. `gateway off`, or a session started without the base
+  Control is off while the gateway is on. `restore`, or a session started without the base
   URL, is the way back (`docs/claude-code-contract.md` § The gateway).
+- **A shell `ANTHROPIC_BASE_URL` loses to the settings file after `off`.** Settings files
+  outrank the shell for `env` (`docs/claude-code-contract.md` § The gateway), so the explicit
+  address `off` writes reaches every session even where the shell exports the router's URL.
+  `restore` removes the explicit address, and the shell's value applies again.
 - **Windows has no socket activation and no file modes**: a restart refuses requests for a
   moment (Claude Code retries them), a stop cuts the answers in flight, and the router's log
   goes nowhere (a task has no console). `docs/windows-gateway.md` says exactly what Windows

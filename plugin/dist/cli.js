@@ -14567,7 +14567,7 @@ function offAddressOf(file, stateDir) {
   const current = getKey(settings, BASE_URL_PATH);
   const ours = ownership(records, BASE_URL_PATH, current) === "ours";
   if (!current.found) {
-    return ours ? { kind: "same" } : { kind: "theirs", present: false };
+    return { kind: "theirs", present: false };
   }
   if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
     return ours ? { kind: "same" } : { kind: "theirs", present: true };
@@ -17951,9 +17951,15 @@ async function commandOff(ctx) {
     if (switched) {
       out.say("Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.");
     }
-    if (result.changes.some((change) => change.after === undefined && change.path[1] === "ENABLE_TOOL_SEARCH")) {
+    const removed = result.changes.filter((change) => change.after === undefined);
+    if (removed.some((change) => change.path[1] === "ENABLE_TOOL_SEARCH")) {
       out.next([
         "env.ENABLE_TOOL_SEARCH is removed, and applies at each session's next restart: it routes nothing."
+      ]);
+    }
+    if (removed.some((change) => RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1]))) {
+      out.next([
+        "The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails."
       ]);
     }
   }
@@ -47864,8 +47870,8 @@ function describe2(result, short) {
 var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
-function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
-  const switched = "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run.";
+function stageOneDone(paths, cliBundle, wrote = false, bunPath = process.execPath) {
+  const switched = wrote ? "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run." : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
   const launcher = join80(paths.binDir, LAUNCHER_NAME);
   if (existsSync72(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -47940,7 +47946,9 @@ function fileUsesRouter(file, stateDir) {
     return false;
   try {
     const url = readGatewaySettings(file).baseUrl;
-    return url !== null && baseUrlPointsAtGateway(url);
+    if (url === null)
+      return true;
+    return baseUrlPointsAtGateway(url);
   } catch {
     return true;
   }
@@ -47976,16 +47984,21 @@ async function runRestore(paths, options) {
   const settingsFiles = Object.entries(changed).filter(([, entry]) => entry.kinds.includes("json-keys")).map(([file]) => file);
   const sessionsUseRouter = routerTracked && settingsFiles.some((file) => fileUsesRouter(file, paths.stateDir));
   if (sessionsUseRouter && !options.now) {
-    const addresses = offWrites(settingsFiles, paths.stateDir);
     return withLock(paths.stateDir, () => {
+      const addresses = offWrites(settingsFiles, paths.stateDir);
+      const excludeFiles = addresses.size === 0 ? [] : Object.entries(changed).filter(([, entry]) => entry.kinds.includes("file-line") && entry.lines?.includes(PERSONAL_EXCLUDE_LINE)).map(([file]) => file);
       const results = restore(paths.stateDir, {
-        except: routerFiles,
+        except: [...routerFiles, ...excludeFiles],
         writeInstead: (file, path) => {
           const address = addresses.get(file);
           return samePath(path, BASE_URL_PATH) && address !== undefined ? { value: address } : undefined;
         }
       });
       print(results, short);
+      const removedRetired = results.some((result) => result.details.some((detail) => RETIRED_GATEWAY_ENV_KEYS.some((key) => detail.includes(key))));
+      if (removedRetired) {
+        console.log("  The retired model keys are removed, and apply at each session's next restart: until then a running session sends its slot name to Anthropic and fails.");
+      }
       const mcp = removeMcp(paths, options, short);
       for (const line of mcp.lines)
         console.log(line);
@@ -47994,7 +48007,7 @@ async function runRestore(paths, options) {
       }
       forgetInstructionChoice(paths.stateDir, short);
       forgetClaudeMemChoice(paths.stateDir, short);
-      console.log(stageOneDone(paths, options.cliBundle));
+      console.log(stageOneDone(paths, options.cliBundle, addresses.size > 0));
       return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
     }, { waitMs: 1e4 });
   }

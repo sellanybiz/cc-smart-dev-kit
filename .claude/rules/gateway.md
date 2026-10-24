@@ -357,8 +357,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   refuses requests for one drain, and the warning names the real cause (`restartWarning`:
   the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
-  So `restore` stops it only once no gateway env key that still holds cc-smart-dev-kit's value is
-  left (its stage 2; a key the person changed since is theirs, and does not hold it back),
+  So `restore` stops it only once no key of ours points at the router (`baseUrlPointsAtGateway`;
+  its stage 2; a key the person changed since is theirs, and does not hold it back),
   and asks first; `--now` does it at once, after saying every session fails until it
   restarts. `restore`'s own two stages are `setup-and-managed-files.md` § `--dry-run` and
   `restore`; `stopRouter` below is the one stop.

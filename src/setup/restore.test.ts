@@ -14,7 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { installLauncher } from "./launcher";
-import { applyManagedJson } from "./managed-json";
+import { applyManagedJson, samePath } from "./managed-json";
 import { applyManagedMarkdown } from "./managed-markdown";
 import { restore } from "./restore";
 import { listBackups, readChanged, writeManagedFile } from "./write";
@@ -351,5 +351,34 @@ describe("where backups live", () => {
     expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "cc-smart-dev-kit")]);
     expect(restore(stateDir).map((result) => result.action)).toEqual(["removed"]);
     expect(existsSync(path)).toBe(false);
+  });
+});
+
+describe("restore: write instead", () => {
+  test("a key written again is reported in `written`, and the file stays tracked for stage 2", () => {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, ORIGINAL_SETTINGS);
+    applyManagedJson({ file: settings, stateDir, set: [[AUTO_UPDATE, true]] });
+
+    const [first] = restore(stateDir, {
+      writeInstead: (_file, path) =>
+        samePath(path, AUTO_UPDATE) ? { value: "sentinel" } : undefined,
+    });
+    expect(first?.action).toBe("cleaned");
+    expect(first?.details).toEqual([]);
+    expect(first?.written).toEqual([
+      { path: 'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate', value: "sentinel" },
+    ]);
+    expect(JSON.parse(read(settings)).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
+      "sentinel",
+    );
+    // It still holds one of ours: the run that takes the key back finds it.
+    expect(Object.keys(readChanged(stateDir))).toEqual([settings]);
+
+    const [second] = restore(stateDir);
+    expect(second?.action).toBe("cleaned");
+    expect(second?.details).toEqual(['extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate']);
+    expect(readChanged(stateDir)).toEqual({});
   });
 });
