@@ -3,7 +3,7 @@
  * (`src/crew/store.ts` › `readNotesState`). A lead hears its crew through `crew watch`, but a
  * monitor line can land while the lead is busy, and a compaction takes the lead's context with it.
  * So each turn the lead starts (UserPromptSubmit, which also fires on a hand-back turn, and
- * SessionStart: a start, a resume after a restart, a clear, a compaction) this hook reads the
+ * SessionStart: a start, a resume after a restart, a compaction) this hook reads the
  * crew store's events log from a per-lead cursor and adds the newest line it has not said yet —
  * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
@@ -23,10 +23,13 @@
  * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
- * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume, a clear or
- *   a compaction, each of which builds the lead's context again — the answer also holds the one
- *   line saying the crew builds the work. Nothing at a prompt and nothing on an edit: the owner
- *   chose words, not a guard. An ordinary session and a crew session hear neither line.
+ * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume or a
+ *   compaction, each of which builds the lead's context again — the answer also holds the one
+ *   line saying the crew builds the work. Those are the three sources `hooks.json` wires the
+ *   hook for (`startup|resume|compact`, kept by `entries.test.ts`); a `clear` is a new
+ *   conversation, which `crew-role` reads the same way. Nothing at a prompt and nothing on an
+ *   edit: the owner chose words, not a guard. An ordinary session and a crew session hear
+ *   neither line.
  *
  * The review mark on a report line is judged with the built-in review agents
  * (`workflowDefaults.reviewAgents`): this hook reads no project file, so its answer is the same
@@ -82,7 +85,7 @@ function leadTitle(
 }
 
 /**
- * The line a lead gets at a start, a resume, a clear and a compaction (D61): the lead skill's
+ * The line a lead gets at a start, a resume and a compaction (D61): the lead skill's
  * "Your crew builds" in one line. A lead plans, briefs, starts, answers and merges; the building
  * goes to its crew sessions, because the lead's context is re-read on every turn and every file
  * it reads or writes costs on every later one. Words only: never at a prompt, never on an edit,

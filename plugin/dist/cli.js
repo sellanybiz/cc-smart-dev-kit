@@ -31586,90 +31586,22 @@ var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function slotOf(model) {
-  const found = familySlotFor(model);
-  const family = claudeFamily(model);
-  if (found === null || family === null)
-    return null;
-  return { family, key: found.slot, name: found.slot.slice(SLOT_PREFIX.length) };
+function slotKeyOf(model) {
+  return familySlotFor(model)?.slot ?? null;
 }
-function standInChains(config, own) {
-  const first = ["sonnet", "haiku"].map(familySlotKey).filter((key) => key !== null);
-  const keys = [...new Set([...first, ...Object.keys(config.slots)])];
-  return keys.filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key)).map((key) => config.slots[key] ?? []);
-}
-function backendTargets(chains) {
-  return [
-    ...new Set(chains.filter((text) => {
-      const parsed = parseTarget(text);
-      return "target" in parsed && parsed.target.kind === "backend";
-    }))
-  ];
-}
-function suggestedTargets(config, first, slot, claim) {
-  const chains = standInChains(config, slot.key).flat();
-  const backends = backendTargets(chains);
-  if (backends.length === 0)
-    return null;
-  const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
-  const otherClaude = modelOnly ? chains.find((text) => {
-    const family = claudeFamily(text);
-    return text.startsWith("claude-") && family !== null && family !== slot.family;
-  }) : undefined;
-  return [...new Set([first, ...otherClaude === undefined ? [] : [otherClaude], ...backends])];
-}
-function shortName(target) {
-  return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
-}
-function typed(commands) {
-  return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
-}
-function offerFor(config, slot, model, claim, profile) {
-  const chain = config.slots[slot.key] ?? [];
-  const fallback = chainCommand(profile, ["fallback", slot.name, "on"]);
+function slotFact(config, slot) {
+  const chain = config.slots[slot] ?? [];
   const head = chain[0];
   if (head !== undefined) {
     const parsed = parseTarget(head);
     if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-      return {
-        kind: "none",
-        words: `${slot.key} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
+      return `${slot} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`;
     }
   }
-  if (chain.length > 1) {
-    if (fallbackOn(config, slot.key)) {
-      return {
-        kind: "none",
-        words: `The ${slot.key} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
-    }
-    return { commands: [fallback], kind: "commands", targets: chain };
+  if (chain.length > 1 && fallbackOn(config, slot)) {
+    return `The ${slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`;
   }
-  const targets = suggestedTargets(config, head ?? model, slot, claim);
-  if (targets === null) {
-    const shown = typed([
-      chainCommand(profile, ["slot", slot.name, `${head ?? model},<backend>:<model>`]),
-      fallback
-    ]);
-    return {
-      kind: "no-target",
-      words: `To use a more affordable model until it resets: ${shown} (${COMMAND} gateway models lists the models).`
-    };
-  }
-  return {
-    commands: [chainCommand(profile, ["slot", slot.name, targets.join(",")]), fallback],
-    kind: "commands",
-    targets
-  };
-}
-function gatewayOnStep(ctx, first = "") {
-  if (!ctx.machineGatewayOn)
-    return `turn the gateway on${first} (${COMMAND} gateway on)`;
-  return `put this session on the gateway${first} (its project or its launch keeps it on Claude: run ${COMMAND} gateway project on in the project's folder, or start the session with ${COMMAND} launch --gateway)`;
-}
-function chainCommand(profile, words) {
-  return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
+  return null;
 }
 function breakerOpening(input, ctx) {
   if (!isJsonObject14(input) || input.error !== "rate_limit")
@@ -31703,53 +31635,24 @@ function planAlert(input, ctx) {
   if (!ctx.gatewaySetUp)
     return null;
   const own = ctx.sessionModel === null ? undefined : limits.find(([model]) => model === withoutContextSuffix(ctx.sessionModel ?? ""));
-  const slotted = limits.filter((entry) => slotOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+  const slotted = limits.filter((entry) => slotKeyOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
   const chosen = own ?? slotted;
   const model = chosen?.[0] ?? null;
   const record = chosen?.[1] ?? null;
   const reset = record?.resetsAt !== null && record?.resetsAt !== undefined ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}` : /resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known";
-  const title = "Claude usage limit reached";
   const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
-  if (ctx.config === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: ${COMMAND} doctor says why.`,
-      title
-    };
-  }
-  const slot = model === null ? null : slotOf(model);
-  if (slot === null || model === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset.`,
-      title
-    };
-  }
-  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null, ctx.profile);
-  if (offer.kind !== "commands")
-    return { action: null, body: `${head} ${offer.words}`, title };
-  const shown = typed(offer.commands);
-  if (!ctx.gatewayOn) {
-    return {
-      action: null,
-      body: `${head} To use a more affordable model until it resets, ${gatewayOnStep(ctx)}, then: ${shown}`,
-      title
-    };
-  }
+  const slot = model === null ? null : slotKeyOf(model);
+  const fact = slot === null || ctx.config === null || !ctx.gatewayOn ? null : slotFact(ctx.config, slot);
   return {
-    action: {
-      commands: offer.commands,
-      label: `Use ${shortName(offer.targets[1] ?? "")} until it resets`
-    },
-    body: `${head} A more affordable model until it resets: ${shown} (Claude takes over again by itself once it answers).`,
-    title
+    body: `${head} ${fact ?? "Claude Code continues by itself after the reset."}`,
+    title: "Claude usage limit reached"
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject14(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync43(paths.gatewayConfigFile);
-  const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
     state = parseLimitState(readFileSync48(paths.gatewayStateFile, "utf8"));
@@ -31772,9 +31675,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     config,
     gatewayOn,
     gatewaySetUp,
-    machineGatewayOn: gatewayOnOf(paths),
     nowMs,
-    profile,
     sessionModel,
     state,
     watchdogOn
@@ -31821,7 +31722,6 @@ var spawnRunner = ({ argv, timeoutMs }) => {
     return { exitCode: null, stdout: "", timedOut: false };
   }
 };
-var ACTION_WAIT_MS = 30 * 60000;
 function parseAlert(text) {
   let raw;
   try {
@@ -31832,20 +31732,7 @@ function parseAlert(text) {
   if (!isJsonObject14(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
     return null;
   }
-  const action = raw.action;
-  if (action === null)
-    return { action: null, body: raw.body, title: raw.title };
-  if (!isJsonObject14(action) || typeof action.label !== "string")
-    return null;
-  const commands = action.commands;
-  if (!Array.isArray(commands) || commands.length === 0 || !commands.every((args) => Array.isArray(args) && args.length > 0 && args.every((arg) => typeof arg === "string"))) {
-    return null;
-  }
-  return {
-    action: { commands, label: action.label },
-    body: raw.body,
-    title: raw.title
-  };
+  return { body: raw.body, title: raw.title };
 }
 function appleString(text) {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
@@ -31873,37 +31760,7 @@ function plainNotification(alert, platform) {
   }
   return null;
 }
-function runAlert(alert, platform, launcher, run) {
-  if (platform === "linux" && alert.action !== null) {
-    const asked = run({
-      argv: [
-        "notify-send",
-        "--app-name=cc-smart-dev-kit",
-        `--action=use=${alert.action.label}`,
-        "--action=wait=Wait",
-        alert.title,
-        alert.body
-      ],
-      timeoutMs: ACTION_WAIT_MS
-    });
-    if (asked.timedOut)
-      return "no answer";
-    if (asked.exitCode === 0) {
-      if (asked.stdout.trim() !== "use")
-        return "waited";
-      const done = alert.action.commands.every((args) => run({ argv: [launcher, ...args], timeoutMs: 60000 }).exitCode === 0);
-      run({
-        argv: [
-          "notify-send",
-          "--app-name=cc-smart-dev-kit",
-          done ? "Fallback on" : "Fallback not turned on",
-          done ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.` : `Run it yourself to see why: ${typed(alert.action.commands)}`
-        ],
-        timeoutMs: 1e4
-      });
-      return done ? "used" : "use failed";
-    }
-  }
+function runAlert(alert, platform, run) {
   const plain = plainNotification(alert, platform);
   if (plain === null)
     return "no notifier";
@@ -40724,9 +40581,8 @@ var VERSION_HELP = `Usage: ${COMMAND} version
 Print the version.`;
 var ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
 
-Waits for a click on the desktop alert, then brings the alert's window back. The notify and
-stop-failure hooks start it, detached, through the launcher. It is not a command to run by
-hand.`;
+Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
+starts it, detached, through the launcher. It is not a command to run by hand.`;
 var CLAUDE_MEM_HELP = `Usage: ${COMMAND} claude-mem [status]
        ${COMMAND} claude-mem route claude|<backend>:<model>
        ${COMMAND} claude-mem key [--gateway]
@@ -45506,7 +45362,7 @@ function fableSession(input, env, paths) {
     model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env))
     return SILENT;
-  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
+  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
   if (real.tier !== "fable")
     return SILENT;
   if (!firstTime(mark))
@@ -45584,8 +45440,9 @@ var INERT = new Set([
 ]);
 var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
 var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
 function namesKit(text) {
-  return KIT_TOKEN.test(text);
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
 }
 function isKitWord(word) {
   return programName(word) === COMMAND || KIT_BUNDLE.test(word);
@@ -50992,7 +50849,7 @@ function statusTasks(input) {
   }
   return out;
 }
-function slotOf2(model) {
+function slotOf(model) {
   const found = familySlotFor(model);
   if (found === null)
     return null;
@@ -51000,7 +50857,7 @@ function slotOf2(model) {
   return found.slot.startsWith(prefix) ? found.slot.slice(prefix.length) : found.slot;
 }
 function rowContent(task, columns = DEFAULT_COLUMNS) {
-  const slot = slotOf2(task.model) ?? "?";
+  const slot = slotOf(task.model) ?? "?";
   const model = task.model ?? "model not resolved yet";
   const effort = task.effort ?? "default effort";
   const route = `${slot} \u2192 ${model} \u2192 ${effort}`;
@@ -52544,8 +52401,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join90(paths.binDir, LAUNCHER_NAME);
-      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+      if (runAlert(alert, process.platform, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;

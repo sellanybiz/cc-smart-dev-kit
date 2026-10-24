@@ -388,9 +388,9 @@ describe("D61: a lead's start note, and never a prompt", () => {
     return { hook_event_name: "SessionStart", session_id: LEAD_SESSION, cwd: repo, source };
   }
 
-  test("a start, a resume, a clear and a compaction each carry it", async () => {
+  test("a start, a resume and a compaction each carry it (the wiring's three sources, `entries.test.ts`)", async () => {
     const world = await leadWorld();
-    for (const source of ["startup", "resume", "clear", "compact"]) {
+    for (const source of ["startup", "resume", "compact"]) {
       expect(await runHook(leadNotesHook, start(world.repo, source), world.env)).toEqual(
         addContext("SessionStart", START_NOTE),
       );

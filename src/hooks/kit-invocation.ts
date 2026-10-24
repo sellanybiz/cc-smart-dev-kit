@@ -78,15 +78,21 @@ const KIT_TOKEN = new RegExp(
   "i",
 );
 
+/** Where a path in a line's text ends: a space, a quote, an assignment, a separator, a substitution. */
+const PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+
 /**
- * True when a line's text names the kit command as a token (`KIT_TOKEN`). A guard that meets a
- * program the line works out when it runs (`$PY`, `$(which gh)`) reads that program as the kit
- * only when this is true: without it, the words around a computed program are another program's
- * (`"$PY" -m pytest -k workflow`), and a guard that read them as the kit's would ask or refuse
- * a test run. `session-escape-guard` and `job-route`'s judge share this one test.
+ * True when a line's text names the kit command: as a token (`KIT_TOKEN`), or by a path to its
+ * bundle (`KIT_BUNDLE`) written anywhere in it, a variable's value included
+ * (`C=…/dist/cli.js; $(which bun) $C …`: the bundle word `$C` is no kit word, and the folder
+ * `KIT_TOKEN` ignores held the name). A guard that meets a program the line works out when it
+ * runs (`$PY`, `$(which gh)`) reads that program as the kit only when this is true: without it,
+ * the words around a computed program are another program's (`"$PY" -m pytest -k workflow`),
+ * and a guard that read them as the kit's would ask or refuse a test run. `session-escape-guard`
+ * and `job-route`'s judge share this one test.
  */
 export function namesKit(text: string): boolean {
-  return KIT_TOKEN.test(text);
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
 }
 
 /** True when a word names the kit command: the launcher by name or path, or its bundle. */

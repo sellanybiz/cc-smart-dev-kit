@@ -190,7 +190,7 @@ questions, merges each branch with one full check after it, keeps the plan file 
 the person. The building — code, tests, research across many files, long debugging — goes to a
 crew session, and the reading a brief needs to a scout subagent. The rule is **words only**: the
 lead skill's "Your crew builds" section, and one line in the lead's start note from this hook at
-a start, a resume, a clear and a compaction — never at a prompt, never on an edit, and no block.
+a start, a resume and a compaction — never at a prompt, never on an edit, and no block.
 Why: the lead's context is re-read on the premium model every turn, so every file it reads or
 writes costs on every later turn, while the crew session that does the same work ends.
 
@@ -833,5 +833,5 @@ each is silent unless its own session is the one it is about, and neither reads
   person's asks and the lead's open work on the list, and keep it true as they move — said before
   the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
   (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
-  turn — at a start, a resume, a clear and a compaction, never at a prompt and never on an edit.
+  turn — at a start, a resume and a compaction, never at a prompt and never on an edit.
   **Never a block**: a lead is reminded, never held.

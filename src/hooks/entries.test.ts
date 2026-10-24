@@ -266,6 +266,16 @@ esac
     ).toHaveLength(1);
   });
 
+  test("the lead's start note comes at a start, a resume and a compaction — never a clear (D61)", () => {
+    // `lead-notes` and the texts that describe it (its header, `specs.ts`, `docs/design/hooks.md`,
+    // `docs/design/crew.md`) say these three sources and no other: a `clear` starts a new
+    // conversation, and `crew-role` reads it that way. The wiring is the one place that decides.
+    const matcher = wired.find(
+      ({ event, handler }) => event === "SessionStart" && bundleOf(handler) === "lead-notes",
+    )?.matcher;
+    expect(matcher).toBe("startup|resume|compact");
+  });
+
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;

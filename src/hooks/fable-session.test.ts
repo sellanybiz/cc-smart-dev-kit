@@ -13,6 +13,7 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { fableSessionMark } from "./fable-session";
@@ -250,5 +251,71 @@ describe("a session on the fable tier", () => {
         env,
       ),
     ).toEqual({});
+  });
+});
+
+describe("RV4: the line names what answers THIS session, read from its own ANTHROPIC_BASE_URL", () => {
+  // Claude Code gives a hook the session's effective URL in its environment: the project's file,
+  // a `--settings` launch and a profile each change it, and the machine's user file does not
+  // speak for them (`sessionGatewayOf`, proved live on 2.1.310).
+  const ROUTER = "http://127.0.0.1:39999";
+
+  /**
+   * The hook's environment on a machine whose `gateway.json` puts a backend first in the fable
+   * slot (and, as `profiles`, the profile `cheap`), whose user settings file holds `userUrl`
+   * (null: no address), for a session whose effective URL is `sessionUrl` (null: none).
+   */
+  function machine(
+    userUrl: null | string,
+    sessionUrl: null | string,
+    options: { profiles?: Record<string, unknown>; slots?: Record<string, string[]> } = {},
+  ): Record<string, string> {
+    const env = hookEnv();
+    const where = cliPaths(env);
+    mkdirSync(dirname(where.gatewayConfigFile), { recursive: true });
+    writeFileSync(
+      where.gatewayConfigFile,
+      JSON.stringify({
+        backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
+        port: 39_999,
+        ...(options.profiles === undefined ? {} : { profiles: options.profiles }),
+        slots: options.slots ?? { "cc-smart-dev-kit-fable": ["omniroute:glm-x"] },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      where.settingsFile,
+      JSON.stringify(userUrl === null ? {} : { env: { ANTHROPIC_BASE_URL: userUrl } }),
+    );
+    return sessionUrl === null ? env : { ...env, ANTHROPIC_BASE_URL: sessionUrl };
+  }
+
+  /** The line a backend at the head of the fable slot gets, written out by hand. */
+  const BY_SLOT =
+    "cc-smart-dev-kit: this session runs on the `fable` model, omniroute:glm-x, the premium model — it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.";
+
+  it("a project set to Anthropic's own address while the machine is on: Claude Fable, on the login", async () => {
+    const env = machine(ROUTER, "https://api.anthropic.com");
+    expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), env))).toBe(THE_LINE);
+  });
+
+  it("a session on the router while the machine's file says nothing: the backend that answers", async () => {
+    const env = machine(null, ROUTER);
+    expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), env))).toBe(BY_SLOT);
+  });
+
+  it("a profile's chain decides for a profile's session, not the machine's", async () => {
+    // The machine's fable slot starts with Claude; the profile `cheap` puts a backend first.
+    const env = machine(ROUTER, `${ROUTER}/p/cheap`, {
+      profiles: { cheap: { slots: { "cc-smart-dev-kit-fable": ["omniroute:glm-x"] } } },
+      slots: { "cc-smart-dev-kit-fable": ["claude-fable-5-1", "omniroute:glm-x"] },
+    });
+    expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), env))).toBe(BY_SLOT);
+    // The same machine, a session on the machine's own address: Claude answers first.
+    const plain = machine(ROUTER, ROUTER, {
+      slots: { "cc-smart-dev-kit-fable": ["claude-fable-5-1", "omniroute:glm-x"] },
+    });
+    expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), plain))).toBe(THE_LINE);
   });
 });
