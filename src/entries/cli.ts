@@ -205,6 +205,7 @@ function launchContext(paths: ReturnType<typeof cliPaths>) {
     cwd: process.cwd(),
     env: process.env,
     error: (line: string) => console.error(line),
+    fetch: (url: string, init: RequestInit) => fetch(url, init),
     home: paths.home,
     platform: process.platform,
     print: (line: string) => console.log(line),

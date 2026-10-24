@@ -37,8 +37,12 @@ const CONFIG: GatewayConfig = {
   version: 1,
 };
 
-/** A temp machine: its home, config folder, paths, and a context whose two calls are fakes. */
-function machine(options: { routerDown?: boolean } = {}) {
+/**
+ * A temp machine: its home, config folder, paths, and a context whose two calls are fakes.
+ * `oldRouter`: the router that answers is a 1.1.x copy, whose health answer has no `features`
+ * (the background self-update made the CLI new; `gateway setup` has not replaced the router yet).
+ */
+function machine(options: { oldRouter?: boolean; routerDown?: boolean } = {}) {
   const home = tempDir("gp2-project");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -52,6 +56,7 @@ function machine(options: { routerDown?: boolean } = {}) {
     return Response.json({
       cooling: {},
       fallbacks: 0,
+      ...(options.oldRouter === true ? {} : { features: ["profiles"] }),
       ok: true,
       port: PORT,
       requests: 0,
@@ -342,6 +347,32 @@ describe("gateway project on", () => {
     await expect(m.run(["project", "on", "--folder", root])).rejects.toThrow(
       "the router does not answer",
     );
+  });
+
+  test("--profile on an older router (no profiles in its features) is refused, and nothing is written", async () => {
+    const m = machine({ oldRouter: true });
+    const root = repo("gp2-on-old-router");
+    await expect(m.run(["project", "on", "--profile", "team", "--folder", root])).rejects.toThrow(
+      `the router running on 127.0.0.1:${PORT} is an older copy that does not know profiles, so every request through a profile's address would fail. Run cc-smart-dev-kit gateway setup first: it puts this version's router in place.`,
+    );
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
+    expect(excludeLines(root)).not.toContain("/.claude/settings.local.json");
+  });
+
+  test("--profile on a router that does not answer names the router, not profiles", async () => {
+    const m = machine({ routerDown: true });
+    const root = repo("gp2-on-profile-down");
+    await expect(m.run(["project", "on", "--profile", "team", "--folder", root])).rejects.toThrow(
+      `the router does not answer on 127.0.0.1:${PORT} (Unable to connect)`,
+    );
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
+  });
+
+  test("an older router still takes a plain on: only a profile's path needs the feature", async () => {
+    const m = machine({ oldRouter: true });
+    const root = repo("gp2-on-old-plain");
+    expect(await m.run(["project", "on", "--folder", root])).toBe(0);
+    expect(urlOf(join(root, ".claude", "settings.local.json"))).toBe(ROUTER);
   });
 
   test("outside a git project it is refused, and says where the state belongs", async () => {

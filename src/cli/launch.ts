@@ -18,7 +18,8 @@
  * when the session ends.
  *
  * **What it will not do:** start a session inside a session (`CLAUDECODE`), guess a profile the
- * config does not have, or point at a gateway this machine never set up. There is deliberately
+ * config does not have, point at a gateway this machine never set up, or point at a profile
+ * while the running router does not know profiles (`routerFeature`). There is deliberately
  * no `--default`: a launch with no mode passes no `--settings`, and the machine's chain decides.
  *
  * **Windows:** the CLI writes the file before it starts `claude`, and `cmd.exe` carries the
@@ -31,6 +32,7 @@ import { COMMAND } from "../build-info";
 import { claudeArgv, findClaude } from "../crew/claude";
 import { writeJsonFile } from "../crew/store";
 import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
+import { type HealthFetch, routerFeature, routerLacksProfiles } from "../gateway/health";
 import { profileUrlOf, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl } from "../gateway/settings";
 import { isProfileName } from "../gateway/targets";
@@ -135,6 +137,8 @@ export interface LaunchContext {
   cwd: string;
   env: Env;
   error: (line: string) => void;
+  /** Asks the router's health page whether it knows profiles (`routerFeature`); a test's is a fake. */
+  fetch: HealthFetch;
   /** The home folder: where the native installer puts `claude`. */
   home: string;
   platform: NodeJS.Platform;
@@ -188,10 +192,13 @@ interface LaunchTarget {
 
 /**
  * The URL one mode names, or the lines that refuse it: an unknown profile, a malformed name,
- * and a gateway this machine never set up are each said here, with their fix, before anything
- * is written or run.
+ * a gateway this machine never set up, and a running router that does not know profiles are
+ * each said here, with their fix, before anything is written or run.
  */
-function launchTarget(mode: LaunchMode, ctx: LaunchContext): LaunchTarget | { lines: string[] } {
+async function launchTarget(
+  mode: LaunchMode,
+  ctx: LaunchContext,
+): Promise<LaunchTarget | { lines: string[] }> {
   if (mode.kind === "default") {
     return { line: "launch: this machine's settings · no --settings file", url: null };
   }
@@ -236,6 +243,25 @@ function launchTarget(mode: LaunchMode, ctx: LaunchContext): LaunchTarget | { li
       ],
     };
   }
+  // An older router copy still running (the CLI updated itself, `gateway setup` has not run)
+  // sends `…/p/<name>/v1/messages` to Anthropic as it is: every request of the session fails.
+  const known = await routerFeature(config.port, "profiles", ctx.fetch);
+  if ("error" in known) {
+    return {
+      lines: [
+        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
+        `Fix: ${COMMAND} gateway setup`,
+      ],
+    };
+  }
+  if (!known.has) {
+    return {
+      lines: [
+        `launch: ${routerLacksProfiles(config.port)}.`,
+        `Fix: ${COMMAND} gateway setup puts this version's router in place.`,
+      ],
+    };
+  }
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" · ${url}`, url };
 }
@@ -255,7 +281,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     );
     return 1;
   }
-  const target = launchTarget(parsed.mode, ctx);
+  const target = await launchTarget(parsed.mode, ctx);
   if ("lines" in target) {
     for (const line of target.lines) ctx.error(line);
     return 1;

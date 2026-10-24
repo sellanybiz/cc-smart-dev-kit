@@ -38,7 +38,7 @@ import {
   type GatewayConfig,
   PROFILE_NAME_RULE,
 } from "./config";
-import { routerHealth } from "./health";
+import { routerFeature, routerLacksProfiles } from "./health";
 import {
   decisionWords,
   excludeFileOf,
@@ -537,12 +537,19 @@ export async function commandProject(
   }
   if (options.state === "on") {
     // The same check as `gateway on`: a project pointed at a router that is not there fails
-    // every request from its next session.
+    // every request from its next session. A profile's URL needs a router that knows profiles:
+    // an older copy still running sends `…/p/<name>/v1/messages` to Anthropic as it is, and a
+    // running session follows the changed URL within about a second (`routerFeature`).
     const port = portOf(projectStateOf(ctx, options.folder));
-    const health = await routerHealth(port, ctx.probe.fetch);
+    const health = await routerFeature(port, "profiles", ctx.probe.fetch);
     if ("error" in health) {
       throw new Error(
         `the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request in this project would fail. Run ${COMMAND} gateway setup first.`,
+      );
+    }
+    if (options.profile !== null && !health.has) {
+      throw new Error(
+        `${routerLacksProfiles(port)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`,
       );
     }
   }

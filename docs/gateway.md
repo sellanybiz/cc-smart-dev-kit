@@ -147,7 +147,13 @@ http://127.0.0.1:20100/p/my-project
   (`HistoryFilters.profile`).
 - **The health page names what this router knows**: `features: ["profiles"]`, and `profiles`
   lists the configured names. A command or the portal reads it to tell a running router that
-  knows profiles from an older one, which carries no version.
+  knows profiles from an older one, which carries no version. One reader asks it
+  (`routerFeature`, `src/gateway/health.ts`): after the background self-update the CLI is new
+  while the router that runs stays the old copy until `gateway setup`, and a 1.1.x router sends
+  `…/p/<name>/v1/messages` to Anthropic as it is, so every request of that project fails. So
+  `gateway project on --profile` (and the portal's Gateway card, which runs it) and `launch
+  --profile` refuse while the router lists no `profiles`, and `doctor` fails a project whose
+  address names a profile; each names `gateway setup` as the fix.
 - **A project reaches its profile by its URL**: `ANTHROPIC_BASE_URL` with `/p/<name>` on the
   end, in that project's own settings file (or passed to one session with `--settings`). It is
   the only place a profile's name comes from; no request header names a project.
@@ -274,7 +280,7 @@ cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claud
 |---|---|---|
 | `--no-gateway` | `https://api.anthropic.com`: Anthropic, on the person's own claude.ai login (P1) | `launch: plain Claude (no gateway) · …` |
 | `--gateway` | the machine's router, `http://127.0.0.1:<port>` from `gateway.json` | `launch: the gateway · …` |
-| `--profile <name>` | the router with the profile, `…/p/<name>` | `launch: the gateway, profile "<name>" · …` |
+| `--profile <name>` | the router with the profile, `…/p/<name>`, once its health page lists `profiles` (§ Profiles) | `launch: the gateway, profile "<name>" · …` |
 | none | no file and no `--settings`: the machine's and the project's settings decide, as for `claude` | `launch: this machine's settings · no --settings file` |
 
 Everything after `--` goes to Claude Code itself (`--model`, `-p`, `--resume`, `--help`). The

@@ -11264,6 +11264,16 @@ async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
     return { error: messageOf(error) };
   }
 }
+function healthHasFeature(body, feature) {
+  return isJsonObject6(body) && Array.isArray(body.features) && body.features.includes(feature);
+}
+async function routerFeature(port, feature, fetchImpl) {
+  const health = await routerHealth(port, fetchImpl);
+  return "error" in health ? health : { has: healthHasFeature(health.body, feature) };
+}
+function routerLacksProfiles(port) {
+  return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
 function isConnectionRefused(error) {
   if (typeof error !== "object" || error === null || !("code" in error))
     return false;
@@ -18435,9 +18445,12 @@ async function commandProject(ctx, args, usage) {
   }
   if (options.state === "on") {
     const port = portOf(projectStateOf(ctx, options.folder));
-    const health = await routerHealth(port, ctx.probe.fetch);
+    const health = await routerFeature(port, "profiles", ctx.probe.fetch);
     if ("error" in health) {
       throw new Error(`the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request in this project would fail. Run ${COMMAND} gateway setup first.`);
+    }
+    if (options.profile !== null && !health.has) {
+      throw new Error(`${routerLacksProfiles(port)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`);
     }
   }
   const written = await applyProjectChange(ctx, options.folder, options);
@@ -21675,7 +21688,8 @@ async function gatewayChecks(options) {
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
     });
   }
-  checks.push(...await projectChecks(options, config));
+  const router = "error" in health ? null : { port: config.port, profiles: healthHasFeature(health.body, "profiles") };
+  checks.push(...await projectChecks(options, config, router));
   return checks;
 }
 function modelKeyWarnings(file, home, backends) {
@@ -21719,7 +21733,7 @@ function fileProblemWords(file, home) {
   const where = tildify(file.path, home);
   return reason === "" ? where : `${where}: ${reason}`;
 }
-async function projectChecks(options, config) {
+async function projectChecks(options, config, router = null) {
   if (options.projects === undefined)
     return [];
   const { paths } = options;
@@ -21753,6 +21767,13 @@ async function projectChecks(options, config) {
       checks.push({ ok: true, warn: true, text });
     } else {
       checks.push({ ok: true, info: true, text });
+    }
+    if (view.choice.state === "on" && view.choice.profile !== null && router !== null && !router.profiles) {
+      checks.push({
+        ok: false,
+        text: `${where}: its address names the profile "${view.choice.profile}", and ${routerLacksProfiles(router.port)}`,
+        fix: SETUP
+      });
     }
     for (const file of view.files) {
       if (file.kind === "machine")

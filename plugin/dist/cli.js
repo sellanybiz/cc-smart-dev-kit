@@ -21580,6 +21580,16 @@ async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
     return { error: messageOf(error) };
   }
 }
+function healthHasFeature(body, feature) {
+  return isJsonObject10(body) && Array.isArray(body.features) && body.features.includes(feature);
+}
+async function routerFeature(port, feature, fetchImpl) {
+  const health = await routerHealth(port, fetchImpl);
+  return "error" in health ? health : { has: healthHasFeature(health.body, feature) };
+}
+function routerLacksProfiles(port) {
+  return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
 function isConnectionRefused(error) {
   if (typeof error !== "object" || error === null || !("code" in error))
     return false;
@@ -27835,9 +27845,12 @@ async function commandProject(ctx, args, usage) {
   }
   if (options.state === "on") {
     const port = portOf(projectStateOf(ctx, options.folder));
-    const health = await routerHealth(port, ctx.probe.fetch);
+    const health = await routerFeature(port, "profiles", ctx.probe.fetch);
     if ("error" in health) {
       throw new Error(`the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request in this project would fail. Run ${COMMAND} gateway setup first.`);
+    }
+    if (options.profile !== null && !health.has) {
+      throw new Error(`${routerLacksProfiles(port)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`);
     }
   }
   const written = await applyProjectChange(ctx, options.folder, options);
@@ -37381,7 +37394,7 @@ function removeSettingsFile(file, ctx) {
     ctx.error(`launch: its settings file could not be removed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-function launchTarget(mode, ctx) {
+async function launchTarget(mode, ctx) {
   if (mode.kind === "default") {
     return { line: "launch: this machine's settings \xB7 no --settings file", url: null };
   }
@@ -37426,6 +37439,23 @@ function launchTarget(mode, ctx) {
       ]
     };
   }
+  const known = await routerFeature(config.port, "profiles", ctx.fetch);
+  if ("error" in known) {
+    return {
+      lines: [
+        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
+        `Fix: ${COMMAND} gateway setup`
+      ]
+    };
+  }
+  if (!known.has) {
+    return {
+      lines: [
+        `launch: ${routerLacksProfiles(config.port)}.`,
+        `Fix: ${COMMAND} gateway setup puts this version's router in place.`
+      ]
+    };
+  }
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" \xB7 ${url}`, url };
 }
@@ -37440,7 +37470,7 @@ See: ${COMMAND} launch --help`);
     ctx.error("launch starts a new Claude Code session, and this is already one: run it from your own terminal.");
     return 1;
   }
-  const target = launchTarget(parsed.mode, ctx);
+  const target = await launchTarget(parsed.mode, ctx);
   if ("lines" in target) {
     for (const line of target.lines)
       ctx.error(line);
@@ -41224,7 +41254,8 @@ async function gatewayChecks(options) {
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
     });
   }
-  checks.push(...await projectChecks(options, config));
+  const router = "error" in health ? null : { port: config.port, profiles: healthHasFeature(health.body, "profiles") };
+  checks.push(...await projectChecks(options, config, router));
   return checks;
 }
 function modelKeyWarnings(file, home, backends) {
@@ -41268,7 +41299,7 @@ function fileProblemWords(file, home) {
   const where = tildify(file.path, home);
   return reason === "" ? where : `${where}: ${reason}`;
 }
-async function projectChecks(options, config) {
+async function projectChecks(options, config, router = null) {
   if (options.projects === undefined)
     return [];
   const { paths } = options;
@@ -41302,6 +41333,13 @@ async function projectChecks(options, config) {
       checks.push({ ok: true, warn: true, text });
     } else {
       checks.push({ ok: true, info: true, text });
+    }
+    if (view.choice.state === "on" && view.choice.profile !== null && router !== null && !router.profiles) {
+      checks.push({
+        ok: false,
+        text: `${where}: its address names the profile "${view.choice.profile}", and ${routerLacksProfiles(router.port)}`,
+        fix: SETUP
+      });
     }
     for (const file of view.files) {
       if (file.kind === "machine")
@@ -52149,6 +52187,7 @@ function launchContext(paths) {
     cwd: process.cwd(),
     env: process.env,
     error: (line) => console.error(line),
+    fetch: (url, init) => fetch(url, init),
     home: paths.home,
     platform: process.platform,
     print: (line) => console.log(line),
