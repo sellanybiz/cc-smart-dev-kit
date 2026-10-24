@@ -5,20 +5,23 @@
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { OTHER_SESSION } from "../testing/crew-world";
-import { git } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
+import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
+import { procEnviron, stopLeftoverProcesses } from "./end";
 import {
   crewMcpFile,
   crewSettingsFile,
   listCrew,
   readCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
 } from "./store";
 
@@ -68,9 +71,74 @@ function commitWork(worktree: string): void {
   git(worktree, "commit", "-m", "work");
 }
 
+/** One commit of a second crew session's own, in its worktree: different work, so a replay sees a change. */
+function commitOtherWork(worktree: string): void {
+  writeFileSync(join(worktree, "other.ts"), "export const y = 2;\n");
+  git(worktree, "add", ".");
+  git(worktree, "commit", "-m", "other work");
+}
+
 /** The lead merges the crew session's branch into its own, as D24 has it. */
 function leadMerges(repo: string, branch: string): void {
   git(repo, "merge", "--no-ff", "-m", "merge the crew session", branch);
+}
+
+/**
+ * A real background program in `cwd`, as a crew session's own check outlives its turn: the
+ * removal signals this test's own child, never a process the test did not start. `crew` is the
+ * crew id its environment carries (`CC_SMART_DEV_KIT_CREW`, which every program a crew session
+ * starts inherits, whoever it is reparented to); null starts one that carries none, as a
+ * person's terminal or dev server does. The environment is built here, not inherited, so the
+ * session that runs the suite cannot leak its own marker in.
+ */
+async function startProgram(
+  cwd: string,
+  crew: null | string,
+  command = "sleep 60",
+): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", command], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(crew === null ? {} : { CC_SMART_DEV_KIT_CREW: crew }),
+    },
+    stderr: "ignore",
+    stdout: "ignore",
+  });
+  // Until the child has run `sleep`, /proc shows the environment it was forked with — the
+  // suite's own — and a removal that read it then would judge the wrong program.
+  for (let tries = 0; tries < 400; tries += 1) {
+    try {
+      if (readFileSync(`/proc/${String(child.pid)}/cmdline`, "utf8").includes("sleep")) break;
+    } catch {
+      break;
+    }
+    await Bun.sleep(5);
+  }
+  return child;
+}
+
+/** True when `child` ended within two seconds (the removal's SIGTERM and SIGKILL are instant here). */
+async function ended(child: Bun.Subprocess): Promise<boolean> {
+  return await Promise.race([child.exited.then(() => true), Bun.sleep(2_000).then(() => false)]);
+}
+
+/** The moment a removal moved a leftover folder aside, in the name `removeWorktree` gives it. */
+const PARKED_AT = 1761300000000;
+
+/**
+ * What a removal that failed midway leaves when git no longer lists the folder: the files git
+ * could not delete, written before the move.
+ */
+function leftoverFolder(repo: string, name: string, files = ["docs/guide.md"]): string {
+  const folder = join(repo, ".claude", "worktrees", `${name}-removing-${String(PARKED_AT)}`);
+  for (const file of files) {
+    mkdirSync(dirname(join(folder, file)), { recursive: true });
+    writeFileSync(join(folder, file), "left\n");
+    const before = new Date(PARKED_AT - 60_000);
+    utimesSync(join(folder, file), before, before);
+  }
+  return folder;
 }
 
 /** Agent view still lists the crew session of the board world: a failed `claude rm` is a real failure. */
@@ -297,7 +365,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
-  test("the lead's own folder is the branch it merges into, wherever the main checkout is", async () => {
+  test("the crew session's own base is the branch it merges into, wherever the lead's folder is", async () => {
     const world = await boardWorld();
     // A lead that works in a worktree of its own, on its own branch.
     const leadFolder = join(world.repo, ".claude", "worktrees", "lead");
@@ -317,14 +385,52 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     const record = await world.addCrew({ leadSessionId: "f00dfeed-0000-1111-2222-333333333333" });
     const { branch, worktree } = places(world.repo);
     commitWork(worktree);
-    // Merged into the main checkout's branch: the lead's folder is on another branch.
+    // Merged into the branch it was cut from (main), though the lead's folder is on another branch.
     leadMerges(world.repo, branch);
 
-    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
-    expect(world.err).toEqual([
-      `crew rm: ${branch} has 1 commit that lead-work does not have`,
-      `Fix: the lead merges it first (git merge ${branch}, in ${leadFolder}), then run crew rm again`,
-    ]);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", branch)).toBe("");
+  });
+
+  test("a continuation is removed against the first base while the lead is on another branch", async () => {
+    const world = await boardWorld();
+    const original = await world.addCrew({ state: "handoff" });
+    commitWork(original.worktree);
+    const previousHead = git(original.worktree, "rev-parse", "HEAD").trim();
+    const next = await world.addCrew({ slug: "next", state: "done" });
+    git(next.worktree, "merge", "--ff-only", original.branch);
+    commitOtherWork(next.worktree);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      next.id,
+      {
+        base: { ref: original.branch, sha: previousHead },
+        baseRef: original.branch,
+        continues: original.id,
+      },
+      NOW,
+    );
+    const leadFolder = join(world.repo, ".claude", "worktrees", "lead-other");
+    git(world.repo, "worktree", "add", "-b", "lead-other", leadFolder, "HEAD");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: leadFolder,
+        name: original.leadName,
+        plan: original.plan,
+        repo: world.repo,
+        sessionId: original.leadSessionId,
+        tag: "my-app",
+      },
+      NOW,
+    );
+    leadMerges(world.repo, next.branch);
+    expect(await runCrew(["rm", next.id], world.ctx())).toBe(0);
+    expect(existsSync(next.worktree)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, next.id)?.state).toBe("removed");
   });
 
   test("a lead whose folder is gone: the ref the crew session was cut from stands in", async () => {
@@ -348,6 +454,52 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       "crew rm: crew/B1-help has 1 commit that main does not have",
       `Fix: the lead merges it first (git merge crew/B1-help, in ${world.repo}), then run crew rm again`,
     ]);
+  });
+
+  test("two crew sessions of one lead, on two bases, each merged into its own base and each removed", async () => {
+    const world = await boardWorld();
+    const { repo } = world;
+    // A second base, cut from main: the lead runs two release branches.
+    git(repo, "branch", "release-1.1.3", "main");
+    const mainSha = git(repo, "rev-parse", "main").trim();
+    const releaseSha = git(repo, "rev-parse", "release-1.1.3").trim();
+    // One crew session on each base. The lead's own folder stays on main, which holds only the first.
+    const first = await world.addCrew({ base: { ref: "main", sha: mainSha }, baseRef: "main" });
+    const second = await world.addCrew({
+      base: { ref: "release-1.1.3", sha: releaseSha },
+      baseRef: "release-1.1.3",
+      phase: "B2",
+      slug: "api",
+      suffix: "2b3c4d",
+    });
+    const firstPlaces = places(repo);
+    const secondPlaces = {
+      branch: "crew/B2-api",
+      worktree: join(repo, ".claude", "worktrees", "crew-B2-api"),
+    };
+    commitWork(firstPlaces.worktree);
+    commitOtherWork(secondPlaces.worktree);
+    leadMerges(repo, firstPlaces.branch);
+    git(repo, "checkout", "release-1.1.3");
+    git(repo, "merge", "--no-ff", "-m", "merge the crew session", secondPlaces.branch);
+    git(repo, "checkout", "main");
+
+    expect(
+      await runCrew(["rm", first.id], world.ctx({}, { FAKE_WORKTREE: firstPlaces.worktree })),
+    ).toBe(0);
+    expect(
+      await runCrew(["rm", second.id], world.ctx({}, { FAKE_WORKTREE: secondPlaces.worktree })),
+    ).toBe(0);
+    expect(existsSync(firstPlaces.worktree)).toBe(false);
+    expect(existsSync(secondPlaces.worktree)).toBe(false);
+    expect(git(repo, "branch", "--list", firstPlaces.branch)).toBe("");
+    expect(git(repo, "branch", "--list", secondPlaces.branch)).toBe("");
+    expect(await readCrew(world.paths.stateDir, repo, first.id)).toMatchObject({
+      state: "removed",
+    });
+    expect(await readCrew(world.paths.stateDir, repo, second.id)).toMatchObject({
+      state: "removed",
+    });
   });
 
   test("after the merge: stop, unlock, remove the worktree and branch, and only then claude rm", async () => {
@@ -498,6 +650,339 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
+  test("D62: a finished session's own leftover program is stopped, and the worktree goes", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    // It carries the session's marker, as everything the session's Bash started does.
+    const check = await startProgram(worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
+            },
+          }),
+        ),
+      ).toBe(0);
+      expect(world.out).toContain("C my-app B1 help: stopped its own leftover programs (check.sh)");
+      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+        state: "removed",
+      });
+      expect(existsSync(worktree)).toBe(false);
+      expect(await ended(check)).toBe(true);
+    } finally {
+      if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a program that is not the session's is never stopped, however long it has run", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    // A person's shell or dev server, started before the session's turn ended and still there:
+    // it has no marker, so it is not the session's. Another crew session's has someone else's.
+    const server = await startProgram(worktree, null);
+    const sibling = await startProgram(worktree, "B2-other-9f8e7d");
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                {
+                  cwd: worktree,
+                  path: "/usr/bin/bun dev",
+                  pid: server.pid,
+                  startedAt: NOW - 13 * MINUTE,
+                },
+                {
+                  cwd: worktree,
+                  path: "/usr/bin/bun test",
+                  pid: sibling.pid,
+                  startedAt: NOW - 13 * MINUTE,
+                },
+              ],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: bun",
+      );
+      expect(world.out.some((line) => line.includes("stopped its own leftover programs"))).toBe(
+        false,
+      );
+      expect(existsSync(worktree)).toBe(true);
+      expect(server.exitCode).toBeNull();
+      expect(sibling.exitCode).toBeNull();
+      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+        state: "done",
+      });
+    } finally {
+      server.kill("SIGKILL");
+      sibling.kill("SIGKILL");
+    }
+  });
+
+  test("D62: one program that is not the session's keeps all of them", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const mine = await startProgram(worktree, record.id);
+    const theirs = await startProgram(worktree, null);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                { parentPid: 1, path: join(worktree, "check.sh"), pid: mine.pid },
+                { cwd: worktree, path: "/usr/bin/bun dev", pid: theirs.pid },
+              ],
+            },
+          }),
+        ),
+      ).toBe(1);
+      // Nothing is stopped when something there is somebody else's: half a stop helps nobody.
+      expect(mine.exitCode).toBeNull();
+      expect(theirs.exitCode).toBeNull();
+    } finally {
+      mine.kill("SIGKILL");
+      theirs.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a live session's children are never stopped, marker or not", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const check = await startProgram(worktree, record.id);
+    try {
+      // Agent view lists the session with a process: it is not finished, its children are its work.
+      const live = JSON.stringify([
+        {
+          id: "a1b2c3d4",
+          pid: 4242,
+          sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+          state: "working",
+        },
+      ]);
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx(
+            {
+              scanFacts: {
+                ...QUIET_MACHINE,
+                programs: [{ parentPid: 4242, path: join(worktree, "check.sh"), pid: check.pid }],
+              },
+            },
+            { FAKE_AGENTS_JSON: live },
+          ),
+        ),
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: check.sh",
+      );
+      expect(check.exitCode).toBeNull();
+    } finally {
+      check.kill("SIGKILL");
+    }
+  });
+
+  describe("D62: what proves a program is the session's own", () => {
+    /** The record, its worktree and the context a direct call needs, with `programs` running. */
+    async function direct(programs: RunningProgram[], env: Record<string, string> = {}) {
+      const world = await boardWorld();
+      // Recorded an hour before NOW.
+      const record = await world.addCrew({ atMs: NOW - 60 * MINUTE, state: "done" });
+      const ctx = world.ctx({ scanFacts: { ...QUIET_MACHINE, programs } }, env);
+      return { ctx, record, world };
+    }
+    const unreadable = () => null;
+
+    test("an unreadable environment is never proof, whenever the program started", async () => {
+      const worktree = tempDir("leftover-lifetime");
+      const own = await startProgram(worktree, null);
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: own.pid },
+        ]);
+        // The environment cannot be read (not Linux, or not this user's process). Whatever the
+        // program's age or parent, it may be a person's editor or dev server: it stays.
+        const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx, unreadable);
+        expect(stopped.line).toBeNull();
+        expect(own.exitCode).toBeNull();
+      } finally {
+        if (own.exitCode === null) own.kill("SIGKILL");
+      }
+    });
+
+    test("a readable environment decides, even for a program that descends from the session", async () => {
+      const worktree = tempDir("leftover-reused-pid");
+      // A person's program that happens to sit under the session's pid (a reused pid): it carries
+      // no id of this crew session, so the session's descent cannot make it the session's own.
+      const stranger = await startProgram(worktree, null);
+      try {
+        const stopped = JSON.stringify([
+          {
+            id: "a1b2c3d4",
+            pid: 4242,
+            sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+            state: "stopped",
+          },
+        ]);
+        const { ctx, record } = await direct(
+          [
+            {
+              cwd: worktree,
+              parentPid: 4242,
+              path: join(worktree, "server.sh"),
+              pid: stranger.pid,
+            },
+          ],
+          { FAKE_AGENTS_JSON: stopped },
+        );
+        const result = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+        expect(result.line).toBeNull();
+        expect(stranger.exitCode).toBeNull();
+      } finally {
+        stranger.kill("SIGKILL");
+      }
+    });
+
+    test.skipIf(process.platform !== "linux")(
+      "SIGKILL goes to the process that got the SIGTERM",
+      async () => {
+        const worktree = tempDir("leftover-sigkill");
+        // It ignores SIGTERM, so only SIGKILL ends it.
+        const stubborn = await startProgram(
+          worktree,
+          "B1-help-1a2b3c",
+          "trap '' TERM; exec sleep 60",
+        );
+        try {
+          const { ctx, record } = await direct([
+            { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+          ]);
+          const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+          expect(stopped.line).toBe(
+            "C my-app B1 help: stopped its own leftover programs (check.sh)",
+          );
+          expect(await ended(stubborn)).toBe(true);
+        } finally {
+          if (stubborn.exitCode === null) stubborn.kill("SIGKILL");
+        }
+      },
+    );
+
+    test("a pid another process took while this one was given time to end is not killed", async () => {
+      const worktree = tempDir("leftover-pid-reused");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        // The first reading is the process that is signalled; the second, after the grace, is
+        // somebody else's start time on the same pid.
+        const reads = ["proc:100", "proc:200"];
+        const startOf = () => reads.shift() ?? null;
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          startOf,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(reads).toEqual([]);
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
+      }
+    });
+
+    test("a start time that was never read is no licence for SIGKILL", async () => {
+      const worktree = tempDir("leftover-start-unread");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          () => null,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
+      }
+    });
+  });
+
+  test.skipIf(process.platform !== "linux")(
+    "D62: a program's environment is read from /proc, and a pid nobody has reads as unreadable",
+    async () => {
+      const child = await startProgram(tempDir("environ"), "B1-help-1a2b3c");
+      try {
+        expect(procEnviron(child.pid)?.CC_SMART_DEV_KIT_CREW).toBe("B1-help-1a2b3c");
+        expect(procEnviron(999_999_999)).toBeNull();
+      } finally {
+        child.kill("SIGKILL");
+      }
+    },
+  );
+
+  test("local files keep the session's owned program alive", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    writeFileSync(join(record.worktree, ".env.local"), "LOCAL=1\n");
+    const child = await startProgram(record.worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [{ parentPid: 1, path: join(record.worktree, "check.sh"), pid: child.pid }],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(child.exitCode).toBeNull();
+      expect(world.err[0]).toContain("local files git does not keep");
+      expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
+
   test("a file git does not keep would be lost with the worktree, so it stays", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();
@@ -509,6 +994,55 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       "Fix: clear that, then run crew rm again; it never forces",
     ]);
     expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("D62: a removal that stopped halfway is finished by crew rm", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    leadMerges(world.repo, branch);
+    // What `removeWorktree` leaves when git could not remove the folder it moved aside.
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "removed",
+    });
+  });
+
+  test("D62: crew rm also finishes a leftover folder no record names, and says so", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const stray = leftoverFolder(world.repo, "crew-ghost");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(stray)).toBe(false);
+    expect(world.out).toContain(
+      `removed ${stray} (left by a removal that stopped halfway; git no longer lists it)`,
+    );
+  });
+
+  test("D62: a leftover of this crew session's own that stays refuses crew rm, with its reason", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done", worktree: false });
+    const { worktree } = places(world.repo);
+    const stray = leftoverFolder(world.repo, "crew-B1-help");
+    // Something wrote in it after the removal moved it: not the removal's own, and not ours to delete.
+    writeFileSync(join(stray, "mine.txt"), "someone's notes\n");
+    expect(stray).toBe(`${worktree}-removing-${String(PARKED_AT)}`);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: .claude/worktrees/crew-B1-help-removing-1761300000000 is kept: files were written in it after the removal moved it: mine.txt",
+      "Fix: clear that, then run crew rm again; it never forces",
+    ]);
+    expect(existsSync(join(stray, "mine.txt"))).toBe(true);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "done",
+    });
   });
 
   test("`claude rm` fails: the store says so, the worktree is gone, and a second run finishes it", async () => {

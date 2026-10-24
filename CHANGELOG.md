@@ -51,6 +51,25 @@ you open it.
   `job run` sent that one on, and its leftover processes when they had to be stopped. The first
   waiting line carries one hint about the pipe, once per job. A job that never waited prints
   neither line: no noise on a free machine.
+- **Finished crew work cleans itself up (D62).** A project with seven leads held 39 crew
+  worktrees, 13 working and the rest finished work nobody had removed (7 merged, 11 handed off,
+  6 stopped), plus 2 folders a removal left half done. The lead's watch now removes a merged crew
+  session with `crew rm`'s own steps and says a refusal once; it waits until every later
+  continuation's work is merged into the first record's base, and never removes a `stopped` one (that stays your call,
+  though it is still marked merged, so a phase that waits for it starts).
+  The merge is judged against the branch the session was cut from, not the lead's current one.
+  The programs a finished session's own turn left running (its background `bun run check` and
+  their `sh` and `bash`) are stopped, SIGTERM then SIGKILL, instead of refusing the removal; a
+  dev server you started there still keeps it. Ownership requires a readable environment naming
+  that crew session; an unreadable environment (including macOS) keeps the folder. Other blockers
+  are judged before its programs are stopped. Older records rewritten to `stopped` need a manual
+  `crew rm`; the watch does not guess whether their stop was intentional. A `…-removing-<time>` folder is finished by the
+  next `crew rm`, `worktrees --clean` or watch pass: while git lists it, under the usual checks;
+  when git no longer lists it (5 of the 8 found on one machine), only when nothing runs from it
+  and no file in it is newer than the move its name records. `worktrees` names a crew worktree as one,
+  with its lead and who removes it, and `--clean` leaves it alone instead of listing 30 of them
+  "kept" and saying "Nothing finished to clear". A finished session's unanswered question is
+  closed, so it leaves the Needs page.
 
 **Three more fixes, found by 1.1.2's own review.**
 

@@ -44,8 +44,9 @@ import {
   recordStart,
 } from "./auto-state";
 import { type CleanLock, cleanFinished, holdCleanLock, type KeptWorktree } from "./clean";
-import { baseBranch } from "./command";
+import { baseBranch, crewRecordsOf, isCrewWorktree } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
+import { finishStrays, type StrayPass, strayParkedFolders } from "./scan-parked";
 
 export interface AutoCleanDeps {
   env: Env;
@@ -134,11 +135,23 @@ function summary(
   forgotten: number,
   failed: KeptWorktree[],
   kept: number,
+  leftovers: StrayPass,
 ): string {
   const parts = [
     `${repo} (${trigger}): removed ${String(removed.length)}${removed.length === 0 ? "" : ` (${removed.join(", ")})`}`,
   ];
   if (forgotten > 0) parts.push(`forgot ${String(forgotten)}`);
+  // Folders a removal moved aside and git no longer lists (D62): removed by what they hold.
+  if (leftovers.removed.length > 0) {
+    parts.push(
+      `finished ${String(leftovers.removed.length)} leftover folder${leftovers.removed.length === 1 ? "" : "s"} (${leftovers.removed.join(", ")})`,
+    );
+  }
+  if (leftovers.kept.length > 0) {
+    parts.push(
+      `left ${String(leftovers.kept.length)} leftover folder${leftovers.kept.length === 1 ? "" : "s"} (${leftovers.kept.map((one) => `${one.path}: ${one.why}`).join("; ")})`,
+    );
+  }
   // A folder moved aside that git could not then remove: the reason says where it is now.
   if (failed.length > 0) {
     parts.push(
@@ -217,9 +230,23 @@ export async function runAutoClean(
       facts: { ...deps.facts, sessions: sessionsToKeep(deps, paths.claudeConfigDir) },
     };
     const scanned = scanWorktrees(main, judged);
+    // The leftover folders git no longer lists are read before the clean removes any worktree:
+    // they are looked for next to the worktrees git lists.
+    const strays = strayParkedFolders(main, env);
+    // A crew session's worktree is its lead's to remove (`crew rm`, or the watch once merged):
+    // this clean would leave the record, the branch and the session behind (D62).
+    const crewRecords = crewRecordsOf(paths, main);
     // The lines the command prints are not kept: the report holds what a person needs.
-    const report = cleanFinished(main, scanned, judged, () => undefined);
+    const report = cleanFinished(
+      main,
+      scanned,
+      judged,
+      () => undefined,
+      (one) => isCrewWorktree(one, crewRecords),
+    );
     recordRun(files, main, { base, kept: report.kept, now, removed: report.removed });
+    // The folders a removal moved aside that git no longer lists: finished by what they hold.
+    const leftovers = finishStrays(main, judged, () => undefined, strays);
     log(
       summary(
         main,
@@ -228,6 +255,7 @@ export async function runAutoClean(
         report.forgotten.length,
         report.failed,
         report.kept.length,
+        leftovers,
       ),
     );
     return "cleaned";

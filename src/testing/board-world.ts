@@ -67,6 +67,10 @@ exit 0
 export interface AddCrew {
   /** When it was recorded, in milliseconds. Default: 12 minutes before `NOW`. */
   atMs?: number;
+  /** The branch it was cut from; default "main". */
+  baseRef?: string;
+  /** The base commit; default the branch's HEAD when a worktree is made. */
+  base?: null | { ref: string; sha: string };
   effort?: string;
   files?: string[];
   kind?: CrewKind;
@@ -136,8 +140,8 @@ export async function boardWorld(): Promise<BoardWorld> {
     return await createCrew(
       world.paths.stateDir,
       {
-        base: made ? { ref: "main", sha } : null,
-        baseRef: "main",
+        base: change.base ?? (made ? { ref: "main", sha } : null),
+        baseRef: change.baseRef ?? "main",
         branch,
         effort: change.effort ?? "high",
         files: change.files ?? [],

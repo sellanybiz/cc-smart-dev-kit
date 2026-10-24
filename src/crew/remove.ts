@@ -33,14 +33,16 @@
 import { existsSync } from "node:fs";
 import { tildify } from "../cli/paths";
 import { hasChanges, listWorktrees, runGit, samePath } from "../hooks/git";
+import { holdCleanLock } from "../worktrees/clean";
 import {
   deleteBranchOnRef,
+  isParkedWorktree,
+  parkedOriginal,
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
-  type WorkOnRef,
-  workOnRef,
 } from "../worktrees/scan";
+import { finishParked, finishStrays } from "../worktrees/scan-parked";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
@@ -50,31 +52,20 @@ import {
   claudeFailure,
   commitsNotOn,
   failure,
+  findOwnLeftovers,
   GIT_TIMEOUT_MS,
-  type LeadRef,
   leadRef,
   markState,
+  mergedIntoBase,
+  programsWithoutOwn,
   reasonOf,
   refuse,
   relative,
   sessionUnknown,
+  stopOwnLeftovers,
   stopSession,
 } from "./end";
-import { appendCrewEvent } from "./store";
-
-/**
- * Is the work of `branch` on the lead's ref? One answer for the removal and the watch
- * (`workOnRef`): an ancestor, or a merge that changes nothing (a squash merge). Anything git
- * cannot say counts as not merged, and the crew session is kept.
- */
-function mergedInto(
-  repo: string,
-  lead: LeadRef,
-  branch: string,
-  env: CrewContext["env"],
-): WorkOnRef {
-  return workOnRef(repo, lead.sha, `refs/heads/${branch}`, env);
-}
+import { appendCrewEvent, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -82,7 +73,11 @@ function commits(count: number): string {
 }
 
 /** `crew rm <name|id>`; the exit code. */
-export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> {
+export async function runCrewRm(
+  ref: string,
+  ctx: CrewContext,
+  options: { skipParked?: boolean } = {},
+): Promise<number> {
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
@@ -100,6 +95,10 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   // 2. The lead's branch decides whether the work is kept (D24).
   const lead = leadRef(record, ctx);
   if ("why" in lead) return refuse(failure(`crew rm: ${lead.why}`), ctx);
+  const mergeStep =
+    lead.folder === null
+      ? `merge ${record.branch} into ${lead.label}`
+      : `git merge ${record.branch}, in ${lead.folder}`;
   const branchThere = runGit(
     repo,
     ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`],
@@ -107,26 +106,31 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
     GIT_TIMEOUT_MS,
   ).ok;
   if (branchThere) {
-    const merged = mergedInto(repo, lead, record.branch, ctx.env);
+    const merged = mergedIntoBase(record, ctx);
     if (merged === "unknown") {
       return refuse(
         failure(
           `crew rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`,
-          `Fix: merge it first (git merge ${record.branch}, in ${lead.folder}) so that it is an ancestor, then run crew rm again`,
+          `Fix: ${mergeStep} so that it is an ancestor, then run crew rm again`,
         ),
         ctx,
       );
     }
     if (merged === "missing") {
       const count = commitsNotOn(repo, lead, record.branch, ctx.env);
-      const missing = count === null ? "some commits" : commits(count);
-      return refuse(
-        failure(
-          `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
-          `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`,
-        ),
-        ctx,
-      );
+      // 0 commits of its own: the branch is its base, and has nothing to lose. The removal goes on.
+      if (count !== 0) {
+        const missing = count === null ? "some commits" : commits(count);
+        return refuse(
+          failure(
+            `crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`,
+            lead.folder === null
+              ? `Fix: the lead must ${mergeStep}, then run crew rm again`
+              : `Fix: the lead merges it first (${mergeStep}), then run crew rm again`,
+          ),
+          ctx,
+        );
+      }
     }
   }
 
@@ -217,6 +221,42 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
     return refuse(refusal, ctx);
   };
 
+  // 5b. A finished crew session's own leftover programs are not a reason to keep it (D62):
+  // the check, the test run its turn left going. Only when every program there is its own —
+  // the session is gone or stopped, and each has a readable environment carrying its crew id;
+  // an unreadable environment is never proof. One line says what went. A program that is
+  // not the session's stays, and the verdict below keeps the worktree with its reason, as before.
+  const leftovers = findOwnLeftovers(record, ctx);
+  // Judge every other blocker before stopping any owned program.
+  const facts = { ...ctx.scanFacts, programs: programsWithoutOwn(leftovers) };
+
+  // 5c. A removal that stopped halfway left a folder at `<path>-removing-<time>` (D62): git
+  // lists it there and the record still names the old path, or git lists it no more and half of
+  // it stays. Finish them now, under the same safe checks — this record's and any other's — so
+  // none is left behind. This record's own, if it stays, refuses the command: the record is about
+  // to say removed, and nothing would come back for the folder.
+  const finished = options.skipParked
+    ? { kept: [], removed: [] }
+    : await finishParkedWorktrees(
+        repo,
+        ctx,
+        { label: lead.label, ref: lead.sha },
+        (line) => ctx.print(line),
+        facts,
+      );
+  const stuck = finished.kept.find((one) => {
+    const original = parkedOriginal(one.path);
+    return samePath(one.path, repo) || (original !== null && samePath(original, record.worktree));
+  });
+  if (stuck !== undefined) {
+    return refuseKept(
+      failure(
+        `crew rm: ${relative(repo, stuck.path)} is kept: ${stuck.why}`,
+        "Fix: clear that, then run crew rm again; it never forces",
+      ),
+    );
+  }
+
   // 6. and 7. The kit's own verdict and removal, judged against the lead's branch.
   if (listed !== undefined) {
     let judged: ReturnType<typeof scanWorktrees>[number] | undefined;
@@ -226,7 +266,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         env: ctx.env,
-        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+        ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
       }).find((one) => one.state !== "main" && samePath(one.listed.path, record.worktree));
     } catch (error) {
@@ -248,6 +288,8 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
           ),
         );
       }
+      const stopped = await stopOwnLeftovers(record, leftovers, ctx);
+      if (stopped.line !== null) ctx.print(stopped.line);
       const removal = removeWorktree(repo, judged.listed, {
         against: { label: lead.label, ref: lead.sha },
         base: lead.label,
@@ -255,7 +297,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         deleteBranch: (_repo, branch) =>
           deleteBranchOnRef(repo, lead.sha, lead.label, branch, ctx.env),
         env: ctx.env,
-        ...(ctx.scanFacts === undefined ? {} : { facts: ctx.scanFacts }),
+        ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
       });
       for (const said of removal.said) ctx.print(said);
@@ -334,4 +376,85 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   const stored = await markState(record, "removed", "removed", ctx);
   ctx.print(`removed ${record.name}`);
   return stored ? 0 : 1;
+}
+
+/** What a pass over a repository's moved-aside folders came to: the ones that stayed, and why. */
+export interface ParkedWorktreesPass {
+  kept: Array<{ path: string; why: string }>;
+  removed: string[];
+}
+
+/**
+ * Finishes every removal that stopped halfway in `repo` (D62): the folders a removal moved
+ * aside (`<path>-removing-<time>`) and could not then remove. One home for `crew rm` and the
+ * lead's watch.
+ *
+ * Those git still lists are judged against the branch their own crew session was cut from when
+ * the store knows it, else against `base` (`origin/<base>`, else the local branch of that name);
+ * with no ref at all they stay, because nothing is judged against a guess. Those git no longer
+ * lists are judged by what the folder holds (`finishStrays`, `scan-parked.ts`) and need no ref.
+ * `facts` replaces the machine's (`ctx.scanFacts`): `crew rm` hands in what is left after it
+ * stopped a finished session's own programs. Nothing is said about a folder that stays — the
+ * caller reads `kept` — because the next pass judges it again.
+ */
+export async function finishParkedWorktrees(
+  repo: string,
+  ctx: CrewContext,
+  base: null | { label: string; ref: string },
+  say: (line: string) => void,
+  facts: CrewContext["scanFacts"] = ctx.scanFacts,
+): Promise<ParkedWorktreesPass> {
+  const lock = await holdCleanLock();
+  if (lock === null)
+    return { kept: [{ path: repo, why: "another worktree clean is running" }], removed: [] };
+  try {
+    const pass: ParkedWorktreesPass = { kept: [], removed: [] };
+    const options = {
+      claudeConfigDir: ctx.paths.claudeConfigDir,
+      env: ctx.env,
+      ...(facts === undefined ? {} : { facts }),
+      idleLimit: 0,
+    };
+    let parked: ReturnType<typeof listWorktrees>;
+    try {
+      parked = listWorktrees(repo, ctx.env).filter((one) => isParkedWorktree(one.path));
+    } catch (error) {
+      return { kept: [{ path: repo, why: reasonOf(error) }], removed: [] };
+    }
+    if (parked.length > 0) {
+      const records = listCrew(ctx.paths.stateDir, repo).records;
+      // One scan per ref: a whole scan is judged against one branch.
+      const groups = new Map<string, { label: string; paths: string[]; ref: string }>();
+      for (const one of parked) {
+        const original = parkedOriginal(one.path) ?? one.path;
+        const record = records.find((two) => samePath(two.worktree, original));
+        let chosen: null | { label: string; ref: string } = null;
+        if (record !== undefined) {
+          const lead = leadRef(record, ctx);
+          if (!("why" in lead)) chosen = { label: lead.label, ref: lead.sha };
+        }
+        chosen = chosen ?? base;
+        if (chosen === null) continue;
+        const group = groups.get(chosen.ref) ?? { label: chosen.label, paths: [], ref: chosen.ref };
+        group.paths.push(one.path);
+        groups.set(chosen.ref, group);
+      }
+      for (const group of groups.values()) {
+        const done = finishParked(
+          repo,
+          group.paths,
+          { ...options, against: { label: group.label, ref: group.ref }, base: group.label },
+          say,
+        );
+        pass.removed.push(...done.removed);
+        pass.kept.push(...done.kept);
+      }
+    }
+    const strays = finishStrays(repo, { ...options, base: base?.label ?? "" }, say);
+    pass.removed.push(...strays.removed);
+    pass.kept.push(...strays.kept);
+    return pass;
+  } finally {
+    lock.close();
+  }
 }

@@ -7456,6 +7456,9 @@ function pathForm(path, ignoreCase = IGNORE_CASE) {
   const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
   return ignoreCase ? forward.toLowerCase() : forward;
 }
+function samePath(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
 
 // src/hooks/git.ts
 var GUARD_GIT_TIMEOUT_MS = 5000;
@@ -7563,6 +7566,7 @@ function hasChanges(folder, env) {
 }
 
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts
@@ -8881,6 +8885,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -8935,6 +8948,7 @@ var crewFields = object({
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -9153,6 +9167,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    if (merged.state === "merged" && before.state === "stopped")
+      merged.mergedWhileStopped = true;
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -9218,6 +9234,8 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
+  parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
   said: record(string2(), string2()),
@@ -15774,6 +15792,9 @@ function routeFacts(input, context) {
   return facts;
 }
 
+// src/ports.ts
+var DEFAULT_PORTAL_PORT = 20150;
+
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync2, readdirSync as readdirSync8, readFileSync as readFileSync26, readlinkSync as readlinkSync3 } from "fs";
 import { join as join28 } from "path";
@@ -15966,9 +15987,12 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
+  const crewRecords = crewRecordsOf(paths, repo);
   const finished = [];
   const gone = [];
   for (const listed of linked) {
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
+      continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
       finished.push(listed);
@@ -16258,6 +16282,14 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
 
 // src/crew/board.ts
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
@@ -16303,6 +16335,7 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -17300,12 +17333,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname10, isAbsolute as isAbsolute7, posix as posix2, relative, resolve as resolve8, win32 as win322 } from "path";
-
-// src/ports.ts
-var DEFAULT_PORTAL_PORT = 20150;
-
-// src/hooks/session-escape-guard.ts
+import { dirname as dirname10, isAbsolute as isAbsolute7, posix as posix2, relative as relative2, resolve as resolve8, win32 as win322 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -17570,7 +17598,7 @@ function protectedNeedles(paths) {
   const settings = dirname10(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
-    const underHome = relative(paths.home, folder);
+    const underHome = relative2(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute7(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));

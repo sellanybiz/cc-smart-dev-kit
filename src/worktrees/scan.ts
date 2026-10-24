@@ -29,6 +29,7 @@ import {
   type ContainerMounts,
   containersUsing,
   dockerMounts,
+  mountPoints,
   programsInside,
   type RunningProgram,
   runningPrograms,
@@ -41,6 +42,37 @@ import {
   type WorktreeContents,
   type WorktreeFacts,
 } from "./verdict";
+
+/**
+ * The mark a removal gives the folder it moves aside before removing it:
+ * `<path>-removing-<milliseconds>` (`removeWorktree`). A folder carrying it is one whose removal
+ * stopped halfway, and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it
+ * (D62). An older kit moved such a folder aside again, so the mark may stand more than once.
+ */
+const PARKED_END = /(?:-removing-\d{13})+$/;
+
+/** The folder a half-done removal moved aside was at, or null when `path` is not one. */
+export function parkedOriginal(path: string): null | string {
+  const found = PARKED_END.exec(path);
+  return found === null || found.index === 0 ? null : path.slice(0, found.index);
+}
+
+/** True when `path` is a folder a half-done removal moved aside (`<path>-removing-<time>`). */
+export function isParkedWorktree(path: string): boolean {
+  return parkedOriginal(path) !== null;
+}
+
+/**
+ * Said when a worktree whose folder is gone is forgotten. `git worktree prune` cannot tell a
+ * folder that was deleted from one on a disk that is not connected — and a LOCKED worktree is
+ * never pruned, so the line says how to be sure next time.
+ */
+export function forgottenLine(path: string): string {
+  return (
+    `forgot ${path} (its folder was already gone). A worktree on a disk that is not connected reads ` +
+    `the same way: lock one there (\`git worktree lock "${path}"\`) and prune leaves it alone.`
+  );
+}
 
 /**
  * Brings `origin/<base>` up to date, so work merged a minute ago counts as merged. Never asks
@@ -85,9 +117,35 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
   return null;
 }
 
-/** What removing the worktree would lose. */
-function contentsOf(worktree: string, mainCheckout: string, env: Env): WorktreeContents {
-  if (hasChanges(worktree, env)) return { localFiles: [], uncommitted: true };
+/**
+ * True when the folder has anything uncommitted beyond tracked files that are gone: what a
+ * removal that stopped halfway leaves behind is files it deleted itself, and `git status` reads
+ * those as changes. A file someone changed, added or staged is not the removal's own work.
+ * `git status` prints ` D path` or `D  path`, and `runGit` trims the first line's leading space,
+ * so a deletion reads `D path` there.
+ */
+function hasChangesBeyondDeletions(worktree: string, env: Env): boolean {
+  const status = runGit(
+    worktree,
+    ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+    env,
+  );
+  if (!status.ok) return true;
+  return status.out.split("\n").some((line) => line !== "" && !/^(?: D|D) /.test(line));
+}
+
+/**
+ * What removing the worktree would lose. `parked`: a folder a removal moved aside (D62), whose
+ * deleted tracked files are the removal's own and are not changes.
+ */
+function contentsOf(
+  worktree: string,
+  mainCheckout: string,
+  env: Env,
+  parked = false,
+): WorktreeContents {
+  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasChanges(worktree, env);
+  if (changed) return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
   if (ignored === null) {
     return { localFiles: ["(git could not list the ignored files)"], uncommitted: false };
@@ -127,6 +185,7 @@ export interface ScanOptions {
   /** A test hands in fakes; the default reads this machine. */
   facts?: {
     containers?: "unknown" | ContainerMounts[];
+    mounts?: "unknown" | string[];
     programs?: "unknown" | RunningProgram[];
     sessions?: SessionRecord[];
   };
@@ -344,6 +403,7 @@ export function workOnRef(
 
 /** What one look at this machine gives every worktree of the scan. */
 interface MachineLook {
+  mounts: "unknown" | string[];
   containers: "unknown" | ContainerMounts[];
   env: Env;
   idleLimit: number | undefined;
@@ -383,6 +443,20 @@ function judgeOne(
   // the path the worktree was made with, while a session record holds the physical one when
   // the repo is reached through a symlink.
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
+  // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
+  const parked = isParkedWorktree(listed.path) && listed.branch !== null;
+  if (parked) {
+    if (look.mounts === "unknown") {
+      return {
+        finished: false,
+        held: false,
+        why: "its mount points could not be read, so it cannot be shown that nothing is mounted in it",
+      };
+    }
+    const mounted = look.mounts.find((path) => isInside(realPath(path), realPath(listed.path)));
+    if (mounted !== undefined)
+      return { finished: false, held: false, why: `a mount point lies inside it: ${mounted}` };
+  }
   const facts: WorktreeFacts = {
     aheadOfBase,
     base: look.label,
@@ -399,24 +473,44 @@ function judgeOne(
       aheadOfBase > 0
         ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
         : null,
+    parked,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
   };
-  return verdict(facts, () => contentsOf(listed.path, repo, look.env), look.idleLimit);
+  return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
+}
+
+/** What this machine says about the Docker containers, the programs and the sessions at work. */
+export interface MachineFacts {
+  mounts: "unknown" | string[];
+  containers: "unknown" | ContainerMounts[];
+  programs: "unknown" | RunningProgram[];
+  sessions: SessionRecord[];
+}
+
+/**
+ * The machine's facts: the options' own (a test gives them), else read from this machine. One
+ * home for what a worktree's verdict and a leftover folder's (`scan-parked.ts`) both ask.
+ */
+export function machineFactsOf(options: ScanOptions): MachineFacts {
+  return {
+    containers: options.facts?.containers ?? dockerMounts(),
+    mounts: options.facts?.mounts ?? mountPoints(),
+    programs: options.facts?.programs ?? runningPrograms(),
+    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
+  };
 }
 
 /** The machine's facts, read once for a whole scan (or one removal). */
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
-    containers: options.facts?.containers ?? dockerMounts(),
+    ...machineFactsOf(options),
     env: options.env,
     idleLimit: options.idleLimit,
     label: options.against?.label ?? options.base,
     now: options.now ?? Date.now(),
-    programs: options.facts?.programs ?? runningPrograms(),
     ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env),
-    sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
   };
 }
 
@@ -500,7 +594,12 @@ export function removeWorktree(
 ): Removal {
   // The listing is read again too: a worktree's head moves when a session commits, and a
   // verdict on the head the scan saw would miss exactly that.
-  const all = listWorktrees(repo, options.env);
+  let all: ListedWorktree[];
+  try {
+    all = listWorktrees(repo, options.env);
+  } catch {
+    return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
+  }
   const current = all.find((one) => samePath(one.path, listed.path));
   if (current === undefined || !existsSync(current.path)) {
     return {
@@ -516,33 +615,50 @@ export function removeWorktree(
       status: fresh.held ? "held" : "kept",
     };
   }
-  const parked = `${listed.path}-removing-${String(Date.now())}`;
-  const moved = runGit(repo, ["worktree", "move", listed.path, parked], options.env);
-  if (!moved.ok) {
-    // A worktree holding a submodule can never be moved, however long anyone waits: git
-    // refuses those by its own rule, so the message says the way out, and no "try again".
-    if (holdsSubmodule(listed.path, options.env)) {
+  // A folder an earlier removal already moved aside (D62) is not moved again: that would stack
+  // a second mark on the first, and the record's folder could no longer be read from the name.
+  const alreadyParked = isParkedWorktree(listed.path);
+  const parked = alreadyParked ? listed.path : `${listed.path}-removing-${String(Date.now())}`;
+  if (!alreadyParked) {
+    const moved = runGit(repo, ["worktree", "move", listed.path, parked], options.env);
+    if (!moved.ok) {
+      // A worktree holding a submodule can never be moved, however long anyone waits: git
+      // refuses those by its own rule, so the message says the way out, and no "try again".
+      if (holdsSubmodule(listed.path, options.env)) {
+        return {
+          said: [
+            `kept ${listed.path}: it holds a git submodule, and git cannot move or remove such a ` +
+              `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
+              `\`${COMMAND} worktrees\` again: a worktree whose folder is gone is forgotten.`,
+          ],
+          status: "kept",
+        };
+      }
       return {
         said: [
-          `kept ${listed.path}: it holds a git submodule, and git cannot move or remove such a ` +
-            `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
-            `\`${COMMAND} worktrees\` again: a worktree whose folder is gone is forgotten.`,
+          `kept ${listed.path}: a program may still work in it — a terminal, a background command, ` +
+            `or an MCP server restarted while a session was in it (${moved.err})`,
         ],
-        status: "kept",
+        status: "held",
       };
     }
-    return {
-      said: [
-        `kept ${listed.path}: a program may still work in it — a terminal, a background command, ` +
-          `or an MCP server restarted while a session was in it (${moved.err})`,
-      ],
-      status: "held",
-    };
   }
-  const removed = runGit(repo, ["worktree", "remove", parked], options.env);
+  // A folder moved aside whose removal stopped halfway has lost tracked files to that removal,
+  // and git refuses such a worktree without `--force` ("contains modified or untracked files").
+  // Our own verdict already proved those deletions are all it holds (`hasChangesBeyondDeletions`),
+  // so the force is limited to exactly this folder, after that proof, and to no other.
+  const removed = runGit(
+    repo,
+    alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
+    options.env,
+  );
   if (!removed.ok) {
     return {
-      said: [`moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`],
+      said: [
+        alreadyParked
+          ? `could not remove ${parked}: ${removed.err}`
+          : `moved ${listed.path} to ${parked}, then could not remove it: ${removed.err}`,
+      ],
       status: "failed",
     };
   }

@@ -19,6 +19,11 @@
  *
  * Its ignored files go with it: dependency folders, build output, caches.
  *
+ * ONE EXCEPTION: a folder a removal moved aside and could not remove (`parked`, D62) asks for
+ * neither the commits on the base nor the idle hour — its branch holds the commits, and the move
+ * was the removal's own touch. Everything else above still holds, so a session, a program or an
+ * uncommitted change keeps it.
+ *
  * The functions here take plain values and touch no disk, so they can be tested.
  * `scan.ts` gathers the facts and removes; `command.ts` is the command.
  *
@@ -57,6 +62,15 @@ export interface WorktreeFacts {
    * (`scan.ts` replays the branch onto the base, and asks `git cherry` and the pull request).
    */
   mergedBy: MergedBy | null;
+  /**
+   * True for a folder a removal moved aside (`<path>-removing-<time>`, `isParkedWorktree` in
+   * `scan.ts`) and could not then remove, that stands on a branch (D62). Its commits are held
+   * by that branch — removing the folder loses none of them, and the branch itself is deleted
+   * only when the ref holds all of it — so they are no reason to keep it; and the move was the
+   * removal's own touch, so the idle hour is no reason either. Every other reason stands. A
+   * detached folder is never parked in this sense: no branch holds its commits.
+   */
+  parked: boolean;
   /**
    * The version of git on this machine when it is too old to replay a branch onto the base
    * (`MIN_MERGE_TREE_GIT`), so the reason can say why the work could not be proven to be on
@@ -150,7 +164,7 @@ export function verdict(
       why: `another worktree lives inside it: ${facts.innerWorktree}`,
     };
   }
-  if (facts.aheadOfBase > 0 && facts.mergedBy === null) {
+  if (facts.aheadOfBase > 0 && facts.mergedBy === null && !facts.parked) {
     const commits = facts.aheadOfBase === 1 ? "1 commit" : `${String(facts.aheadOfBase)} commits`;
     // A git too old to replay the branch onto the base cannot see a squash merge, so the
     // reason says so: the work may well be on the base, but nothing here can prove it.
@@ -160,7 +174,7 @@ export function verdict(
         : ` (git ${facts.gitTooOld} is too old to replay it onto ${facts.base}: git ${MIN_MERGE_TREE_GIT} or newer is needed)`;
     return { finished: false, held: false, why: `${commits} not on ${facts.base}${tooOld}` };
   }
-  if (facts.idleMinutes < idleLimit) {
+  if (facts.idleMinutes < idleLimit && !facts.parked) {
     return {
       finished: false,
       held: true,

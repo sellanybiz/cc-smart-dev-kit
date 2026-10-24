@@ -37,6 +37,8 @@ import {
   crewMcpFile,
   crewSettingsFile,
   listCrew,
+  openQuestionIndex,
+  questionClosed,
   readReport,
 } from "./store";
 
@@ -63,17 +65,6 @@ const REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"] a
 /** True when `state` is one a crew session can still take an answer in. */
 function isReachable(state: string): boolean {
   return (REACHABLE_STATES as readonly string[]).includes(state);
-}
-
-/**
- * The index of the question the answer goes to: the newest one that has no answer yet. Null
- * when every question has its answer.
- */
-export function openQuestionIndex(record: CrewRecord): null | number {
-  for (let index = record.questions.length - 1; index >= 0; index -= 1) {
-    if (record.questions[index]?.answer === null) return index;
-  }
-  return null;
 }
 
 /**
@@ -127,6 +118,14 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   const { record } = found;
   const index = openQuestionIndex(record);
   if (index === null) {
+    // A question left behind at the end of the phase needs no answer: the crew session is
+    // finished, and nothing would read one (one rule for every reader, `openQuestionIndex`).
+    if (questionClosed(record.state) && record.questions.some((one) => one.answer === null)) {
+      ctx.error(
+        `crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`,
+      );
+      return 1;
+    }
     ctx.error(
       `crew answer: ${record.name} has no question waiting for an answer${
         record.questions.length === 0 ? " (it never asked one)" : ""

@@ -11,7 +11,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { groupTitle } from "../../cli/check";
 import type { CliPaths } from "../../cli/paths";
-import { openQuestionIndex } from "../../crew/answer";
 import { findCrew, stateSince } from "../../crew/board";
 import { diffAgainstBase, outsideBrief } from "../../crew/diff";
 import { RUNNING_STATES } from "../../crew/places";
@@ -22,6 +21,7 @@ import {
   type LeadRecord,
   listAllCrew,
   listAllLeads,
+  openQuestionIndex,
   readCrewEvents,
   readReport,
 } from "../../crew/store";
@@ -134,7 +134,10 @@ export const SUMMARY_MEMORY_POINTS = 60;
  * whole log, oldest first; the board's readers take one crew session's own, newest first.
  */
 function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: number): CrewSummary {
-  const open = [...record.questions].reverse().find((question) => question.answer === null);
+  // The one open-question rule every reader shares (`openQuestionIndex`): a question the crew
+  // session left behind at its end needs no answer, so this page and the Needs page agree.
+  const openIndex = openQuestionIndex(record);
+  const open = openIndex === null ? undefined : record.questions[openIndex];
   const own = events.filter((event) => event.crew === record.id).reverse();
   // The board's own rule for its last line (`lastSaid`): never the "created" line, never empty.
   const said = own.find(

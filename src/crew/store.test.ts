@@ -22,6 +22,7 @@ import {
   crewEventsFile,
   crewFile,
   crewFilesDir,
+  crewOfWorktree,
   crewReportFile,
   crewSettingsFile,
   crewStoreDir,
@@ -33,6 +34,8 @@ import {
   listCrew,
   listLeads,
   type NewCrew,
+  openQuestionIndex,
+  questionClosed,
   readCrew,
   readCrewEvents,
   readLead,
@@ -355,6 +358,40 @@ describe("the crew record", () => {
       0,
     );
   });
+
+  test("D62: the crew session a worktree belongs to: a removed record names nothing, the newest live one wins", async () => {
+    const state = tempDir("state");
+    const path = `${REPO}/.claude/worktrees/crew-K-contracts`;
+    await createCrew(state, { ...queued("crew-K-1"), state: "removed", worktree: path }, T0);
+    const list = () => listCrew(state, REPO).records;
+    // Only a removed record is at that path: its worktree is gone, so a folder there is not its own.
+    expect(crewOfWorktree(list(), path)).toBeNull();
+    // The phase was started again in the same folder: the live one is the owner.
+    await createCrew(state, { ...queued("crew-K-2"), state: "working", worktree: path }, T1);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-2");
+    await createCrew(state, { ...queued("crew-K-3"), state: "done", worktree: path }, T1 + 1000);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-3");
+    // Any other folder has none.
+    expect(crewOfWorktree(list(), `${REPO}/.claude/worktrees/crew-other`)).toBeNull();
+  });
+
+  test("D62: a crew session the lead merged after it was stopped is the lead's to remove", async () => {
+    // The store keeps the fact from the state the record was in, so no later pass can forget it.
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "stopped" }, T0);
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "merged" }, T1, "merged");
+    expect(readCrew(state, REPO, "crew-K-contracts")).toMatchObject({
+      mergedWhileStopped: true,
+      state: "merged",
+    });
+    // Written again as merged, it stays marked.
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "merged" }, T1 + 1000);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.mergedWhileStopped).toBe(true);
+    // Any other crew session that is merged carries no such mark.
+    await createCrew(state, { ...queued("crew-L-other"), state: "done" }, T0);
+    await updateCrew(state, REPO, "crew-L-other", { state: "merged" }, T1, "merged");
+    expect(readCrew(state, REPO, "crew-L-other")?.mergedWhileStopped).toBeUndefined();
+  });
 });
 
 describe("D36: a crew session's questions", () => {
@@ -411,6 +448,39 @@ describe("D36: a crew session's questions", () => {
     await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "a", T1)).rejects.toThrow(
       'crew "crew-K-contracts" has no question 1',
     );
+  });
+
+  test("D62: a question is open while its phase is, and closed when the phase is over", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { options: ["a", "b"], question: "which?", recommended: 1 },
+      T1,
+    );
+    const indexIn = async (next: string): Promise<null | number> => {
+      await updateCrew(state, REPO, "crew-K-contracts", { state: next }, T1 + 1000);
+      const record = readCrew(state, REPO, "crew-K-contracts");
+      return record === null ? null : openQuestionIndex(record);
+    };
+    // The states a crew session's phase runs in, and `stopped`, which an answer resumes.
+    for (const open of ["working", "blocked", "paused", "quiet", "starting", "stopped"]) {
+      expect([open, await indexIn(open)]).toEqual([open, 0]);
+    }
+    // The states it is over in: nothing reads the question any more.
+    for (const closed of ["done", "failed", "handoff", "merged", "removed"]) {
+      expect([closed, await indexIn(closed)]).toEqual([closed, null]);
+      expect(questionClosed(closed)).toBe(true);
+    }
+    expect(questionClosed("working")).toBe(false);
+    expect(questionClosed("stopped")).toBe(false);
+    // An answered question was never open.
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "working" }, T1 + 2000);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1 + 3000);
+    const answered = readCrew(state, REPO, "crew-K-contracts");
+    expect(answered === null ? "missing" : openQuestionIndex(answered)).toBeNull();
   });
 
   test("D36: a question with one option, or a recommendation it does not hold, is never written", async () => {

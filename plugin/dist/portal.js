@@ -20164,6 +20164,7 @@ function liveSessions(claudeConfigDir) {
 }
 
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts
@@ -21465,6 +21466,28 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath3(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
+var QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"];
+function questionClosed(state) {
+  return QUESTION_CLOSED_STATES.includes(state);
+}
+function openQuestionIndex(record2) {
+  if (questionClosed(record2.state))
+    return null;
+  for (let index = record2.questions.length - 1;index >= 0; index -= 1) {
+    if (record2.questions[index]?.answer === null)
+      return index;
+  }
+  return null;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -21519,6 +21542,7 @@ var crewFields = object({
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -21740,6 +21764,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    if (merged.state === "merged" && before.state === "stopped")
+      merged.mergedWhileStopped = true;
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -21805,6 +21831,8 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
+  parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
   said: record(string2(), string2()),
@@ -28074,9 +28102,12 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
+  const crewRecords = crewRecordsOf(paths, repo);
   const finished = [];
   const gone = [];
   for (const listed of linked) {
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
+      continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
       finished.push(listed);
@@ -28366,6 +28397,14 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
 
 // src/crew/board.ts
 function findNamed(records, ref, look) {
@@ -28418,17 +28457,8 @@ function stateSince(record, events) {
 }
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
 
-// src/crew/answer.ts
-function openQuestionIndex(record) {
-  for (let index = record.questions.length - 1;index >= 0; index -= 1) {
-    if (record.questions[index]?.answer === null)
-      return index;
-  }
-  return null;
-}
-
 // src/crew/diff.ts
-var GIT_TIMEOUT_MS2 = 20000;
+var GIT_TIMEOUT_MS3 = 20000;
 
 class DiffError extends Error {
   name = "DiffError";
@@ -28444,7 +28474,7 @@ function numstatRecord(record) {
   };
 }
 function diffAgainstBase(folder, baseSha, env) {
-  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS2);
+  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS3);
   if (!run.ok) {
     throw new DiffError(`git diff ${baseSha.slice(0, 7)}..HEAD failed in ${folder}: ${run.err === "" ? "no reason given" : run.err}`);
   }
@@ -28573,6 +28603,7 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -29633,7 +29664,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname19, isAbsolute as isAbsolute7, posix as posix3, relative as relative3, resolve as resolve9, win32 as win324 } from "path";
+import { dirname as dirname19, isAbsolute as isAbsolute7, posix as posix3, relative as relative4, resolve as resolve9, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -29898,7 +29929,7 @@ function protectedNeedles(paths) {
   const settings = dirname19(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
-    const underHome = relative3(paths.home, folder);
+    const underHome = relative4(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute7(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
@@ -30625,7 +30656,7 @@ var MACHINE_WIDE_HOOKS = [
 
 // src/cli/project-init.ts
 import { existsSync as existsSync46, readFileSync as readFileSync56 } from "fs";
-import { join as join54, relative as relative4 } from "path";
+import { join as join54, relative as relative5 } from "path";
 
 // src/project/init.ts
 import { existsSync as existsSync45 } from "fs";
@@ -32868,7 +32899,7 @@ function legacyBrowserInfo(paths, deps) {
 
 // src/update/retired-repos.ts
 import { existsSync as existsSync51, readFileSync as readFileSync61 } from "fs";
-import { join as join60, relative as relative5 } from "path";
+import { join as join60, relative as relative6 } from "path";
 
 // src/sessions/command.ts
 import {
@@ -33000,7 +33031,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
       error = messageOf3(cause);
     }
   }
-  const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative5(repo, file));
+  const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative6(repo, file));
   if (fields.length === 0 && engineFiles.length === 0 && error === null)
     return null;
   return { engineFiles, error, fields, mainCheckout, repo };
@@ -33644,7 +33675,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync65 } from "fs";
-import { basename as basename10, dirname as dirname23, relative as relative6 } from "path";
+import { basename as basename10, dirname as dirname23, relative as relative7 } from "path";
 
 // src/portal/facts.ts
 import { createHash as createHash8 } from "crypto";
@@ -35197,7 +35228,8 @@ function repoOf(deps) {
 }
 var SUMMARY_MEMORY_POINTS = 60;
 function crewSummary(record, events, nowMs) {
-  const open = [...record.questions].reverse().find((question) => question.answer === null);
+  const openIndex = openQuestionIndex(record);
+  const open = openIndex === null ? undefined : record.questions[openIndex];
   const own = events.filter((event) => event.crew === record.id).reverse();
   const said = own.find((event) => event.type !== "created" && event.text !== null && event.text.trim() !== "");
   return {
@@ -35236,7 +35268,7 @@ function crewSummary(record, events, nowMs) {
     worktree: record.worktree
   };
 }
-function reasonOf4(error) {
+function reasonOf5(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function eventsByRepo(paths, records) {
@@ -35259,12 +35291,12 @@ async function workAnswer(deps) {
   try {
     records = [...listAllCrew(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   } catch (error) {
-    note = `the crew store could not be read: ${reasonOf4(error)}`;
+    note = `the crew store could not be read: ${reasonOf5(error)}`;
   }
   try {
     leadRecords = [...listAllLeads(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.sessionId.localeCompare(a.sessionId));
   } catch (error) {
-    note = note ?? `the crew store could not be read: ${reasonOf4(error)}`;
+    note = note ?? `the crew store could not be read: ${reasonOf5(error)}`;
   }
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now));
@@ -35341,7 +35373,7 @@ async function crewAnswerFor(deps, ref) {
   try {
     records = listAllCrew(paths.stateDir).records;
   } catch (error) {
-    return { error: reasonOf4(error) };
+    return { error: reasonOf5(error) };
   }
   const named = findCrew(records, ref, "status");
   if ("refusal" in named) {
@@ -35855,8 +35887,8 @@ async function uncommittedProject(root, env) {
     "status",
     "--porcelain",
     "--",
-    relative6(root, files.config),
-    relative6(root, files.settings)
+    relative7(root, files.config),
+    relative7(root, files.settings)
   ], env);
   return status.ok ? status.out !== "" : null;
 }
