@@ -10,8 +10,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   change was refused, because the kit never overwrites a value it did not write. The
   **take-over** records those values as cc-smart-dev-kit's own, after asking and naming them:
   nothing in claude-mem's settings file changes, each value stays exactly as it is until you pick
-  another, and `restore` puts them back — a key is never written down, so `restore` removes a
-  taken-over key like any other key of the kit's. It is
+  another, and `restore` puts them back — a key's value is never written down, so `restore`
+  leaves a taken-over key as you set it, or as the kit set it once it replaced yours, naming the
+  backup that holds yours. It is
   `cc-smart-dev-kit claude-mem take-over`. A new **`cc-smart-dev-kit claude-mem`** command makes
   the card's choices from your own terminal — `status`, `route`, `key` (on stdin, never an
   argument, never printed), `fallback` and `take-over` — through the same functions and the same

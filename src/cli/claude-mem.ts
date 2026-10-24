@@ -30,6 +30,7 @@ import {
 } from "../machine/claude-mem-choices";
 import { usageError } from "./help";
 import type { CliPaths } from "./paths";
+import { cleanSecretLine } from "./secret-line";
 import type { Out } from "./ui/out";
 
 // The command's help text is `CLAUDE_MEM_HELP` in `src/cli/help.ts`, whose table builds the
@@ -40,8 +41,11 @@ import type { Out } from "./ui/out";
 export interface ClaudeMemDeps {
   paths: CliPaths;
   out: Out;
-  /** The key, when it arrives on stdin (`key`): never an argument. */
-  read: () => Promise<string>;
+  /**
+   * The key, when it arrives on stdin (`key`): never an argument. A terminal's own read answers
+   * null at Ctrl+C; a read that cannot hide what is typed throws, and the caller says why.
+   */
+  read: () => Promise<null | string>;
   /** Asks before a take-over; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   /**
@@ -214,7 +218,7 @@ function status(deps: ClaudeMemDeps): number {
       `Changing ${choices.join(" or ")} is refused: ${facts.handKeys.join(", ")} ${facts.handKeys.length === 1 ? "is" : "are"} set by hand in ${facts.file}.`,
       {
         detail: [
-          `${COMMAND} claude-mem take-over records ${facts.handKeys.length === 1 ? "it" : "them"} as cc-smart-dev-kit's, and restore puts the value back.`,
+          `${COMMAND} claude-mem take-over records ${facts.handKeys.length === 1 ? "it" : "them"} as ${COMMAND}'s, and restore puts the value back.`,
         ],
       },
     );
@@ -255,14 +259,28 @@ async function key(deps: ClaudeMemDeps, rest: string[]): Promise<number> {
     );
   }
   if (gateway) return show(deps, await chooseKey(deps.paths, { kind: "gateway" }, deps.check));
-  const pasted = (await deps.read()).trim();
-  if (pasted === "") {
+  let pasted: null | string;
+  try {
+    pasted = await deps.read();
+  } catch (error) {
+    // A terminal that cannot hide what is typed, or a broken pipe. Never "nothing arrived":
+    // that would be a lie about a read error, and the person would not know what to fix.
+    return refused(deps, `The key was not saved: ${messageOf(error)}.`);
+  }
+  if (pasted === null) {
+    deps.out.line("fail", "Nothing was saved (Ctrl+C).");
+    return 130;
+  }
+  // The bracketed-paste markers a terminal wraps a paste in, and every other control character,
+  // go first (`cleanSecretLine`): a key pasted with them would fail its own check.
+  const text = cleanSecretLine(pasted);
+  if (text === "") {
     return refused(
       deps,
       "The key was not saved: none arrived on stdin, and a key is never an argument.",
     );
   }
-  return show(deps, await chooseKey(deps.paths, { kind: "other", key: pasted }, deps.check));
+  return show(deps, await chooseKey(deps.paths, { kind: "other", key: text }, deps.check));
 }
 
 /** `fallback off|claude [<claude model id>]|<backend>:<model>`. */
@@ -281,13 +299,25 @@ async function fallback(deps: ClaudeMemDeps, rest: string[]): Promise<number> {
     return show(deps, await chooseFallback(deps.paths, { kind: "off" }, deps.check));
   }
   if (word === CLAUDE_PROVIDER) {
+    const named = model?.trim();
+    // An empty word is not "claude-mem's own model": leaving the model out is. The model id is
+    // checked the way the card's list checks one (`parseTarget`), so a word typed free never
+    // reaches claude-mem's file.
+    if (model !== undefined && named === "") {
+      return wrong(deps, "claude takes a Claude model id after it, or none at all");
+    }
+    if (named !== undefined) {
+      const parsed = parseTarget(named);
+      if ("error" in parsed || parsed.target.kind !== "anthropic") {
+        return refused(
+          deps,
+          `${named} is not a Claude model id: give a claude-… id, or none for claude-mem's own model.`,
+        );
+      }
+    }
     return show(
       deps,
-      await chooseFallback(
-        deps.paths,
-        { kind: "claude", model: model?.trim() ?? null },
-        deps.check,
-      ),
+      await chooseFallback(deps.paths, { kind: "claude", model: named ?? null }, deps.check),
     );
   }
   if (model !== undefined) {
@@ -301,8 +331,8 @@ async function fallback(deps: ClaudeMemDeps, rest: string[]): Promise<number> {
 }
 
 /**
- * `take-over [--yes]`: records the values the person set by hand as cc-smart-dev-kit's own, so
- * those choices can change. It asks first, and names what it would take.
+ * `take-over [--yes]`: records the values the person set by hand as ${COMMAND}'s own, so those
+ * choices can change. It asks first, and names what it would take.
  */
 async function takeOverCommand(deps: ClaudeMemDeps, rest: string[]): Promise<number> {
   const yes = rest.includes("--yes");
@@ -316,15 +346,15 @@ async function takeOverCommand(deps: ClaudeMemDeps, rest: string[]): Promise<num
   if (facts.handKeys.length === 0) return show(deps, await takeOver(deps.paths));
   deps.out.line(
     "info",
-    `${facts.file} holds values of yours: ${facts.handKeys.join(", ")}. The take-over records them as cc-smart-dev-kit's, so the route, the key and the fallback can change.`,
+    `${facts.file} holds values of yours: ${facts.handKeys.join(", ")}. The take-over records them as ${COMMAND}'s, so the route, the key and the fallback can change.`,
   );
   deps.out.line(
     "info",
     "Nothing in that file changes: each value stays exactly as it is until you pick another, and " +
-      `${COMMAND} restore puts it back. A key is never written down, so restore takes a taken-over key out.`,
+      `${COMMAND} restore puts it back. A key's value is never written down, so restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
   );
   if (!yes) {
-    const answer = deps.confirm?.("Record them as cc-smart-dev-kit's?") ?? null;
+    const answer = deps.confirm?.(`Record them as ${COMMAND}'s?`) ?? null;
     if (answer !== true) {
       deps.out.line(
         "info",

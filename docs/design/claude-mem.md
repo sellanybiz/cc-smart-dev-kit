@@ -178,15 +178,25 @@ take-over, and it is theirs to ask for: a plain `setup` never runs it, and the c
   changed — or took away — since the take-over keeps their value instead: `release` writes
   nothing back unless the key is still the kit's (`applyOnce`'s `ownership` check), and only the
   claim goes, so a restore never undoes their own edit.
-- **A key is the one exception.** `owned.json` keeps only a secret's hash, so a taken-over key has
-  no value to put back: it stays the kit's, and `restore` removes it as it removes any other key
-  of ours. A key is never written down, and a backup is no place for one.
+- **A key's value is never written down.** `owned.json` keeps a secret's hash, and the claim also
+  keeps the hash it took the key over with (`OwnedRecord.wasSha256`): while the key still hashes
+  to that, the kit never replaced it. So `release` with no value (`[path, undefined]`) drops the
+  claim and leaves the key exactly as it is — the person's own again — and `restore` leaves it.
+  A key the kit replaced since (the person picked another through the kit) cannot get its old
+  value back: `restore` leaves that key as the kit wrote it and names the backup whose copy still
+  holds the earlier one — the path only, never the key. A key removed since is simply the
+  person's. `applyManagedJson`'s `remove` treats a taken-over key the same way, so a restore that
+  falls back to its own pass (when `restoreTakenOver` throws) writes a plain value back and leaves
+  a secret's key where it is.
 - **What it takes is what refuses a choice now** (`handSetKeys`): the route's five keys,
   claude-mem's OpenRouter three, and the quota fallback's two.
-- **A taken-over key is treated as the person's.** `keyFor` reads the `taken` record and never
-  touches that value again, so a route change does not swap in the new backend's own key from
-  `gateway.json` — that key is the person's, kept as it is. A key the kit wrote still follows its
-  backend: moving the route from backend `a` to `b` gives claude-mem `b`'s key.
+- **A taken-over key is treated as the person's, while its address is the backend's.** `keyFor`
+  reads the `taken` record and keeps that value, so a route change does not swap in the new
+  backend's own key from `gateway.json` — the key is the person's, kept as it is. A key the kit
+  wrote still follows its backend: moving the route from backend `a` to `b` gives claude-mem
+  `b`'s key. A taken-over key was set for one address, so it stays only while that address is the
+  backend's this write goes to: a route that moves to another host takes the gateway's key for
+  that host instead, so the person's key is never sent to another host.
 
 ## The same choices from the command (MS1, D63)
 

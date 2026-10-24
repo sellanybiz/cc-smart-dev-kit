@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { backendAddress } from "../gateway/settings";
@@ -9,13 +10,17 @@ import {
   ForeignKeyError,
   formatKeyPath,
   getKey,
+  hashOf,
+  type JsonObject,
   type KeyPath,
   type ManagedJsonResult,
+  type OwnedRecord,
   ownedRecords,
   ownership,
+  readJsonObject,
   samePath,
 } from "../setup/managed-json";
-import { realTarget } from "../setup/write";
+import { listBackups, realTarget } from "../setup/write";
 import {
   type AffordableTarget,
   API_KEY,
@@ -446,6 +451,7 @@ function keyFor(
   keyName: string,
   gatewayKey: string,
   gatewayKeys: readonly string[],
+  backendBaseUrl: string,
 ): { key: string; set: boolean } {
   const current = textOf(read, keyName);
   const source = sourceOf(read, keyName);
@@ -459,9 +465,19 @@ function keyFor(
     !gatewayKeys.includes(current) &&
     (taken || source === "portal" || source === "hand")
   ) {
-    return { key: current, set: false };
+    // A taken-over key was set for one address. It stays the person's only while that address is
+    // the backend's this write goes to; a route change to another backend takes the gateway's key
+    // for that backend instead, so the person's key is never sent to another host.
+    if (!taken || textOf(read, pairedAddress(keyName)) === compatBaseUrl(backendBaseUrl)) {
+      return { key: current, set: false };
+    }
   }
   return { key: gatewayKey, set: true };
+}
+
+/** The address a provider's key belongs to: the compat five's and the OpenRouter three's. */
+function pairedAddress(keyName: string): string {
+  return keyName === OPENROUTER_API_KEY ? OPENROUTER_BASE_URL : BASE_URL;
 }
 
 /** A backend's model as one of claude-mem's OpenAI-shaped providers takes it. */
@@ -473,7 +489,7 @@ interface ProviderKeys {
 /** The keys that point claude-mem's OpenAI-compatible provider at one gateway backend's model. */
 function compatKeys(read: ClaudeMemSettings, backend: GatewayBackend, model: string): ProviderKeys {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
   return {
     set: [
       [PRESET, CUSTOM_PRESET],
@@ -496,7 +512,7 @@ function openRouterKeys(
   model: string,
 ): ProviderKeys {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys);
+  const key = keyFor(read, OPENROUTER_API_KEY, backend.apiKey, backend.allKeys, backend.baseUrl);
   return {
     set: [
       [OPENROUTER_BASE_URL, baseUrl],
@@ -691,12 +707,21 @@ export async function chooseRoute(
   const ready = readReady(paths);
   if ("blocked" in ready) return { lines: [ready.blocked.text], ok: false };
   if (choice.kind === "claude") {
-    return save(
+    const result = await save(
       paths,
       ready.read,
       [[PROVIDER, CLAUDE_PROVIDER]],
       routeLine("Claude, on your own Claude login"),
     );
+    // A Claude fallback under a Claude route never takes over, just as a backend fallback under its
+    // own provider does not: claude-mem then has no fallback at all. Say it, rather than let the
+    // person wait for one that cannot come (`readClaudeMemFacts` reports the same, as `idle`).
+    if (result.ok && fallbackProvider(ready.read, ready.version) === CLAUDE_PROVIDER) {
+      result.lines.push(
+        "! claude-mem's fallback is Claude, the same as the route now, so claude-mem ignores it: choose the fallback again, or off.",
+      );
+    }
+    return result;
   }
   const found = gatewayBackend(paths, choice.backend);
   if ("why" in found) return { lines: [found.why], ok: false };
@@ -910,8 +935,9 @@ export async function followSetup(
  *   picks another; the writer records the claim alone (`applyManagedJson`'s `claim`), with the
  *   value the key held, so `restore` puts that value back (`restoreTakenOver`) rather than
  *   removing a value cc-smart-dev-kit never wrote.
- * - **A key is never written down**, `owned.json` keeping only its hash: a taken-over key has no
- *   value to put back, so `restore` removes it as it removes any other key of ours.
+ * - **A key's value is never written down**, `owned.json` keeping only its hash: a taken-over key
+ *   has no value to put back, so `restore` leaves it exactly as it is — or, once cc-smart-dev-kit
+ *   replaced it, as the kit set it, naming the backup that holds the earlier one.
  * - **The keys it takes are the ones that refuse a choice now** (`handSetKeys`): the route's five,
  *   claude-mem's OpenRouter three, and the quota fallback's two. A key that already holds
  *   cc-smart-dev-kit's own value, or claude-mem's own default, is left alone.
@@ -930,7 +956,7 @@ export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {
   if (claims.length === 0) {
     return {
       lines: [
-        `Nothing to take over: every value claude-mem holds in ${read.short} is cc-smart-dev-kit's own, or claude-mem's own default.`,
+        `Nothing to take over: every value claude-mem holds in ${read.short} is ${COMMAND}'s own, or claude-mem's own default.`,
       ],
       ok: true,
     };
@@ -962,12 +988,13 @@ export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {
     const short = tildify(paths.claudeMemSettingsFile, paths.home);
     return {
       lines: [
-        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as cc-smart-dev-kit's: each stays exactly as it is until you pick another.`,
+        `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as ${COMMAND}'s: each stays exactly as it is until you pick another.`,
         ...taken.map(
           (path) =>
             `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`,
         ),
         "restore puts them back.",
+        `A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
         ...moved.map(
           (key) =>
             `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`,
@@ -979,39 +1006,110 @@ export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {
 }
 
 /**
+ * The newest backup of claude-mem's settings file whose copy of `path` still holds the value the
+ * take-over recorded: the copy made just before cc-smart-dev-kit replaced the key. Null when no
+ * backup proves it. Reads the backups; never prints a value.
+ */
+function backupHoldingTakenKey(
+  paths: CliPaths,
+  file: string,
+  path: KeyPath,
+  wasSha256: string,
+): null | string {
+  const backups = listBackups(paths.stateDir, file);
+  // Newest first: the copy from just before the replacement is the last one that still holds it.
+  for (let index = backups.length - 1; index >= 0; index -= 1) {
+    const backup = backups[index];
+    if (backup === undefined || backup.absent) continue;
+    try {
+      const { data } = readJsonObject(backup.path);
+      const current = getKey(data, path);
+      if (current.found && hashOf(current.value) === wasSha256) return backup.path;
+    } catch {
+      // A backup that cannot be read proves nothing: go on to the next one.
+    }
+  }
+  return null;
+}
+
+/** What one taken-over secret's key became, as the one line `restore` prints. Never the value. */
+function secretRestoreLine(
+  paths: CliPaths,
+  file: string,
+  short: string,
+  record: OwnedRecord & { wasSha256: string },
+  data: JsonObject,
+): string {
+  const path = formatKeyPath(record.path);
+  const current = getKey(data, record.path);
+  if (!current.found) {
+    return `! ${short}: ${path}: not in the file any more; the take-over's claim on it is dropped.`;
+  }
+  const hash = hashOf(current.value);
+  if (hash === record.wasSha256) {
+    return `~ ${short}: ${path}: yours again (still the key you set)`;
+  }
+  if (record.sha256 !== undefined && hash === record.sha256) {
+    // The person picked another key through the kit: the older value cannot be written back, so
+    // the current key stays and the line names the copy that still holds the earlier one.
+    const backup = backupHoldingTakenKey(paths, file, record.path, record.wasSha256);
+    return backup === null
+      ? `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over, so the key you set before is not in the file any more; earlier copies are in the backups folder.`
+      : `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over; the key you set before is in the backup at ${tildify(backup, paths.home)}.`;
+  }
+  return `~ ${short}: ${path}: changed since the take-over; yours again.`;
+}
+
+/**
  * Puts a take-over back, and nothing else: what `runRestore` calls **before** its own pass
- * (`src/cli/restore.ts`). For each key the take-over recorded, the file gets the value it held
- * then and the claim goes (`applyManagedJson`'s `release`), so the value is the person's again
- * and `restore` leaves it: a value cc-smart-dev-kit never wrote is not its to remove. It runs
- * first because `restore` takes the records out with the keys, and the value to put back lives
- * in the record.
+ * (`src/cli/restore.ts`). For each key the take-over recorded, the claim goes and the value is
+ * the person's again: a plain value gets the value it held then (`applyManagedJson`'s `release`),
+ * and a secret is left exactly as it is — its value was never kept, so there is nothing to write
+ * back. It runs first because `restore` takes the records out with the keys, and what a key was
+ * taken over with lives in the record.
  *
- * A key's value is never kept (only its hash), so a taken-over key has nothing to put back and
- * is still cc-smart-dev-kit's when `restore` runs: `restore` removes it, as it removes any other
- * key of ours. A key is never written down, and no backup is the place for one.
+ * A secret cc-smart-dev-kit replaced after the take-over cannot get its old value back: the key
+ * stays as cc-smart-dev-kit wrote it, and the line names the backup that holds the earlier
+ * settings file — the path only, never the key. A secret removed since is simply the person's.
  *
  * Returns the lines it wrote; none when there was nothing to put back.
  */
 export async function restoreTakenOver(paths: CliPaths): Promise<ChoiceResult> {
   const file = paths.claudeMemSettingsFile;
-  const taken = ownedRecords(paths.stateDir, realTarget(file)).filter(
-    (record) => record.was !== undefined,
+  const records = ownedRecords(paths.stateDir, realTarget(file));
+  const plain = records.filter((record) => record.was !== undefined);
+  // A taken-over secret: its value was never kept, so its hash stands in for it (`wasSha256`).
+  const secret = records.filter(
+    (record): record is OwnedRecord & { wasSha256: string } =>
+      record.was === undefined && record.taken === true && record.wasSha256 !== undefined,
   );
-  if (taken.length === 0) return { lines: [], ok: true };
+  if (plain.length === 0 && secret.length === 0) return { lines: [], ok: true };
   const short = tildify(file, paths.home);
   // No lock of its own: `runRestore` calls this inside the lock it already holds, and a second
   // `withLock` on the same state folder would wait for the first and give up.
   const result = applyManagedJson({
     file,
-    release: taken.map((record) => [record.path, record.was] as const),
+    release: [
+      ...plain.map((record) => [record.path, record.was] as const),
+      // No value: the claim goes and the key stays as it is (a secret's value is never kept).
+      ...secret.map((record) => [record.path, undefined] as const),
+    ],
     stateDir: paths.stateDir,
     unchosen,
   });
-  return {
-    lines: result.changes.map(
-      (change) =>
-        `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`,
-    ),
-    ok: true,
-  };
+  const lines = result.changes.map(
+    (change) =>
+      `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`,
+  );
+  // The secrets leave no change to report, so their line comes from what each key holds now.
+  let data: JsonObject | null = null;
+  try {
+    data = readJsonObject(file).data;
+  } catch {
+    // The writer already read the file; an unreadable one is its error to report, not ours twice.
+  }
+  if (data !== null) {
+    for (const record of secret) lines.push(secretRestoreLine(paths, file, short, record, data));
+  }
+  return { lines, ok: true };
 }

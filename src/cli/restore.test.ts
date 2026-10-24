@@ -132,7 +132,7 @@ describe("restore: claude-mem's keys and the task tools (D23)", () => {
 });
 
 describe("restore: a value cc-smart-dev-kit took over (MS1)", () => {
-  test("MS1: the value the person had goes back, and a taken-over key goes with the rest", async () => {
+  test("MS1: the value the person had goes back, and a taken-over key stays", async () => {
     const { options, paths } = machine();
     const file = paths.claudeMemSettingsFile;
     mkdirSync(dirname(file), { recursive: true });
@@ -180,11 +180,16 @@ describe("restore: a value cc-smart-dev-kit took over (MS1)", () => {
     expect(after.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("their-model");
     expect(after.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL).toBe("http://127.0.0.1:18434/v1");
     expect(after.CLAUDE_MEM_PROVIDER).toBe("openai-compatible");
-    // A key's value is never written down, so restore removes the key with the rest.
-    expect(after.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBeUndefined();
+    // A key's value is never written down: restore leaves the key exactly as the person set it,
+    // and its claim goes. The key is never printed, only that it is theirs again.
+    expect(after.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe("sk-own-0001");
     expect(printed.join("\n")).toContain(
       '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model" (yours again)',
     );
+    expect(printed.join("\n")).toContain(
+      "~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: yours again (still the key you set)",
+    );
+    expect(printed.join("\n")).not.toContain("sk-own-0001");
   });
 });
 

@@ -829,14 +829,26 @@ async function main(argv: string[]): Promise<number> {
         process.env,
       );
     }
-    case "claude-mem":
+    case "claude-mem": {
+      // The key comes on stdin, never as an argument (the card's own rule). On a terminal it is
+      // read with no echo — the prompts' one secret read — and from a pipe or a file as it is.
+      // A terminal that cannot hide what is typed throws instead: the key would be shown on screen.
+      const secret = prompts?.secret ?? null;
       return await runClaudeMem(rest, {
         confirm: ask,
         out: createOut(currentTerminal(process.env)),
         paths,
-        // The key comes on stdin, never as an argument (the card's own rule).
-        read: () => Bun.stdin.text(),
+        read: async () => {
+          if (process.stdin.isTTY !== true) return await Bun.stdin.text();
+          if (secret === null) {
+            throw new Error(
+              "this terminal cannot hide what you type, so the key would be shown on screen",
+            );
+          }
+          return await secret("Paste the key for claude-mem's backend, then press Enter");
+        },
       });
+    }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "omniroute":

@@ -39,7 +39,10 @@ interface Options {
   settings?: unknown;
   /** The models the backend lists; null: it does not answer. */
   models?: null | string[];
-  stdin?: string;
+  /** What the key's read answers: a string, or null at Ctrl+C. Left out: nothing arrives. */
+  stdin?: null | string;
+  /** A read that fails, as a terminal that cannot hide what is typed does. */
+  readError?: string;
   /** The terminal's answer to the take-over's question; null: there is no terminal. */
   confirm?: null | boolean;
 }
@@ -99,7 +102,10 @@ function world(options: Options = {}) {
       textSink((text) => lines.push(text)),
     ),
     paths,
-    read: async () => options.stdin ?? "",
+    read: async () => {
+      if (options.readError !== undefined) throw new Error(options.readError);
+      return options.stdin === undefined ? "" : options.stdin;
+    },
   };
   const settings = () => JSON.parse(readFileSync(paths.claudeMemSettingsFile, "utf8"));
   const printed = () => lines.join("");
@@ -242,6 +248,34 @@ describe("claude-mem route and fallback", () => {
     expect(await runClaudeMem([OWN_KEY], bare.deps)).toBe(2);
     expect(bare.printed()).not.toContain("PLANTED");
   });
+
+  test("MS1: a Claude fallback's model is checked like a route's, and an empty word is refused", async () => {
+    const w = world();
+    await runClaudeMem(["route", "omniroute:glm/flash"], w.deps);
+    // A Claude model id goes in on a backend route: the fallback provider becomes Claude.
+    expect(await runClaudeMem(["fallback", "claude", "claude-sonnet-5-5"], w.deps)).toBe(0);
+    expect(w.settings()).toMatchObject({
+      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-5-5",
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
+    });
+    // An empty word is not "claude-mem's own model": leaving the model out is.
+    const empty = world();
+    expect(await runClaudeMem(["fallback", "claude", ""], empty.deps)).toBe(2);
+    expect(empty.printed()).toContain("claude takes a Claude model id after it, or none at all");
+    // A word that is not a Claude id, and a backend target after "claude": both refused in words.
+    const wrong = world();
+    expect(await runClaudeMem(["fallback", "claude", "not-a-claude-id"], wrong.deps)).toBe(1);
+    expect(wrong.printed()).toContain(
+      "not-a-claude-id is not a Claude model id: give a claude-… id, or none for claude-mem's own model.",
+    );
+    const target = world();
+    expect(await runClaudeMem(["fallback", "claude", "omniroute:glm/flash"], target.deps)).toBe(1);
+    expect(target.printed()).toContain(
+      "omniroute:glm/flash is not a Claude model id: give a claude-… id, or none for claude-mem's own model.",
+    );
+    expect(target.settings().CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER).toBe("claude");
+    expect(target.settings().CLAUDE_MEM_QUOTA_FALLBACK_MODEL).toBe("");
+  });
 });
 
 describe("claude-mem key", () => {
@@ -277,6 +311,33 @@ describe("claude-mem key", () => {
     expect(argument.printed()).not.toContain("PLANTED");
     expect(argument.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe("");
   });
+
+  test("MS1: a paste's bracketed markers and control characters go first, so the key checks clean", async () => {
+    const w = world({ stdin: `\u001b[200~${OWN_KEY}\u001b[201~\n` });
+    await runClaudeMem(["route", "omniroute:glm/flash"], w.deps);
+    expect(await runClaudeMem(["key"], w.deps)).toBe(0);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OWN_KEY);
+    expect(w.printed()).not.toContain("PLANTED");
+  });
+
+  test("MS1: Ctrl+C at the secret read saves nothing and exits 130", async () => {
+    const w = world({ stdin: null });
+    expect(await runClaudeMem(["key"], w.deps)).toBe(130);
+    expect(w.printed()).toContain("Nothing was saved (Ctrl+C).");
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe("");
+  });
+
+  test("MS1: a read that cannot hide what is typed refuses in its own words, never as Ctrl+C", async () => {
+    const w = world({
+      readError: "this terminal cannot hide what you type, so the key would be shown on screen",
+    });
+    expect(await runClaudeMem(["key"], w.deps)).toBe(1);
+    expect(w.printed()).toContain(
+      "The key was not saved: this terminal cannot hide what you type, so the key would be shown on screen.",
+    );
+    expect(w.printed()).not.toContain("Nothing was saved (Ctrl+C)");
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe("");
+  });
 });
 
 describe("claude-mem take-over", () => {
@@ -298,7 +359,7 @@ describe("claude-mem take-over", () => {
       "~/.claude-mem/settings.json holds values of yours: CLAUDE_MEM_PROVIDER, CLAUDE_MEM_OPENAI_COMPAT_PRESET, CLAUDE_MEM_OPENAI_COMPAT_BASE_URL, CLAUDE_MEM_OPENAI_COMPAT_MODEL.",
     );
     expect(w.printed()).toContain(
-      "Nothing in that file changes: each value stays exactly as it is until you pick another, and cc-smart-dev-kit restore puts it back.",
+      "Nothing in that file changes: each value stays exactly as it is until you pick another, and cc-smart-dev-kit restore puts it back. A key's value is never written down, so restore leaves your key exactly as it is while it is still yours; once cc-smart-dev-kit replaced it, restore leaves that key and names the backup that holds yours.",
     );
     // A "no" at the terminal is the same: nothing changes.
     const no = world({ confirm: false, settings: BY_HAND });

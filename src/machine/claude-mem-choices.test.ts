@@ -423,6 +423,9 @@ describe("PM1: the route", () => {
     expect(result).toEqual({
       lines: [
         "claude-mem already uses that: nothing to change. claude-mem reads its settings each time it uses them: its next summaries go to Claude, on your own Claude login.",
+        // The fallback is Claude too, so claude-mem ignores it: the person hears that before it
+        // waits for a fallback that cannot come (Low 8).
+        "! claude-mem's fallback is Claude, the same as the route now, so claude-mem ignores it: choose the fallback again, or off.",
       ],
       ok: true,
     });
@@ -1008,6 +1011,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
         '  ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model"',
         '  ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••0002"',
         "restore puts them back.",
+        "A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once cc-smart-dev-kit replaced it, restore leaves that key and names the backup that holds yours.",
       ],
       ok: true,
     });
@@ -1031,7 +1035,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
     expect(w.checks.at(-1)?.apiKey).toBe(OWN_KEY);
   });
 
-  test("MS1: restore puts the taken-over values back; a key is never written down, so it goes", async () => {
+  test("MS1: restore puts the taken-over values back; a key the kit never replaced stays", async () => {
     const w = machine({ settings: BY_HAND });
     await takeOver(w.paths);
     await chooseRoute(
@@ -1046,20 +1050,79 @@ describe("MS1: the take-over, and what restore puts back", () => {
     expect(back).toEqual({
       lines: [
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model" (yours again)',
+        "~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: yours again (still the key you set)",
       ],
       ok: true,
     });
     expect(w.settings()).toMatchObject({
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEY: OWN_KEY,
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${BACKEND_URL}/v1`,
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
     });
-    // A key is never written down: the kit had only its hash, so restore took it out.
-    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBeUndefined();
     // Nothing of cc-smart-dev-kit's is left in it, and a second restore changes nothing.
     expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
     expect(restore(w.paths.stateDir)).toEqual([]);
     expect(await restoreTakenOver(w.paths)).toEqual({ lines: [], ok: true });
+  });
+
+  test("MS1: a key cc-smart-dev-kit replaced since stays too, and restore names its backup", async () => {
+    const w = machine({ settings: BY_HAND });
+    await takeOver(w.paths);
+    // The person picks another key through the kit: cc-smart-dev-kit writes this one.
+    const picked = "sk-picked-PLANTED-0003";
+    expect(await chooseKey(w.paths, { key: picked, kind: "other" }, w.check())).toMatchObject({
+      ok: true,
+    });
+    const back = await restoreTakenOver(w.paths);
+    // The key the kit wrote stays: the older one cannot be written back (its value was never kept),
+    // so the line names the backup whose copy still holds it — the path only, never the key.
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(picked);
+    const line = back.lines.find((one) => one.includes("CLAUDE_MEM_OPENAI_COMPAT_API_KEY"));
+    expect(line).toMatch(
+      /^! ~\/\.claude-mem\/settings\.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: cc-smart-dev-kit replaced it after the take-over; the key you set before is in the backup at ~\/\.claude\/cc-smart-dev-kit\/backups\//,
+    );
+    expect(line).not.toContain(picked);
+    expect(line).not.toContain(OWN_KEY);
+    // The claim is gone: nothing of ours is left to remove.
+    expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
+  });
+
+  test("MS1: a taken-over key stays only while its address is the backend's this write goes to", async () => {
+    const w = machine({ settings: BY_HAND });
+    await takeOver(w.paths);
+    // The same backend's address: the key stays the person's, and the chat runs with it.
+    expect(
+      await chooseRoute(
+        w.paths,
+        { backend: "omniroute", kind: "backend", model: "glm/flash" },
+        w.check(),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(w.checks.at(-1)?.apiKey).toBe(OWN_KEY);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OWN_KEY);
+    // Another host's address: the person's key must not be sent there. The gateway's key for that
+    // backend takes its place, and the chat runs with that one.
+    expect(
+      await chooseRoute(w.paths, { backend: "other", kind: "backend", model: "b" }, w.check()),
+    ).toMatchObject({ ok: true });
+    expect(w.checks.at(-1)).toMatchObject({ apiKey: OTHER_KEY, baseUrl: `${OTHER_URL}/v1` });
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OTHER_KEY);
+  });
+
+  test("MS1: a taken-over key removed since has nothing to give back", async () => {
+    const w = machine({ settings: BY_HAND });
+    await takeOver(w.paths);
+    // The person removes the key by hand, after the take-over.
+    const settings = { ...w.settings() };
+    delete settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY;
+    writeFileSync(w.paths.claudeMemSettingsFile, JSON.stringify(settings, null, 2));
+    const back = await restoreTakenOver(w.paths);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBeUndefined();
+    expect(back.lines).toContain(
+      "! ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: not in the file any more; the take-over's claim on it is dropped.",
+    );
+    expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
   });
 
   test("MS1: the take-over leaves setup's own values, and a key of ours, alone", async () => {

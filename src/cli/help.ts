@@ -272,11 +272,12 @@ key     reads the OpenAI-compatible key from stdin (never an argument) and check
         is saved. --gateway puts the gateway's own key for that backend back.
 fallback picks what takes over while the route's provider is limited: off, claude (with
         claude-mem's own model, or the <claude model id> you name), or a <backend>:<model>.
-take-over records the values you set by hand in claude-mem's file as cc-smart-dev-kit's, so the
+take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
         route, the key and the fallback may change. Nothing in that file changes: each value
-        stays exactly as it is until you pick another, and ${COMMAND} restore puts it back (a
-        key is never written down, so restore takes it out like any other key). It asks first;
-        --yes takes them over without the question.`;
+        stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
+        key's value is never written down, so restore leaves your key exactly as it is while it
+        is still yours; once ${COMMAND} replaced it, restore leaves that key and names the
+        backup that holds yours. It asks first; --yes takes them over without the question.`;
 
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {
