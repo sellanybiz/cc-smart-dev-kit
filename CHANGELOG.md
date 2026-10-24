@@ -34,7 +34,8 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and
   stop with `gateway setup` as the fix when it does not answer (after a full `restore`, which
   keeps `gateway.json`, the config is there but the router is not), instead of starting a session
-  whose every request fails.
+  whose every request fails. A signal sent to the `launch` command alone (`kill <pid>`) now reaches
+  the session it runs, so it no longer leaves a session running behind a finished command.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
   so no session needs a restart. A second `restore` takes the key out. One exception: on a

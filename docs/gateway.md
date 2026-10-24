@@ -295,7 +295,13 @@ the command's.
   `--settings` file beats the project's personal file, its team file, the user file and the
   shell (P3). So the launch writes one small file holding only `env.ANTHROPIC_BASE_URL` and
   passes it with `--settings`; every other setting stays the person's. An environment variable
-  would lose to any settings file.
+  would lose to any settings file. **That is also its limit**: Claude Code merges `env` one
+  variable at a time, so a key the launch file does not name keeps the value a lower file gives
+  it. `--no-gateway` is plain Claude at Anthropic's address, on the claude.ai login **unless** the
+  person's settings hold a login key (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`),
+  which the session then uses instead, or one of 0.4.3's retired model keys
+  (`ANTHROPIC_DEFAULT_*_MODEL` naming a slot), which sends that name to Anthropic. `gateway status`
+  and `doctor` list such keys; the launch does not touch them.
 - **Where the file is:** `<stateDir>/launch/<mode>-<pid>.json` (`no-gateway-<pid>.json`,
   `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600 in a 0700 folder, written by the
   kit's one JSON writer (`writeJsonFile`, `src/crew/store.ts`), which `crew start` uses for its
@@ -315,7 +321,10 @@ the command's.
   the one that started it. A wrong option is a usage mistake (exit 2), never a guess.
 - **It does not replace its own process.** Bun has no `execve`, so the command stays in front of
   the session: the session gets the same stdin, stdout and stderr, and the command returns the
-  session's exit code. The terminal sees one session either way.
+  session's exit code. The terminal sees one session either way. A SIGHUP, SIGINT or SIGTERM sent
+  to the command alone (`kill <pid>`, a supervisor) is handed on to the session, so the command
+  ends with the session and removes its settings file; one the terminal sent reaches the session
+  by itself too. What happens to the session on Ctrl+Z is Claude Code's own and not proved here.
 - **A router that does not answer is refused, in both gateway modes.** The config alone proves
   nothing: `restore` keeps `gateway.json` and removes the router, and a stopped service leaves it
   too. A session pointed at a silent port fails every request with a connection error that Claude

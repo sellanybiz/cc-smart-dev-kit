@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
+import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   type LaunchContext,
@@ -474,4 +475,82 @@ describe("launch", () => {
     expect(argv[5]).toContain("--settings");
     expect(argv[5]).toContain(`no-gateway-${process.pid}.json`);
   });
+});
+
+describe("RV3: the launcher hands a signal sent to it on to the session it runs", () => {
+  /**
+   * Runs `realRunSession` in a bun process of its own around a fake `claude` that says "ready",
+   * then ends with its own code for the signal it gets (TERM 7, HUP 8, INT 9), and writes the
+   * signal it got to a file. Sends `signal` to the launcher alone, as `kill <pid>` does.
+   */
+  async function signalLauncher(
+    signal: "SIGHUP" | "SIGINT" | "SIGTERM",
+  ): Promise<{ code: null | number; got: string }> {
+    const dir = tempDir("launch-signal");
+    const got = join(dir, "got.txt");
+    const pidFile = join(dir, "claude.pid");
+    const claude = join(dir, "claude");
+    writeFileSync(
+      claude,
+      [
+        "#!/bin/sh",
+        `echo $$ > "${pidFile}"`,
+        `trap 'echo TERM > "${got}"; exit 7' TERM`,
+        `trap 'echo HUP > "${got}"; exit 8' HUP`,
+        `trap 'echo INT > "${got}"; exit 9' INT`,
+        "echo ready",
+        "while true; do sleep 0.05; done",
+      ].join("\n"),
+    );
+    chmodSync(claude, 0o755);
+    const runner = join(dir, "runner.ts");
+    writeFileSync(
+      runner,
+      [
+        `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, verbatim: false });`,
+      ].join("\n"),
+    );
+    const guard = subprocessGuard();
+    const launcher = Bun.spawn([process.execPath, ...guard.args, runner], {
+      env: { ...process.env, ...guard.env },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    try {
+      // The session is up when it has said so: no guessing at a delay.
+      const reader = launcher.stdout.getReader();
+      let said = "";
+      while (!said.includes("ready")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        said += new TextDecoder().decode(chunk.value);
+      }
+      expect(said).toContain("ready");
+      launcher.kill(signal);
+      const code = await launcher.exited;
+      return { code, got: existsSync(got) ? readFileSync(got, "utf8").trim() : "" };
+    } finally {
+      // A session the launcher left behind must not outlive the test.
+      launcher.kill("SIGKILL");
+      if (existsSync(pidFile)) {
+        try {
+          process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");
+        } catch {
+          // Already gone: the launcher stopped it.
+        }
+      }
+    }
+  }
+
+  test.each([
+    ["SIGTERM", "TERM", 7],
+    ["SIGHUP", "HUP", 8],
+    ["SIGINT", "INT", 9],
+  ] as const)(
+    "%s sent to the launcher reaches the session, and its exit code is the launcher's",
+    async (signal, word, code) => {
+      expect(await signalLauncher(signal)).toEqual({ code, got: word });
+    },
+  );
 });

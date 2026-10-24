@@ -121,6 +121,9 @@ export type RunSession = (
   options: { cwd: string; env: Env; verbatim: boolean },
 ) => Promise<number>;
 
+/** The signals a launch hands on to its session (a terminal's close, `kill`, Ctrl+C). */
+const FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+
 /**
  * The real run: the session gets this terminal's own stdin, stdout and stderr, so it is the
  * session a person types into, and its exit code is the one this command returns. Bun has no
@@ -133,8 +136,20 @@ export const realRunSession: RunSession = async (argv, options) => {
     stdio: ["inherit", "inherit", "inherit"],
     windowsVerbatimArguments: options.verbatim,
   });
-  // A session killed by a signal has no exit code (Bun answers null there): 1 says "not clean".
-  return (await child.exited) ?? 1;
+  // A signal sent to the launcher alone (`kill <pid>`, a supervisor) would end it and leave the
+  // session running with nobody to remove its settings file or pass its exit code on. So the
+  // launcher hands each one on and keeps waiting, as `job run` does (`src/jobs/launch.ts`). One
+  // the terminal sent reaches the session by itself too, so it gets it twice: for these three
+  // that ends it once, as it would have.
+  const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
+  const handlers = FORWARDED_SIGNALS.map((signal) => [signal, forward(signal)] as const);
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  try {
+    // A session killed by a signal has no exit code (Bun answers null there): 1 says "not clean".
+    return (await child.exited) ?? 1;
+  } finally {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  }
 };
 
 /** What `launch` needs from the machine, so a test builds its own and reaches no real one. */
