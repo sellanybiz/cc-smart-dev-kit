@@ -159,6 +159,8 @@ describe("PM1: the claude-mem actions", () => {
     const before = w.settingsText();
     const taken = await w.run("claudemem.takeover", { confirm: true });
     expect(taken.ok).toBe(true);
+    // A clean take-over is a plain success: the warning tone is for a value that moved meanwhile.
+    expect(taken.tone).toBeUndefined();
     // Nothing in claude-mem's file changes: the values stay until the person picks another.
     expect(w.settingsText()).toBe(before);
     expect(

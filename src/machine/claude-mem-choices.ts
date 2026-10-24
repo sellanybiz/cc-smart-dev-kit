@@ -276,9 +276,12 @@ function sourceOf(read: ClaudeMemSettings, key: string): ClaudeMemSource {
   if (isPersonsChoice(read, key)) return "portal";
   const path = read.at(key);
   const current = getKey(read.data, path);
+  // A missing key is claude-mem's own default, whoever wrote it before: one setup wrote and the
+  // person removed holds nothing to refuse a choice with (`handRefusal` refuses found keys only).
+  if (!current.found) return "default";
   const whose = ownership(read.records, path, current, unchosen);
   if (whose === "ours") return unchosen(path, current.value) ? "default" : "setup";
-  if (whose === "none" && (!current.found || unchosen(path, current.value))) return "default";
+  if (whose === "none" && unchosen(path, current.value)) return "default";
   return "hand";
 }
 
@@ -321,13 +324,18 @@ function fallbackProviderFor(route: string): string {
 }
 
 /**
- * The keys the person set by hand in claude-mem's file, by name, in one order. These are what a
- * choice refuses now, and what a take-over records. One home, so the card, the command and the
- * take-over always agree on the same keys.
+ * The keys the person set by hand in claude-mem's file that some choice really writes now, by
+ * name, in one order. These are what a choice refuses now, and exactly what a take-over records
+ * — the card and the command name these before the take-over asks. One home, so the three always
+ * agree. claude-mem's OpenRouter three refuse nothing while no choice takes them (on a route not
+ * on the compat provider the fallback holds the compat keys), so naming or taking them would be
+ * untrue; they are named once a route change makes them the fallback's.
  */
 function handSetKeys(read: ClaudeMemSettings): string[] {
+  const refused = keysPerChoice(routeProvider(read));
+  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
   return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter(
-    (one) => sourceOf(read, one) === "hand",
+    (one) => writable.has(one) && sourceOf(read, one) === "hand",
   );
 }
 
@@ -389,11 +397,8 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
       : null;
   const refused = keysPerChoice(provider);
   // The hand-set keys some choice really writes now — and so the choices a change to which is
-  // refused. claude-mem's OpenRouter three refuse nothing while no choice takes them (on a Claude
-  // route the fallback holds the compat keys), so naming them would be untrue, and would leave a
-  // line with no choice in it.
-  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
-  const handKeys: string[] = handSetKeys(read).filter((one) => writable.has(one));
+  // refused.
+  const handKeys = handSetKeys(read);
   const refusedByHand = (keys: readonly string[]): boolean =>
     keys.some((one) => handKeys.includes(one));
   return {
@@ -938,8 +943,9 @@ export async function followSetup(
  * - **A key's value is never written down**, `owned.json` keeping only its hash: a taken-over key
  *   has no value to put back, so `restore` leaves it exactly as it is — or, once cc-smart-dev-kit
  *   replaced it, as the kit set it, naming the backup that holds the earlier one.
- * - **The keys it takes are the ones that refuse a choice now** (`handSetKeys`): the route's five,
- *   claude-mem's OpenRouter three, and the quota fallback's two. A key that already holds
+ * - **The keys it takes are the ones that refuse a choice now** (`handSetKeys`), exactly the keys
+ *   the card and the command name before it asks: of the route's five, claude-mem's OpenRouter
+ *   three and the quota fallback's two, those a choice writes on this route. A key that already holds
  *   cc-smart-dev-kit's own value, or claude-mem's own default, is left alone.
  */
 export async function takeOver(paths: CliPaths): Promise<ChoiceResult> {

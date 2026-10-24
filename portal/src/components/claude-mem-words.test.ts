@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ClaudeMemCurrent } from "@/api/types";
-import { fallbackWords, ownClaudeModelWords, takenOverWords } from "./claude-mem-words";
+import { fallbackWords, handSetWords, ownClaudeModelWords } from "./claude-mem-words";
 
 type Fallback = ClaudeMemCurrent["fallback"];
 
@@ -72,9 +72,9 @@ describe("ownClaudeModelWords", () => {
   });
 });
 
-describe("takenOverWords", () => {
+describe("handSetWords", () => {
   test("counts the values in words", () => {
-    expect(takenOverWords(1)).toBe("One value in claude-mem's file was set by hand");
-    expect(takenOverWords(5)).toBe("5 values in claude-mem's file were set by hand");
+    expect(handSetWords(1)).toBe("One value in claude-mem's file was set by hand");
+    expect(handSetWords(5)).toBe("5 values in claude-mem's file were set by hand");
   });
 });

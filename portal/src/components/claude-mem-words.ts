@@ -35,7 +35,7 @@ export function fallbackWords(fallback: Fallback): string {
 }
 
 /** The take-over's lead line: how many values the kit leaves alone because they are the person's. */
-export function takenOverWords(count: number): string {
+export function handSetWords(count: number): string {
   return count === 1
     ? "One value in claude-mem's file was set by hand"
     : `${count} values in claude-mem's file were set by hand`;

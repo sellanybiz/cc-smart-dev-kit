@@ -1446,7 +1446,12 @@ async function claudeMemTakeOver(
   body: Record<string, unknown>,
 ): Promise<ActionResult> {
   if (body.confirm !== true) return notConfirmed("taken over");
-  return claudeMemWrite(() => takeOver(action.portal.paths));
+  const result = await claudeMemWrite(() => takeOver(action.portal.paths));
+  // Done, but a value moved while it ran and was left (its `!` line): the page keeps the words
+  // until they are read, as it does for a failure.
+  return result.ok && result.lines.some((line) => line.startsWith("! "))
+    ? { ...result, tone: "warn" }
+    : result;
 }
 
 /**

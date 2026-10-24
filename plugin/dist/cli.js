@@ -11055,10 +11055,12 @@ function sourceOf(read, key) {
     return "portal";
   const path = read.at(key);
   const current = getKey(read.data, path);
+  if (!current.found)
+    return "default";
   const whose = ownership(read.records, path, current, unchosen);
   if (whose === "ours")
     return unchosen(path, current.value) ? "default" : "setup";
-  if (whose === "none" && (!current.found || unchosen(path, current.value)))
+  if (whose === "none" && unchosen(path, current.value))
     return "default";
   return "hand";
 }
@@ -11085,7 +11087,9 @@ function fallbackProviderFor(route) {
   return route === OPENAI_COMPATIBLE ? OPENROUTER : OPENAI_COMPATIBLE;
 }
 function handSetKeys(read) {
-  return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter((one) => sourceOf(read, one) === "hand");
+  const refused = keysPerChoice(routeProvider(read));
+  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
+  return [...PROVIDER_KEYS, ...OPENROUTER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL].filter((one) => writable.has(one) && sourceOf(read, one) === "hand");
 }
 function keysPerChoice(route) {
   return {
@@ -11125,8 +11129,7 @@ function readClaudeMemFacts(paths) {
   const openRouterModel = textOf(read, OPENROUTER_MODEL);
   const openRouterTarget = openRouterBackend !== null && openRouterModel !== "" ? `${openRouterBackend.name}:${openRouterModel}` : null;
   const refused = keysPerChoice(provider);
-  const writable = new Set([...refused.fallback, ...refused.key, ...refused.route]);
-  const handKeys = handSetKeys(read).filter((one) => writable.has(one));
+  const handKeys = handSetKeys(read);
   const refusedByHand = (keys) => keys.some((one) => handKeys.includes(one));
   return {
     ...base,

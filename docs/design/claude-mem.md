@@ -188,8 +188,13 @@ take-over, and it is theirs to ask for: a plain `setup` never runs it, and the c
   person's. `applyManagedJson`'s `remove` treats a taken-over key the same way, so a restore that
   falls back to its own pass (when `restoreTakenOver` throws) writes a plain value back and leaves
   a secret's key where it is.
-- **What it takes is what refuses a choice now** (`handSetKeys`): the route's five keys,
-  claude-mem's OpenRouter three, and the quota fallback's two.
+- **What it takes is what refuses a choice now** (`handSetKeys`), exactly the keys the card and
+  the command name before they ask: of the route's five keys, claude-mem's OpenRouter three and
+  the quota fallback's two, those a choice writes on the current route. On a route that is not
+  on the compat provider no choice writes the OpenRouter three, so they are neither named nor
+  taken; a route change that makes them the fallback's names them, and they stay the person's
+  until a second take-over. A key that is missing from the file is claude-mem's default, never
+  "set by hand", even when setup wrote it before.
 - **A taken-over key is treated as the person's, while its address is the backend's.** `keyFor`
   reads the `taken` record and keeps that value, so a route change does not swap in the new
   backend's own key from `gateway.json` — the key is the person's, kept as it is. A key the kit

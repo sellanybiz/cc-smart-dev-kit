@@ -192,7 +192,15 @@ takes them out: § claude-mem from the portal. The answer also carries, per choi
 set by hand refuses it, and the keys that do (`refusedByHand`, `handKeys`), so the card can say
 why a change is refused; **`claudemem.takeover` (MS1)** is the action beside it that records those
 values as cc-smart-dev-kit's own, after the page's own confirmation, and changes nothing in
-claude-mem's file until the person picks another.
+claude-mem's file until the person picks another. **The card (MS2)** names `handKeys` once, in a
+note at its top with **Let the kit manage these** and its `ConfirmDialog` (the keys, that nothing
+changes now, what `restore` brings back), and marks each part whose `refusedByHand` is true. The
+parts' buttons stay on: which keys a choice writes depends on the choice (a fallback `off`
+writes one key), so the server's own refusal names the key that stops it. The take-over's
+`useAction` lives in the card, not the note, so its result stays in place once the note goes;
+a take-over that left a value that moved meanwhile answers with the warning tone, so its words
+stay until read. The fallback offers backend models on every route, and an empty fallback reads
+as Claude with the model it really runs on (`claudeModel`), never a guessed one.
 
 **The gateway's key (PK1).** The owner asked to set the gateway's own OmniRoute key
 from the portal, and to make one from OmniRoute's dashboard password, as `gateway setup` does.

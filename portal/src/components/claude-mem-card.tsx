@@ -19,9 +19,9 @@ import {
 import {
   CLAUDE,
   fallbackWords,
+  handSetWords,
   OFF,
   ownClaudeModelWords,
-  takenOverWords,
 } from "@/components/claude-mem-words";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CommandLine } from "@/components/copy-button";
@@ -90,7 +90,11 @@ function Part({
   source?: ClaudeMemSource;
   children: ReactNode;
   note?: ReactNode;
-  /** A change here is refused now: a value it writes was set by hand (`refusedByHand`). */
+  /**
+   * A change here may be refused now: a value it can write was set by hand (`refusedByHand`).
+   * Its button stays on: which keys a choice writes depends on the choice, so the server's own
+   * refusal names the one that stops it.
+   */
   refused?: boolean;
 }) {
   return (
@@ -107,8 +111,8 @@ function Part({
         {/* The kit never overwrites a value the person set by hand: say so before they try. */}
         {refused && (
           <StatusMark tone="warn" className="text-xs text-pretty">
-            A value this writes was set by hand, so the kit changes nothing here: let the kit manage
-            it (above), or change it in the file.
+            A value this part can write was set by hand, so a change here may be refused: let the
+            kit manage it (above), or change it in the file.
           </StatusMark>
         )}
         {note}
@@ -190,7 +194,7 @@ function RoutePart({ current, models }: { current: ClaudeMemCurrent; models: Mod
         action="claudemem.route"
         body={{ confirm: true, target: choice }}
         variant="outline"
-        disabled={current.route.refusedByHand || choice === now || choice === ""}
+        disabled={choice === now || choice === ""}
         confirm={{
           title: toBackend
             ? `Send claude-mem's summaries to ${targetModel(choice)}?`
@@ -261,7 +265,6 @@ function KeyPart({ current }: { current: ClaudeMemCurrent }) {
           action="claudemem.key"
           body={{ confirm: true, use: "gateway" }}
           variant="outline"
-          disabled={refused}
           confirm={{
             title: `Use the gateway's own key for ${name}?`,
             body: "The same key the gateway's slots use, as setup gives it to claude-mem. The kit sends one tiny request with it first.",
@@ -287,7 +290,7 @@ function KeyPart({ current }: { current: ClaudeMemCurrent }) {
             type="submit"
             size="sm"
             variant="outline"
-            disabled={refused || sending || key.trim() === ""}
+            disabled={sending || key.trim() === ""}
             aria-busy={sending}
           >
             Save this key
@@ -394,7 +397,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         </NativeSelect>
         <p className="text-xs text-pretty text-muted-foreground">
           {backendRoute
-            ? "The fallback can be Claude, a backend model, or off. A backend model goes through claude-mem's OpenRouter setting, pointed at the same backend: the route keeps its own."
+            ? "The fallback can be Claude, a backend model, or off. A backend model goes through claude-mem's OpenRouter setting, pointed at the backend of the model you pick: the route keeps its own."
             : claudeRoute
               ? "On the Claude route, the fallback can be a backend model, or off."
               : "The fallback can be Claude, a backend model, or off."}
@@ -404,7 +407,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         action="claudemem.fallback"
         body={{ confirm: true, target: choice }}
         variant="outline"
-        disabled={fallback.refusedByHand || choice === now || choice === ""}
+        disabled={choice === now || choice === ""}
         confirm={{
           title:
             choice === OFF
@@ -456,12 +459,12 @@ function TakeOver({
       <Alert role="note" className="border-warn/40">
         <TriangleAlertIcon className="text-warn" aria-hidden="true" />
         <AlertTitle className="text-pretty">
-          {takenOverWords(keys.length)}, so the kit changes none of them
+          {handSetWords(keys.length)}, so the kit changes none of them
         </AlertTitle>
         <div className="flex min-w-0 flex-col items-start gap-2 text-sm text-muted-foreground">
           <p className="text-pretty">
-            The choices they hold are refused below. Let the kit manage them to change claude-mem's
-            route, key and fallback here:
+            A change that writes one of them is refused (the parts marked below). Let the kit manage
+            them to change claude-mem's route, key and fallback here:
           </p>
           {keyList}
           <Button
@@ -598,7 +601,7 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
               icon={<Undo2Icon data-icon="inline-start" aria-hidden="true" />}
               confirm={{
                 title: "Hand claude-mem back to setup?",
-                body: "Your choices here are forgotten, and setup's own claude-mem step runs now: claude-mem follows the gateway's scout slot again (after one tiny request to its model), and its fallback goes back to claude-mem's own default. A value you set by hand in the file stays yours.",
+                body: "Your choices here are forgotten, and setup's own claude-mem step runs now: claude-mem follows the gateway's scout slot again (after one tiny request to its model), and its fallback goes back to claude-mem's own default. A value you set by hand and did not let the kit manage stays yours; one the kit manages is setup's again.",
                 yes: "Hand it back",
               }}
             >
