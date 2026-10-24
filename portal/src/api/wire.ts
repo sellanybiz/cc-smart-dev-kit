@@ -464,6 +464,7 @@ export type WorkflowKey =
   | "crew.usagePercent"
   | "crew.quietMinutes"
   | "crew.handoffPercent"
+  | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.tag"

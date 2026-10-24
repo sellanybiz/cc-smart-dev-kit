@@ -312,8 +312,10 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    --settings <settings.json> "<first line>"`. The
    first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
    `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: Claude Code's own window for
-   the model stands, and its compaction comes after the crew's own hand-off share of it
-   (`workflow.crew.handoffPercent`; the window the gauge measures is `context-window.ts`).
+   the model stands, and none of the person's `autoCompactWindow` settings applies to the crew
+   session (`auto` skips them; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still does). Its compaction comes
+   after the crew's own hand-off line (`workflow.crew.handoffTokens` and `handoffPercent`, and a
+   margin below the compaction point; the window the gauge measures is `context-window.ts`).
    `--mcp-config` comes **before** `--settings`, never last: it takes any number of files, so the
    prompt after it would read as another config (proved live on 2.1.309). The settings are a
    **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
@@ -628,9 +630,19 @@ config's slot chain names — a catalog id names it by its last segment too, bec
 leaves the provider out (`ollama-cloud/deepseek-v4.1-flash` is answered as
 `deepseek-v4.1-flash`). The list is read once, and only the models a chain names are kept in
 `<stateDir>/backend-windows.json` — never one network call per poll. A model whose window none of
-the three gives has no window and so no context line. At
-`workflow.crew.handoffPercent` (70 %) the crew session is told to **hand off**: commit the work in
-progress and run `crew report --status handoff`. At `workflow.crew.softHours` (2) it gets a
+the three gives has no window and so no percent line; the token cap still applies. **The hand-off
+line** is the smallest of three numbers (`handoffTokensOf`): `workflow.crew.handoffTokens`
+(400 000), `workflow.crew.handoffPercent` (70 %) of the window when it is known, and
+`HANDOFF_MARGIN_TOKENS` (33 000) below the point Claude Code compacts the session at. So a 1M
+window hands off at 400k, a 200k window at 140k, and a window held lower by the environment
+earlier still. At that line the crew session is told to **hand off**: commit the work in
+progress and run `crew report --status handoff`. **The compaction point** (`compactPointOf`) is
+what Claude Code does with `--autocompact auto`: the window is the model's, held down by
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set, and Claude Code compacts `COMPACT_RESERVE_TOKENS`
+(33 000: 20 000 for the reply and 13 000 of summary buffer) below it, or at a share of it with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. The person's
+`autoCompactWindow` keys do not count: `auto` skips them. One read-only reader holds the two
+variables (`src/machine/claude-settings.ts`: the process environment and the `env` block of the
+user, project and local settings files; the smallest value wins), re-read at every poll. At `workflow.crew.softHours` (2) it gets a
 **note** (the phase is long); at `workflow.crew.maxHours` (4) it is told to hand off again —
 the hours count from when its session **started** (`startedAt` in the record), not from when it
 was recorded, because a crew session that waited in the queue has not run for the hours it waited. The

@@ -135,7 +135,8 @@ Commands:
                  each event. --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
-                 at the context share, a note when the phase runs long. It says
+                 at the token cap or the context share, whichever comes first, and
+                 before Claude Code would compact; a note when the phase runs long. It says
                  nothing else, and repeats its line every 15 minutes while it is
                  ignored. --once checks once and exits.
 

@@ -21,6 +21,7 @@ import {
   claudeWindowFile,
   claudeWindowOfInput,
   claudeWindowSaid,
+  compactPointOf,
   contextWindowOf,
   recordClaudeWindow,
   windowWatch,
@@ -365,4 +366,29 @@ test("CC4: the kept files live in the state folder", () => {
   const paths = world();
   expect(claudeWindowFile(paths)).toBe(join(paths.stateDir, "context-window.json"));
   expect(backendWindowsFile(paths)).toBe(join(paths.stateDir, "backend-windows.json"));
+});
+
+describe("HO1: the point Claude Code compacts a crew session at", () => {
+  const none = { percent: null, window: null };
+
+  test("--autocompact auto with nothing set: the model's window less the 33 000 reserve", () => {
+    expect(compactPointOf(1_000_000, none)).toBe(967_000);
+    expect(compactPointOf(200_000, none)).toBe(167_000);
+  });
+
+  test("a window the kit cannot know and no variable: no point", () => {
+    expect(compactPointOf(null, none)).toBeNull();
+  });
+
+  test("CLAUDE_CODE_AUTO_COMPACT_WINDOW holds the window down, and stands in for an unknown one", () => {
+    expect(compactPointOf(1_000_000, { percent: null, window: 300_000 })).toBe(267_000);
+    expect(compactPointOf(null, { percent: null, window: 300_000 })).toBe(267_000);
+    // Above the model's window it is clamped to it, as Claude Code does.
+    expect(compactPointOf(200_000, { percent: null, window: 900_000 })).toBe(167_000);
+  });
+
+  test("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE lowers the point to a share of the window, never raises it", () => {
+    expect(compactPointOf(1_000_000, { percent: 50, window: null })).toBe(500_000);
+    expect(compactPointOf(200_000, { percent: 99, window: null })).toBe(167_000);
+  });
 });

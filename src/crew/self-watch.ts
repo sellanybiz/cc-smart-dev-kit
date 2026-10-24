@@ -4,9 +4,10 @@
  * The crew session's monitor runs this. It reads the crew session's own transcript tail and the time since
  * it started, and prints **one line** into the crew session's chat when the crew session should act:
  *
- * - at `workflow.crew.handoffPercent` (70 %) of its context: **hand off** — commit the work
- *   in progress and run `crew report --status handoff`, so the lead starts the next crew session
- *   from this head;
+ * - at `workflow.crew.handoffTokens` (400 000 tokens) or `workflow.crew.handoffPercent` (70 %)
+ *   of its window, whichever comes first, and always `HANDOFF_MARGIN_TOKENS` before the point
+ *   Claude Code would auto-compact it at: **hand off** — commit the work in progress and run
+ *   `crew report --status handoff`, so the lead starts the next crew session from this head;
  * - at `workflow.crew.softHours` (2): a **note** — the phase is long: tell the lead where it
  *   stands (a `crew step` with a `--note`, which the lead's watch says), or hand off;
  * - at `workflow.crew.maxHours` (4): **hand off** again, now because the time is up.
@@ -17,15 +18,22 @@
  * **The window.** The model that wrote the last reply decides it (`context-window.ts`): Claude
  * Code's own number when the status line recorded one for that model, the kit's table
  * otherwise, and a backend's own model list for a bare backend model. A model whose window the
- * kit cannot know has no window, and so no context line — the time lines still apply.
+ * kit cannot know has no window, and so no percent line — the token cap still applies, and so
+ * do the time lines.
+ *
+ * **The auto-compact point.** A crew session starts with `--autocompact auto`, which skips the
+ * person's `autoCompactWindow` settings; only `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and
+ * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` still move it (`claude-settings.ts`). The hand-off line is
+ * never at or past it.
  */
 import { COMMAND } from "../build-info/names";
+import { compactEnvOf } from "../machine/claude-settings";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
-import { windowWatch } from "./context-window";
+import { COMPACT_RESERVE_TOKENS, compactPointOf, windowWatch } from "./context-window";
 import { runningCrew } from "./places";
 import { readCrew, readSelfWatchState, writeSelfWatchState } from "./store";
-import { contextPercent, contextUseOf, transcriptFile } from "./transcript";
+import { type ContextUse, contextPercent, contextUseOf, transcriptFile } from "./transcript";
 
 /** How long the crew session waits before it says the same line again. */
 export const SELF_WATCH_REPEAT_MS = 15 * 60_000;
@@ -43,8 +51,10 @@ export interface SelfAdvice {
 
 /** The thresholds a crew session watches itself against. */
 export interface SelfThresholds {
-  /** The share of the context, in percent, at which it hands off. */
+  /** The share of the window, in percent, at which it hands off. */
   handoffPercent: number;
+  /** The tokens of context at which it hands off, whatever the window. */
+  handoffTokens: number;
   /** The hours after which the lead gets a note about it. */
   softHours: number;
   /** The hours after which it hands off. */
@@ -56,12 +66,45 @@ export function hoursSince(startedAtMs: number, nowMs: number): number {
   return Math.max(0, (nowMs - startedAtMs) / 3_600_000);
 }
 
+/** How far below the point Claude Code compacts at the hand-off line stays: one more reserve. */
+export const HANDOFF_MARGIN_TOKENS = COMPACT_RESERVE_TOKENS;
+
+/** What one poll knows about the crew session's context. */
+export interface ContextFacts {
+  /** The context size at which Claude Code compacts; null when the kit cannot tell. */
+  compactPoint: null | number;
+  /** What the last reply used; null when there is no reply. */
+  use: ContextUse | null;
+  /** The model's window; null when the kit cannot know it. */
+  window: null | number;
+}
+
 /**
- * The line the crew session needs, or null when it needs none. `contextPercent` is the share of the
- * window its last reply used (null when the window is unknown), `hours` how long it has run.
+ * The context size, in tokens, at which the crew session hands off: the smallest of the token
+ * cap, the share of the window (when the window is known) and `HANDOFF_MARGIN_TOKENS` below the
+ * point Claude Code compacts at (when that is known). Never below 1.
+ */
+export function handoffTokensOf(context: ContextFacts, thresholds: SelfThresholds): number {
+  const lines = [thresholds.handoffTokens];
+  if (context.window !== null) {
+    lines.push(Math.floor((context.window * thresholds.handoffPercent) / 100));
+  }
+  if (context.compactPoint !== null) lines.push(context.compactPoint - HANDOFF_MARGIN_TOKENS);
+  return Math.max(1, Math.min(...lines));
+}
+
+/** `412345` → `412k`: the tokens as the crew session reads them. */
+function thousands(tokens: number): string {
+  return `${Math.round(tokens / 1000)}k`;
+}
+
+/**
+ * The line the crew session needs, or null when it needs none. `context` is what its last reply
+ * used and the window and the compaction point that use is measured against; `hours` is how
+ * long it has run.
  */
 export function adviceFor(
-  contextPercentValue: null | number,
+  context: ContextFacts,
   hours: number,
   thresholds: SelfThresholds,
 ): SelfAdvice | null {
@@ -71,10 +114,11 @@ export function adviceFor(
       line: `${hours.toFixed(1)} hours into this phase: hand off now — commit your work in progress, then run \`cc-smart-dev-kit crew report --status handoff\``,
     };
   }
-  if (contextPercentValue !== null && contextPercentValue >= thresholds.handoffPercent) {
+  if (context.use !== null && context.use.tokens >= handoffTokensOf(context, thresholds)) {
+    const percent = contextPercent(context.use, context.window);
     return {
       kind: "context",
-      line: `context at ${contextPercentValue}%: hand off now — commit your work in progress, then run \`cc-smart-dev-kit crew report --status handoff\``,
+      line: `context at ${thousands(context.use.tokens)} tokens${percent === null ? "" : ` (${percent}%)`}: hand off now — commit your work in progress, then run \`cc-smart-dev-kit crew report --status handoff\``,
     };
   }
   if (hours >= thresholds.softHours) {
@@ -90,12 +134,14 @@ export function adviceFor(
 export function thresholdsOf(resolved: {
   crew: {
     handoffPercent: { value: number };
+    handoffTokens: { value: number };
     maxHours: { value: number };
     softHours: { value: number };
   };
 }): SelfThresholds {
   return {
     handoffPercent: resolved.crew.handoffPercent.value,
+    handoffTokens: resolved.crew.handoffTokens.value,
     maxHours: resolved.crew.maxHours.value,
     softHours: resolved.crew.softHours.value,
   };
@@ -128,9 +174,17 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
     // The model that wrote the last reply is the truth about the window (a fallback target may
     // have answered); the record's own model stands in before there is a reply.
     const window = await windows.of(usage?.model ?? record.model.resolved, now);
-    const percent = usage === null ? null : contextPercent(usage, window);
+    // Read at every poll: a few small files, and the person may change them while it runs.
+    const compactPoint = compactPointOf(
+      window,
+      compactEnvOf({
+        configDir: ctx.paths.claudeConfigDir,
+        env: ctx.env,
+        projectFolder: record.worktree,
+      }),
+    );
     const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
-    const advice = adviceFor(percent, hours, thresholds);
+    const advice = adviceFor({ compactPoint, use: usage, window }, hours, thresholds);
     if (advice !== null) {
       // The same advice is said again only after its time is up: a crew session that ignored it sees
       // it again, and a crew session that acted does not.

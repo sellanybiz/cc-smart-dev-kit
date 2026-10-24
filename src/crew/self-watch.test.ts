@@ -10,16 +10,41 @@ import { projectFolderName } from "../sessions/saved-sessions";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { runCrew } from "./command";
-import { adviceFor, hoursSince, type SelfThresholds } from "./self-watch";
+import {
+  adviceFor,
+  type ContextFacts,
+  handoffTokensOf,
+  hoursSince,
+  type SelfThresholds,
+} from "./self-watch";
 import { createCrew, writeLead } from "./store";
-import { contextPercent } from "./transcript";
+import { type ContextUse, contextPercent } from "./transcript";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
 
 /** The thresholds the plan set. */
-const THRESHOLDS: SelfThresholds = { handoffPercent: 70, maxHours: 4, softHours: 2 };
+const THRESHOLDS: SelfThresholds = {
+  handoffPercent: 70,
+  handoffTokens: 400_000,
+  maxHours: 4,
+  softHours: 2,
+};
+
+/** The hand-off line says this, then the way to hand off. */
+const HAND_OFF =
+  "hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`";
+
+/** What a poll learned: `tokens` of context against a `window` and the point Claude Code compacts at. */
+function facts(
+  tokens: null | number,
+  window: null | number,
+  compactPoint: null | number = null,
+): ContextFacts {
+  const use: ContextUse | null = tokens === null ? null : { changedAtMs: 0, model: null, tokens };
+  return { compactPoint, use, window };
+}
 
 /** 75 % of a 1M window: what a current Claude family's hand-off is measured against now. */
 const AT_75 = 750_000;
@@ -96,18 +121,64 @@ async function crewWorldWith(tokens: number, startedHoursAgo = 0, model = "claud
 }
 
 describe("the thresholds the crew session watches itself against", () => {
-  test("D25: the context share, the long note and the time up", () => {
-    expect(adviceFor(null, 0.5, THRESHOLDS)).toBeNull();
-    expect(adviceFor(null, 1.9, THRESHOLDS)).toBeNull();
-    expect(adviceFor(50, 0.5, THRESHOLDS)).toBeNull();
-    expect(adviceFor(70, 0.5, THRESHOLDS)?.kind).toBe("context");
-    expect(adviceFor(71, 0.5, THRESHOLDS)?.line).toBe(
-      "context at 71%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
+  test("D25: the context line, the long note and the time up", () => {
+    const M = 1_000_000;
+    expect(adviceFor(facts(null, null), 0.5, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(null, M), 1.9, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(300_000, M), 0.5, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(400_000, M), 0.5, THRESHOLDS)?.kind).toBe("context");
+    expect(adviceFor(facts(410_000, M), 0.5, THRESHOLDS)?.line).toBe(
+      `context at 410k tokens (41%): ${HAND_OFF}`,
     );
-    expect(adviceFor(null, 2.1, THRESHOLDS)?.kind).toBe("long");
-    expect(adviceFor(null, 4.1, THRESHOLDS)?.kind).toBe("time");
+    expect(adviceFor(facts(null, M), 2.1, THRESHOLDS)?.kind).toBe("long");
+    expect(adviceFor(facts(null, M), 4.1, THRESHOLDS)?.kind).toBe("time");
     // The time up comes first: the crew session must not hear two lines.
-    expect(adviceFor(90, 5, THRESHOLDS)?.kind).toBe("time");
+    expect(adviceFor(facts(900_000, M), 5, THRESHOLDS)?.kind).toBe("time");
+  });
+
+  test("HO1: a 1M window hands off at the token cap, 400k, before 70 % of it", () => {
+    expect(handoffTokensOf({ compactPoint: null, use: null, window: 1_000_000 }, THRESHOLDS)).toBe(
+      400_000,
+    );
+    expect(adviceFor(facts(399_999, 1_000_000), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(400_000, 1_000_000), 0, THRESHOLDS)?.kind).toBe("context");
+  });
+
+  test("HO1: a 200k window hands off at 70 % of it, 140k, before the cap", () => {
+    expect(handoffTokensOf(facts(null, 200_000), THRESHOLDS)).toBe(140_000);
+    expect(adviceFor(facts(139_999, 200_000), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(140_000, 200_000), 0, THRESHOLDS)?.line).toBe(
+      `context at 140k tokens (70%): ${HAND_OFF}`,
+    );
+  });
+
+  test("HO1: the person's own handoffPercent and handoffTokens stay in force", () => {
+    const own = (change: Partial<SelfThresholds>) => ({ ...THRESHOLDS, ...change });
+    // 40 % of 1M is 400k: the owner's setting and the cap agree; 30 % comes first.
+    expect(handoffTokensOf(facts(null, 1_000_000), own({ handoffPercent: 40 }))).toBe(400_000);
+    expect(handoffTokensOf(facts(null, 1_000_000), own({ handoffPercent: 30 }))).toBe(300_000);
+    expect(handoffTokensOf(facts(null, 1_000_000), own({ handoffTokens: 250_000 }))).toBe(250_000);
+    // A cap above the percent does not raise it.
+    expect(handoffTokensOf(facts(null, 200_000), own({ handoffTokens: 900_000 }))).toBe(140_000);
+  });
+
+  test("HO1: a window the kit cannot know still hands off at the token cap", () => {
+    expect(handoffTokensOf(facts(null, null), THRESHOLDS)).toBe(400_000);
+    expect(adviceFor(facts(399_000, null), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(400_000, null), 0, THRESHOLDS)?.line).toBe(
+      `context at 400k tokens: ${HAND_OFF}`,
+    );
+  });
+
+  test("HO1: always before the point Claude Code compacts at, a margin early", () => {
+    // Compaction at 267k (a 300k window less the 33k reserve): the line is one more reserve early.
+    expect(handoffTokensOf(facts(null, 1_000_000, 267_000), THRESHOLDS)).toBe(234_000);
+    expect(adviceFor(facts(233_999, 1_000_000, 267_000), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(234_000, 1_000_000, 267_000), 0, THRESHOLDS)?.kind).toBe("context");
+    // Unknown model window, known compaction point: the guard still holds.
+    expect(handoffTokensOf(facts(null, null, 267_000), THRESHOLDS)).toBe(234_000);
+    // A compaction point above both numbers changes nothing.
+    expect(handoffTokensOf(facts(null, 1_000_000, 967_000), THRESHOLDS)).toBe(400_000);
   });
 
   test("the share of the window", () => {
@@ -140,9 +211,7 @@ describe("crew self-watch", () => {
       ["self-watch", "--once"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
-    expect(world.out).toEqual([
-      "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-    ]);
+    expect(world.out).toEqual([`context at 750k tokens (75%): ${HAND_OFF}`]);
   });
 
   test("CC4: the hand-off line is the real share of the real window", async () => {
@@ -152,9 +221,7 @@ describe("crew self-watch", () => {
       ["self-watch", "--once"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
-    expect(world.out).toEqual([
-      "context at 80%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-    ]);
+    expect(world.out).toEqual([`context at 800k tokens (80%): ${HAND_OFF}`]);
     expect(world.err).toEqual([]);
   });
 
@@ -170,9 +237,7 @@ describe("crew self-watch", () => {
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     // The table would say 1M (15 %); the number Claude Code reported says 200 000.
-    expect(world.out).toEqual([
-      "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-    ]);
+    expect(world.out).toEqual([`context at 150k tokens (75%): ${HAND_OFF}`]);
   });
 
   test("CC4: a backend's model is measured against that backend's listed window", async () => {
@@ -202,10 +267,47 @@ describe("crew self-watch", () => {
       ["self-watch", "--once"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
-    expect(world.out).toEqual([
-      "context at 80%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-    ]);
+    expect(world.out).toEqual([`context at 800k tokens (80%): ${HAND_OFF}`]);
     expect(world.err).toEqual([]);
+  });
+
+  test("HO1: a crew session hands off at the 400k cap on a 1M window, not at 70 % of it", async () => {
+    const world = await crewWorldWith(400_000);
+    await runCrew(
+      ["self-watch", "--once"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    expect(world.out).toEqual([`context at 400k tokens (40%): ${HAND_OFF}`]);
+  });
+
+  test("HO1: the person's modelSettings autoCompactWindow does not apply: --autocompact auto skips it", async () => {
+    const world = await crewWorldWith(380_000);
+    mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ modelSettings: { "claude-opus-5-5": { autoCompactWindow: 400_000 } } }),
+    );
+    await runCrew(
+      ["self-watch", "--once"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    // Were the setting in force, Claude Code would compact at 367k and the line would be 334k.
+    expect(world.out).toEqual([]);
+  });
+
+  test("HO1: an auto-compact window in the environment puts the hand-off before it", async () => {
+    const world = await crewWorldWith(240_000);
+    mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300k" } }),
+    );
+    await runCrew(
+      ["self-watch", "--once"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    // Compaction at 267k; the line is 234k.
+    expect(world.out).toEqual([`context at 240k tokens (24%): ${HAND_OFF}`]);
   });
 
   test("D25: the same line is not said twice within a quarter of an hour", async () => {
@@ -264,8 +366,8 @@ describe("crew self-watch", () => {
     // The line at once, and the same line again after a quarter of an hour (round 15) — not
     // on the rounds between — and then the loop ends with the phase.
     expect(world.out).toEqual([
-      "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-      "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
+      `context at 750k tokens (75%): ${HAND_OFF}`,
+      `context at 750k tokens (75%): ${HAND_OFF}`,
     ]);
     expect(rounds).toBe(17);
   });
@@ -277,9 +379,7 @@ describe("crew self-watch", () => {
     const code = await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }));
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
-    expect(world.out).toEqual([
-      "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
-    ]);
+    expect(world.out).toEqual([`context at 750k tokens (75%): ${HAND_OFF}`]);
   });
 
   test("D25: a self-watch outside a crew session is refused", async () => {

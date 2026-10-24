@@ -41,6 +41,7 @@ import {
   versionAtLeast,
 } from "../gateway/targets";
 import { gatewayConfigOf } from "../hooks/agent-guard";
+import type { CompactEnv } from "../machine/claude-settings";
 import { writeStoreFile } from "./store";
 
 /** The 1M window every Claude family has from `WINDOW_1M_SINCE` on, in tokens. */
@@ -60,6 +61,36 @@ export const WINDOW_1M_SINCE: Readonly<Record<ClaudeFamily, { major: number; min
   opus: { major: 4, minor: 6 },
   sonnet: { major: 4, minor: 6 },
 };
+
+/**
+ * The tokens Claude Code keeps free below its auto-compact window: it compacts at the window
+ * less this. 20 000 are the room it keeps for the reply (the output reserve) and 13 000 its summary
+ * buffer: the "Autocompact buffer" row of `/context` shows the 33 000 (`docs/claude-code-contract.md`,
+ * proved live on 2.1.310). A model with a smaller output limit keeps less, so this is the larger
+ * guess: the hand-off comes early, never late. The hand-off line stays one more of these below
+ * that point: the room a crew session needs to commit and report, and for the minute between
+ * two polls.
+ */
+export const COMPACT_RESERVE_TOKENS = 33_000;
+
+/**
+ * The context size, in tokens, at which Claude Code compacts a crew session, or null when the
+ * kit cannot tell. A crew session runs with `--autocompact auto`, so the window is the model's
+ * own, held down by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set (`claude-settings.ts`);
+ * the point is `COMPACT_RESERVE_TOKENS` below it, or lower when `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+ * puts it at a share of the window. With no model window the variable's own window stands in.
+ */
+export function compactPointOf(modelWindow: null | number, env: CompactEnv): null | number {
+  const window =
+    env.window === null
+      ? modelWindow
+      : modelWindow === null
+        ? env.window
+        : Math.min(modelWindow, env.window);
+  if (window === null) return null;
+  const point = window - COMPACT_RESERVE_TOKENS;
+  return env.percent === null ? point : Math.min(point, Math.floor((window * env.percent) / 100));
+}
 
 /**
  * The window of `model` from the kit's own table, in tokens; null for anything that is not a

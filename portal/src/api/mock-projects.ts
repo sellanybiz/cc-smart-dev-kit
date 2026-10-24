@@ -129,6 +129,7 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "crew.usagePercent", source: "default", value: 85 },
   { key: "crew.quietMinutes", source: "default", value: 20 },
   { key: "crew.handoffPercent", source: "default", value: 70 },
+  { key: "crew.handoffTokens", source: "default", value: 400_000 },
   { key: "crew.softHours", source: "default", value: 2 },
   { key: "crew.maxHours", source: "default", value: 4 },
   { key: "crew.tag", source: "project", value: "my-app" },
