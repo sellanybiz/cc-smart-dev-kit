@@ -7358,6 +7358,14 @@ var watchStateFields = object({
   routerRequests: number2().int().min(0).nullable().optional(),
   stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
+});
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
   last: _enum(["report", "step"]).nullable(),
@@ -9181,18 +9189,34 @@ async function freeForCrewGb(home, memory) {
 }
 
 // src/crew/context.ts
+function stdoutPrinter(stream) {
+  let failed = false;
+  return {
+    closed: () => failed,
+    print: (line) => {
+      stream.write(`${line}
+`, (error) => {
+        if (error)
+          failed = true;
+      });
+    }
+  };
+}
 function realCrewContext(paths) {
   const env = process.env;
+  const stdout = stdoutPrinter(process.stdout);
   return {
     cwd: process.cwd(),
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
     now: () => Date.now(),
+    outputClosed: stdout.closed,
+    parentPid: () => process.ppid,
     paths,
     pid: process.pid,
     platform: process.platform,
-    print: (line) => console.log(line),
+    print: stdout.print,
     processes: realProcessFacts(process.platform),
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),

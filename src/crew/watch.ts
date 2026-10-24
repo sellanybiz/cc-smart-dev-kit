@@ -42,8 +42,10 @@
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
  */
+import { randomUUID } from "node:crypto";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
+import { currentHolder } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
@@ -67,13 +69,16 @@ import { startQueued } from "./start";
 import {
   type CrewEvent,
   type CrewRecord,
+  keepWatchLease,
   listCrew,
   listLeads,
   readCrewEvents,
   readReport,
   readWatchState,
   setCrewMemory,
+  takeWatchLease,
   updateCrew,
+  type WatchLease,
   type WatchState,
   writeWatchState,
 } from "./store";
@@ -92,6 +97,23 @@ import {
 
 /** How often the watch reads agent view. */
 export const WATCH_POLL_MS = 20_000;
+
+/**
+ * A watch that must stop acting (WF1): a newer watch of its lead took the lease, the process that
+ * started it ended, or nobody reads its output. Thrown by its check (`WatchScope.goesOn`) before
+ * it acts, and caught once in `runCrewWatch`, which says `line` on `stream` and ends with 0.
+ */
+export class WatchEnd extends Error {
+  override name = "WatchEnd";
+  readonly line: string;
+  readonly stream: "error" | "print";
+
+  constructor(stream: "error" | "print", line: string) {
+    super(line);
+    this.line = line;
+    this.stream = stream;
+  }
+}
 
 /**
  * How long a `starting` crew session may run before its own SessionStart hook has said it reached
@@ -372,6 +394,13 @@ export interface WatchScope {
    * test reaches a real router's port.
    */
   gateway?: (nowMs: number) => Promise<GatewayNow>;
+  /**
+   * Throws `WatchEnd` when this watch may no longer act (WF1): it lost its lead's lease, its
+   * parent ended, or nobody reads its output. The pass asks again right before it starts queued
+   * crew sessions and before it resumes paused ones — each launches a Claude session, and two
+   * watches launching one record start two. Left out (a test's own pass): it always goes on.
+   */
+  goesOn?: () => Promise<void>;
 }
 
 /**
@@ -497,6 +526,7 @@ async function resumePaused(
   said: Record<string, string>,
   ctx: CrewContext,
   gateway: (nowMs: number) => Promise<GatewayNow>,
+  goesOn: () => Promise<void>,
   agents: null | AgentRow[],
   say: (line: string) => void,
 ): Promise<null | ResumeMark> {
@@ -514,6 +544,8 @@ async function resumePaused(
     if (now - last < RESUME_SPACING_MS) return null;
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
+  // Only the watch that holds its lead's lease resumes (WF1): two would start two sessions.
+  await goesOn();
   const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
   const one = await resumeOne(next, ctx, now, agents, say, held);
   if (one.unnamed) said[resumeHoldKey(next.id)] = held;
@@ -933,6 +965,8 @@ export async function watchPass(
   const queued = here
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // Only the watch that holds its lead's lease starts a session (WF1).
+  if (queued.length > 0 && scope.mayStart !== false) await scope.goesOn?.();
   for (const record of queued) {
     if (scope.mayStart !== false) await startQueued(record, ctx, resolved);
     // A phase that was removed before its work was merged releases nothing, so this one never
@@ -968,6 +1002,7 @@ export async function watchPass(
           said,
           ctx,
           scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)),
+          scope.goesOn ?? (() => Promise.resolve()),
           agents,
           say,
         );
@@ -1049,11 +1084,66 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   }
   // The lead merges in its own folder; where that is gone, in the main checkout.
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
+  // **One acting watch per lead: the newest wins** (WF1). A monitor the lead restarts is its
+  // intent, so this watch takes the lease whoever holds it, and the one it replaces ends at its
+  // next look. Before the state is read, so this watch goes on from where the last one wrote.
+  const lease: WatchLease = { ...currentHolder(), at: ctx.now(), token: randomUUID() };
+  try {
+    await takeWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+  } catch (error) {
+    ctx.error(`crew watch: could not take this lead's watch lease: ${reasonOf(error)}`);
+    return 1;
+  }
+  const parent = ctx.parentPid?.() ?? null;
+  const goesOn = async (): Promise<void> => {
+    // Claude Code ends a monitor by ending its shell, and the watch is re-parented: nobody
+    // started it any more, and nobody reads it.
+    if (parent !== null && ctx.parentPid?.() !== parent) {
+      throw new WatchEnd("error", "crew watch: the process that started it ended; this watch ends");
+    }
+    if (ctx.outputClosed?.() === true) {
+      throw new WatchEnd("error", "crew watch: nobody reads its output any more; this watch ends");
+    }
+    const kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    if (!kept.held) {
+      throw new WatchEnd(
+        "print",
+        `crew watch: a newer watch of this lead runs (pid ${kept.holder.pid}); this one ends`,
+      );
+    }
+  };
+  try {
+    return await watchLoop(args, ctx, {
+      base: watchBase(read.caller, ctx),
+      goesOn,
+      leadSessionId,
+      mergeInto,
+      repo,
+      resolved,
+    });
+  } catch (error) {
+    // The one way a watch ends by itself: it says why once, and ends well.
+    if (!(error instanceof WatchEnd)) throw error;
+    (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+    return 0;
+  }
+}
+
+/**
+ * The watch's passes, one every `WATCH_POLL_MS`, each after `scope.goesOn` said this watch may
+ * still act, and its state written only while it holds the lease. `--once` ends on the first pass
+ * with news, `--timeout` on its deadline.
+ */
+async function watchLoop(
+  args: WatchArgs,
+  ctx: CrewContext,
+  start: WatchScope & { goesOn: () => Promise<void> },
+): Promise<number> {
+  const { goesOn, leadSessionId, repo, resolved } = start;
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
   let state: WatchState = known ?? { noted: false, offset: 0, said: {} };
-  const parkedBase = watchBase(read.caller, ctx);
   // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
   // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
@@ -1066,6 +1156,8 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
+    // Before it acts: a watch that may not act any more ends here (`WatchEnd`).
+    await goesOn();
     const reread = readCaller("watch", ctx, { session: "optional" });
     let mayStart = true;
     if (reread.ok) {
@@ -1082,22 +1174,19 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
         capsSaid = true;
       }
     }
-    const scope: WatchScope = {
-      base: parkedBase,
-      leadSessionId,
-      mergeInto,
-      mayStart,
-      repo,
-      resolved: caps,
-    };
+    const scope: WatchScope = { ...start, mayStart, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
     } catch (error) {
+      if (error instanceof WatchEnd) throw error;
       ctx.error(`crew watch: ${reasonOf(error)}`);
       return 1;
     }
     state = pass.state;
+    // Only the lease holder writes the state: a watch that lost the lease while this pass ran
+    // leaves it to the newer one, which goes on from what it read.
+    await goesOn();
     writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
     // `--once` ends on the next change: the lead runs it in the background, and its end
     // starts the lead's next turn. A pass with nothing to say waits for the next one — a

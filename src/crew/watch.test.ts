@@ -18,11 +18,13 @@ import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
+import { currentHolder } from "../setup/lock";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
 import { runCrew } from "./command";
+import type { CrewContext } from "./context";
 import {
   appendCrewEvent,
   type CrewRecord,
@@ -30,16 +32,21 @@ import {
   crewMcpFile,
   crewSettingsFile,
   eventsEndOffset,
+  keepWatchLease,
   listCrew,
   readCrew,
+  readWatchLease,
   readWatchState,
+  takeWatchLease,
   updateCrew,
+  type WatchLease,
   type WatchState,
+  watchLeaseFile,
   writeLead,
   writeStoreFile,
 } from "./store";
 import type { GatewayNow } from "./wait";
-import { eventLine, PARKED_PASS_MS, type WatchScope, watchPass } from "./watch";
+import { eventLine, PARKED_PASS_MS, WatchEnd, type WatchScope, watchPass } from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -2614,5 +2621,230 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(1);
     expect(done.state.resumedAt).toBeUndefined();
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+});
+
+/**
+ * WF1: one acting watch per lead. Seen live on 2026-10-25: 13 watches whose monitor had ended
+ * (parent pid 1), up to 30 hours old, up to 5 for one lead, each starting, resuming and stopping
+ * crew sessions and writing the same state file.
+ */
+describe("WF1: one acting watch per lead", () => {
+  /** A step of the crew session in the log: news a watch that acts would say. */
+  async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      T0,
+    );
+  }
+
+  /**
+   * A context whose `sleep` runs `between` once — what happens while the watch waits for its next
+   * pass — and refuses a second wait, so a watch that does not end fails the test, never hangs it.
+   */
+  function waiting(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    between: () => Promise<void>,
+    change: Partial<CrewContext> = {},
+  ): CrewContext {
+    let waits = 0;
+    return world.ctx({
+      ...change,
+      sleep: async () => {
+        waits += 1;
+        if (waits > 1) throw new Error("the watch went on to a third pass");
+        await between();
+      },
+    });
+  }
+
+  /** A lease another watch of this test's own process holds: alive, with a token of its own. */
+  function newer(token = "the-newer-watch"): WatchLease {
+    return { ...currentHolder(), at: T0, token };
+  }
+
+  /** A lease whose process is gone: a pid that ran and ended. */
+  function deadLease(): WatchLease {
+    const ended = Bun.spawnSync(["true"]);
+    return { ...currentHolder(), at: T0, pid: ended.pid, token: "a-watch-that-died" };
+  }
+
+  test("a newer watch takes over: the older one says so once and ends before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const offset = () => readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.offset;
+    let written: number | undefined;
+    const ctx = waiting(world, async () => {
+      // Its first pass held the lease and wrote its state. Then a restarted monitor's watch
+      // takes the lease, and news arrives.
+      written = offset();
+      await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer());
+      await step(world, "tests-green");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    // It ended before its next pass: the step it would have said is left to the newer watch, and
+    // it wrote no state after it lost the lease.
+    expect(world.out).toEqual([
+      `crew watch: a newer watch of this lead runs (pid ${process.pid}); this one ends`,
+    ]);
+    expect(written).toBeGreaterThan(0);
+    expect(offset()).toBe(written);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.token).toBe(
+      "the-newer-watch",
+    );
+  });
+
+  test("a watch takes the lease when it starts, whoever holds it: the newest wins", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer("an-older-watch"));
+    await step(world, "tests-red");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
+    expect(held?.pid).toBe(process.pid);
+    expect(held?.token).not.toBe("an-older-watch");
+  });
+
+  test("a lease whose watch died is free: the watch takes it back and goes on", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = waiting(world, async () => {
+      await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, deadLease());
+      await step(world, "committed");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: committed"]);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.pid).toBe(process.pid);
+  });
+
+  test("a watch whose parent is gone ends, before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let parent = 4100;
+    const ctx = waiting(
+      world,
+      async () => {
+        // Claude Code ended the monitor's shell: the watch was re-parented.
+        parent = 1;
+        await step(world, "tests-green");
+      },
+      { parentPid: () => parent },
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual(["crew watch: the process that started it ended; this watch ends"]);
+  });
+
+  test("a watch whose stdout is closed ends, before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let closed = false;
+    const ctx = waiting(
+      world,
+      async () => {
+        closed = true;
+        await step(world, "tests-green");
+      },
+      { outputClosed: () => closed },
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
+  });
+
+  test("two leads never share a lease", async () => {
+    const world = await leadWorld();
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app other-plan",
+        plan: "other-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    await addCrew(world, "working");
+    // The other lead's watch holds its own lease, alive: this lead's watch acts all the same.
+    await takeWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION, newer("other-lead"));
+    const ctx = waiting(world, async () => {
+      await takeWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION, newer("other-again"));
+      await step(world, "tests-green");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60", "--lead", LEAD_SESSION], ctx)).toBe(
+      0,
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION)).not.toBe(
+      watchLeaseFile(world.paths.stateDir, world.repo, OTHER_SESSION),
+    );
+    expect(readWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION)?.token).toBe(
+      "other-again",
+    );
+  });
+
+  test("a pass whose watch lost the lease before its resumes resumes nothing", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "paused", {
+      lastPause: { backoffMs: 0, since: "2026-10-21T09:50:00.000Z" },
+      waitingFor: { kind: "unknown", since: "2026-10-21T09:50:00.000Z" },
+    });
+    mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve({ breakers: {}, inUse: null, limits: {}, requests: 10 }),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      // A newer watch took the lease while this pass ran: the check before the resume says so.
+      goesOn: () => Promise.reject(new WatchEnd("print", "a newer watch of this lead runs")),
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    };
+    const state: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    };
+    await expect(
+      watchPass(state, world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]" }), scope),
+    ).rejects.toBeInstanceOf(WatchEnd);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+});
+
+describe("WF1: the lease in the store", () => {
+  test("held by its own token; taken back from a watch that died; never from a live one", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
+    const theirs: WatchLease = { ...currentHolder(), at: T0, token: "theirs" };
+    // No lease yet: free, so it is taken.
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, theirs);
+    const lost = await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine);
+    expect(lost.held).toBe(false);
+    expect(lost.held ? null : lost.holder.token).toBe("theirs");
+    const ended = Bun.spawnSync(["true"]);
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, { ...theirs, pid: ended.pid });
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)?.token).toBe("mine");
+  });
+
+  test("a lease file that cannot be read is free", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    writeStoreFile(watchLeaseFile(stateDir, world.repo, LEAD_SESSION), "{ half a file");
+    expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)).toBeNull();
+    const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
   });
 });

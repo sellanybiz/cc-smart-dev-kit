@@ -24777,6 +24777,52 @@ function writeWatchState(stateDir, repo, leadSessionId, state) {
   writeStoreFile(watchStateFile(stateDir, repo, leadSessionId), `${JSON.stringify(state, null, 2)}
 `);
 }
+function watchLeaseFile(stateDir, repo, leadSessionId) {
+  return join40(crewStoreDir(stateDir, repo), "watch", `${fileId(leadSessionId, "session id")}.lease.json`);
+}
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
+});
+function readWatchLease(stateDir, repo, leadSessionId) {
+  let raw;
+  try {
+    raw = readFileSync48(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+  } catch (error) {
+    if (notThere(error))
+      return null;
+    throw error;
+  }
+  try {
+    const parsed = watchLeaseFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+async function takeWatchLease(stateDir, repo, leadSessionId, lease) {
+  await underStoreLock(stateDir, repo, () => {
+    writeStoreFile(watchLeaseFile(stateDir, repo, leadSessionId), `${JSON.stringify(lease, null, 2)}
+`);
+  });
+}
+async function keepWatchLease(stateDir, repo, leadSessionId, lease) {
+  return await underStoreLock(stateDir, repo, () => {
+    const now = readWatchLease(stateDir, repo, leadSessionId);
+    if (now !== null && now.token === lease.token)
+      return { held: true };
+    if (now !== null && !holderIsGone(now, now.at, FALLBACK_STALE_MS)) {
+      return { held: false, holder: now };
+    }
+    writeStoreFile(watchLeaseFile(stateDir, repo, leadSessionId), `${JSON.stringify(lease, null, 2)}
+`);
+    return { held: true };
+  });
+}
 function notesStateFile(stateDir, repo, leadSessionId) {
   return join40(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
 }
@@ -31696,6 +31742,9 @@ function routeFacts(input, context) {
   return facts;
 }
 
+// src/crew/watch.ts
+import { randomUUID as randomUUID4 } from "crypto";
+
 // src/worktrees/command.ts
 import { basename as basename12, resolve as resolve8 } from "path";
 
@@ -34680,18 +34729,34 @@ import { basename as basename11 } from "path";
 
 // src/crew/context.ts
 import { randomBytes } from "crypto";
+function stdoutPrinter(stream) {
+  let failed = false;
+  return {
+    closed: () => failed,
+    print: (line) => {
+      stream.write(`${line}
+`, (error) => {
+        if (error)
+          failed = true;
+      });
+    }
+  };
+}
 function realCrewContext(paths) {
   const env = process.env;
+  const stdout = stdoutPrinter(process.stdout);
   return {
     cwd: process.cwd(),
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
     now: () => Date.now(),
+    outputClosed: stdout.closed,
+    parentPid: () => process.ppid,
     paths,
     pid: process.pid,
     platform: process.platform,
-    print: (line) => console.log(line),
+    print: stdout.print,
     processes: realProcessFacts(process.platform),
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),
@@ -36809,6 +36874,17 @@ function contextPercent(use, window) {
 
 // src/crew/watch.ts
 var WATCH_POLL_MS = 20000;
+
+class WatchEnd extends Error {
+  name = "WatchEnd";
+  line;
+  stream;
+  constructor(stream, line) {
+    super(line);
+    this.line = line;
+    this.stream = stream;
+  }
+}
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var OVER_STATES = ["done", "failed", "handoff", "merged", "stopped"];
 var PARKED_PASS_MS = 5 * 60000;
@@ -36989,7 +37065,7 @@ var RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
 function resumeHoldKey(id) {
   return `resume-hold:${id}`;
 }
-async function resumePaused(paused, state, said, ctx, gateway, agents, say) {
+async function resumePaused(paused, state, said, ctx, gateway, goesOn, agents, say) {
   const now = ctx.now();
   const facts = await gateway(now);
   const ready = paused.filter((one) => said[resumeHoldKey(one.id)] === undefined && waitOver(one, facts, now)).sort((a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt));
@@ -37003,6 +37079,7 @@ async function resumePaused(paused, state, said, ctx, gateway, agents, say) {
     if (!routerAnsweredSince(facts, state.routerRequests ?? null))
       return null;
   }
+  await goesOn();
   const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
   const one = await resumeOne(next, ctx, now, agents, say, held);
   if (one.unnamed)
@@ -37232,6 +37309,8 @@ async function watchPass(state, ctx, scope) {
   }
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (queued.length > 0 && scope.mayStart !== false)
+    await scope.goesOn?.();
   for (const record of queued) {
     if (scope.mayStart !== false)
       await startQueued(record, ctx, resolved);
@@ -37250,7 +37329,7 @@ async function watchPass(state, ctx, scope) {
       delete said[key];
     }
   }
-  const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), agents, say);
+  const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), scope.goesOn ?? (() => Promise.resolve()), agents, say);
   offset = sayEvents(offset, scope, ctx, say);
   const resumedAt = marked?.resumedAt ?? state.resumedAt;
   const routerRequests = marked === null ? state.routerRequests : marked.routerRequests;
@@ -37299,13 +37378,51 @@ async function runCrewWatch(args, ctx) {
     return 2;
   }
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
+  const lease = { ...currentHolder(), at: ctx.now(), token: randomUUID4() };
+  try {
+    await takeWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+  } catch (error) {
+    ctx.error(`crew watch: could not take this lead's watch lease: ${reasonOf3(error)}`);
+    return 1;
+  }
+  const parent = ctx.parentPid?.() ?? null;
+  const goesOn = async () => {
+    if (parent !== null && ctx.parentPid?.() !== parent) {
+      throw new WatchEnd("error", "crew watch: the process that started it ended; this watch ends");
+    }
+    if (ctx.outputClosed?.() === true) {
+      throw new WatchEnd("error", "crew watch: nobody reads its output any more; this watch ends");
+    }
+    const kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    if (!kept.held) {
+      throw new WatchEnd("print", `crew watch: a newer watch of this lead runs (pid ${kept.holder.pid}); this one ends`);
+    }
+  };
+  try {
+    return await watchLoop(args, ctx, {
+      base: watchBase(read.caller, ctx),
+      goesOn,
+      leadSessionId,
+      mergeInto,
+      repo,
+      resolved
+    });
+  } catch (error) {
+    if (!(error instanceof WatchEnd))
+      throw error;
+    (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+    return 0;
+  }
+}
+async function watchLoop(args, ctx, start) {
+  const { goesOn, leadSessionId, repo, resolved } = start;
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   let state = known ?? { noted: false, offset: 0, said: {} };
-  const parkedBase = watchBase(read.caller, ctx);
   let caps = resolved;
   let capsSaid = false;
   const deadline = args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;; ) {
+    await goesOn();
     const reread = readCaller("watch", ctx, { session: "optional" });
     let mayStart = true;
     if (reread.ok) {
@@ -37319,22 +37436,18 @@ async function runCrewWatch(args, ctx) {
         capsSaid = true;
       }
     }
-    const scope = {
-      base: parkedBase,
-      leadSessionId,
-      mergeInto,
-      mayStart,
-      repo,
-      resolved: caps
-    };
+    const scope = { ...start, mayStart, resolved: caps };
     let pass;
     try {
       pass = await watchPass(state, ctx, scope);
     } catch (error) {
+      if (error instanceof WatchEnd)
+        throw error;
       ctx.error(`crew watch: ${reasonOf3(error)}`);
       return 1;
     }
     state = pass.state;
+    await goesOn();
     writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
     if (args.once && pass.lines > 0)
       return 0;

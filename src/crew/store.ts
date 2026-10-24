@@ -52,7 +52,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { CrewKind } from "../models/launch-policy";
 import { samePath } from "../path-compare";
-import { withLock } from "../setup/lock";
+import { FALLBACK_STALE_MS, holderIsGone, type ProcessHolder, withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
@@ -1332,6 +1332,105 @@ export function writeWatchState(
     watchStateFile(stateDir, repo, leadSessionId),
     `${JSON.stringify(state, null, 2)}\n`,
   );
+}
+
+/**
+ * Where a lead's acting watch is named: `<store>/watch/<lead session id>.lease.json` (WF1). One
+ * file per lead, so two leads of one repository never share a lease.
+ */
+export function watchLeaseFile(stateDir: string, repo: string, leadSessionId: string): string {
+  return join(
+    crewStoreDir(stateDir, repo),
+    "watch",
+    `${fileId(leadSessionId, "session id")}.lease.json`,
+  );
+}
+
+/**
+ * The lease that names the one watch of a lead that acts (WF1): the process that holds it — its
+ * pid, start time, host and pid namespace, as the store's lock records a holder
+ * (`currentHolder`, `src/setup/lock.ts`) — its own token, so two watches in one process stay
+ * apart, and when it took the lease (ms).
+ */
+export interface WatchLease extends ProcessHolder {
+  at: number;
+  token: string;
+}
+
+const watchLeaseFields = z.object({
+  at: z.number().int().min(0),
+  host: z.string(),
+  pid: z.number().int().positive(),
+  pidns: z.string().nullable().default(null),
+  startTime: z.string().nullable(),
+  token: text,
+});
+
+/** The lead's watch lease; null when there is none, or it cannot be read (then it is free). */
+export function readWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+): null | WatchLease {
+  let raw: string;
+  try {
+    raw = readFileSync(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+  } catch (error) {
+    if (notThere(error)) return null;
+    throw error;
+  }
+  try {
+    const parsed = watchLeaseFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    // Half a file a crash left, or not JSON: no holder can be read from it, so the lease is free.
+    return null;
+  }
+}
+
+/**
+ * Takes the lead's watch lease for `lease`, whoever holds it: **the newest watch wins** — a
+ * monitor the lead restarts is its intent, and the watch it replaces ends at its next pass
+ * (`keepWatchLease`). Under the store's lock, so it never lands between another watch's look
+ * and its take.
+ */
+export async function takeWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<void> {
+  await underStoreLock(stateDir, repo, () => {
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+  });
+}
+
+/**
+ * Whether the watch `lease` may still act for its lead, judged under the store's lock: it holds
+ * the lease, or the lease is free — none, unreadable, or its holder is gone (`holderIsGone`: the
+ * pid is dead or was reused) — and it takes it back. Else `holder` is the live watch that took it.
+ */
+export async function keepWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<{ held: true } | { held: false; holder: WatchLease }> {
+  return await underStoreLock(stateDir, repo, () => {
+    const now = readWatchLease(stateDir, repo, leadSessionId);
+    if (now !== null && now.token === lease.token) return { held: true };
+    if (now !== null && !holderIsGone(now, now.at, FALLBACK_STALE_MS)) {
+      return { held: false, holder: now };
+    }
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+    return { held: true };
+  });
 }
 
 /**

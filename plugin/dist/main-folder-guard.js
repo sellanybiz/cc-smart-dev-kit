@@ -9268,6 +9268,14 @@ function eventsEndOffset(stateDir, repo) {
     return 0;
   }
 }
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
+});
 function notesStateFile(stateDir, repo, leadSessionId) {
   return join11(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
 }
