@@ -6320,16 +6320,12 @@ var gatewayConfigSchema = looseObject({
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, pins] of Object.entries(config.effort ?? {})) {
-    if (!Object.hasOwn(config.slots, slot))
-      ctx.addIssue({
-        code: "custom",
-        message: `effort names slot "${slot}", which has no chain`,
-        path: ["effort", slot]
-      });
-    effortIssues(pins, Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? [] : [], ["effort", slot], ctx);
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+    effortIssues(pins, ["effort", slot], ctx);
   }
   for (const [slot, saved] of Object.entries(config.kept ?? {})) {
-    effortIssues(saved.effort ?? {}, saved.targets, ["kept", slot, "effort"], ctx);
+    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
   }
   for (const slot of Object.keys(config.slots)) {
     if (!isSlotKey(slot))
@@ -6435,10 +6431,10 @@ function chainIssues(config, targets, path, ctx) {
     }
   });
 }
-function effortIssues(pins, targets, path, ctx) {
+function effortIssues(pins, path, ctx) {
   for (const target of Object.keys(pins)) {
     const parsed = parseTarget(target);
-    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : !targets.includes(target) ? `effort target "${target}" is not in this slot's chain` : null;
+    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
     if (error !== null)
       ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
   }
@@ -6510,7 +6506,30 @@ class ConfigError extends Error {
 }
 function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
-  return result.success ? { config: result.data } : { error: prettifyError(result.error) };
+  if (!result.success)
+    return { error: prettifyError(result.error) };
+  const config = result.data;
+  if (config.effort !== undefined) {
+    const effort = Object.fromEntries(Object.entries(config.effort).flatMap(([slot, pins]) => {
+      const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+      const active = Object.fromEntries(Object.entries(pins).filter(([target]) => chain?.includes(target)));
+      return Object.keys(active).length === 0 ? [] : [[slot, active]];
+    }));
+    if (Object.keys(effort).length === 0)
+      delete config.effort;
+    else
+      config.effort = effort;
+  }
+  for (const saved of Object.values(config.kept ?? {})) {
+    if (saved.effort === undefined)
+      continue;
+    const pins = Object.fromEntries(Object.entries(saved.effort).filter(([target]) => saved.targets.includes(target)));
+    if (Object.keys(pins).length === 0)
+      delete saved.effort;
+    else
+      saved.effort = pins;
+  }
+  return { config };
 }
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;

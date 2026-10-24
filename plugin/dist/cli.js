@@ -8869,16 +8869,12 @@ var gatewayConfigSchema = looseObject({
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, pins] of Object.entries(config.effort ?? {})) {
-    if (!Object.hasOwn(config.slots, slot))
-      ctx.addIssue({
-        code: "custom",
-        message: `effort names slot "${slot}", which has no chain`,
-        path: ["effort", slot]
-      });
-    effortIssues(pins, Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? [] : [], ["effort", slot], ctx);
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+    effortIssues(pins, ["effort", slot], ctx);
   }
   for (const [slot, saved] of Object.entries(config.kept ?? {})) {
-    effortIssues(saved.effort ?? {}, saved.targets, ["kept", slot, "effort"], ctx);
+    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
   }
   for (const slot of Object.keys(config.slots)) {
     if (!isSlotKey(slot))
@@ -8984,10 +8980,10 @@ function chainIssues(config, targets, path, ctx) {
     }
   });
 }
-function effortIssues(pins, targets, path, ctx) {
+function effortIssues(pins, path, ctx) {
   for (const target of Object.keys(pins)) {
     const parsed = parseTarget(target);
-    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : !targets.includes(target) ? `effort target "${target}" is not in this slot's chain` : null;
+    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
     if (error !== null)
       ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
   }
@@ -9167,7 +9163,30 @@ class ConfigError extends Error {
 }
 function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
-  return result.success ? { config: result.data } : { error: prettifyError(result.error) };
+  if (!result.success)
+    return { error: prettifyError(result.error) };
+  const config = result.data;
+  if (config.effort !== undefined) {
+    const effort = Object.fromEntries(Object.entries(config.effort).flatMap(([slot, pins]) => {
+      const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+      const active = Object.fromEntries(Object.entries(pins).filter(([target]) => chain?.includes(target)));
+      return Object.keys(active).length === 0 ? [] : [[slot, active]];
+    }));
+    if (Object.keys(effort).length === 0)
+      delete config.effort;
+    else
+      config.effort = effort;
+  }
+  for (const saved of Object.values(config.kept ?? {})) {
+    if (saved.effort === undefined)
+      continue;
+    const pins = Object.fromEntries(Object.entries(saved.effort).filter(([target]) => saved.targets.includes(target)));
+    if (Object.keys(pins).length === 0)
+      delete saved.effort;
+    else
+      saved.effort = pins;
+  }
+  return { config };
 }
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
@@ -29526,14 +29545,23 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   const name = slotName(key);
   const pins = current.effort?.[key] ?? kept?.effort;
   const base = withEffort(withoutModelSlot(current, key), key, undefined);
+  const plan = (change, config) => {
+    const after = config.effort?.[key] ?? keptChain(config, key)?.effort ?? {};
+    const removed = Object.fromEntries(Object.entries(pins ?? {}).filter(([target]) => !Object.hasOwn(after, target)));
+    return checkedPlan({
+      ...change,
+      ...current.effort?.[key] === undefined ? {} : { oldEffort: current.effort[key] },
+      ...Object.keys(removed).length === 0 ? {} : { removedEffort: removed }
+    }, config);
+  };
   if (SLOT_WORDS.claude.includes(word)) {
     if (old.length === 0) {
       return {
-        error: kept === null ? `${key} is already Claude` : `${key} is already Claude; its chain is saved, not in use: ${kept.targets.join(" \u2192 ")} (to use it: ${COMMAND} gateway slot ${name} custom)`
+        error: kept === null ? `${key} is already Claude` : `${key} is already Claude; its chain is saved, not in use: ${chainWithEffort(kept.targets, kept.effort)} (to use it: ${COMMAND} gateway slot ${name} custom)`
       };
     }
     if (key === JUDGE_SLOT) {
-      return checkedPlan({ key, kind: "claude", next: [], old }, withKept(withoutSlot(base, key), key, {
+      return plan({ key, kind: "claude", next: [], old }, withKept(withoutSlot(base, key), key, {
         targets: old,
         ...pins === undefined ? {} : { effort: pins }
       }));
@@ -29545,11 +29573,11 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
       ...pins === undefined ? {} : { effort: pins }
     };
     const orphaned = withoutOrphanProfileSwitches(withKept(withoutSwitches(withoutSlot(base, key), key), key, saved), key);
-    return checkedPlan({ key, kind: "claude", next: [], old, profiles: orphaned.profiles }, orphaned.config);
+    return plan({ key, kind: "claude", next: [], old, profiles: orphaned.profiles }, orphaned.config);
   }
   if (SLOT_WORDS.custom.includes(word)) {
     if (old.length > 0)
-      return { error: `${key} is already Custom: ${old.join(" \u2192 ")}` };
+      return { error: `${key} is already Custom: ${chainWithEffort(old, current.effort?.[key])}` };
     if (kept === null) {
       return {
         error: `${key} has no saved chain, so it stays Claude. Give it one: ${COMMAND} gateway slot ${name} <targets>`
@@ -29560,13 +29588,13 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
       return { error: `${key}'s saved chain cannot be used: ${problem}` };
     }
     const back = withKept(withEffort({ ...base, slots: { ...base.slots, [key]: [...kept.targets] } }, key, kept.effort), key, null);
-    return checkedPlan({ key, kind: "custom", next: [...kept.targets], old }, key === JUDGE_SLOT || kept.fallback === undefined ? back : withSwitch(back, "fallback", key, kept.fallback));
+    return plan({ key, kind: "custom", next: [...kept.targets], old }, key === JUDGE_SLOT || kept.fallback === undefined ? back : withSwitch(back, "fallback", key, kept.fallback));
   }
   if (SLOT_WORDS.clear.includes(word)) {
     if (old.length === 0 && kept === null)
       return { error: `${key} has no chain to clear` };
     const orphaned = withoutOrphanProfileSwitches(withKept(key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key), key, null), key);
-    return checkedPlan({ key, kind: "clear", next: [], old, profiles: orphaned.profiles }, orphaned.config);
+    return plan({ key, kind: "clear", next: [], old, profiles: orphaned.profiles }, orphaned.config);
   }
   const next = chainToCheck(current, slotArg, word);
   if (next.length === 0)
@@ -29576,7 +29604,7 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
     return { error: problem };
   const replaced = withKept(base, key, null);
   const withSavedSwitch = kept?.fallback !== undefined && setFallback(replaced, key) === undefined ? withSwitch(replaced, "fallback", key, kept.fallback) : replaced;
-  return checkedPlan({ key, kind: "chain", next, old }, withEffort({ ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } }, key, Object.fromEntries(Object.entries(pins ?? {}).filter(([target]) => next.includes(target)))));
+  return plan({ key, kind: "chain", next, old }, withEffort({ ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } }, key, Object.fromEntries(Object.entries(pins ?? {}).filter(([target]) => next.includes(target)))));
 }
 function planFallbackChange(current, slotArg, value) {
   const key = slotKeyFromArg(slotArg);
@@ -29782,14 +29810,16 @@ function dropFallbackRecord(statePath, slot) {
   atomicWrite(statePath, formatLimitState(state), 384);
 }
 function slotChangeLines(plan) {
-  const before = plan.old.length > 0 ? plan.old.join(" \u2192 ") : plan.kind === "chain" ? "(new)" : "Claude";
-  const now = plan.next.length > 0 ? `${plan.next.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})` : claudeWords(plan.config, plan.key);
+  const before = plan.old.length > 0 ? chainWithEffort(plan.old, plan.oldEffort) : plan.kind === "chain" ? "(new)" : "Claude";
+  const now = plan.next.length > 0 ? `${chainWithEffort(plan.next, plan.config.effort?.[plan.key])}  (${fallbackWords(plan.config, plan.key)})` : claudeWords(plan.config, plan.key);
   const lines = [`${plan.key}: ${before}`, `  now: ${now}`];
   const savedChain = keptChain(plan.config, plan.key);
   if (savedChain !== null)
     lines.push(`  ${keptWords(plan.key, savedChain)}`);
   if (plan.kind === "clear")
     lines.push("  No chain is saved for it now.");
+  for (const [target, effort] of Object.entries(plan.removedEffort ?? {}))
+    lines.push(`  ${target}: effort ${effort} removed (the target left the chain)`);
   return lines;
 }
 var ROUTER_TAKES_IT = "The router uses it from its next request.";
@@ -29931,7 +29961,7 @@ async function commandFallback(ctx, args) {
   } else {
     printSlotChange(out, [
       change,
-      `  ${targets.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})`,
+      `  ${chainWithEffort(targets, plan.config.effort?.[plan.key])}  (${fallbackWords(plan.config, plan.key)})`,
       plan.now ? "  The next target answers when the one before it fails or rests." : "  Only the first target answers; when it fails, its error goes back to Claude Code."
     ]);
   }
@@ -29970,12 +30000,12 @@ async function commandEffort(ctx, args) {
   const path = ctx.paths.gatewayConfigFile;
   const before = loadConfigFile(path);
   const checked = effortTarget(before, slot, target);
-  if (pin !== undefined) {
+  if (pin !== undefined || checked.key === JUDGE_SLOT) {
     const result = await sendBackendTest(checked.backend.baseUrl, checked.backend.apiKey, effortPinForBackend(judgeTestRequest(checked.model), pin), ctx.apiFetch);
     if ("error" in result)
-      throw new Error(`${target} refused effort ${pin}: ${result.error}. Nothing was saved.`);
+      throw new Error(`${target} refused effort ${pin ?? "none (unpinned)"}: ${result.error}. Nothing was saved.`);
     if (checked.key === JUDGE_SLOT && judgeVerdict(result.body).verdict !== "block")
-      throw new Error(`${target} did not block the judge test at effort ${pin}. Nothing was saved.`);
+      throw new Error(`${target} did not block the judge test at effort ${pin ?? "none (unpinned)"} (${judgeVerdict(result.body).detail}). Nothing was saved.`);
   }
   const now = await withLock(ctx.paths.stateDir, () => {
     const config = loadConfigFile(path);
@@ -30015,7 +30045,7 @@ async function commandBreaker(ctx, args) {
   const out = gatewayOut(ctx);
   printSlotChange(out, [
     `${plan.key}: breaker ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`,
-    `  ${targets.join(" \u2192 ")}  (${breakerWords(plan.config, plan.key) ?? ""})`,
+    `  ${chainWithEffort(targets, plan.config.effort?.[plan.key])}  (${breakerWords(plan.config, plan.key) ?? ""})`,
     plan.now ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry." : "  While every target is limited or down, the last answer goes back to Claude Code at once."
   ]);
   out.verdict("ok", ROUTER_TAKES_IT);
@@ -41125,12 +41155,12 @@ async function gatewayChecks(options) {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: Custom, first target ${first} (${fallback})`
+      text: `slot ${slot}: Custom, first target ${chainWithEffort([first], config.effort?.[slot])} (${fallback})`
     });
   }
   const saved = (slot) => {
     const kept = keptChain(config, slot);
-    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" \u2192 ")}`;
+    return kept === null ? "" : `; saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}`;
   };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot))

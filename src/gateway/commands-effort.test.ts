@@ -90,6 +90,21 @@ describe("D64: gateway effort", () => {
     expect(readFileSync(w.paths.gatewayConfigFile, "utf8")).toBe(before);
   });
 
+  it("chain changes, fallback and breaker output show pins, and dropped pins are announced", async () => {
+    const w = world(async () => Response.json({ content: [] }));
+    await runGateway(["effort", "scout", "backend:model", "high"], w.ctx);
+    w.lines.length = 0;
+    await runGateway(["fallback", "scout", "off"], w.ctx);
+    await runGateway(["breaker", "scout", "off"], w.ctx);
+    expect(w.lines.filter((line) => line.includes("backend:model [effort high]"))).toHaveLength(2);
+    w.lines.length = 0;
+    await runGateway(["slot", "scout", "claude"], w.ctx);
+    expect(w.lines.join("\n")).toContain("backend:model [effort high]");
+    w.lines.length = 0;
+    await runGateway(["slot", "scout", "claude-haiku-5-5"], w.ctx);
+    expect(w.lines.join("\n")).toContain("backend:model: effort high removed");
+  });
+
   it("a 200 carrying an upstream error is not acceptance", async () => {
     const w = world(async () => Response.json({ error: { message: "level refused" } }));
     await expect(runGateway(["effort", "scout", "backend:model", "xhigh"], w.ctx)).rejects.toThrow(
@@ -111,6 +126,28 @@ describe("D64: gateway effort", () => {
       "did not block",
     );
     expect(loadConfigFile(w.paths.gatewayConfigFile).effort).toBeUndefined();
+  });
+
+  it("removing a judge pin tests the default effort and refuses an allowing answer", async () => {
+    const calls: string[] = [];
+    const w = world(async (_url, init) => {
+      calls.push(String(init?.body));
+      return Response.json({ content: [{ type: "text", text: "<block>no</block>" }] });
+    });
+    const before = loadConfigFile(w.paths.gatewayConfigFile);
+    saveConfig(w.paths.gatewayConfigFile, {
+      ...before,
+      slots: { "cc-smart-dev-kit-judge": ["backend:model"] },
+      effort: { "cc-smart-dev-kit-judge": { "backend:model": "high" } },
+    });
+    await expect(runGateway(["effort", "judge", "backend:model", "off"], w.ctx)).rejects.toThrow(
+      "did not block",
+    );
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0] ?? "{}").output_config).toEqual({ effort: "none" });
+    expect(loadConfigFile(w.paths.gatewayConfigFile).effort).toEqual({
+      "cc-smart-dev-kit-judge": { "backend:model": "high" },
+    });
   });
 
   it("does not save a tested pin when the backend or chain changed during the request", async () => {

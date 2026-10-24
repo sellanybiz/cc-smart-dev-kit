@@ -428,7 +428,10 @@ at the chosen effort and with only the backend's key. A refusal shows the backen
 masked and on one line, and saves nothing. An accepted request proves the backend accepts
 that level, not that every provider honors it without mapping. The router uses the pin from
 its next request; no restart is needed. A judge target must still block the safety test
-at the pinned effort; an answer that allows it saves nothing.
+at the pinned effort; an answer that allows it saves nothing. Removing a judge pin also tests
+its unpinned effort before saving. Other slots' `off` does not make a request. The test has a
+1,024-token answer budget and a 60-second deadline; it proves one short check, not every
+real safety check's budget or latency.
 
 The config's loose top level holds `effort: { "<slot key>": { "<backend>:<model>": "xhigh" } }`.
 The pin runs through `effortPinForBackend`, after `reasoningOffForBackend`: it wins over
@@ -436,11 +439,19 @@ The pin runs through `effortPinForBackend`, after `reasoningOffForBackend`: it w
 `output_config.effort` changes; prompts, messages and tools do not. No pin changes an
 explicit one-off target request, an Anthropic route, or a safety check's route to Claude.
 A backend on the judge's own chain uses that judge slot's pin. Machine pins also apply in
-a profile when the same slot and target are still in its effective chain.
+a profile when the same slot and target are still in its effective chain. The worker's tested
+targets that stand in while Claude cannot judge use the judge's unpinned effort, not worker
+pins: those requests belong to the judge slot.
+
+A pin above `none` turns reasoning back on even for short thinking-off calls. A backend may
+spend their small output budget on reasoning and return no visible answer. That is the pin's
+trade-off, not a reason for the router to ignore it.
 
 `slot <slot> claude` saves the pins with the chain in `kept`; `custom` restores them.
 `clear` deletes them, and replacing a chain drops a pin for each target that leaves it.
-An older loose-schema router preserves the new fields but does not apply pins.
+An older loose-schema router preserves the new fields but does not apply pins. If its writer
+changes a chain and leaves stale pins, a newer reader ignores and prunes those pins instead
+of rejecting the chain change; the next save removes them from the file.
 `gateway status` shows `[effort xhigh]` beside a pinned target, in active and saved chains.
 The Slots API carries the optional `SlotTarget.effort`. A pinned request's log ends in
 `effort=xhigh pinned`; the health answer's `recent` row has `effort` and `effortPinned: true`.

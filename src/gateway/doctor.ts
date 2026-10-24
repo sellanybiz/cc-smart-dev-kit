@@ -9,7 +9,13 @@ import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
-import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
+import {
+  chainWithEffort,
+  JUDGE_WARNING,
+  judgeDefaultWords,
+  NEEDS_SYSTEMD,
+  routerService,
+} from "./commands";
 import { type KnownProjects, projectSourceWords, projectStateOfAsync } from "./commands-project";
 import {
   emptyConfig,
@@ -248,13 +254,15 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: Custom, first target ${first} (${fallback})`,
+      text: `slot ${slot}: Custom, first target ${chainWithEffort([first], config.effort?.[slot])} (${fallback})`,
     });
   }
   /** A chain saved for a slot that answers as Claude, in words; empty when there is none. */
   const saved = (slot: string): string => {
     const kept = keptChain(config, slot);
-    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" → ")}`;
+    return kept === null
+      ? ""
+      : `; saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}`;
   };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot)) continue;

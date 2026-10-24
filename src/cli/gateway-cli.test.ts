@@ -2989,6 +2989,36 @@ describe("cc-smart-dev-kit gateway on: no gateway.json", () => {
   });
 });
 
+test("D64: doctor and status show pins on active and saved targets", async () => {
+  const m = machine();
+  const server = fakeServer();
+  expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+  m.writeConfig(server.port);
+  m.useServer(server.port, {
+    slots: { "cc-smart-dev-kit-scout": ["omniroute:m1"] },
+    effort: { "cc-smart-dev-kit-scout": { "omniroute:m1": "high" } },
+    kept: {
+      "cc-smart-dev-kit-worker": { targets: ["omniroute:m2"], effort: { "omniroute:m2": "xhigh" } },
+    },
+  });
+  const checks = await gatewayChecks({
+    paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+    bundle: BUILT_ROUTER,
+    runner: () => ({ exitCode: 0, output: "active\n" }),
+    service: "systemd",
+    fetch: m.probe.fetch,
+  });
+  expect(checks.map((check) => check.text).join("\n")).toContain(
+    "saved, not in use: omniroute:m2 [effort xhigh]",
+  );
+  expect(checks.map((check) => check.text).join("\n")).toContain(
+    "first target omniroute:m1 [effort high]",
+  );
+  const status = await m.runHere(["gateway", "status"]);
+  expect(status.stdout).toContain("Custom: omniroute:m1 [effort high]");
+  expect(status.stdout).toContain("saved, not in use: omniroute:m2 [effort xhigh]");
+});
+
 describe("secrets", () => {
   test("no command ever prints the backend key, the broken config's text included", async () => {
     const m = machine();

@@ -56,17 +56,32 @@ function parsed(text: Record<string, unknown>) {
 }
 
 describe("D64: effort pins", () => {
-  it("accepts none and rejects levels, slots and targets a pin cannot name", () => {
+  it("accepts none and rejects malformed targets, Claude targets and invalid levels", () => {
     expect(parseConfig(raw({ effort: { [SCOUT]: { "omniroute:m1": "none" } } }))).toHaveProperty(
       "config",
     );
     for (const effort of [
       { [SCOUT]: { "omniroute:m1": "turbo" } },
-      { [SCOUT]: { "omniroute:gone": "high" } },
+      { [SCOUT]: { "not-a-target": "high" } },
       { [SCOUT]: { "claude-sonnet-5-5": "high" } },
-      { "cc-smart-dev-kit-gone": { "omniroute:m1": "high" } },
+      { "invalid-slot": { "omniroute:m1": "high" } },
     ])
       expect(parseConfig(raw({ effort }))).toHaveProperty("error");
+  });
+
+  it("an older writer can turn a pinned slot off or replace its target without invalidating the config", () => {
+    for (const slots of [{}, { [SCOUT]: ["omniroute:m2"] }]) {
+      const cfg = parsed(raw({ slots, effort: { [SCOUT]: { "omniroute:m1": "xhigh" } } }));
+      expect(cfg.slots).toEqual(slots);
+      expect(cfg.effort).toBeUndefined();
+      const file = join(tempDir("old-effort-writer"), "gateway.json");
+      saveConfig(file, cfg);
+      expect(JSON.parse(readFileSync(file, "utf8"))).not.toHaveProperty("effort");
+    }
+    const cfg = parsed(
+      raw({ effort: { [SCOUT]: { "omniroute:m1": "high", "omniroute:gone": "max" } } }),
+    );
+    expect(cfg.effort).toEqual({ [SCOUT]: { "omniroute:m1": "high" } });
   });
 
   it("keeps future loose fields while saving active and kept effort pins", () => {
