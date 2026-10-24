@@ -17816,15 +17816,38 @@ function clearGatewayBaseUrl(options) {
 }
 
 // src/gateway/project-state.ts
+function trackedArgv() {
+  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+}
+function trackedFromExit(code) {
+  return code === 0 ? true : code === 1 ? false : null;
+}
 function personalTracked(mainCheckout) {
   try {
-    const result = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`], {
+    const result = Bun.spawnSync(trackedArgv(), {
       cwd: mainCheckout,
       env: gitEnv(process.env),
       stderr: "ignore",
-      stdout: "ignore"
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
     });
-    return result.exitCode === 0 ? true : result.exitCode === 1 ? false : null;
+    return trackedFromExit(result.exitCode);
+  } catch {
+    return null;
+  }
+}
+async function personalTrackedAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const code = await child.exited;
+    return child.signalCode === null ? trackedFromExit(code) : null;
   } catch {
     return null;
   }
@@ -17915,24 +17938,44 @@ function decide(files, routerUrl) {
 }
 function projectGatewayState(folder, options) {
   const asked = resolve6(folder);
-  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
-  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
-  let checkout = null;
-  let checkoutProblem = null;
+  let found;
   try {
     const located = locateCheckout(asked);
-    if (located !== null && located.mainCheckout !== null) {
-      checkout = {
-        commonDir: located.commonDir,
-        isWorktree: located.isWorktree,
-        mainCheckout: located.mainCheckout,
-        personalTracked: personalTracked(located.mainCheckout),
-        root: located.root
-      };
-    }
+    found = checkoutFound(located, located?.mainCheckout ? personalTracked(located.mainCheckout) : null);
   } catch (error) {
-    checkoutProblem = messageOf(error);
+    found = { checkout: null, checkoutProblem: messageOf(error) };
   }
+  return stateFrom(asked, options, found);
+}
+async function projectGatewayStateAsync(folder, options) {
+  const asked = resolve6(folder);
+  let found;
+  try {
+    const located = await locateCheckoutAsync(asked);
+    found = checkoutFound(located, located?.mainCheckout ? await personalTrackedAsync(located.mainCheckout) : null);
+  } catch (error) {
+    found = { checkout: null, checkoutProblem: messageOf(error) };
+  }
+  return stateFrom(asked, options, found);
+}
+function checkoutFound(located, tracked) {
+  if (located === null || located.mainCheckout === null) {
+    return { checkout: null, checkoutProblem: null };
+  }
+  return {
+    checkout: {
+      commonDir: located.commonDir,
+      isWorktree: located.isWorktree,
+      mainCheckout: located.mainCheckout,
+      personalTracked: tracked,
+      root: located.root
+    },
+    checkoutProblem: null
+  };
+}
+function stateFrom(asked, options, { checkout, checkoutProblem }) {
+  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
+  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project = [];
   if (checkout !== null)
     project.push(settingsFileState(personalFileOf(checkout), "personal"));
@@ -18021,6 +18064,12 @@ function projectOptions(args) {
 }
 function projectStateOf(ctx, folder) {
   return projectGatewayState(folder, {
+    configPath: ctx.paths.gatewayConfigFile,
+    settingsFile: ctx.paths.settingsFile
+  });
+}
+function projectStateOfAsync(ctx, folder) {
+  return projectGatewayStateAsync(folder, {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile
   });
@@ -21414,7 +21463,7 @@ async function projectChecks(options, config) {
   }
   const checks = [];
   for (const project of list.projects) {
-    const view = projectStateOf({ paths }, project.root);
+    const view = await projectStateOfAsync({ paths }, project.root);
     const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
     const state = view.choice.source === "none" || view.choice.state === "unknown" ? decisionWords(view.choice) : `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`;
     const broken = view.files.find((one) => one.problem !== null);

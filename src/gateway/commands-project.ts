@@ -49,6 +49,7 @@ import {
   type ProjectGatewayState,
   profileUrlOf,
   projectGatewayState,
+  projectGatewayStateAsync,
   readGatewayConfig,
   type SettingsFileState,
   type SettingsLevel,
@@ -129,6 +130,17 @@ export function projectStateOf(
   folder: string,
 ): ProjectGatewayState {
   return projectGatewayState(folder, {
+    configPath: ctx.paths.gatewayConfigFile,
+    settingsFile: ctx.paths.settingsFile,
+  });
+}
+
+/** `projectStateOf`, without blocking: the doctor pass, which the portal runs in its server. */
+export function projectStateOfAsync(
+  ctx: Pick<GatewayContext, "paths">,
+  folder: string,
+): Promise<ProjectGatewayState> {
+  return projectGatewayStateAsync(folder, {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile,
   });
