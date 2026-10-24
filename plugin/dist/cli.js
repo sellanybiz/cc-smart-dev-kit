@@ -9067,7 +9067,7 @@ function aliasError(name, to, config) {
     return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
   }
   if (isSlotKey(to)) {
-    return Object.hasOwn(config.slots, to) ? null : `alias "${name}" points at slot "${to}", which is not in slots`;
+    return Object.hasOwn(config.slots, to) || Object.hasOwn(config.kept ?? {}, to) || Object.hasOwn(FAMILY_SLOTS, to) || to === JUDGE_SLOT ? null : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
   }
   const parsed = parseTarget(to);
   if ("error" in parsed)

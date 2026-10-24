@@ -1150,8 +1150,14 @@ A config may map old model names to new ones:
   the old name, so it gets the same translation as a slot's Claude target (§ What a
   Claude target sees); the safety check under it changes only `model`. It is not routed by
   that model's family: the alias names the model, not its slot.
-- An alias names a configured slot, or a target whose backend is configured. **An alias to
+- An alias names a slot, or a target whose backend is configured. **An alias to
   an alias is an error at load**, so there are no chains and no loops.
+- **A slot is one in either mode**: Custom (in `slots`), or Claude — one of the five slots,
+  which exist with no chain, or a machine's own slot whose chain is saved in `kept`. So
+  `gateway slot <slot> claude` leaves the slot's aliases alone, and so does `custom`. A
+  request under such an alias while the slot is Claude gets the answer a slot-named request
+  gets: the 400 that says what to do (the router never picks a Claude model for it). A
+  machine's own slot that is cleared is no slot any more: its alias goes first.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
 - **The plugin ships no aliases.** A project that moves from its own gateway writes them
   in its migration, and removes them once every machine uses the new names. The one the

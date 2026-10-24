@@ -3494,8 +3494,8 @@ describe("aliases", () => {
       const parsed = parseConfig({ ...base, aliases });
       return "error" in parsed ? parsed.error : "no error";
     };
-    expect(error({ old: "cc-smart-dev-kit-worker" })).toContain(
-      'alias "old" points at slot "cc-smart-dev-kit-worker", which is not in slots',
+    expect(error({ old: "cc-smart-dev-kit-nowhere" })).toContain(
+      'alias "old" points at slot "cc-smart-dev-kit-nowhere", which is no slot: not in slots, not saved in kept, and none of the five',
     );
     expect(error({ old: "ollama:glm-5.3-flash" })).toContain(
       'alias "old" names backend "ollama", which is not in backends',
@@ -3513,6 +3513,36 @@ describe("aliases", () => {
       'alias "old[1m]": write it without [1m]; the router looks names up without it',
     );
     expect(error({ old: "omniroute:glm-5.3-flash", older: "claude-haiku-5-5" })).toBe("no error");
+  });
+
+  it("an alias to a slot in Claude mode loads: one of the five with no chain, or a machine's own slot whose chain is saved", () => {
+    const parsed = parseConfig({
+      aliases: {
+        "old-cheap": "cc-smart-dev-kit-cheap",
+        "old-judge": "cc-smart-dev-kit-judge",
+        "old-opus": "cc-smart-dev-kit-opus",
+        "old-worker": "cc-smart-dev-kit-worker",
+      },
+      backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://127.0.0.1:20128" } },
+      kept: { "cc-smart-dev-kit-cheap": { targets: ["omniroute:glm-5.3-flash"] } },
+      slots: {},
+      version: 1,
+    });
+    expect("error" in parsed ? parsed.error : "loaded").toBe("loaded");
+  });
+
+  it("a request under an alias to a slot in Claude mode gets the 400 a slot-named one gets; nothing is asked", async () => {
+    const cfg = aliased({ "old-worker": "cc-smart-dev-kit-worker" });
+    const { "cc-smart-dev-kit-worker": _claude, ...withoutWorker } = cfg.slots;
+    const { calls, handle } = router([], { config: { ...cfg, slots: withoutWorker } });
+    const res = await handle(clientRequest({ body: JSON.stringify(message("old-worker")) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string; type: string } };
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.message).toBe(
+      `cc-smart-dev-kit-router: cc-smart-dev-kit-worker is off (no chain in ${CONFIG_PATH}), and this request names the slot, not a Claude model: Claude Code's settings still send sonnet work to it. Run: cc-smart-dev-kit gateway on (it stops that), or give the slot a chain: cc-smart-dev-kit gateway slot worker <targets>`,
+    );
+    expect(calls).toEqual([]);
   });
 
   it("the plugin ships no aliases: a config without the field has none", () => {
