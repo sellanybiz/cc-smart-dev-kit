@@ -41,6 +41,12 @@
  *
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
+ *
+ * **One watch acts for a lead: the newest** (WF1). A watch takes its lead's lease in the store
+ * when it starts (`takeWatchLease`), and checks it still holds it before each pass, before it
+ * starts or resumes a session, and before it writes its state (`keepWatchLease`); one that lost it
+ * says so once and ends. A watch also ends when its parent ended (a monitor's shell is gone) or
+ * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
 import { randomUUID } from "node:crypto";
 import { COMMAND } from "../build-info/names";
@@ -1122,10 +1128,14 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
       resolved,
     });
   } catch (error) {
-    // The one way a watch ends by itself: it says why once, and ends well.
-    if (!(error instanceof WatchEnd)) throw error;
-    (error.stream === "print" ? ctx.print : ctx.error)(error.line);
-    return 0;
+    // The one way a watch ends by itself: it says why once, and ends well. Anything else — a
+    // store it cannot read or lock — ends it the way a failed pass does.
+    if (error instanceof WatchEnd) {
+      (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+      return 0;
+    }
+    ctx.error(`crew watch: ${reasonOf(error)}`);
+    return 1;
   }
 }
 

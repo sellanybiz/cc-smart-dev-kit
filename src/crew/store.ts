@@ -7,6 +7,8 @@
  *   <stateDir>/crew/<repo key>/files/<crew id>/         its brief and its settings file
  *   <stateDir>/crew/<repo key>/notes/<lead id>.json      where that lead's notes hook is in the log
  *   <stateDir>/crew/<repo key>/stop/<crew id>.json        where that crew session's Stop hook is in the log
+ *   <stateDir>/crew/<repo key>/watch/<lead id>.json       what that lead's watch has read and said
+ *   <stateDir>/crew/<repo key>/watch/<lead id>.lease.json  which one watch acts for that lead (WF1)
  *   <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/crew/<repo key>/lock                       held for a moment by each write
  *

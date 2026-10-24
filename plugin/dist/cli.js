@@ -37408,10 +37408,12 @@ async function runCrewWatch(args, ctx) {
       resolved
     });
   } catch (error) {
-    if (!(error instanceof WatchEnd))
-      throw error;
-    (error.stream === "print" ? ctx.print : ctx.error)(error.line);
-    return 0;
+    if (error instanceof WatchEnd) {
+      (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+      return 0;
+    }
+    ctx.error(`crew watch: ${reasonOf3(error)}`);
+    return 1;
   }
 }
 async function watchLoop(args, ctx, start) {

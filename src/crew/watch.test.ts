@@ -2755,6 +2755,26 @@ describe("WF1: one acting watch per lead", () => {
     expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
   });
 
+  test("a lease it cannot read ends the watch as a failed pass does: one line, exit 1", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
+    const ctx = waiting(world, async () => {
+      chmodSync(file, 0o000);
+      await step(world, "tests-green");
+    });
+    let code: number;
+    try {
+      code = await runCrew(["watch", "--once", "--timeout", "60"], ctx);
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    expect(code).toBe(1);
+    expect(world.out).toEqual([]);
+    expect(world.err).toHaveLength(1);
+    expect(world.err[0]).toStartWith("crew watch: EACCES");
+  });
+
   test("two leads never share a lease", async () => {
     const world = await leadWorld();
     await writeLead(

@@ -14,7 +14,10 @@
  *   ("With --resume <session-id>, continues that session in the background under the same ID,
  *   or starts a copy and says so when the session is already running"). The conversation stays
  *   on disk, so the crew session picks up where it stopped. Because of that copy, agent view is read
- *   first: a stopped record whose session still has a process is sent the message instead.
+ *   first: a stopped record whose session still has a process is sent the message instead. On
+ *   2.1.310 every crew resume is a copy with a new id all the same — the flags it passes differ
+ *   from the session's saved ones — and the record takes that id with the answer (WF1,
+ *   `resumedSession`).
  *
  * **A resume runs in the crew session's own worktree, never in the main checkout** where the lead
  * happens to be: a session brought back in the main checkout is marked failed by its own
