@@ -134,3 +134,29 @@ describe("doctor: a project on a profile, and the router that runs", () => {
     );
   });
 });
+
+describe("doctor: a linked worktree's own local file (P6, re-proved on 2.1.310)", () => {
+  test("! its subagent key is warned about, and the root's address still decides", async () => {
+    const m = machine();
+    const root = project(m.home, "app", DEFAULT_ANTHROPIC_BASE_URL);
+    const worktree = join(m.home, "Code", "app-wt");
+    git(root, "worktree", "add", "-q", worktree, "-b", "crew/one");
+    // The root's file wins for the address; the key the root does not set is the worktree's own.
+    mkdirSync(join(worktree, ".claude"), { recursive: true });
+    writeFileSync(
+      join(worktree, ".claude", "settings.local.json"),
+      `${JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: "claude-haiku-5-5" } }, null, 2)}\n`,
+    );
+    const lines = await linesFor(m, [worktree], "current");
+    expect(
+      lines.some((line) =>
+        line.startsWith(
+          "! ~/Code/app-wt/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL:",
+        ),
+      ),
+    ).toBe(true);
+    expect(lines).toContain(
+      `· ~/Code/app-wt (here): off → ${DEFAULT_ANTHROPIC_BASE_URL}  · from the personal file ~/Code/app/.claude/settings.local.json (never committed)`,
+    );
+  });
+});

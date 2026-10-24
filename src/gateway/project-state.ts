@@ -9,10 +9,12 @@
  * - **P3, the order for an `env` key**: a `--settings` file (not visible here), then the
  *   project's `settings.local.json`, then the starting folder's `.claude/settings.json`, then
  *   the user's own settings file, then the shell. The first file that sets the key decides.
- * - **P6, where each file is read**: `settings.local.json` at the **main checkout's root**,
- *   for the checkout, every subfolder and every linked worktree; `.claude/settings.json` from
- *   **the folder the session starts in** (a subfolder does not read the root's). A worktree
- *   reads a shared file only when it carries it (committed).
+ * - **P6, where each file is read** (re-proved on 2.1.310): `settings.local.json` at the **main
+ *   checkout's root**, for the checkout, every subfolder and every linked worktree, and the
+ *   **starting folder's own** `settings.local.json` after it (key by key the root's wins; outside
+ *   git the folder's own is the only one); `.claude/settings.json` from **the folder the
+ *   session starts in** only (a subfolder does not read the root's). A worktree reads a shared
+ *   file only when it carries it (committed).
  * - **P1, "off" is an explicit `https://api.anthropic.com`**: that value keeps the person's
  *   claude.ai login, so turning a project off never logs them out.
  *
@@ -78,6 +80,11 @@ export interface SettingsFileState {
 
 /** What one stretch of the settings chain decides. */
 export interface GatewayDecision {
+  /**
+   * The file that decides, by path: a session reads two personal files (the main root's and its
+   * starting folder's own), so the level alone does not name one. Null when `source` is `none`.
+   */
+  path: null | string;
   /** The profile a router URL names; null when it names none. */
   profile: null | string;
   /** The file that decides; `none` when no file sets the key. */
@@ -194,6 +201,55 @@ export function personalFileOf(checkout: Pick<ProjectCheckout, "mainCheckout">):
   return join(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
 
+/**
+ * The personal file of the folder a session starts in: Claude Code reads it after the main
+ * checkout's (P6, 2.1.310). In a linked worktree it is a copy a `.worktreeinclude` made, or the
+ * person's own; in a subfolder or a folder outside git, the folder's own.
+ */
+export function ownPersonalFileOf(folder: string): string {
+  return join(folder, ".claude", PERSONAL_FILE);
+}
+
+/**
+ * The linked worktrees of a repo whose own `settings.local.json` holds a gateway address — the
+ * copies a project's `.worktreeinclude` makes of the personal file (P6, 2.1.310). The main
+ * root's key wins key by key while it is there; once it is removed (`gateway project default`,
+ * `restore`), a session started in such a worktree reads its copy and goes to that address. The
+ * kit did not write the copy, so it is reported, never changed
+ * (`.claude/rules/setup-and-managed-files.md` § Never take what is not ours).
+ *
+ * Reads only. A repo git cannot list, or a file that cannot be read, gives no copy: this is a
+ * warning, never a state.
+ */
+export function worktreeCopiesOf(mainCheckout: string): SettingsFileState[] {
+  let listing: string;
+  try {
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0) return [];
+    listing = result.stdout.toString();
+  } catch {
+    return [];
+  }
+  const main = realFolder(mainCheckout);
+  const copies: SettingsFileState[] = [];
+  for (const block of listing.split("\n\n")) {
+    const lines = block.split("\n");
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main) continue;
+    const copy = settingsFileState(ownPersonalFileOf(path), "personal");
+    if (copy.problem === null && copy.url !== null && baseUrlPointsAtGateway(copy.url)) {
+      copies.push(copy);
+    }
+  }
+  return copies;
+}
+
 /** The team file of a folder: the one a session started there reads (P6). */
 export function teamFileOf(folder: string): string {
   return join(folder, ".claude", "settings.json");
@@ -295,13 +351,19 @@ export function readGatewayConfig(path: string): {
  */
 function decide(files: readonly SettingsFileState[], routerUrl: string): GatewayDecision {
   for (const file of files) {
-    if (file.problem !== null)
-      return { profile: null, source: file.kind, state: "unknown", url: null };
+    if (file.problem !== null) {
+      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
+    }
     if (file.url !== null) {
-      return { ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url };
+      return {
+        ...urlMeaning(file.url, routerUrl),
+        path: file.path,
+        source: file.kind,
+        url: file.url,
+      };
     }
   }
-  return { profile: null, source: "none", state: "default", url: null };
+  return { path: null, profile: null, source: "none", state: "default", url: null };
 }
 
 /**
@@ -384,6 +446,12 @@ function stateFrom(
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
   const project: SettingsFileState[] = [];
   if (checkout !== null) project.push(settingsFileState(personalFileOf(checkout), "personal"));
+  // P6 (2.1.310): the starting folder's own local file is read too, after the main root's (key
+  // by key the root's wins) and before the folder's team file. In the main root it is the same
+  // file; outside git it is the only personal file there is.
+  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
+    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
+  }
   project.push(settingsFileState(teamFileOf(asked), "team"));
   const files = [...project, settingsFileState(options.settingsFile, "machine")];
 

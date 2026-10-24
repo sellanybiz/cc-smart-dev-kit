@@ -18,6 +18,7 @@ import { restore } from "../setup/restore";
 import { git, tempDir } from "../testing/temp";
 import { type GatewayContext, runGateway } from "./commands";
 import { DEFAULT_ANTHROPIC_BASE_URL, type GatewayConfig, saveConfig } from "./config";
+import { PROJECT_HELP } from "./commands-project";
 import type { HealthFetch } from "./health";
 
 const PORT = 20999;
@@ -248,7 +249,7 @@ describe("gateway project on", () => {
       "  A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.",
     );
     expect(m.output()).toContain(
-      "  Every session of this project — the main checkout, its subfolders and its worktrees — reads it.",
+      "  Every session of this project — the main checkout, its subfolders and its worktrees — reads it first: a settings.local.json of their own sets only what this one does not.",
     );
     expect(m.output()).toContain(`✓ Done. This project's sessions use the gateway (${ROUTER}).`);
 
@@ -419,7 +420,7 @@ describe("gateway project off and default", () => {
     );
   });
 
-  test("default removes the key and says a running session keeps the old value until it restarts", async () => {
+  test("default removes the key; with no other file setting it, a running session keeps its value", async () => {
     const m = machine();
     const root = repo("gp2-default");
     const personal = join(root, ".claude", "settings.local.json");
@@ -432,7 +433,7 @@ describe("gateway project off and default", () => {
       `~ ${personal.replace(m.home, "~")}: env.ANTHROPIC_BASE_URL: "${ROUTER}" -> (none)`,
     );
     expect(m.output()).toContain(
-      "  A session already running keeps the value it had until it restarts: a removed key never reaches a running session.",
+      "  No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none).",
     );
   });
 
@@ -703,5 +704,108 @@ describe("gateway off: the projects still on (GP4a)", () => {
     expect(m.lines).toEqual([
       "✓ Nothing to change: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
     ]);
+  });
+});
+
+describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)", () => {
+  /** A project with a linked worktree; `copy` is written as the worktree's own local file. */
+  function withWorktree(label: string, copy: Record<string, unknown> | null) {
+    const root = repo(label);
+    const worktree = join(tempDir(`${label}-wt`), "wt");
+    git(root, "worktree", "add", "-q", worktree, "-b", "crew/gf1");
+    const own = join(worktree, ".claude", "settings.local.json");
+    if (copy !== null) writeSettings(own, copy);
+    return { own, root, worktree };
+  }
+
+  test("status in a worktree sees the worktree's own local file when the root sets nothing", async () => {
+    const m = machine();
+    const { own, worktree } = withWorktree("gf1-status", { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    expect(await m.run(["project", "status", "--folder", worktree])).toBe(0);
+    expect(m.output()).toContain(`  ✓ on → ${ROUTER}`);
+    expect(m.output()).toContain(
+      `  · from: the personal file ${own.replace(m.home, "~")} (never committed)`,
+    );
+  });
+
+  test("the main root's file wins key by key: status names the root's file, not the worktree's", async () => {
+    const m = machine();
+    const { own, root, worktree } = withWorktree("gf1-wins", {
+      env: { ANTHROPIC_BASE_URL: ROUTER },
+    });
+    writeSettings(join(root, ".claude", "settings.local.json"), {
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    expect(await m.run(["project", "status", "--folder", worktree])).toBe(0);
+    expect(m.output()).toContain(`off → ${DEFAULT_ANTHROPIC_BASE_URL}`);
+    expect(m.output()).toContain(
+      `from: the personal file ${join(root, ".claude", "settings.local.json").replace(m.home, "~")}`,
+    );
+    expect(m.output()).toContain(`the personal file ${own.replace(m.home, "~")}: on → ${ROUTER}`);
+  });
+
+  test("a login key in the worktree's own local file stops `on` and `off` there", async () => {
+    const m = machine();
+    const { root, worktree } = withWorktree("gf1-login", {
+      env: { ANTHROPIC_API_KEY: "sk-test-not-a-real-key" },
+    });
+    await expect(m.run(["project", "on", "--folder", worktree])).rejects.toThrow(
+      "ANTHROPIC_API_KEY is set in",
+    );
+    await expect(m.run(["project", "off", "--folder", worktree])).rejects.toThrow(
+      "ANTHROPIC_API_KEY is set in",
+    );
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
+  });
+
+  test("default says what a removal does: the next file that sets the key takes over (P7)", async () => {
+    const m = machine();
+    const root = repo("gf1-default-falls");
+    writeSettings(m.paths.settingsFile, { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    await m.run(["project", "on", "--folder", root]);
+    m.reset();
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      `  A session already running here follows by itself, within about a second, to the next file that sets the address: on → ${ROUTER}. Nothing to restart.`,
+    );
+    expect(m.output()).not.toContain("never reaches a running session");
+  });
+
+  test("default with no other file setting the key says the session keeps its value until it restarts (P7)", async () => {
+    const m = machine();
+    const root = repo("gf1-default-keeps");
+    await m.run(["project", "on", "--folder", root]);
+    m.reset();
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      "  No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none).",
+    );
+  });
+
+  test("default names a worktree's copy that still holds the router, and leaves it alone", async () => {
+    const m = machine();
+    const { own, root } = withWorktree("gf1-default-copy", null);
+    await m.run(["project", "on", "--folder", root]);
+    // A `.worktreeinclude` copy of the personal file, made while the project was on.
+    writeSettings(own, { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    m.reset();
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      `! ${own.replace(m.home, "~")} holds ${ROUTER}: a session started in that worktree reads it once the root's key is gone`,
+    );
+    expect(urlOf(own)).toBe(ROUTER);
+  });
+
+  test("status at the root warns about the same copy", async () => {
+    const m = machine();
+    const { own, root } = withWorktree("gf1-status-copy", { env: { ANTHROPIC_BASE_URL: ROUTER } });
+    expect(await m.run(["project", "status", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(`! ${own.replace(m.home, "~")} holds ${ROUTER}`);
+  });
+
+  test("the help says a removed key falls to the next file, not that it waits for a restart", () => {
+    const help = PROJECT_HELP.replace(/\s+/g, " ");
+    expect(help).toContain("a removed one falls to the next file that sets it");
+    expect(help).not.toContain("waits for a restart");
   });
 });

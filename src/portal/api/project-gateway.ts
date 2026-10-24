@@ -103,6 +103,7 @@ function fileOf(
         ? "sets nothing"
         : wordsOf({
             ...urlMeaning(file.url, view.routerUrl),
+            path: file.path,
             source: file.kind,
             url: file.url,
           });

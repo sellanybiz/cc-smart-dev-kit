@@ -7,11 +7,14 @@
  * (an explicit `https://api.anthropic.com`, which keeps the person's own Claude login — P1),
  * and `default` (no key: the machine's settings decide).
  *
- * **Where the value lives** (GP0's P6):
+ * **Where the value lives** (P6, re-proved on 2.1.310):
  * - the **personal** file, `<main checkout>/.claude/settings.local.json`, by default. Claude
  *   Code reads it at the main checkout's root for the checkout, every subfolder and every
- *   linked worktree, and it beats the team file. A managed `/.claude/settings.local.json` line
- *   in `.git/info/exclude` keeps it out of git, and `restore` takes both back.
+ *   linked worktree, and it beats the team file. The starting folder's own
+ *   `settings.local.json` is read too, after it: it decides only what the root's file does not
+ *   set (a worktree's copy, made by a `.worktreeinclude`, is the case `worktreeCopiesOf`
+ *   reports). A managed `/.claude/settings.local.json` line in `.git/info/exclude` keeps the
+ *   root's file out of git, and `restore` takes both back.
  * - the **team** file, `<folder>/.claude/settings.json`, with `--team`, for `off` and `default`
  *   only: a team file never points teammates at one person's local router. Its limit, from P6:
  *   a session started in a subfolder does not read it.
@@ -21,8 +24,10 @@
  * The refusals are one line each with the fix: a foreign URL in the file, a login override at
  * any level, `--team` with `on`, a profile the config does not have.
  *
- * What reaches a running session (P7): a **changed** value, within about a second; a **removed**
- * one never, so `default` says the session keeps the old value until it restarts.
+ * What reaches a running session (P7, 2.1.310): a **changed** value, within about a second; a
+ * **removed** key falls through to the next file that still sets it, also within seconds, and a
+ * session keeps its last value only when no file sets the key any more — so `default` says
+ * which of the two happens, from the state that applies after the write.
  */
 import { resolve } from "node:path";
 import { COMMAND } from "../build-info";
@@ -56,6 +61,7 @@ import {
   settingsFileState,
   teamFileOf,
   urlMeaning,
+  worktreeCopiesOf,
 } from "./project-state";
 import { BASE_URL_PATH, clearGatewayBaseUrl, setGatewayBaseUrl, shownValue } from "./settings";
 import { isProfileName } from "./targets";
@@ -343,7 +349,12 @@ function fileLine(file: SettingsFileState, home: string, routerUrl: string): str
       ? `cannot be read (${file.problem})`
       : file.url === null
         ? "sets nothing"
-        : decisionWords({ ...urlMeaning(file.url, routerUrl), source: file.kind, url: file.url });
+        : decisionWords({
+            ...urlMeaning(file.url, routerUrl),
+            path: file.path,
+            source: file.kind,
+            url: file.url,
+          });
   return `${kind} ${tildify(file.path, home)}: ${holds}`;
 }
 
@@ -356,10 +367,34 @@ function subfolderTeamWarning(view: ProjectGatewayState, home: string): null | s
   if (file.url === null) return null;
   const held = decisionWords({
     ...urlMeaning(file.url, view.routerUrl),
+    path: rootTeam,
     source: "team",
     url: file.url,
   });
   return `the project root's team file (${tildify(rootTeam, home)}) holds ${held}, and a session started in a subfolder does not read it: Claude Code reads .claude/settings.json in the folder a session starts in`;
+}
+
+/**
+ * The linked worktrees whose own `settings.local.json` holds the router's address: a session
+ * there reads that copy as soon as the root's key is gone (P6). Reported, never changed — the
+ * kit did not write the copy.
+ */
+function printWorktreeCopies(
+  out: ReturnType<typeof gatewayOut>,
+  view: ProjectGatewayState,
+  home: string,
+): void {
+  if (view.checkout === null) return;
+  for (const copy of worktreeCopiesOf(view.checkout.mainCheckout)) {
+    out.line(
+      "warn",
+      `${tildify(copy.path, home)} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone`,
+      {
+        fix: "remove the key from that copy (a .worktreeinclude makes it again in a new worktree), or take .claude/settings.local.json out of the list",
+        indent: 2,
+      },
+    );
+  }
 }
 
 /** The mark a state's line carries. */
@@ -376,12 +411,15 @@ function markOf(decision: GatewayDecision): "fail" | "info" | "ok" | "warn" {
  * file is the person's own, and the shell may still set a value this cannot see (P3).
  */
 export function projectSourceWords(
-  decision: Pick<GatewayDecision, "source">,
+  decision: Pick<GatewayDecision, "path" | "source">,
   home: string,
   view: ProjectGatewayState,
 ): string {
   if (decision.source === "none") return "nothing in this project";
-  const file = view.files.find((one) => one.kind === decision.source);
+  // Two personal files may be in the chain (P6): the decision names the one that decides.
+  const file = view.files.find((one) =>
+    decision.path === null ? one.kind === decision.source : one.path === decision.path,
+  );
   if (file === undefined) return "nothing in this project";
   if (file.kind === "personal") {
     const shared =
@@ -412,7 +450,7 @@ function projectStatus(ctx: GatewayContext, folder: string): number {
       continue;
     }
     // The file that decided is said above; a file that sets nothing is not repeated.
-    if (file.kind === view.choice.source || file.url === null) continue;
+    if (file.path === view.choice.path || file.url === null) continue;
     out.line("info", fileLine(file, paths.home, view.routerUrl), { indent: 2 });
   }
   if (view.checkout === null && view.checkoutProblem === null) {
@@ -424,6 +462,7 @@ function projectStatus(ctx: GatewayContext, folder: string): number {
   }
   const subfolder = subfolderTeamWarning(view, paths.home);
   if (subfolder !== null) out.line("warn", subfolder, { indent: 2 });
+  printWorktreeCopies(out, view, paths.home);
   if (effective.profile !== null && !view.profiles.includes(effective.profile)) {
     out.line(
       "warn",
@@ -484,7 +523,9 @@ function savedStateLines(view: ProjectGatewayState, plan: ProjectChangePlan): st
   const lines = [decisionWords(view.effective)];
   if (plan.kind === "personal") {
     lines.push(
-      "Every session of this project — the main checkout, its subfolders and its worktrees — reads it.",
+      plan.value === null
+        ? "A subfolder's or a worktree's own settings.local.json is still read after this one: it decides what this file no longer sets."
+        : "Every session of this project — the main checkout, its subfolders and its worktrees — reads it first: a settings.local.json of their own sets only what this one does not.",
     );
   } else {
     lines.push("The team file is committed with the project: commit it for your teammates.");
@@ -501,8 +542,12 @@ function savedStateLines(view: ProjectGatewayState, plan: ProjectChangePlan): st
     );
   }
   if (plan.value === null) {
+    // P7 (2.1.310): a removed key falls through to the next file that sets it; only when none
+    // does, a running session keeps its last value.
     lines.push(
-      "A session already running keeps the value it had until it restarts: a removed key never reaches a running session.",
+      view.effective.source === "none"
+        ? "No other file sets the address, so a session already running here keeps the value it had until it restarts (a new session takes the shell's, or none)."
+        : `A session already running here follows by itself, within about a second, to the next file that sets the address: ${decisionWords(view.effective)}. Nothing to restart.`,
     );
   } else {
     lines.push(
@@ -589,6 +634,8 @@ export async function commandProject(
     );
   }
   for (const line of savedStateLines(written.saved, written.plan)) out.say(line, 2);
+  // A removed key lets a worktree's copy of the personal file decide there (P6): name each one.
+  if (written.plan.value === null) printWorktreeCopies(out, written.saved, paths.home);
   // The file written is not the one that decides: say which one is, and what it gives.
   if (effective.source !== "none" && effective.source !== written.plan.kind) {
     out.line(
@@ -670,7 +717,8 @@ export const PROJECT_HELP = `  project <status|on|off|default> [--team] [--profi
                          default (no key: the machine's settings decide). The personal file
                          (.claude/settings.local.json, never committed) unless --team, which
                          writes .claude/settings.json and takes off or default only. A changed
-                         value reaches a running session; a removed one waits for a restart.
+                         value reaches a running session; a removed one falls to the next file
+                         that sets it, and only with none does the session keep its value.
                          Refused: another gateway's URL in the file, a login key or
                          apiKeyHelper anywhere in the chain (with on or off), a profile the
                          config does not have.`;
