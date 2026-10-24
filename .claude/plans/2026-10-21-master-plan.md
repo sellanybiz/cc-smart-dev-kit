@@ -417,7 +417,7 @@ Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
 both validates, `check:portal`, the release skill, the owner's yes. After the merge: WF1's live
 copy-resume case (its contract row says it is owed). Not briefed (notes only): the poll guard
-blocks a command that has both `sleep` and `claude agents`. (The split review workflow's budget
+blocks a command that has both `sleep` and `claude agents`; **the installed 1.1.2 watch never marked GF1 merged** (2026-10-25: `git merge --no-ff` in the lead's worktree at 04:36, GF1's head on that HEAD, its record `stopped` with its base set, the lead record's `cwd` that worktree; nothing after 4 minutes of 20 s polls), so RV6's wait never released and the lead removed and restarted RV6 by hand: find why once WF1's watch is merged (WN1 or a new phase). (The split review workflow's budget
 cut and argument shape, seen 2026-10-25, are RS1.)
 
 ## The last stage — heavy cleanup (D30), after 1.0.0–1.2.0 are verified live on this machine
