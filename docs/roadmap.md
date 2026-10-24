@@ -323,10 +323,12 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   `cc-smart-dev-kit-router`, and asks before a restart. `gateway on` / `off` use owned keys.
 - `doctor` checks the gateway when it is set up.
 - No prompt text is ever changed (`.claude/rules/gateway.md`).
-- **Answered (2026-10-23):** a changed env value reaches a running session within about a second,
-  but a removed key does not — the session keeps the URL it had (`claude-code-contract.md`
-  § The gateway). So `restore`'s two stages stay: it can never stop the router right after
-  removing the keys.
+- **Answered (2026-10-23, corrected 2026-10-25 on 2.1.310):** a changed env value reaches a
+  running session within about a second; a removed key reaches it only when another settings
+  file still sets the key, and otherwise the session keeps the URL it had
+  (`claude-code-contract.md` § The gateway). So `restore`'s two stages stay: it can never stop
+  the router right after removing the keys. A worktree's own copy of the personal file is read
+  after the main root's, so `restore`, `gateway project default` and `status` name it (GF1).
 
 ## 3 — Hooks and `doctor --live` (done, 0.3.0)
 

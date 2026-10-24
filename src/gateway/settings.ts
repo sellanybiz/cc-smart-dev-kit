@@ -4,9 +4,10 @@
  * undoes them too, and a key someone else set is never overwritten.
  *
  * **`off` sets the address, it does not remove the key** (GP5): a changed value reaches a
- * running Claude session within about a second, while a removed key never does — the session
- * keeps the address it last had (proved 2026-10-23, `.claude/research/2026-10-23-r6-proofs.md`
- * § P7). So the owned `env.ANTHROPIC_BASE_URL` is left holding Anthropic's own address, the
+ * running Claude session within about a second, whatever the files below it hold. A removed key
+ * reaches it only when another settings file still sets the key (it falls to that file's
+ * value); when none does, the session keeps the address it last had (P7, re-proved on 2.1.310,
+ * `.claude/research/2026-10-25-r6-recheck.md`). The write is right in every case. So the owned `env.ANTHROPIC_BASE_URL` is left holding Anthropic's own address, the
  * one value that means plain Claude on the person's own login (P1, the same value
  * `gateway project off` writes), and `restore` takes the key back later.
  */
@@ -80,14 +81,15 @@ export function baseUrlPointsAtGateway(url: null | string): boolean {
  * What a settings file's `env.ANTHROPIC_BASE_URL` needs for the gateway to be off, and whose
  * key it is (GP5):
  * - `write`: the key is cc-smart-dev-kit's and holds another address — set it to Anthropic's own,
- *   which a running session follows within about a second where a removed key never would.
+ *   which a running session follows within about a second, whatever a removed key would fall to.
  * - `same`: nothing to do — no key at all, or one that already holds Anthropic's own address.
  * - `theirs`: a key the person set, changed or removed since: never written, never removed.
  *   `present` says whether it is still in the file, so a command can name it.
  *
- * A **changed** value reaches a running Claude session within about a second, a **removed** key
- * never does (proved 2026-10-23, `.claude/research/2026-10-23-r6-proofs.md` § P7), so this is
- * what switches running sessions at once and keeps the key owned for `restore` to take back.
+ * A **changed** value reaches a running Claude session within about a second; a **removed** key
+ * reaches it only when another settings file still sets the key (P7, re-proved on 2.1.310,
+ * `.claude/research/2026-10-25-r6-recheck.md`), so this is what switches running sessions at
+ * once, whatever the files below hold, and keeps the key owned for `restore` to take back.
  */
 export type OffAddress =
   | { kind: "write"; value: string }
@@ -359,8 +361,9 @@ export function retireOldModelKeys(options: {
 /**
  * Turns the gateway off: removes the keys cc-smart-dev-kit owns, and **writes Anthropic's own
  * address into `env.ANTHROPIC_BASE_URL` instead of removing it** (`offAddressOf`, GP5), so
- * every running session switches to Anthropic within about a second — a removed key would wait
- * for each session's restart. `switched` says whether that write happened in this call. A
+ * every running session switches to Anthropic within about a second — a removed key would move
+ * a session only to the next file that sets it, and with none would leave it on the router
+ * until it restarts. `switched` says whether that write happened in this call. A
  * gateway key someone else set stays, and is returned in `foreign`, so the output can name it.
  */
 export function turnOff(options: { settingsFile: string; stateDir: string; dryRun?: boolean }): {

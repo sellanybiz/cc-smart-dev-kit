@@ -1,5 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   type BrowserSetupRecord,
   browserRestoreLines,
@@ -9,7 +9,7 @@ import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
-import { PERSONAL_EXCLUDE_LINE } from "../gateway/project-state";
+import { PERSONAL_EXCLUDE_LINE, PERSONAL_FILE, worktreeCopiesOf } from "../gateway/project-state";
 import {
   type RouterServiceKind,
   type Runner,
@@ -294,13 +294,37 @@ function fileUsesRouter(file: string, stateDir: string): boolean {
     // The one reader of a settings file's own gateway facts (`project-state.ts` reads it too).
     const url = readGatewaySettings(file).baseUrl;
     // An absent address key with another owned key still routes running sessions to the router
-    // (a removed key never reaches them, P7): keep the old answer. A set address is "on" only
+    // (a removed key reaches them only when another file sets it, P7): keep the answer — at worst
+    // the router runs a run longer than it had to. A set address is "on" only
     // when it points at a gateway, not at Anthropic's own.
     if (url === null) return true;
     return baseUrlPointsAtGateway(url);
   } catch {
     return true;
   }
+}
+
+/**
+ * The copies of a personal file we wrote that sit in a project's linked worktrees and hold a
+ * gateway address (P6, 2.1.310): a project's `.worktreeinclude` makes them. Claude Code reads a
+ * worktree's own `settings.local.json` after the main root's, key by key — so while the root's
+ * key says Anthropic's address (stage 1) the copy changes nothing, and once restore removes that
+ * key (stage 2) a session started in the worktree goes to its copy's address, a router that is
+ * stopped. The kit did not write the copy, so restore reports it and leaves it as it is
+ * (`.claude/rules/setup-and-managed-files.md` § Never take what is not ours).
+ */
+function copyWarnings(settingsFiles: readonly string[], short: (path: string) => string): string[] {
+  const lines: string[] = [];
+  for (const file of settingsFiles) {
+    const claudeDir = dirname(file);
+    if (basename(file) !== PERSONAL_FILE || basename(claudeDir) !== ".claude") continue;
+    for (const copy of worktreeCopiesOf(dirname(claudeDir))) {
+      lines.push(
+        `! ${short(copy.path)} holds ${shownValue(copy.url ?? "")}: it is a copy the kit did not write, so restore leaves it, and a session started in that worktree goes to a stopped router once the root's key is gone`,
+      );
+    }
+  }
+  return lines;
 }
 
 /**
@@ -321,8 +345,9 @@ function offWrites(files: readonly string[], stateDir: string): Map<string, stri
 /**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
  * sessions follow a **changed** `ANTHROPIC_BASE_URL` within about a second, but a **removed**
- * key never reaches one (proved 2026-10-23; `docs/claude-code-contract.md` § The gateway): a
- * session keeps the address it last had. So while cc-smart-dev-kit's gateway env keys are in any
+ * key reaches one only when another settings file still sets it (P7, re-proved on 2.1.310;
+ * `docs/claude-code-contract.md` § The gateway): with none, the session keeps the address it
+ * last had, and with a router address further down the chain it moves there. So while cc-smart-dev-kit's gateway env keys are in any
  * of the settings files it wrote — the user's `settings.json`, a project's own
  * `settings.local.json` or team `.claude/settings.json` (GP4a) — those sessions still send
  * requests to the router, and stopping it in the same run would make each of them fail. (A key
@@ -381,6 +406,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     .map(([file]) => file);
   const sessionsUseRouter =
     routerTracked && settingsFiles.some((file) => fileUsesRouter(file, paths.stateDir));
+  // Read before `restore` forgets the records: only a router that will stop makes them matter.
+  const copies = routerTracked ? copyWarnings(settingsFiles, short) : [];
 
   if (sessionsUseRouter && !options.now) {
     // Stage 1: nothing stops, so nothing is asked. Every file still pointing at the router gets
@@ -416,6 +443,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           },
         });
         print(results, short);
+        for (const line of copies) console.log(line);
         // A retired model key is removed in this same write: a running session keeps the slot
         // name and now sends it to Anthropic, which does not know it, so it fails until it
         // restarts. Say so; the address key's change needs no restart.
@@ -443,6 +471,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     );
   }
 
+  // Stage 2 (and `--now`): before the question, so the person decides with these in sight.
+  for (const line of copies) console.log(line);
   if (sessionsUseRouter) {
     if (
       !askFirst(

@@ -17,8 +17,8 @@ import { cliPaths } from "../cli/paths";
 import { restore } from "../setup/restore";
 import { git, tempDir } from "../testing/temp";
 import { type GatewayContext, runGateway } from "./commands";
-import { DEFAULT_ANTHROPIC_BASE_URL, type GatewayConfig, saveConfig } from "./config";
 import { PROJECT_HELP } from "./commands-project";
+import { DEFAULT_ANTHROPIC_BASE_URL, type GatewayConfig, saveConfig } from "./config";
 import type { HealthFetch } from "./health";
 
 const PORT = 20999;

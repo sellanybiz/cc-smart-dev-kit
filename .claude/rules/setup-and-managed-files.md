@@ -204,8 +204,11 @@ Each of them:
 - **A service is a managed change too.** When `gateway setup` installed the router (its
   copy or unit is in `changed.json`), `restore` works in two stages, because running
   sessions must leave the router before it stops. A running session follows a **changed**
-  `ANTHROPIC_BASE_URL` within about a second; a **removed** key never reaches it (proved
-  2026-10-23, `.claude/research/2026-10-23-r6-proofs.md` § P7):
+  `ANTHROPIC_BASE_URL` within about a second; a **removed** key reaches it only when another
+  settings file still sets the key, and otherwise never (P7, re-proved on 2.1.310,
+  `.claude/research/2026-10-25-r6-recheck.md`). A worktree's copy of a personal file we wrote
+  that holds the router (a `.worktreeinclude` makes one) is such a file: restore names it and
+  never changes it, because the kit did not write it:
   - **stage 1**, while cc-smart-dev-kit's gateway env keys still hold its value in **any
     settings file it wrote** — the user's `settings.json`, a project's own
     `settings.local.json` or team `.claude/settings.json` (`ownedGatewayEnvKeys` over

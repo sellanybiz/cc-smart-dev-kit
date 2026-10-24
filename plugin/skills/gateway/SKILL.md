@@ -249,9 +249,13 @@ without touching the others:
   state.
 
 The personal file is `.claude/settings.local.json` at the main checkout's root, which Claude Code
-reads for the checkout, its subfolders and its worktrees; a managed `.git/info/exclude` line keeps
-it out of git, and `restore` takes back both. A changed value reaches a running session within
-about a second; a removed key only after it restarts, so `default` keeps the old value until then.
+reads for the checkout, its subfolders and its worktrees, before the starting folder's own
+`settings.local.json` (a worktree's copy decides only what the root's file does not set); a managed
+`.git/info/exclude` line keeps it out of git, and `restore` takes back both. A changed value
+reaches a running session within about a second; a removed key moves it, as fast, to the next file
+that still sets it, and only when none does the session keep its old value until it restarts. A
+worktree's copy that still holds the router is named by `status`, `default` and `restore`, never
+changed.
 The command refuses, in one line with the fix: another gateway's URL already in the file, a
 personal file git already tracks (for on), a login key or `apiKeyHelper` anywhere in the project's
 chain (with on or off), `--team` with on, and a profile the config does not have. **For the

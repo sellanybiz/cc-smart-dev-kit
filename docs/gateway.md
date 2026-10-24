@@ -206,7 +206,12 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   then the starting folder's `.claude/settings.json`, then the user's own settings file, then
   the shell. The personal file is read at the **main checkout's root** for the checkout, every
   subfolder and every worktree (P6), which is why it is the default home of a project's own
-  choice: one write reaches every session of the project.
+  choice: one write reaches every session of the project. Claude Code reads the **starting
+  folder's own** `settings.local.json` too (a subfolder's, a linked worktree's, a folder outside
+  git): key by key the main root's file wins, then the folder's own, before its team file and the
+  user file (re-proved on 2.1.310, `.claude/research/2026-10-25-r6-recheck.md`). The reader puts
+  that file into `files` in that order, so `status`, the login-override refusal and doctor's
+  warnings all see what a session there runs; a decision names the file that decides by path.
 - **The team file's limit (P6).** `.claude/settings.json` is read from the folder the session
   starts in. A team `off` or `default` at the project's top folder does not reach a session
   started in a subfolder — the machine's value applies there — and a linked worktree reads it
@@ -223,9 +228,17 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   **unknown**: Claude Code's own answer past such a file is not known, and a state nobody read
   is not a state to claim. `gateway project status` exits 1 when it cannot tell (an unreadable
   file or config) and 0 otherwise.
-- **Running sessions (P7).** A changed value reaches a session already running in the project
-  within about a second. A removed key never does: `default` says the session keeps the value it
-  had until it restarts.
+- **Running sessions (P7, 2.1.310).** A changed value reaches a session already running in the
+  project within about a second. A removed key moves it, as fast, to the next file that still
+  sets the key (the machine's settings, say); only when no file sets it does the session keep its
+  last value until it restarts. `default` says which of the two it is, from the state that
+  applies after the write.
+- **A worktree's copy of the personal file (P6).** A project's `.worktreeinclude` copies the
+  git-ignored personal file into a new worktree. While the root's key is there it wins, but once
+  `gateway project default` or `restore` removes it, a session started in that worktree reads its
+  copy and goes to the router's address. The kit did not write the copy, so it never changes it:
+  `gateway project status`, `default` and `restore` (both stages, before it stops the router)
+  name each copy that holds a gateway address, with the fix — remove the key there.
 - **`restore` counts a project's key, and waits for its sessions (GP4a).** A project's own
   `ANTHROPIC_BASE_URL` keeps that project's sessions on the router exactly as the machine's key
   does, so stage 1 asks **every settings file cc-smart-dev-kit wrote** (each entry in the state
@@ -1751,9 +1764,10 @@ does not answer: every Claude request would fail. With no `gateway.json` (set up
 every slot off.
 
 Saving `settings.json` switches every running session at once, within about a second (proved
-2026-10-23). Removing keys needs a restart of each session: a removed key never reaches a running
-session (`claude-code-contract.md` § The gateway); stop the router only after every session
-restarted. **`gateway off` writes instead of removing** (GP5): the owned `ANTHROPIC_BASE_URL` is
+2026-10-23). A removed key reaches a running session only when another settings file still sets
+the key (it falls to that file's value); with none, the session keeps its last value
+(`claude-code-contract.md` § The gateway, P7, re-proved on 2.1.310); so stop the router only after
+every session has left it. **`gateway off` writes instead of removing** (GP5): the owned `ANTHROPIC_BASE_URL` is
 set to Anthropic's own address, so every running session switches to Anthropic by itself within
 about a second and nothing needs a restart. The key stays owned (its value is the one `off`
 wrote), so `restore` takes it back later. A key the person set or changed since is theirs: `off`
