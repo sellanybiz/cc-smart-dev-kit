@@ -5,6 +5,36 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.2.0
 
+The gateway per project and per session, a project's workflow from the portal, claude-mem from the
+kit, and the effort pin. It also carries everything 1.1.3 was to ship (below), which never went out
+on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
+
+- **The gateway per project.** `gateway project on|off|default [--team] [--profile <name>]` turns
+  the gateway on or off for one project only. The kit writes it to that project's own settings, so
+  every session there follows it: a personal file by default, or the team file with `--team`.
+  `gateway project status` says what a project uses and which file says so, and `gateway projects`
+  lists them all. A **profile** is a set of chains a project can use instead of the machine's
+  (`gateway profile <name> slot …`). Projects you never set keep the machine's gateway.
+- **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
+  (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
+  and changes nothing on disk.
+- **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
+  address in place of the gateway's, and a running session picks that up within about a second,
+  so no session needs a restart. A second `restore` takes the key out.
+- **`doctor` shows each project's gateway state and its source,** and warns about a project file
+  that names a slot or a backend model as Claude Code's model. `restore` also covers the keys the
+  kit wrote into project files. `gateway off` lists the projects still switched on.
+- **The portal's Project page** has two new cards:
+  - **Gateway** shows that project's state, where it comes from, and the switch;
+  - **Workflow** shows each workflow setting, its value and source. A change you make there
+    becomes a pull request into the project's base branch (`workflow propose`), and its link
+    shows in place. A crew session cannot propose one.
+- **The portal never waits on a slow command.** Its doctor pass and its project reads run off the
+  server's loop, one CLI child serves every action, and its state folder follows
+  `CLAUDE_CONFIG_DIR`.
+- **Two guard fixes:** a crew session's text that starts with `-` is passed safely, and the
+  escape guard no longer flags a computed command because its path holds the kit's name.
+
 - **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when
   thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
@@ -31,7 +61,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   backend models for the fallback on every route); an empty fallback provider is
   now shown as Claude with the model it really runs on.
 
-## 1.1.3
+### Also in 1.2.0: what 1.1.3 was to ship
 
 **Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
 this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
@@ -157,6 +187,8 @@ that is not one.
 **What to run:** `cc-smart-dev-kit gateway setup`. The reader and the price table live in the
 router bundle, so a machine updates the copy it runs; setup says what the restart costs and
 asks first.
+
+**What to run for 1.2.0:** `cc-smart-dev-kit gateway setup` once — the router changed (the effort pin, the token and price fixes) and setup asks before it restarts it. Then restart your sessions, so each runs the new version.
 
 ## 1.1.2
 
