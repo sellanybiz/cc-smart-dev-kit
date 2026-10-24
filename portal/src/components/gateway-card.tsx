@@ -43,6 +43,7 @@ import {
   type GatewayDraft,
   gatewayDraftOf,
   gatewayRequest,
+  personalFileWords,
   runningWords,
   STATE_LABEL,
   slotApplies,
@@ -54,12 +55,9 @@ function chainLine(targets: readonly string[]): string {
   return targets.map(targetModel).join(" → ");
 }
 
-/** The words for each file the form can write. */
-const FILE_WORDS = {
-  personal:
-    "Only you: .claude/settings.local.json in the main checkout, never committed. Every worktree of the project reads it.",
-  team: "Your team: .claude/settings.json, committed with the project. A session reads it only when it starts in the project's top folder.",
-} as const;
+/** The team file's words; the personal file's depend on git (`personalFileWords`). */
+const TEAM_FILE_WORDS =
+  "Your team: .claude/settings.json, committed with the project. A session reads it only when it starts in the project's top folder.";
 
 /** One note beside the state: a fault or a warning as an alert, a fact as a quiet line. */
 function NoteLine({ note }: { note: ProjectGatewayNote }) {
@@ -181,13 +179,11 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
   const profileId = useId();
   const blockedId = useId();
   const edit = (next: Partial<GatewayDraft>) => setEdited({ ...draft, ...next });
-  const onBlocked = !data.configured
-    ? "Needs this machine's gateway."
-    : !data.onAllowed
-      ? "Refused while git tracks the personal file."
-      : draft.team
-        ? "The team file takes off or default only."
-        : null;
+  // Each option says why the command would refuse it in the file chosen, in its own words; the
+  // team file's refusal of on is the one structural rule, said short.
+  const refusals = data.refusals[draft.team ? "team" : "personal"];
+  const onBlocked =
+    draft.team && refusals.on !== null ? "The team file takes off or default only." : refusals.on;
   return (
     <section aria-labelledby={`${fileId}-title`} className="flex flex-col gap-4 border-t pt-5">
       <div className="flex flex-col gap-0.5">
@@ -211,8 +207,8 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
             onChoose={(next) => edit({ state: next })}
             options={[
               { blocked: onBlocked, label: "On", value: "on" },
-              { label: "Off", value: "off" },
-              { label: "Default", value: "default" },
+              { blocked: refusals.off, label: "Off", value: "off" },
+              { blocked: refusals.default, label: "Default", value: "default" },
             ]}
           />
         </div>
@@ -228,14 +224,17 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
             options={[
               { label: "Only me", value: "personal" },
               {
-                blocked: draft.state === "on" ? "On goes to your personal file only." : null,
+                blocked:
+                  draft.state === "on" && data.refusals.team.on !== null
+                    ? "On goes to your personal file only."
+                    : null,
                 label: "The team",
                 value: "team",
               },
             ]}
           />
           <p id={fileId} className="text-xs text-pretty text-muted-foreground">
-            {draft.team ? FILE_WORDS.team : FILE_WORDS.personal}
+            {draft.team ? TEAM_FILE_WORDS : personalFileWords(data)}
           </p>
         </div>
       </div>
@@ -326,7 +325,7 @@ function ChangeForm({ data, project }: { data: ProjectGatewayData; project: Proj
         <span className="block">
           {draft.state === "default"
             ? `It removes the address from the ${draft.team ? "team" : "personal"} file.`
-            : `It writes the address in the ${draft.team ? "team" : "personal"} file${draft.team ? ": commit it for your teammates" : ", which is never committed"}.`}{" "}
+            : `It writes the address in the ${draft.team ? "team" : "personal"} file${draft.team ? ": commit it for your teammates" : data.personalTracked === true ? ", which git tracks in this project: it is committed with it" : ", which is never committed"}.`}{" "}
           {draft.state === "off"
             ? "Anthropic's own address keeps your own Claude login: nobody is logged out."
             : ""}

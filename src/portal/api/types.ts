@@ -336,6 +336,23 @@ export interface ProjectProfile {
   slots: ProjectProfileSlot[];
 }
 
+/** One file's three states: null where the command would write, else its refusal in its words. */
+export interface ProjectGatewayWrites {
+  default: null | string;
+  off: null | string;
+  on: null | string;
+}
+
+/**
+ * What `gateway project <state> [--team]` would refuse before it writes, from its own planner
+ * (`planProjectChange`) over the same state: the card offers only what the command takes. A
+ * router that does not answer, and a profile, are checked when it runs.
+ */
+export interface ProjectGatewayRefusals {
+  personal: ProjectGatewayWrites;
+  team: ProjectGatewayWrites;
+}
+
 /** A line the Gateway card shows beside the state: a fact, a warning, or a fault. */
 export interface ProjectGatewayNote {
   text: string;
@@ -357,13 +374,15 @@ export interface ProjectGatewayAnswer {
   effective: ProjectGatewayDecision;
   /** Every settings file read, in the chain's order. */
   files: ProjectGatewayFile[];
-  /** The facts that change what the card may do, and the faults, in words. */
+  /** The facts and the faults, in words. */
   notes: ProjectGatewayNote[];
   /**
-   * Whether `on` can be written to the personal file: false while git tracks that file (a
-   * router address would be committed with it), and with no gateway config.
+   * True when git tracks the personal file, so what is written there is committed with the
+   * project; null when git could not tell (or there is no checkout).
    */
-  onAllowed: boolean;
+  personalTracked: boolean | null;
+  /** What the command would refuse, per file and state, before it writes anything. */
+  refusals: ProjectGatewayRefusals;
   /** The profile the effective address names; null when it names none. */
   profile: null | ProjectProfile;
   /** The profiles the config holds, sorted. */

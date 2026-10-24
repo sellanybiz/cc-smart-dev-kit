@@ -594,6 +594,19 @@ export interface ProjectProfile {
   slots: ProjectProfileSlot[];
 }
 
+/** One file's three states: null where the command would write, else its refusal. */
+export interface ProjectGatewayWrites {
+  default: null | string;
+  off: null | string;
+  on: null | string;
+}
+
+/** What `gateway project` would refuse before it writes, per file (its own planner). */
+export interface ProjectGatewayRefusals {
+  personal: ProjectGatewayWrites;
+  team: ProjectGatewayWrites;
+}
+
 /** A line the Gateway card shows beside the state. */
 export interface ProjectGatewayNote {
   text: string;
@@ -607,8 +620,10 @@ export interface ProjectGatewayAnswer {
   effective: ProjectGatewayDecision;
   files: ProjectGatewayFile[];
   notes: ProjectGatewayNote[];
-  /** Whether `on` may be written to the personal file now. */
-  onAllowed: boolean;
+  /** True when git tracks the personal file; null when git could not tell. */
+  personalTracked: boolean | null;
+  /** What the command would refuse, per file and state; null where it writes. */
+  refusals: ProjectGatewayRefusals;
   profile: null | ProjectProfile;
   profiles: string[];
   /** Whether the project is in a git checkout. */

@@ -57,66 +57,52 @@ export type GatewayRequest =
   | { kind: "blocked"; why: string }
   | { kind: "send"; body: GatewayDraft };
 
+/** The refusal the command would give for a draft's state in its file; null where it writes. */
+export function refusalOf(answer: ProjectGatewayData, draft: GatewayDraft): null | string {
+  return answer.refusals[draft.team ? "team" : "personal"][draft.state];
+}
+
 /**
- * The action's body for a draft, or why the form will not send it. The same refusals the
- * command makes before it writes (`planProjectChange`), in the page's words: a team file never
- * points teammates at one person's router, on needs the gateway and an untracked personal file,
- * and a profile must be one the router has.
+ * The action's body for a draft, or why the form will not send it: nothing while the draft is
+ * where the form started (the project's own choice — so a project whose address is another
+ * gateway's, or cannot be read, offers nothing until a change is chosen), else the command's own
+ * refusal for that file and state (`refusals`, from its planner), else a profile the router does
+ * not have.
  */
 export function gatewayRequest(answer: ProjectGatewayData, draft: GatewayDraft): GatewayRequest {
   const body: GatewayDraft = { ...draft, profile: draft.state === "on" ? draft.profile : null };
-  const now = gatewayDraftOf(answer);
-  if (
-    answer.choice.state === now.state &&
-    body.state === now.state &&
-    body.team === now.team &&
-    body.profile === now.profile
-  ) {
+  const start = gatewayDraftOf(answer);
+  if (body.state === start.state && body.team === start.team && body.profile === start.profile) {
     return { kind: "same" };
   }
-  if (!answer.writable) {
+  const refused = refusalOf(answer, body);
+  if (refused !== null) return { kind: "blocked", why: refused };
+  if (body.state === "on" && body.profile !== null && !answer.profiles.includes(body.profile)) {
     return {
       kind: "blocked",
-      why: "This folder is not in a git project: nothing can be written here.",
+      why: `The router has no profile "${body.profile}": choose one it has, or none.`,
     };
-  }
-  if (body.state === "on") {
-    if (body.team) {
-      return {
-        kind: "blocked",
-        why: "The team file takes off or default only: it never points teammates at your own router.",
-      };
-    }
-    if (!answer.configured) {
-      return {
-        kind: "blocked",
-        why: "On needs this machine's gateway: set it up on Machine first.",
-      };
-    }
-    if (!answer.onAllowed) {
-      return {
-        kind: "blocked",
-        why: "On is refused while git tracks the personal file: the note above says how to untrack it.",
-      };
-    }
-    if (body.profile !== null && !answer.profiles.includes(body.profile)) {
-      return {
-        kind: "blocked",
-        why: `The router has no profile "${body.profile}": choose one it has, or none.`,
-      };
-    }
   }
   return { body, kind: "send" };
 }
 
 /**
- * What reaches a Claude Code session already running (GP0's P7): a changed address within about
- * a second, a removed one never — so default, which removes the key, waits for a restart.
+ * What reaches a Claude Code session already running (GP0's P7, proved for a file that existed
+ * when the session started): a changed address within about a second, a removed one never — so
+ * default, which removes the key, waits for a restart. A file the session did not see at its
+ * start is not proved to reach it, so the words say to restart then, as the command does.
  */
 export function runningWords(state: GatewayChoice): string {
   return state === "default"
     ? "Default removes the address, and a running session never sees a removal: restart a session already running in this project."
-    : "A session already running in this project switches within about a second.";
+    : "A session already running in this project switches within about a second; restart it if the file did not exist when it started.";
+}
+
+/** Where the personal file's words come from: git tracking it makes it committed, whatever its name. */
+export function personalFileWords(answer: ProjectGatewayData): string {
+  return answer.personalTracked === true
+    ? "Only you, by its name: .claude/settings.local.json in the main checkout. But git tracks it in this project, so what is written there is committed with it."
+    : "Only you: .claude/settings.local.json in the main checkout, never committed. Every worktree of the project reads it.";
 }
 
 /**

@@ -485,11 +485,30 @@ describe("the Gateway card's actions run the CLI's own command in a child (GP4b)
     expect((await run({ kind: "slot", slot: "opus", value: "claude" })).ok).toBe(true);
     expect((await run({ kind: "slot", slot: "worker", value: "machine" })).ok).toBe(true);
     expect((await run({ kind: "fallback", on: false, slot: "scout" })).ok).toBe(true);
+    // A machine's own slot, and a Claude target and a model id with "/" and ":" in it: the
+    // command takes all of them, so the action does too.
+    expect(
+      (
+        await run({
+          kind: "slot",
+          slot: "cc-smart-dev-kit-review",
+          targets: ["claude-sonnet-5-5", "omniroute:openrouter/deepseek/deepseek-v4.1-flash:floor"],
+        })
+      ).ok,
+    ).toBe(true);
     expect(runsOf(w.log).map((one) => one.args)).toEqual([
       ["gateway", "profile", "cheap", "slot", "scout", "omniroute:glm-5,omniroute:kimi-k3"],
       ["gateway", "profile", "cheap", "slot", "opus", "off"],
       ["gateway", "profile", "cheap", "slot", "worker", "clear"],
       ["gateway", "profile", "cheap", "fallback", "scout", "off"],
+      [
+        "gateway",
+        "profile",
+        "cheap",
+        "slot",
+        "cc-smart-dev-kit-review",
+        "claude-sonnet-5-5,omniroute:openrouter/deepseek/deepseek-v4.1-flash:floor",
+      ],
     ]);
   });
 
@@ -504,9 +523,15 @@ describe("the Gateway card's actions run the CLI's own command in a child (GP4b)
     expect(await refused({ ...base, profile: "Cheap" })).toEqual([
       '"Cheap": a profile name is lower-case letters, digits and - (the /p/<name> of a project\'s URL), at most 64.',
     ]);
-    expect(await refused({ ...base, slot: "haiku" })).toEqual([
-      '"haiku" is not a slot: the slots are scout, worker, judge, fable, opus.',
+    expect(await refused({ ...base, slot: "--team" })).toEqual([
+      '"--team" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>).',
     ]);
+    // A word the command reads as a change of its own is never a chain's one target.
+    for (const word of ["off", "claude", "clear", "custom"]) {
+      expect(await refused({ ...base, targets: [word] })).toEqual([
+        `"${word}" is not a target: a target is <backend>:<model>, from the model list.`,
+      ]);
+    }
     expect(await refused({ ...base, targets: [] })).toEqual([
       "Give the chain at least one target, or choose Claude or the machine's chain.",
     ]);

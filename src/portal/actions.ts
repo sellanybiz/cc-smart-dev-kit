@@ -43,6 +43,7 @@ import {
   runGateway,
   setOmnirouteKey,
 } from "../gateway/commands";
+import { notSlotName } from "../gateway/commands-chains";
 import {
   type GatewayConfig,
   keptChain,
@@ -52,7 +53,13 @@ import {
   slotMode,
 } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
-import { isProfileName, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import {
+  isProfileName,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  slotKeyFromArg,
+} from "../gateway/targets";
 import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
@@ -99,10 +106,8 @@ import {
   projectFilesHash,
   projectFileTexts,
   readProject,
-  SLOT_ORDER,
   settingsLineNote,
   shownDetail,
-  slotName,
   slotStamp,
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
@@ -1062,13 +1067,11 @@ async function projectGatewayProfile(
   if (!isProfileName(profile)) {
     return { lines: [`"${String(body.profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
   }
-  const slots = SLOT_ORDER.map(slotName);
+  // The command's own slot rule: the five, and a machine's own `cc-smart-dev-kit-<name>`. A
+  // name that passes it is a key's own characters, never an option.
   const slot = typeof body.slot === "string" ? body.slot : "";
-  if (!slots.includes(slot)) {
-    return {
-      lines: [`"${String(body.slot)}" is not a slot: the slots are ${slots.join(", ")}.`],
-      ok: false,
-    };
+  if (slotKeyFromArg(slot) === null) {
+    return { lines: [`${notSlotName(String(body.slot))}.`], ok: false };
   }
   if (body.kind === "fallback") {
     if (typeof body.on !== "boolean") return { lines: ["on is true or false."], ok: false };
@@ -1097,9 +1100,16 @@ async function projectGatewayProfile(
       };
     }
     for (const one of targets) {
-      // A target never starts with "-" (it would read as an option) and never holds the comma
-      // that joins the chain; the command checks the rest against the live model list.
-      if (typeof one !== "string" || !/^[^\s,-][^\s,]*$/.test(one)) {
+      // Each one a target by the command's own parser (`parseTarget`: never a word such as
+      // `off` or `clear`, which the command would read as a change of its own), with no comma —
+      // the comma joins the chain — and no leading "-", which would read as an option. The
+      // command checks the rest against the live model list.
+      if (
+        typeof one !== "string" ||
+        one.includes(",") ||
+        one.trim().startsWith("-") ||
+        "error" in parseTarget(one)
+      ) {
         return {
           lines: [
             `"${String(one)}" is not a target: a target is <backend>:<model>, from the model list.`,

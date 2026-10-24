@@ -36620,13 +36620,9 @@ async function projectGatewayProfile(action, body) {
   if (!isProfileName(profile)) {
     return { lines: [`"${String(body.profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
   }
-  const slots = SLOT_ORDER.map(slotName2);
   const slot = typeof body.slot === "string" ? body.slot : "";
-  if (!slots.includes(slot)) {
-    return {
-      lines: [`"${String(body.slot)}" is not a slot: the slots are ${slots.join(", ")}.`],
-      ok: false
-    };
+  if (slotKeyFromArg(slot) === null) {
+    return { lines: [`${notSlotName(String(body.slot))}.`], ok: false };
   }
   if (body.kind === "fallback") {
     if (typeof body.on !== "boolean")
@@ -36653,7 +36649,7 @@ async function projectGatewayProfile(action, body) {
       };
     }
     for (const one of targets) {
-      if (typeof one !== "string" || !/^[^\s,-][^\s,]*$/.test(one)) {
+      if (typeof one !== "string" || one.includes(",") || one.trim().startsWith("-") || "error" in parseTarget(one)) {
         return {
           lines: [
             `"${String(one)}" is not a target: a target is <backend>:<model>, from the model list.`
@@ -38867,17 +38863,33 @@ async function jobsAnswerFor(deps) {
 }
 
 // src/portal/api/project-gateway.ts
+function wordsOf2(decision) {
+  if (decision.state !== "other" || decision.url === null)
+    return decisionWords(decision);
+  const address = backendAddress(decision.url);
+  return `another address: ${address === null ? "(not a URL)" : shownValue(address)}`;
+}
+function withoutRawAddresses(text, view) {
+  let out = text;
+  for (const file of view.files) {
+    if (file.url === null)
+      continue;
+    const address = backendAddress(file.url);
+    out = out.replaceAll(shownValue(file.url), address === null ? "(not a URL)" : shownValue(address));
+  }
+  return out;
+}
 function decisionOf(decision, view, home) {
   return {
     from: projectSourceWords(decision, home, view),
     profile: decision.profile,
     source: decision.source,
     state: decision.state,
-    words: decisionWords(decision)
+    words: wordsOf2(decision)
   };
 }
 function fileOf(file, view, home) {
-  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : decisionWords({
+  const holds = file.problem !== null ? `cannot be read (${file.problem})` : file.url === null ? "sets nothing" : wordsOf2({
     ...urlMeaning(file.url, view.routerUrl),
     source: file.kind,
     url: file.url
@@ -38891,6 +38903,7 @@ function profileOf(config, name) {
   const view = profileView(config, name) ?? config;
   const keys = [
     ...SLOT_ORDER.map((one) => `cc-smart-dev-kit-${slotName2(one)}`),
+    ...Object.keys(config.slots),
     ...Object.keys(profile.slots ?? {})
   ];
   return {
@@ -38961,11 +38974,29 @@ function notesOf(view, config, home) {
   }
   if (view.effective.state === "other") {
     notes.push({
-      text: `This project's sessions send their requests to another address: ${COMMAND} does not set it, and will not replace it. Remove it by hand to choose here.`,
+      text: `This project's sessions send their requests to another address, which ${COMMAND} did not set and never replaces: remove it by hand, or set the state in a file that decides before it.`,
       tone: "warn"
     });
   }
   return notes;
+}
+function writesOf(view, config, configured, paths, team) {
+  const refusal = (state) => {
+    const plan = planProjectChange(view, {
+      config,
+      configPath: paths.gatewayConfigFile,
+      home: paths.home,
+      request: { folder: view.folder, profile: null, state, team },
+      stateDir: paths.stateDir
+    });
+    if ("error" in plan)
+      return withoutRawAddresses(plan.error, view);
+    if (state === "on" && !configured) {
+      return "On needs this machine's gateway, and it is not set up: set it up on Machine first.";
+    }
+    return null;
+  };
+  return { default: refusal("default"), off: refusal("off"), on: refusal("on") };
 }
 async function projectGatewayAnswerFor(deps, id) {
   const list = await projectsList(projectsWorldOf(deps));
@@ -38983,7 +39014,11 @@ async function projectGatewayAnswerFor(deps, id) {
     effective: decisionOf(view.effective, view, paths.home),
     files: view.files.map((file) => fileOf(file, view, paths.home)),
     notes: notesOf(view, deps.found, paths.home),
-    onAllowed: configured && view.checkout !== null && view.checkout.personalTracked !== true,
+    personalTracked: view.checkout?.personalTracked ?? null,
+    refusals: {
+      personal: writesOf(view, config, configured, paths, false),
+      team: writesOf(view, config, configured, paths, true)
+    },
     profile: view.effective.state === "on" && view.effective.profile !== null ? profileOf(config, view.effective.profile) : null,
     profiles: view.profiles,
     writable: view.checkout !== null

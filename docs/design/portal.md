@@ -308,12 +308,18 @@ yet. Nothing carries a key or a prompt.
 **A project's gateway, and the two actions that change it** (GP4b, D29):
 `projects/<id>/gateway` (`src/portal/api/project-gateway.ts`) answers the project's own choice
 and what a session started in its folder effectively gets, each in `gateway project status`'
-own words (`decisionWords`, `projectSourceWords`) — an address that is neither Anthropic's nor
-the router's is masked there, so no raw URL reaches the page — every settings file read with
-what it holds, and the notes that change what the card may do: no checkout, a file that cannot
-be read (`unknown`), no gateway config, a personal file git tracks (on is refused), a key or
-`apiKeyHelper` that replaces the login (on and off are refused), a profile the router does not
-have (its requests answer as plain Claude), another gateway's address. It reads the state with
+own words (`decisionWords`, `projectSourceWords`) — except another gateway's address, which a
+page gets as `backendAddress` gives one (no user name, password, query or fragment) through
+`shownValue` — every settings file read with what it holds, whether git tracks the personal
+file (then what is written there is committed), and the notes: no checkout, a file that cannot
+be read (`unknown`), no gateway config, a personal file git tracks, a key or `apiKeyHelper` that
+replaces the login, a profile the router does not have (its requests answer as plain Claude),
+another gateway's address. **What the card may offer is the command's own answer:** `refusals`
+holds, per file (personal, team) and state (on, off, default), the refusal of
+`planProjectChange` — the planner `gateway project` runs before it writes, pure over the state
+just read — with its addresses stripped the same way, or null where it would write; on also
+needs this machine's gateway. The command plans again under its lock when it runs, so this is
+what the card offers, never what it trusts. It reads the state with
 `projectGatewayStateAsync`, **the awaited twin of the one reader** (`src/gateway/project-state.ts`:
 `locateCheckoutAsync` and an `ls-files` through `Bun.spawn`; every other step is the same code),
 so the read never blocks the server. When the effective address names a profile, the answer
@@ -594,9 +600,13 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   only), with a profile when On. Each choice is a `ChoiceSwitch` (`choice-switch.tsx`, the one
   segmented radio group; the Slots page's Claude/Custom `ModeSwitch` is one of its uses): every
   state named, the arrow keys move, an option that cannot be chosen stays focusable and says
-  why. The form starts from the project's own choice; Apply asks first and says what reaches a
-  running session (GP0's P7: a changed address within about a second, a removed one — Default —
-  only after a restart). When the address names a profile, its slots are listed with what
+  why — the command's own refusal for that file (`refusals`). The form starts from the project's
+  own choice and offers nothing until a change is chosen (so another gateway's address, or a
+  file that cannot be read, is never "fixed" by an Apply nobody asked for). The personal file's
+  words say it is committed when git tracks it. Apply asks first and says what reaches a running
+  session (GP0's P7, proved for a file that existed at the session's start: a changed address
+  within about a second — restart a session that started before the file existed — and a
+  removed one, Default, only after a restart). When the address names a profile, its slots are listed with what
   answers each (its own chain, Claude in the profile, or this machine's chain) and the fallback
   switch; a slot's Change opens the Slots page's own `ChainEditor` (the model list is
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change

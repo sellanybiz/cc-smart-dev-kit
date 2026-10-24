@@ -157,6 +157,17 @@ function decision(
 }
 
 const ROUTER = "http://127.0.0.1:20100";
+
+/** A file where the command writes every state. */
+const NOTHING_REFUSED = { default: null, off: null, on: null };
+
+/** The command's refusal of on in a team file, in its planner's words. */
+const TEAM_ON =
+  "a team file never points teammates at one person's local router: on each teammate's machine, 127.0.0.1 is their own computer, so their sessions would fail or reach whatever listens on that port. Set this project's state for yourself (no --team), or put off or default in the team file.";
+
+/** Every state refused, as the planner refuses a folder outside git. */
+const NOT_GIT_WORDS = `${ROOT.replace("/code", "/somewhere")} is not in a git project: a project's gateway state lives in its .claude/ folder, beside the checkout. Run this inside a git project.`;
+const NOT_GIT = { default: NOT_GIT_WORDS, off: NOT_GIT_WORDS, on: NOT_GIT_WORDS };
 const MACHINE_FILE = "~/.claude/settings.json";
 
 /**
@@ -183,7 +194,8 @@ function gatewayPagesFor(rows: ProjectListRow[]): Record<string, ProjectGatewayA
     const base = {
       configured: true,
       notes: [],
-      onAllowed: true,
+      personalTracked: false,
+      refusals: { personal: NOTHING_REFUSED, team: { ...NOTHING_REFUSED, on: TEAM_ON } },
       profile: null,
       profiles: ["cheap", "night-shift"],
       writable: true,
@@ -273,7 +285,14 @@ function gatewayPagesFor(rows: ProjectListRow[]): Record<string, ProjectGatewayA
             tone: "warn",
           },
         ],
-        onAllowed: false,
+        personalTracked: true,
+        refusals: {
+          personal: {
+            ...NOTHING_REFUSED,
+            on: `${project.path}/.claude/settings.local.json is committed in this project (git tracks it), so a router address written here would be committed with it. Untrack it first: git rm --cached -- .claude/settings.local.json`,
+          },
+          team: { ...NOTHING_REFUSED, on: TEAM_ON },
+        },
       };
     } else {
       const unknown = decision(
@@ -305,7 +324,8 @@ function gatewayPagesFor(rows: ProjectListRow[]): Record<string, ProjectGatewayA
             tone: "bad",
           },
         ],
-        onAllowed: false,
+        personalTracked: null,
+        refusals: { personal: NOT_GIT, team: NOT_GIT },
         writable: false,
       };
     }

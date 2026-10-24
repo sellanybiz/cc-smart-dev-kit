@@ -19,7 +19,11 @@
 
 import { COMMAND } from "../../build-info";
 import { tildify } from "../../cli/paths";
-import { projectSourceWords, projectStateOfAsync } from "../../gateway/commands-project";
+import {
+  planProjectChange,
+  projectSourceWords,
+  projectStateOfAsync,
+} from "../../gateway/commands-project";
 import { fallbackOn, type GatewayConfig, profileView } from "../../gateway/config";
 import {
   decisionWords,
@@ -29,6 +33,7 @@ import {
   type SettingsFileState,
   urlMeaning,
 } from "../../gateway/project-state";
+import { backendAddress, shownValue } from "../../gateway/settings";
 import { SLOT_ORDER, slotName } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { projectsList, projectsWorldOf } from "./projects";
@@ -37,8 +42,38 @@ import type {
   ProjectGatewayDecision,
   ProjectGatewayFile,
   ProjectGatewayNote,
+  ProjectGatewayWrites,
   ProjectProfile,
 } from "./types";
+
+/**
+ * A decision in the command's words (`decisionWords`), except another gateway's address: a page
+ * gets it as `backendAddress` gives one — no user name, password, query or fragment, where a key
+ * can ride — then `shownValue`, as every address a page shows (`.claude/rules/portal.md`).
+ */
+function wordsOf(decision: GatewayDecision): string {
+  if (decision.state !== "other" || decision.url === null) return decisionWords(decision);
+  const address = backendAddress(decision.url);
+  return `another address: ${address === null ? "(not a URL)" : shownValue(address)}`;
+}
+
+/**
+ * The command's own words with every settings file's address as a page may show it: the planner
+ * quotes another gateway's address through `shownValue`, which keeps a short query token, so each
+ * one becomes its `backendAddress` form here.
+ */
+function withoutRawAddresses(text: string, view: ProjectGatewayState): string {
+  let out = text;
+  for (const file of view.files) {
+    if (file.url === null) continue;
+    const address = backendAddress(file.url);
+    out = out.replaceAll(
+      shownValue(file.url),
+      address === null ? "(not a URL)" : shownValue(address),
+    );
+  }
+  return out;
+}
 
 /** One decision as the page reads it: the command's two lines, and nothing raw. */
 function decisionOf(
@@ -51,7 +86,7 @@ function decisionOf(
     profile: decision.profile,
     source: decision.source,
     state: decision.state,
-    words: decisionWords(decision),
+    words: wordsOf(decision),
   };
 }
 
@@ -66,7 +101,7 @@ function fileOf(
       ? `cannot be read (${file.problem})`
       : file.url === null
         ? "sets nothing"
-        : decisionWords({
+        : wordsOf({
             ...urlMeaning(file.url, view.routerUrl),
             source: file.kind,
             url: file.url,
@@ -86,8 +121,11 @@ function profileOf(config: GatewayConfig | null, name: string): ProjectProfile {
       : undefined;
   if (config === null || profile === undefined) return { exists: false, name, slots: [] };
   const view = profileView(config, name) ?? config;
+  // The Slots page's slots in its order, then the machine's own slots (they answer in the
+  // profile with the machine's chain) and any other slot the profile names.
   const keys = [
     ...SLOT_ORDER.map((one) => `cc-smart-dev-kit-${slotName(one)}`),
+    ...Object.keys(config.slots),
     ...Object.keys(profile.slots ?? {}),
   ];
   return {
@@ -167,11 +205,42 @@ function notesOf(
   }
   if (view.effective.state === "other") {
     notes.push({
-      text: `This project's sessions send their requests to another address: ${COMMAND} does not set it, and will not replace it. Remove it by hand to choose here.`,
+      text: `This project's sessions send their requests to another address, which ${COMMAND} did not set and never replaces: remove it by hand, or set the state in a file that decides before it.`,
       tone: "warn",
     });
   }
   return notes;
+}
+
+/**
+ * What `gateway project <state>` would refuse in one file, from its own planner
+ * (`planProjectChange`, pure over the state just read): null where it would write. The
+ * command plans again under its lock when it runs, so this is what the card offers, never what
+ * it trusts. `on` also needs this machine's gateway: without a config the command's router check
+ * would fail, so the card says so first.
+ */
+function writesOf(
+  view: ProjectGatewayState,
+  config: GatewayConfig | null,
+  configured: boolean,
+  paths: { gatewayConfigFile: string; home: string; stateDir: string },
+  team: boolean,
+): ProjectGatewayWrites {
+  const refusal = (state: "default" | "off" | "on"): null | string => {
+    const plan = planProjectChange(view, {
+      config,
+      configPath: paths.gatewayConfigFile,
+      home: paths.home,
+      request: { folder: view.folder, profile: null, state, team },
+      stateDir: paths.stateDir,
+    });
+    if ("error" in plan) return withoutRawAddresses(plan.error, view);
+    if (state === "on" && !configured) {
+      return "On needs this machine's gateway, and it is not set up: set it up on Machine first.";
+    }
+    return null;
+  };
+  return { default: refusal("default"), off: refusal("off"), on: refusal("on") };
 }
 
 /**
@@ -198,7 +267,11 @@ export async function projectGatewayAnswerFor(
     effective: decisionOf(view.effective, view, paths.home),
     files: view.files.map((file) => fileOf(file, view, paths.home)),
     notes: notesOf(view, deps.found, paths.home),
-    onAllowed: configured && view.checkout !== null && view.checkout.personalTracked !== true,
+    personalTracked: view.checkout?.personalTracked ?? null,
+    refusals: {
+      personal: writesOf(view, config, configured, paths, false),
+      team: writesOf(view, config, configured, paths, true),
+    },
     profile:
       view.effective.state === "on" && view.effective.profile !== null
         ? profileOf(config, view.effective.profile)

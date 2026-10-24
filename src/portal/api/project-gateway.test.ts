@@ -131,7 +131,18 @@ describe("a project's gateway answer (GP4b)", () => {
     });
     expect(answer.effective.state).toBe("default");
     expect(answer.configured).toBe(false);
-    expect(answer.onAllowed).toBe(false);
+    // Off and default write; on needs the gateway, and the team file never takes on.
+    expect(answer.refusals.personal).toEqual({
+      default: null,
+      off: null,
+      on: "On needs this machine's gateway, and it is not set up: set it up on Machine first.",
+    });
+    expect(answer.refusals.team.default).toBeNull();
+    expect(answer.refusals.team.off).toBeNull();
+    expect(answer.refusals.team.on).toStartWith(
+      "a team file never points teammates at one person's local router",
+    );
+    expect(answer.personalTracked).toBe(false);
     expect(answer.writable).toBe(true);
     expect(answer.profile).toBeNull();
     expect(answer.profiles).toEqual([]);
@@ -162,7 +173,7 @@ describe("a project's gateway answer (GP4b)", () => {
     });
     expect(answer.effective).toEqual(answer.choice);
     expect(answer.configured).toBe(true);
-    expect(answer.onAllowed).toBe(true);
+    expect(answer.refusals.personal).toEqual({ default: null, off: null, on: null });
     expect(answer.profiles).toEqual(["cheap"]);
     expect(answer.profile).toEqual({
       exists: true,
@@ -235,7 +246,13 @@ describe("a project's gateway answer (GP4b)", () => {
     writeSettings(join(root, ".claude", "settings.local.json"), {});
     git(root, "add", "-f", ".claude/settings.local.json");
     const answer = await answerOf(deps, root);
-    expect(answer.onAllowed).toBe(false);
+    expect(answer.personalTracked).toBe(true);
+    // The command refuses on there, and writes off and default: the card says they are committed.
+    expect(answer.refusals.personal.on).toBe(
+      `${join(root, ".claude", "settings.local.json")} is committed in this project (git tracks it), so a router address written here would be committed with it. Untrack it first: git rm --cached -- .claude/settings.local.json`,
+    );
+    expect(answer.refusals.personal.off).toBeNull();
+    expect(answer.refusals.personal.default).toBeNull();
     expect(answer.notes).toContainEqual({
       text: "Git tracks this project's personal file (.claude/settings.local.json), so a router address written there would be committed with it: on is refused until it is untracked (git rm --cached -- .claude/settings.local.json).",
       tone: "warn",
@@ -261,6 +278,10 @@ describe("a project's gateway answer (GP4b)", () => {
     const { deps, home } = await world(root, true);
     writeSettings(join(root, ".claude", "settings.json"), { apiKeyHelper: "echo key" });
     const answer = await answerOf(deps, root);
+    // The command's own refusal, in both files, for on and off; default is still written.
+    const refused = `apiKeyHelper is set in ${join(root, ".claude", "settings.json").replace(home, "~")}: a gateway is never pointed at a project, and a project is never turned off, while a key or a helper replaces your own Claude login. Remove it by hand first (cc-smart-dev-kit gateway status shows it too).`;
+    expect(answer.refusals.personal).toEqual({ default: null, off: refused, on: refused });
+    expect(answer.refusals.team.off).toBe(refused);
     expect(answer.notes).toContainEqual({
       text: `apiKeyHelper is set in ${join(root, ".claude", "settings.json").replace(home, "~")}: it replaces your own Claude login, so this project cannot be turned on or off until it is removed by hand.`,
       tone: "warn",
@@ -277,6 +298,35 @@ describe("a project's gateway answer (GP4b)", () => {
     const answer = await answerOf(deps, root);
     expect(answer.choice.state).toBe("other");
     expect(JSON.stringify(answer)).not.toContain(secret);
+    // Another gateway's address is the command's to refuse: on and off are not written over it.
+    expect(answer.refusals.personal.on).toContain("is not this command's to replace");
+    expect(answer.refusals.personal.off).toContain("is not this command's to replace");
+  });
+
+  test("another address reaches the page with no user name, query or fragment", async () => {
+    const root = repo("pg-other-query");
+    const { deps } = await world(root, true);
+    writeSettings(join(root, ".claude", "settings.local.json"), {
+      env: { ANTHROPIC_BASE_URL: "https://gw.example.com/v1?key=abc123def#frag" },
+    });
+    const answer = await answerOf(deps, root);
+    expect(answer.choice.words).toBe("another address: https://gw.example.com/v1");
+    expect(answer.files[0]?.holds).toBe("another address: https://gw.example.com/v1");
+    expect(JSON.stringify(answer)).not.toContain("abc123def");
+  });
+
+  test("a folder that is no git project is no row: its gateway answer is the plain refusal", async () => {
+    const plain = join(tempDir("pg-plain"), "notes");
+    mkdirSync(plain, { recursive: true });
+    const { deps, paths } = await world(repo("pg-plain-other"), true);
+    await addProjectRoot(paths, plain);
+    forgetProjectsList();
+    const answer = await projectGatewayAnswerFor(deps, idOf(plain));
+    // An added folder that is no git project is still listed only when git knows it: the list
+    // folds by checkout, so a plain folder is no row and the answer is the plain refusal.
+    expect(answer).toEqual({
+      error: `no project has the id "${idOf(plain)}"; the list on /api/projects names them`,
+    });
   });
 
   test("the route answers by id, and an unknown id is a 404 in words", async () => {

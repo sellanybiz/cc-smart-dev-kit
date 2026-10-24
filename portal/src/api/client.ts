@@ -162,7 +162,26 @@ export function mockClient(scenario: MockScenario): PortalClient {
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         // A machine with no gateway: the card shows what a project can still be, off or default.
         return scenario === "no-gateway"
-          ? { ...found, configured: false, onAllowed: false, profile: null, profiles: [] }
+          ? {
+              ...found,
+              configured: false,
+              notes: [
+                ...found.notes,
+                {
+                  text: "This machine's gateway is not set up (~/.config/cc-smart-dev-kit/gateway.json does not exist), so a project can be off or default here, never on.",
+                  tone: "info" as const,
+                },
+              ],
+              refusals: {
+                ...found.refusals,
+                personal: {
+                  ...found.refusals.personal,
+                  on: "On needs this machine's gateway, and it is not set up: set it up on Machine first.",
+                },
+              },
+              profile: null,
+              profiles: [],
+            }
           : found;
       }),
     projectWorkflow: (id) =>

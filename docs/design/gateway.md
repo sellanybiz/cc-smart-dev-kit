@@ -19,8 +19,8 @@ An optional local router between Claude Code and the model providers
   gives a profile its chains. One reader, `projectGatewayState` (`src/gateway/project-state.ts`),
   answers a folder's own choice and what a session there effectively gets, for the commands
   (GP4a adds `doctor`'s one-line-per-project report and `gateway off`'s "still on" lines on the
-  same reader, and the portal's project card follows on it); a file it cannot read is
-  `unknown`, never a guess.
+  reader's awaited twin `projectGatewayStateAsync`, and the portal's Gateway card on it too); a
+  file it cannot read is `unknown`, never a guess.
   `docs/gateway.md` § Per project, and the rules in `.claude/rules/gateway.md`.
 - **One session can take another path** (GP3): `cc-smart-dev-kit launch` writes a `--settings`
   file holding only `env.ANTHROPIC_BASE_URL` and starts `claude` with it, attached to the
