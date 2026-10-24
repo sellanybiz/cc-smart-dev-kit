@@ -56,7 +56,7 @@ session you start yourself.
 1. Each change has a test, seen failing first: delivered to a running session; recorded only (the
    `SendMessage` line printed); a correction; a closed question refused; a stopped session resumed.
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
-3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `opus` at
-   `xhigh` (it drives sessions on the person's machine).
+3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
+   `high`.
 4. Commit a checkpoint after each green step. Never send an empty report.
 5. Before you report, stop every background check and every test session you started.

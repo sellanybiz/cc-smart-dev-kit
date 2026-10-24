@@ -67,8 +67,8 @@ every settings file comes from the test's temporary folder.
    window); a model id with a suffix; past `alerts.usagePercent` (the warn colour); no context data
    (no segment); a settings file that is not valid JSON (no crash, the model's window).
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
-3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `opus` at
-   `xhigh`.
+3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
+   `high`.
 4. Commit a checkpoint after each green step. Never send an empty report.
 5. Before you report, stop every background check you started. In the report's `needsLead`, the
    owner's check: the footer in a live session, before and after `/autocompact`.

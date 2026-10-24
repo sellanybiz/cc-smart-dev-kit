@@ -371,8 +371,12 @@ Close (before 2026-10-25): integration review, 1.2.0, the release skill, the own
 Branch `release-1.2.1`, cut from `main` after 1.2.0's merge. Merged in first, in this order:
 `release-1.1.3` (CL1, CL1F), `crew/CL2-cleanup-rest-10` (`6cad48b`), `crew/CL2B-hook-boundary`
 (`2953b08`; the old lead's full check on its branch: 6,246 pass, 0 fail, though its report said
-red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR1 started early), each on opus `xhigh`
-(the owner's word for every crew phase). The owner picked all twelve follow-ups (2026-10-25); JW1 came later the same night.
+red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR1 started early),
+each on its kind's own model (Claude Sonnet through the worker slot for `build`, `tests` and
+`security`), reviewers on `sonnet` `high`, SC1's on `opus` `xhigh` (the router). The owner,
+2026-10-25: Sonnet answers again (the "until Oct 29" limit had cleared), so the "opus `xhigh` for
+every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all twelve follow-ups
+(2026-10-25); JW1, SL1 and MC1 came later the same night.
 
 | Phase | Kind | What |
 |---|---|---|
@@ -385,6 +389,7 @@ red), EF2 (`784d67b`), WF1, AR1. Then the phases below start at once from it (AR
 | AR1 a finished crew session leaves `/resume` (the owner's ask; from `crew/CL2B-hook-boundary`, started at once) | build | On removal the conversation (its `.jsonl`, its subagent folder, the empty project folder) moves to `<state>/crew-archive/<repo>/<crew id>/`, compressed, beside the report; pruned after `crew.archiveDays` (7); unmerged work only on removal; leads never; a one-time sweep in `sessions --finished`; the transcript readers decide; a contract row, and the owner's `/resume` check. Brief `briefs/ar1.md`. |
 | JW1 `workflow set` keeps the project file's layout | build | `workflow set\|unset --project` rewrote `.claude/cc-smart-dev-kit.json` in a layout Biome refuses (a one-line array became three), so a project's `bun run check` fails; one edit that keeps untouched lines byte for byte, for every writer of that file and the personal one; a new dependency only with the owner's yes. Brief `briefs/jw1.md`. |
 | SL1 the status line always shows the context use (the owner's ask) | build | One segment (`ctx 312k · 78% of 400k`), measured against Claude Code's `modelSettings.<model>.autoCompactWindow` when set (the owner's `/autocompact 400000`), else the model's window; read-only, once per refresh; the warn colour from `alerts.usagePercent`; none without context data; the contract row extended. Brief `briefs/sl1.md`. |
+| MC1 the lead changes a crew session's model or effort (the owner's ask) | build | Today only `crew start` sets them, and a person's `/model` in an attached session leaves the record wrong. One command: the launch policy's checks, the caps re-checked on a tier change, a running session stopped and resumed with the new flags through WF1's one resume path, the record updated in the same write; proved first (`--resume` with `--model`/`--effort`, and the crew `--settings` file). Brief `briefs/mc1.md`. |
 | SC1 the router ends a stalled stream | security | A mid-stream idle limit (`timeouts.streamIdleMs`), proved first against Claude Code's retry; `router.js` changes. Brief `briefs/sc1.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its

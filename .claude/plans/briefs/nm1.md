@@ -57,7 +57,7 @@ or run git in another worktree.
 
 1. Each fix has a test, seen failing first.
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
-3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `opus` at
-   `xhigh`.
+3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
+   `high`.
 4. Commit a checkpoint after each green fix. Never send an empty report.
 5. Before you report, stop every background check you started.

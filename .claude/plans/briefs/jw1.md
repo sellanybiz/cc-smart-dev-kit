@@ -51,7 +51,7 @@ or run git in another worktree. Tests never touch the real `~/.claude`, `~/.conf
    on one line; a file with 4-space indent and one with tabs; a key added to an empty object; an
    invalid file refused.
 2. `bun run build`, then `bun run check` and both `claude plugin validate … --strict`.
-3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `opus` at
-   `xhigh` (it writes a project's own files).
+3. Your own review, then one second opinion: the `cc-smart-dev-kit:reviewer` agent on `sonnet` at
+   `high`.
 4. Commit a checkpoint after each green step. Never send an empty report.
 5. Before you report, stop every background check you started.
