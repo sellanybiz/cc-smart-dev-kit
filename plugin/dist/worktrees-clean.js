@@ -7020,6 +7020,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -8123,9 +8132,6 @@ function crewRecordsOf(paths, repo) {
   } catch {
     return [];
   }
-}
-function crewOfWorktree(records, path) {
-  return records.find((one) => samePath(one.worktree, path)) ?? null;
 }
 function isCrewWorktree(worktree, records) {
   if (worktree.state === "main" || worktree.state === "gone")

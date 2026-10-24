@@ -21466,6 +21466,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath3(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"];
 function questionClosed(state) {
   return QUESTION_CLOSED_STATES.includes(state);
@@ -28092,16 +28101,16 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
-  let crewWorktrees = [];
+  let crewRecords = [];
   try {
-    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+    crewRecords = listCrew(paths.stateDir, repo).records;
   } catch {
-    crewWorktrees = [];
+    crewRecords = [];
   }
   const finished = [];
   const gone = [];
   for (const listed of linked) {
-    if (crewWorktrees.some((path) => samePath3(path, listed.path)))
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
       continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
@@ -28442,6 +28451,7 @@ function stateSince(record, events) {
   return stateEvent?.at ?? record.updatedAt;
 }
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
 // src/crew/diff.ts
 var GIT_TIMEOUT_MS3 = 20000;
 

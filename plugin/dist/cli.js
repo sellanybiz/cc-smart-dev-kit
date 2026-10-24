@@ -24202,6 +24202,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath3(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var QUESTION_CLOSED_STATES = ["done", "failed", "handoff", "merged", "removed"];
 function questionClosed(state) {
   return QUESTION_CLOSED_STATES.includes(state);
@@ -31814,16 +31823,16 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
-  let crewWorktrees = [];
+  let crewRecords = [];
   try {
-    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+    crewRecords = listCrew(paths.stateDir, repo).records;
   } catch {
-    crewWorktrees = [];
+    crewRecords = [];
   }
   const finished = [];
   const gone = [];
   for (const listed of linked) {
-    if (crewWorktrees.some((path) => samePath3(path, listed.path)))
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
       continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
@@ -32811,9 +32820,6 @@ function crewRecordsOf(paths, repo) {
     return [];
   }
 }
-function crewOfWorktree(records, path) {
-  return records.find((one) => samePath3(one.worktree, path)) ?? null;
-}
 function isCrewWorktree(worktree, records) {
   if (worktree.state === "main" || worktree.state === "gone")
     return false;
@@ -32826,15 +32832,13 @@ function crewWorktreeStep(record) {
     case "done":
       return `done, waiting for its lead's merge; then \`${COMMAND} crew rm\` or the watch removes it`;
     case "handoff":
-      return `handed off; it goes once its continuation and the lead's merge are past`;
+      return `handed off; \`${COMMAND} crew rm\` or the watch removes it once its work is merged`;
     case "failed":
-      return `failed; its lead removes it with \`${COMMAND} crew rm\` once its work is merged`;
+      return `failed; \`${COMMAND} crew rm\` or the watch removes it once its work is merged`;
     case "stopped":
       return `stopped; its removal is its lead's call (\`${COMMAND} crew rm\`)`;
     case "queued":
       return "queued; it has not started";
-    case "removed":
-      return `removed already; a folder it left behind is finished by \`${COMMAND} worktrees --clean\``;
     default:
       return `still running (${record.state}); its lead's watch ends it, and removes it once merged`;
   }
@@ -35771,6 +35775,7 @@ var WATCH_POLL_MS = 20000;
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var OVER_STATES = ["done", "failed", "handoff", "merged", "stopped"];
 var PARKED_PASS_MS = 5 * 60000;
+var PARKED_SAID_KEY = "watch:parked";
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -36108,9 +36113,9 @@ async function watchPass(state, ctx, scope) {
       finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
     } catch (error) {
       const line = `crew watch: could not look for folders a removal left half done: ${reasonOf3(error)}`;
-      if (said.parked !== line) {
+      if (said[PARKED_SAID_KEY] !== line) {
         ctx.error(line);
-        said.parked = line;
+        said[PARKED_SAID_KEY] = line;
       }
     }
   }

@@ -8885,6 +8885,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (one.state === "removed" || !samePath(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -15977,16 +15986,16 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
-  let crewWorktrees = [];
+  let crewRecords = [];
   try {
-    crewWorktrees = listCrew(paths.stateDir, repo).records.map((one) => one.worktree);
+    crewRecords = listCrew(paths.stateDir, repo).records;
   } catch {
-    crewWorktrees = [];
+    crewRecords = [];
   }
   const finished = [];
   const gone = [];
   for (const listed of linked) {
-    if (crewWorktrees.some((path) => samePath(path, listed.path)))
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
       continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
@@ -16279,6 +16288,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
 }
 // src/crew/board.ts
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
