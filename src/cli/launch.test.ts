@@ -308,15 +308,52 @@ describe("launch", () => {
     expect(runLog(home)).toEqual([]);
   });
 
-  test("--gateway asks no router: a plain gateway URL needs no feature", async () => {
+  test("--gateway asks the router's health page once, and needs no feature from it", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const asked: string[] = [];
+    // A 1.1.x router lists no features: a plain gateway URL works there, so it still launches.
+    const old = healthOf("old");
+    const ctx = context(home, {
+      fetch: (url, init) => {
+        asked.push(url);
+        return old(url, init);
+      },
+    });
+    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(asked).toEqual([`${ROUTER_URL}/__cc-smart-dev-kit/health`]);
+    expect(ctx.printed).toEqual([`launch: the gateway · ${ROUTER_URL}`]);
+  });
+
+  test("--gateway on a router that does not answer runs nothing, and names gateway setup", async () => {
+    // The config is there but nothing listens: after a full `restore` (it keeps gateway.json),
+    // or a stopped service. A session would retry its connection for minutes, saying nothing.
     const home = world();
     gatewayConfig(home, []);
     const ctx = context(home, {
       fetch: async () => {
-        throw new Error("launch --gateway must not ask the router");
+        throw new TypeError("Unable to connect");
       },
     });
-    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(await runLaunch(["--gateway"], ctx)).toBe(1);
+    expect(ctx.errors).toEqual([
+      `launch: the router does not answer on 127.0.0.1:${TEST_PORT} (Unable to connect), so every request of the session would fail.`,
+      "Fix: cc-smart-dev-kit gateway setup",
+    ]);
+    expect(ctx.printed).toEqual([]);
+    expect(runLog(home)).toEqual([]);
+    expect(existsSync(join(home.stateDir, "launch"))).toBe(false);
+  });
+
+  test("--gateway on a router that answers an error page is refused the same way", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const ctx = context(home, { fetch: async () => new Response("down", { status: 503 }) });
+    expect(await runLaunch(["--gateway"], ctx)).toBe(1);
+    expect(ctx.errors[0]).toBe(
+      `launch: the router does not answer on 127.0.0.1:${TEST_PORT} (HTTP 503), so every request of the session would fail.`,
+    );
+    expect(runLog(home)).toEqual([]);
   });
 
   test("the settings file's name carries the process and the mode: two launches never clash", () => {

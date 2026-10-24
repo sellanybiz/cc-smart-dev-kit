@@ -19,7 +19,10 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   `launch`) is refused and `doctor` fails a project whose address names one.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
-  and changes nothing on disk.
+  and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and
+  stop with `gateway setup` as the fix when it does not answer (after a full `restore`, which
+  keeps `gateway.json`, the config is there but the router is not), instead of starting a session
+  whose every request fails.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
   so no session needs a restart. A second `restore` takes the key out. One exception: on a

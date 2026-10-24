@@ -281,7 +281,7 @@ cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claud
 | Mode | `env.ANTHROPIC_BASE_URL` in the session | The line it prints |
 |---|---|---|
 | `--no-gateway` | `https://api.anthropic.com`: Anthropic, on the person's own claude.ai login (P1) | `launch: plain Claude (no gateway) · …` |
-| `--gateway` | the machine's router, `http://127.0.0.1:<port>` from `gateway.json` | `launch: the gateway · …` |
+| `--gateway` | the machine's router, `http://127.0.0.1:<port>` from `gateway.json`, once its health page answers | `launch: the gateway · …` |
 | `--profile <name>` | the router with the profile, `…/p/<name>`, once its health page lists `profiles` (§ Profiles) | `launch: the gateway, profile "<name>" · …` |
 | none | no file and no `--settings`: the machine's and the project's settings decide, as for `claude` | `launch: this machine's settings · no --settings file` |
 
@@ -307,15 +307,22 @@ the command's.
 - **Refused, one line each with the fix:** `--profile` with a name `gateway.json` does not have
   (the line lists the profiles it has, and `gateway profile <name> slot …` makes one), a name
   `isProfileName` refuses, `--gateway` or `--profile` on a machine with no `gateway.json` yet
-  (`gateway setup`), a config that cannot be read, and `launch` itself **inside a Claude Code
+  (`gateway setup`), a config that cannot be read, a router that does not answer (below),
+  and `launch` itself **inside a Claude Code
   session** (`CLAUDECODE`): that would be a session inside a session, on a different path from
   the one that started it. A wrong option is a usage mistake (exit 2), never a guess.
 - **It does not replace its own process.** Bun has no `execve`, so the command stays in front of
   the session: the session gets the same stdin, stdout and stderr, and the command returns the
   session's exit code. The terminal sees one session either way.
-- **A stopped router is not refused here.** `--gateway` checks that the gateway is set up (its
-  config exists and reads), not that it answers: a router that is down is `gateway status` and
-  `doctor`'s question, and starting a session anyway is the person's choice.
+- **A router that does not answer is refused, in both gateway modes.** The config alone proves
+  nothing: `restore` keeps `gateway.json` and removes the router, and a stopped service leaves it
+  too. A session pointed at a silent port fails every request with a connection error that Claude
+  Code retries for minutes, with nothing to say why. So `--gateway` and `--profile` ask the
+  router's health page once before anything is written: no answer (a refused connection, a
+  timeout, an HTTP error) stops the launch with `launch: the router does not answer on
+  127.0.0.1:<port> (<why>) …` and the fix `gateway setup`. `--gateway` needs only an answer;
+  `--profile` also needs `profiles` in the page's `features`. `--no-gateway` and no mode ask
+  nothing: they do not use the router.
 - **Windows is unproved** (P11 is owed): the CLI writes the file before it starts `claude`, and
   a `claude.cmd` runs through `cmd.exe` on one quoted line (`claudeArgv`), so no `.cmd` launcher
   has to write a file first. The path and the quoting are tested; the live run is not.

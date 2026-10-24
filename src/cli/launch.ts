@@ -18,9 +18,11 @@
  * when the session ends.
  *
  * **What it will not do:** start a session inside a session (`CLAUDECODE`), guess a profile the
- * config does not have, point at a gateway this machine never set up, or point at a profile
- * while the running router does not know profiles (`routerFeature`). There is deliberately
- * no `--default`: a launch with no mode passes no `--settings`, and the machine's chain decides.
+ * config does not have, point at a gateway this machine never set up, point at a router that
+ * does not answer (a config with no router behind it: after `restore`, which keeps
+ * `gateway.json`, or a stopped service), or point at a profile while the running router does
+ * not know profiles (`routerFeature`). There is deliberately no `--default`: a launch with no
+ * mode passes no `--settings`, and the machine's chain decides.
  *
  * **Windows:** the CLI writes the file before it starts `claude`, and `cmd.exe` carries the
  * path on one quoted line (`claudeArgv`), so a `.cmd` launcher needs no write of its own.
@@ -32,7 +34,12 @@ import { COMMAND } from "../build-info";
 import { claudeArgv, findClaude } from "../crew/claude";
 import { writeJsonFile } from "../crew/store";
 import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
-import { type HealthFetch, routerFeature, routerLacksProfiles } from "../gateway/health";
+import {
+  type HealthFetch,
+  routerFeature,
+  routerHealth,
+  routerLacksProfiles,
+} from "../gateway/health";
 import { profileUrlOf, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl } from "../gateway/settings";
 import { isProfileName } from "../gateway/targets";
@@ -137,7 +144,7 @@ export interface LaunchContext {
   cwd: string;
   env: Env;
   error: (line: string) => void;
-  /** Asks the router's health page whether it knows profiles (`routerFeature`); a test's is a fake. */
+  /** Asks the router's health page: does it answer, and does it know profiles (`routerFeature`); a test's is a fake. */
   fetch: HealthFetch;
   /** The home folder: where the native installer puts `claude`. */
   home: string;
@@ -190,10 +197,21 @@ interface LaunchTarget {
   url: null | string;
 }
 
+/** The refusal for a router that gives no health answer; `why` says what the session would suffer. */
+function routerSilent(port: number, error: string, why: string): { lines: string[] } {
+  return {
+    lines: [
+      `launch: the router does not answer on 127.0.0.1:${port} (${error}), ${why}.`,
+      `Fix: ${COMMAND} gateway setup`,
+    ],
+  };
+}
+
 /**
  * The URL one mode names, or the lines that refuse it: an unknown profile, a malformed name,
- * a gateway this machine never set up, and a running router that does not know profiles are
- * each said here, with their fix, before anything is written or run.
+ * a gateway this machine never set up, a router that does not answer, and a running router
+ * that does not know profiles are each said here, with their fix, before anything is written
+ * or run.
  */
 async function launchTarget(
   mode: LaunchMode,
@@ -230,6 +248,14 @@ async function launchTarget(
   }
   const routerUrl = routerBaseUrl(config.port);
   if (mode.kind === "gateway") {
+    // The config alone proves nothing: `restore` keeps it and removes the router, and a stopped
+    // service leaves it too. Every request of a session pointed at a silent port fails with a
+    // connection error that Claude Code retries for minutes. Any answer will do: a plain
+    // gateway URL needs no feature of the router.
+    const health = await routerHealth(config.port, ctx.fetch);
+    if ("error" in health) {
+      return routerSilent(config.port, health.error, "so every request of the session would fail");
+    }
     return { line: `launch: the gateway · ${routerUrl}`, url: routerUrl };
   }
   if (!isProfileName(mode.name)) return { lines: [`launch: ${PROFILE_NAME_RULE}`] };
@@ -247,12 +273,7 @@ async function launchTarget(
   // sends `…/p/<name>/v1/messages` to Anthropic as it is: every request of the session fails.
   const known = await routerFeature(config.port, "profiles", ctx.fetch);
   if ("error" in known) {
-    return {
-      lines: [
-        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
-        `Fix: ${COMMAND} gateway setup`,
-      ],
-    };
+    return routerSilent(config.port, known.error, "so it cannot say it knows profiles");
   }
   if (!known.has) {
     return {

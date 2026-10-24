@@ -37455,6 +37455,14 @@ function removeSettingsFile(file, ctx) {
     ctx.error(`launch: its settings file could not be removed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+function routerSilent(port, error, why) {
+  return {
+    lines: [
+      `launch: the router does not answer on 127.0.0.1:${port} (${error}), ${why}.`,
+      `Fix: ${COMMAND} gateway setup`
+    ]
+  };
+}
 async function launchTarget(mode, ctx) {
   if (mode.kind === "default") {
     return { line: "launch: this machine's settings \xB7 no --settings file", url: null };
@@ -37486,6 +37494,10 @@ async function launchTarget(mode, ctx) {
   }
   const routerUrl = routerBaseUrl(config.port);
   if (mode.kind === "gateway") {
+    const health = await routerHealth(config.port, ctx.fetch);
+    if ("error" in health) {
+      return routerSilent(config.port, health.error, "so every request of the session would fail");
+    }
     return { line: `launch: the gateway \xB7 ${routerUrl}`, url: routerUrl };
   }
   if (!isProfileName(mode.name))
@@ -37502,12 +37514,7 @@ async function launchTarget(mode, ctx) {
   }
   const known = await routerFeature(config.port, "profiles", ctx.fetch);
   if ("error" in known) {
-    return {
-      lines: [
-        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
-        `Fix: ${COMMAND} gateway setup`
-      ]
-    };
+    return routerSilent(config.port, known.error, "so it cannot say it knows profiles");
   }
   if (!known.has) {
     return {
