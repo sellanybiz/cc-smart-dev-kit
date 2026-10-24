@@ -20,7 +20,11 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   and changes nothing on disk.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
-  so no session needs a restart. A second `restore` takes the key out.
+  so no session needs a restart. A second `restore` takes the key out. One exception: on a
+  machine that still has 0.4.3's retired model keys (`ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` and their names), the first `restore` removes them, and a
+  removal reaches a session only at its next start. Until you restart it, such a session sends a
+  slot name to Anthropic and fails; `restore` says so when it removes them.
 - **`doctor` shows each project's gateway state and its source,** and warns about a project file
   that names a slot or a backend model as Claude Code's model. `restore` also covers the keys the
   kit wrote into project files. `gateway off` lists the projects still switched on.
