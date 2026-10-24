@@ -94,7 +94,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import { isKitWord, kitArguments } from "./kit-invocation";
+import { isKitWord, kitArguments, namesKit } from "./kit-invocation";
 
 /** The shell tools, and the tools that edit a file. */
 export const ESCAPE_SHELL_TOOLS: readonly string[] = ["Bash", "PowerShell"];
@@ -245,7 +245,7 @@ interface ShellContext {
   paths: CliPaths;
   /** The input's `cwd`, or null; where a relative target is looked for, besides a `cd`'s. */
   cwd: string | null;
-  /** The line's text names the kit command as a token, never a path through its name (`KIT_WORD`). */
+  /** The line's text names the kit command as a token, never a path through its name (`namesKit`). */
   namesKit: boolean;
   /** The platform whose paths the line names (the hook's own; a test may pass another). */
   platform: NodeJS.Platform;
@@ -456,21 +456,6 @@ function innerKitPrefix(program: string, operands: readonly string[]): string[] 
 /** The question when the line names the kit command but its program is worked out at run time. */
 const COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
 
-/**
- * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too,
- * and so does a launcher named by its path, `/…/bin/${COMMAND}` or `${COMMAND}.cmd`), but never
- * a path that only passes through a folder of that name: a path separator may come before the
- * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
- * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
- * a crew session working in this repository, whose name every path holds). A token that ends a
- * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
- * `K=${COMMAND}`).
- */
-const KIT_WORD = new RegExp(
-  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`,
-  "i",
-);
-
 /** Why a question about a kit file is asked at all: the same sentence for an Edit and a command. */
 const SETTINGS_TAIL =
   "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
@@ -653,7 +638,7 @@ function judgeShell(
   const found: Findings = { denials: new Set(), asks: new Set() };
   const ctx: ShellContext = {
     cwd: stringField(input.cwd),
-    namesKit: KIT_WORD.test(command),
+    namesKit: namesKit(command),
     paths,
     platform,
     text: command,

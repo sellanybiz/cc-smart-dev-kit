@@ -29,6 +29,7 @@ import {
   writePersonalWorkflow,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { readBash } from "./bash-judge";
 import type { HookResult } from "./io";
 import { jobRouteHook } from "./specs";
 
@@ -451,6 +452,37 @@ describe("a crew session proposing a workflow change", () => {
     ]) {
       const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
       expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("RV4 finding 7: a computed program that merely ends in the word `workflow` is no proposal", async () => {
+    // Nothing on these lines names the kit: the word is a test filter and `gh`'s own subcommand.
+    // They were read as `workflow` with no subcommand, which `xargs cc-smart-dev-kit workflow`
+    // needs to be a possible proposal, and a crew session's test run was denied.
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of ['"$PY" -m pytest -k workflow', "$(which gh) workflow"]) {
+      expect({ command, propose: readBash(command).workflowPropose }).toEqual({
+        command,
+        propose: false,
+      });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("RV4 finding 7: a computed program the line names as the kit, with no subcommand, is still a possible proposal", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "K=cc-smart-dev-kit; $K workflow",
+      "echo propose | $(command -v cc-smart-dev-kit) workflow",
+      // The words `workflow propose` are the domain words: a computed program asks without them
+      // naming the kit anywhere.
+      "$KIT workflow propose autoCommit true",
+      // A subcommand worked out at run time is as unreadable as a missing one.
+      "$KIT workflow $SUB autoCommit true",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "deny" });
     }
   });
 });

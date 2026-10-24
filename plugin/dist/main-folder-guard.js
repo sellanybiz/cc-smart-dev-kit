@@ -15550,6 +15550,10 @@ var INERT = new Set([
   "which"
 ]);
 var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+function namesKit(text) {
+  return KIT_TOKEN.test(text);
+}
 function isKitWord(word) {
   return programName(word) === COMMAND || KIT_BUNDLE.test(word);
 }
@@ -15677,7 +15681,7 @@ function crewNeverRunOf(step) {
   const sub = words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : words[at + 1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
-function isWorkflowPropose(step) {
+function isWorkflowPropose(step, lineNamesKit) {
   const words = kitWordsOf(step);
   if (words === null)
     return false;
@@ -15685,7 +15689,9 @@ function isWorkflowPropose(step) {
   if (at === -1 || asksHelp(words.slice(at + 1)))
     return false;
   const sub = words[at + 1];
-  return sub === "propose" || sub === undefined || isComputedWord(sub);
+  if (sub === undefined)
+    return !step.computed || lineNamesKit;
+  return sub === "propose" || isComputedWord(sub);
 }
 function proposalOf(step, moved) {
   if (step.computed)
@@ -15814,12 +15820,13 @@ function readBash(command, dialect = "bash") {
   let workflowPropose = false;
   const proposals = [];
   const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
-    if (isWorkflowPropose(step)) {
+    if (isWorkflowPropose(step, lineNamesKit)) {
       workflowPropose = true;
       proposals.push(proposalOf(step, moved));
     }
@@ -17987,7 +17994,6 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -18087,7 +18093,7 @@ function judgeShell(input, paths, platform, crew) {
   const found = { denials: new Set, asks: new Set };
   const ctx = {
     cwd: stringField(input.cwd),
-    namesKit: KIT_WORD.test(command),
+    namesKit: namesKit(command),
     paths,
     platform,
     text: command

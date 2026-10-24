@@ -63,6 +63,32 @@ const INERT: ReadonlySet<string> = new Set([
 /** A bundle that is the kit's command or its portal, run by path (`bun …/dist/cli.js`). */
 const KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
 
+/**
+ * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too,
+ * and so does a launcher named by its path, `/…/bin/${COMMAND}` or `${COMMAND}.cmd`), but never
+ * a path that only passes through a folder of that name: a path separator may come before the
+ * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
+ * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
+ * a crew session working in this repository, whose name every path holds). A token that ends a
+ * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
+ * `K=${COMMAND}`).
+ */
+const KIT_TOKEN = new RegExp(
+  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`,
+  "i",
+);
+
+/**
+ * True when a line's text names the kit command as a token (`KIT_TOKEN`). A guard that meets a
+ * program the line works out when it runs (`$PY`, `$(which gh)`) reads that program as the kit
+ * only when this is true: without it, the words around a computed program are another program's
+ * (`"$PY" -m pytest -k workflow`), and a guard that read them as the kit's would ask or refuse
+ * a test run. `session-escape-guard` and `job-route`'s judge share this one test.
+ */
+export function namesKit(text: string): boolean {
+  return KIT_TOKEN.test(text);
+}
+
 /** True when a word names the kit command: the launcher by name or path, or its bundle. */
 export function isKitWord(word: string): boolean {
   return programName(word) === COMMAND || KIT_BUNDLE.test(word);

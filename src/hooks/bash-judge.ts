@@ -90,7 +90,7 @@ import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
-import { kitArguments } from "./kit-invocation";
+import { kitArguments, namesKit } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -325,14 +325,22 @@ function crewNeverRunOf(step: Step): CrewNeverRun | null {
  * read — a word the line works out when it runs (`workflow $SUB`), or none at all (`echo propose
  * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
  * than let through.
+ *
+ * **A computed program with no subcommand is the kit's only when the line names the kit**
+ * (`namesKit`, the test `session-escape-guard` makes too). Its words are all the judge has, and
+ * `workflow` at their end is as likely a test filter or another program's subcommand
+ * (`"$PY" -m pytest -k workflow`, `$(which gh) workflow`) as the kit's: a line that does not
+ * name the kit proposes nothing there. The words `workflow propose`, and a subcommand the line
+ * works out, keep their reading: they are the kit's own domain words.
  */
-function isWorkflowPropose(step: Step): boolean {
+function isWorkflowPropose(step: Step, lineNamesKit: boolean): boolean {
   const words = kitWordsOf(step);
   if (words === null) return false;
   const at = kitWordAt(words, step, "workflow");
   if (at === -1 || asksHelp(words.slice(at + 1))) return false;
   const sub = words[at + 1];
-  return sub === "propose" || sub === undefined || isComputedWord(sub);
+  if (sub === undefined) return !step.computed || lineNamesKit;
+  return sub === "propose" || isComputedWord(sub);
 }
 
 /**
@@ -523,11 +531,12 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   let workflowPropose = false;
   const proposals: Proposal[] = [];
   const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null) crewNeverRuns.push(never);
-    if (isWorkflowPropose(step)) {
+    if (isWorkflowPropose(step, lineNamesKit)) {
       workflowPropose = true;
       proposals.push(proposalOf(step, moved));
     }
