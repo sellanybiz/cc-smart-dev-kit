@@ -107,8 +107,8 @@ function Part({
         {/* The kit never overwrites a value the person set by hand: say so before they try. */}
         {refused && (
           <StatusMark tone="warn" className="text-xs text-pretty">
-            A value this writes was set by hand, so the kit changes nothing here. Let the kit manage
-            claude-mem's values (above), or change them in the file.
+            A value this writes was set by hand, so the kit changes nothing here: let the kit manage
+            it (above), or change it in the file.
           </StatusMark>
         )}
         {note}
@@ -331,7 +331,9 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
   const claudeRoute = route.kind === "claude";
   const backendRoute = route.kind === "backend";
   const claudeModels = ready.filter((row) => row.plan);
-  const groups = backendRoute ? [] : backendGroups(ready);
+  // Every route takes a backend fallback: on a backend route the kit writes it through
+  // claude-mem's other OpenAI-shaped provider (`chooseFallback`, MS1).
+  const groups = backendGroups(ready);
   // Every value the list offers: the one in use now is shown even when it is not among them
   // (Claude as a Claude route's own fallback, a model the list does not name), so the list
   // never reads as a value that is not set.
@@ -392,7 +394,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         </NativeSelect>
         <p className="text-xs text-pretty text-muted-foreground">
           {backendRoute
-            ? "claude-mem has one backend setting, and the route uses it: the fallback can be Claude, or off."
+            ? "The fallback can be Claude, a backend model, or off. A backend model goes through claude-mem's OpenRouter setting, pointed at the same backend: the route keeps its own."
             : claudeRoute
               ? "On the Claude route, the fallback can be a backend model, or off."
               : "The fallback can be Claude, a backend model, or off."}
