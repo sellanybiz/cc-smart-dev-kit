@@ -43,7 +43,7 @@ out is the committed-file rule.
 in the project: the person's own switch alone does not file into every repository they have
 cloned. Without the file the command refuses and names `project init`.
 
-A project that sets `workflow.issues` raises `requires` to `>=1.3` (`WORKFLOW_ISSUES_SINCE`).
+A project that sets `workflow.issues` raises `requires` to `>=1.4` (`WORKFLOW_ISSUES_SINCE`).
 
 ## `cc-smart-dev-kit issue file`
 

@@ -3,7 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## 1.3.0
+## 1.4.0
 
 GitHub Issues, opt-in: the kit can file its follow-ups and findings as issues in your project's
 own repository, instead of losing them as a line in a summary.

@@ -93,7 +93,7 @@ export const CHECKS_SINCE = "1.1.0";
  * file that sets it needs that plugin version or newer, for the same reason as
  * `WORKFLOW_CREW_SINCE`.
  */
-export const WORKFLOW_ISSUES_SINCE = "1.3.0";
+export const WORKFLOW_ISSUES_SINCE = "1.4.0";
 
 /**
  * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that

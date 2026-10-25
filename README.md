@@ -2814,7 +2814,7 @@ every question it holds.
 | `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
 | `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
 | `workflow.crew` | Lead and crew sessions here: `enabled` (off by default), the limits a lead keeps its crew to, and the `tag` in their names (§ [The workflow](#the-workflow)). It wins over the same fields in your own file. |
-| `workflow.issues` | GitHub Issues (1.3.0): `enabled` and `allowPublic` (both off by default) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. |
+| `workflow.issues` | GitHub Issues (1.4.0): `enabled` and `allowPublic` (both off by default) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`. A project that
@@ -2824,7 +2824,7 @@ a teammate on an older plugin is told to update instead of failing the file's pa
 `worktrees.autoClean` came with 1.0.0 (an optional field: a minor change), so a project that
 sets it asks for `>=1.0`.
 `checks` came with 1.1.0 the same way, so a project that sets it asks for `>=1.1`.
-`workflow.issues` came with 1.3.0 the same way, so a project that sets it asks for `>=1.3`.
+`workflow.issues` came with 1.4.0 the same way, so a project that sets it asks for `>=1.4`.
 `worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
 worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
 field and the fix, `cc-smart-dev-kit project init`.

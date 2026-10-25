@@ -13477,7 +13477,7 @@ var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var CHECKS_SINCE = "1.1.0";
-var WORKFLOW_ISSUES_SINCE = "1.3.0";
+var WORKFLOW_ISSUES_SINCE = "1.4.0";
 var WORKFLOW_CREW_KEYS_SINCE = {
   perLead: "1.1.0",
   perLeadOpus: "1.1.0",
