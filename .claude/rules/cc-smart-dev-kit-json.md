@@ -63,7 +63,14 @@ minor change to the contract); a project that uses one raises `requires` to `>=1
 `workflow.crew.perLead`, `perLeadOpus`, `usagePercent` and `keep` come with 1.1.0, and so does
 `checks` (one home: `CHECKS_SINCE` in `src/project/config.ts`): a project that sets one raises
 `requires` to `>=1.1`, so an older plugin hears "update" rather than refusing the whole file as
-an unknown field. `worktrees.guardMainFolder`, `protectedBranches`,
+an unknown field. `workflow.crew.handoffTokens` came with 1.2.0, and `workflow.crew.loadPerCore`
+and `workflow.crew.archiveDays` with 1.3.0 (all three in `WORKFLOW_CREW_KEYS_SINCE`); a project
+that sets one raises `requires` to `>=1.2` or `>=1.3`. An `ownHooks` name that came after
+`ownHooks` itself does the same (`OWN_HOOK_NAMES_SINCE`): `subagent-background`, `crew-role` and
+`lead-notes` with 1.0.0, `verify-gate` and `agent-usage` with 1.1.0, `tier-view` with 1.3.0.
+**A new field or hook name needs its floor in the same change**: a since-table entry, and a line
+in the hand-written lists of `src/project/config.test.ts`, which fails until both are there.
+`worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
 `requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
 the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one

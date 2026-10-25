@@ -228,8 +228,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 ## Release notes
 
 What each release changed — the "What's new" an update message points you to — is in
-[CHANGELOG.md](CHANGELOG.md), newest first. This version is **1.1.0**: the portal, crew caps
-per lead, and a verification gate.
+[CHANGELOG.md](CHANGELOG.md), newest first: the heading at the top is the newest release.
 
 ## Older versions
 
@@ -2809,6 +2808,14 @@ a teammate on an older plugin is told to update instead of failing the file's pa
 `worktrees.autoClean` came with 1.0.0 (an optional field: a minor change), so a project that
 sets it asks for `>=1.0`.
 `checks` came with 1.1.0 the same way, so a project that sets it asks for `>=1.1`.
+A `workflow.crew` key that came after `workflow.crew` itself asks for its own release:
+`perLead`, `perLeadOpus`, `usagePercent` and `keep` for `>=1.1`, `handoffTokens` for `>=1.2`,
+and `loadPerCore` and `archiveDays` for `>=1.3`. An `ownHooks` name does the same when its hook
+came after `ownHooks`: `subagent-background`, `crew-role` and `lead-notes` ask for `>=1.0`,
+`verify-gate` and `agent-usage` for `>=1.1`, and `tier-view` for `>=1.3`. An older plugin
+refuses a key or a hook name it does not know, so it must hear "update" first. The tables are
+`WORKFLOW_CREW_KEYS_SINCE` and `OWN_HOOK_NAMES_SINCE` in `src/project/config.ts`, and a test
+fails when a new key or hook name has no entry.
 `worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
 worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
 field and the fix, `cc-smart-dev-kit project init`.
