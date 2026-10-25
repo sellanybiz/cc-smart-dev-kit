@@ -1,0 +1,105 @@
+/**
+ * SessionStart and UserPromptSubmit: tell Claude what each subagent tier runs now, so it picks
+ * the effort the task needs (the owner, 2026-10-25). Claude models are not cheap models: a
+ * Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task, and `max` when the
+ * task wants it. An affordable backend runs at `max`. Nothing used to tell a session which of
+ * the two its tiers were: the Agent guard knew, and the session read "the gateway is on".
+ *
+ * **What it says.** `tierNote` (`src/models/tier-view.ts`): a header and one line per tier the
+ * Agent tool's `model` names, read the Agent guard's way (`resolveLaunchModel`) through the
+ * session's own gateway view (`sessionGatewayOf`: its effective `ANTHROPIC_BASE_URL`, a profile's
+ * chains) — never a second list. The gateway off says that every tier is Claude, in the same
+ * lines: the instructions' effort rule reads the note, so a session without a gateway needs it
+ * as much as one with.
+ *
+ * **When.** At every SessionStart (a start, a resume, a clear, a compaction: each builds Claude's
+ * context again, and the hook's `hooks.json` entry carries no matcher), and at a
+ * UserPromptSubmit **only when the note differs from the one said last in this session** — the
+ * owner may change a slot while sessions run, and each line costs context in every session on
+ * the machine. The last note is kept in `<TMPDIR>/cc-smart-dev-kit-session-names/<session>.tiers`,
+ * beside the session's other marks (`namesDir`), so the OS clears it. A prompt in a session the
+ * hook never saw start (the plugin updated mid-session) says it once. A mark that cannot be kept
+ * makes a prompt silent: a note that cannot be remembered would repeat at every prompt.
+ *
+ * **Why UserPromptSubmit and not the Agent guard's PreToolUse.** The guard answers a launch
+ * after Claude chose its effort; a note there arrives too late and costs a denied call. A
+ * prompt's context reaches Claude before it picks.
+ *
+ * **Why a hook of its own.** `fable-session` runs at the same events but speaks to the person
+ * and never to Claude (its contract); `lead-notes` and `crew-role` speak for a lead and a crew
+ * session; `session-name` names the session. None has this job.
+ *
+ * **Machine-wide**, like `agent-guard` whose view it reads: the note never depends on the
+ * project's file, a folder outside git gets it, and a crew session gets it too (its subagents
+ * run on these tiers). A config that cannot be read is said plainly, never a crash; the address
+ * of a proxy that is not the kit's gateway (no `gateway.json`) is read as Claude, the guard's
+ * way. Never a question and never a block.
+ */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
+import type { CliPaths } from "../cli/paths";
+import { tierNote } from "../models/tier-view";
+import { sessionGatewayOf } from "./agent-guard";
+import { addContext, type HookInput, type HookResult, SILENT, stringField } from "./io";
+import type { Env } from "./run";
+import { isSessionId, namesDir } from "./session-name";
+
+/** The note when the gateway is on and its config cannot be used: the view is not known. */
+export function tierNoteUnknown(): string {
+  return `Subagent tiers now: not known — the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
+}
+
+/** The mark that holds the note this session was told last, beside the session's name files. */
+export function tierViewMark(env: Env, sessionId: string): string {
+  return join(namesDir(env), `${sessionId}.tiers`);
+}
+
+/**
+ * The note for this session's own gateway view. A session on a gateway address whose
+ * `gateway.json` exists but cannot be used has a view nobody can prove: the plain note says so.
+ */
+export function currentNote(paths: CliPaths, env: Env): string {
+  const gateway = sessionGatewayOf(paths, env);
+  if (gateway.gatewayOn && gateway.config === null && existsSync(paths.gatewayConfigFile)) {
+    return tierNoteUnknown();
+  }
+  return tierNote(gateway, env);
+}
+
+/** The note last said in this session, or null: no mark, or one that cannot be read. */
+function lastSaid(mark: string): null | string {
+  try {
+    return readFileSync(mark, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps `note` as the last said. False when the mark cannot be written. */
+function keep(mark: string, note: string): boolean {
+  try {
+    mkdirSync(dirname(mark), { recursive: true });
+    writeFileSync(mark, note);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The note as context at a start, or at a prompt when what the tiers run has changed. */
+export function tierView(input: HookInput, env: Env, paths: CliPaths): HookResult {
+  const event = stringField(input.hook_event_name);
+  if (event !== "SessionStart" && event !== "UserPromptSubmit") return SILENT;
+  const sessionId = input.session_id;
+  const mark = isSessionId(sessionId) ? tierViewMark(env, sessionId) : null;
+  const note = currentNote(paths, env);
+  if (event === "SessionStart") {
+    // A new context every time: said whatever the mark holds, and kept for the prompts after it.
+    if (mark !== null) keep(mark, note);
+    return addContext(event, note);
+  }
+  if (mark === null || lastSaid(mark) === note) return SILENT;
+  // Said only when it can be remembered: else the next prompt would say it again.
+  return keep(mark, note) ? addContext(event, note) : SILENT;
+}

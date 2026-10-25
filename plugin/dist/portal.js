@@ -28,7 +28,7 @@ __export(exports_iso, {
 });
 
 // src/entries/portal.ts
-import { join as join76 } from "path";
+import { join as join77 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -12890,8 +12890,8 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync55, mkdirSync as mkdirSync25, readFileSync as readFileSync69 } from "fs";
-import { basename as basename11, dirname as dirname25, join as join71, relative as relative7 } from "path";
+import { existsSync as existsSync56, mkdirSync as mkdirSync26, readFileSync as readFileSync70 } from "fs";
+import { basename as basename11, dirname as dirname26, join as join72, relative as relative7 } from "path";
 
 // src/crew/store.ts
 import {
@@ -14814,6 +14814,7 @@ var PLUGIN_HOOK_NAMES = [
   "message-guard",
   "agent-guard",
   "fable-session",
+  "tier-view",
   "after-merge",
   "review-record",
   "subagent-background",
@@ -25935,8 +25936,8 @@ function planWindow(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync68 } from "fs";
-import { join as join70 } from "path";
+import { readFileSync as readFileSync69 } from "fs";
+import { join as join71 } from "path";
 
 // src/machine/load.ts
 import { availableParallelism, loadavg } from "os";
@@ -28175,7 +28176,7 @@ function levelsText(levels) {
   return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
 }
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
@@ -29831,12 +29832,12 @@ function reportOf(output) {
 
 // src/portal/actions.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync54, statSync as statSync21 } from "fs";
-import { isAbsolute as isAbsolute9, join as join69 } from "path";
+import { existsSync as existsSync55, statSync as statSync21 } from "fs";
+import { isAbsolute as isAbsolute9, join as join70 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync52, readFileSync as readFileSync67 } from "fs";
-import { dirname as dirname24, join as join66 } from "path";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync53, readFileSync as readFileSync68 } from "fs";
+import { dirname as dirname25, join as join67 } from "path";
 
 // src/hooks/desktop-alert.ts
 function hasDesktop(platform, env) {
@@ -30791,8 +30792,8 @@ function checkGitBash(platform, env, facts) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync51, readFileSync as readFileSync66 } from "fs";
-import { join as join65 } from "path";
+import { existsSync as existsSync52, readFileSync as readFileSync67 } from "fs";
+import { join as join66 } from "path";
 
 // src/shell/command.ts
 function dialectOfTool(tool) {
@@ -36279,6 +36280,89 @@ function subagentBackground(context) {
   return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
 }
 
+// src/hooks/tier-view.ts
+import { existsSync as existsSync51, mkdirSync as mkdirSync24, readFileSync as readFileSync66, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname24, join as join65 } from "path";
+
+// src/models/tier-view.ts
+var TIERS = ["haiku", "sonnet", "opus", "fable"];
+var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
+function capitalised(family) {
+  return `${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+}
+function modelName(real) {
+  if (!real.claude)
+    return `${real.model} (a backend)`;
+  const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+  return family === null ? real.model : `Claude ${capitalised(family)}`;
+}
+function effortRule(real, gatewayOn) {
+  if (real.tier === "fable")
+    return "asks the person, with a `Fable reason:` line";
+  if (real.tier === "opus") {
+    const free = OPUS_FREE_EFFORTS;
+    return `${free[0]} to ${free[free.length - 1]}; ${OPUS_ASK_EFFORT} asks the person`;
+  }
+  if (isAffordable(real) && gatewayOn)
+    return `runs at ${AFFORDABLE_EFFORT}`;
+  return `the effort the task needs, ${ALLOWED_EFFORTS[0]} to ${ALLOWED_EFFORTS[ALLOWED_EFFORTS.length - 1]}`;
+}
+function tierLine(tier, gateway, env) {
+  const real = resolveLaunchModel(tier, gateway, env);
+  return `- ${tier} \u2192 ${modelName(real)}: ${effortRule(real, gateway.gatewayOn)}.`;
+}
+function tierNote(gateway, env) {
+  return [TIER_NOTE_HEADER, ...TIERS.map((tier) => tierLine(tier, gateway, env))].join(`
+`);
+}
+
+// src/hooks/tier-view.ts
+function tierNoteUnknown() {
+  return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
+}
+function tierViewMark(env, sessionId) {
+  return join65(namesDir(env), `${sessionId}.tiers`);
+}
+function currentNote(paths, env) {
+  const gateway = sessionGatewayOf(paths, env);
+  if (gateway.gatewayOn && gateway.config === null && existsSync51(paths.gatewayConfigFile)) {
+    return tierNoteUnknown();
+  }
+  return tierNote(gateway, env);
+}
+function lastSaid(mark) {
+  try {
+    return readFileSync66(mark, "utf8");
+  } catch {
+    return null;
+  }
+}
+function keep(mark, note) {
+  try {
+    mkdirSync24(dirname24(mark), { recursive: true });
+    writeFileSync10(mark, note);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function tierView(input, env, paths) {
+  const event = stringField(input.hook_event_name);
+  if (event !== "SessionStart" && event !== "UserPromptSubmit")
+    return SILENT;
+  const sessionId = input.session_id;
+  const mark = isSessionId2(sessionId) ? tierViewMark(env, sessionId) : null;
+  const note = currentNote(paths, env);
+  if (event === "SessionStart") {
+    if (mark !== null)
+      keep(mark, note);
+    return addContext(event, note);
+  }
+  if (mark === null || lastSaid(mark) === note)
+    return SILENT;
+  return keep(mark, note) ? addContext(event, note) : SILENT;
+}
+
 // src/hooks/verify-gate.ts
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
@@ -36660,6 +36744,13 @@ var fableSessionHook = {
   outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
   run: ({ input, env, paths }) => fableSession(input, env, paths)
 };
+var tierViewHook = {
+  name: "tier-view",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (_message, input, _event, _checkout, context) => tierView(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
+  run: ({ input, env, paths }) => tierView(input, env, paths)
+};
 var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
@@ -36681,6 +36772,7 @@ var HOOKS = [
   agentGuardHook,
   sessionEscapeGuardHook,
   fableSessionHook,
+  tierViewHook,
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
@@ -36705,6 +36797,7 @@ var MACHINE_WIDE_HOOKS = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
+  "tier-view",
   "session-escape-guard",
   "crew-role",
   "lead-notes",
@@ -36903,16 +36996,16 @@ function renamedCommand(command) {
 }
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
-  const config = join65(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync51(config)) {
+  const config = join66(projectDir, ".claude", `${OLD_NAME}.json`);
+  if (existsSync52(config)) {
     lines.push({
       ok: true,
       warn: true,
       text: `project: ${shown(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
     });
   }
-  const addons = join65(projectDir, ".claude", OLD_NAME);
-  if (existsSync51(addons)) {
+  const addons = join66(projectDir, ".claude", OLD_NAME);
+  if (existsSync52(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -36975,10 +37068,10 @@ async function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync51(file))
+    if (!existsSync52(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync66(file, "utf8"));
+      const parsed = JSON.parse(readFileSync67(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -36992,7 +37085,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync66(file, "utf8"));
+  const parsed = JSON.parse(readFileSync67(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -37090,7 +37183,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   let checkout;
   try {
-    checkout = existsSync51(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
+    checkout = existsSync52(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
@@ -37143,7 +37236,7 @@ async function coverGitLines(checkout, env) {
 var SETUP_FIX = `${COMMAND} setup`;
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync52(file))
+  if (!existsSync53(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -37171,7 +37264,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync52(install.installPath)) {
+  if (!existsSync53(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -37199,13 +37292,13 @@ function isExecutable(file) {
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync52(bun) : isExecutable(bun);
+  return platform === "win32" ? existsSync53(bun) : isExecutable(bun);
 }
 async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
-  const launcher = join66(paths.binDir, LAUNCHER_NAME);
+  const launcher = join67(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync52(launcher))
+  if (!existsSync53(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable(launcher)) {
     return [
@@ -37216,7 +37309,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync67(launcher, "utf8");
+  const script = readFileSync68(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -37243,16 +37336,16 @@ async function checkLauncher(paths, platform, read) {
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
 async function checkLauncherCmd(paths, shLauncher, read) {
-  const cmd = join66(paths.binDir, LAUNCHER_CMD_NAME);
+  const cmd = join67(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync52(cmd)) {
+  if (!existsSync53(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync67(cmd, "utf8");
+  const script = readFileSync68(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -37293,7 +37386,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync52(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync53(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -37554,7 +37647,7 @@ function hasEntry(data, field, key) {
 async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject14(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync52(join66(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync53(join67(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -37564,18 +37657,18 @@ async function checkOldPlugin(settings, paths, read) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join66(paths.binDir, OLD_NAME2);
+  const launcher = join67(paths.binDir, OLD_NAME2);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync52(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync53(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync52(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
+  const canRun = existsSync53(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -37611,7 +37704,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync52(where.claudeMd) ? readFileSync67(where.claudeMd, "utf8") : "";
+  const text = existsSync53(where.claudeMd) ? readFileSync68(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -37642,7 +37735,7 @@ async function checkLiveRecord(paths, read) {
     text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`
   };
 }
-var PROJECT_MEMORY_FILES = ["CLAUDE.md", join66(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+var PROJECT_MEMORY_FILES = ["CLAUDE.md", join67(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 function ccSmartDevKitImports(text) {
   const found = [];
   let inFence = false;
@@ -37666,28 +37759,28 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname24(dir)) {
+  for (let dir = cwd;; dir = dirname25(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
-      const from = join66(dir, name);
-      if (from === join66(paths.claudeConfigDir, "CLAUDE.md") || !existsSync52(from))
+      const from = join67(dir, name);
+      if (from === join67(paths.claudeConfigDir, "CLAUDE.md") || !existsSync53(from))
         continue;
       let text;
       try {
-        text = readFileSync67(from, "utf8");
+        text = readFileSync68(from, "utf8");
       } catch {
         continue;
       }
       for (const path of ccSmartDevKitImports(text)) {
-        const file = path.startsWith("~/") ? join66(paths.home, path.slice(2)) : path;
+        const file = path.startsWith("~/") ? join67(paths.home, path.slice(2)) : path;
         imports.push({ from, path, file });
       }
     }
-    if (dirname24(dir) === dir)
+    if (dirname25(dir) === dir)
       break;
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync52(entry.file));
+  const missing = imports.filter((entry) => !existsSync53(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -38191,8 +38284,8 @@ ${UPDATE_USAGE}`);
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync24, readdirSync as readdirSync20, statSync as statSync20 } from "fs";
-import { join as join67 } from "path";
+import { mkdirSync as mkdirSync25, readdirSync as readdirSync20, statSync as statSync20 } from "fs";
+import { join as join68 } from "path";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -38234,7 +38327,7 @@ function weightsState(config, ctx) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync24(dir, { recursive: true, mode: 448 });
+    mkdirSync25(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new Error(`The state folder ${dir} cannot be made (${code}).`);
@@ -38419,7 +38512,7 @@ function jobsFingerprint(home) {
   const parts = [];
   for (const dir of dirs) {
     for (const sub of ["leases", "tickets"]) {
-      const folder = join67(dir, sub);
+      const folder = join68(dir, sub);
       let names;
       try {
         names = readdirSync20(folder).sort();
@@ -38429,7 +38522,7 @@ function jobsFingerprint(home) {
       }
       for (const name of names) {
         try {
-          const stat = statSync20(join67(folder, name));
+          const stat = statSync20(join68(folder, name));
           parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
         } catch {
           parts.push(`${folder}/${name}:gone`);
@@ -38441,11 +38534,11 @@ function jobsFingerprint(home) {
 }
 
 // src/machine/claude-mem-choices.ts
-import { existsSync as existsSync53 } from "fs";
+import { existsSync as existsSync54 } from "fs";
 var KEY_MAX = 512;
 function readReady(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync53(install.installPath)) {
+  if (install === null || !existsSync54(install.installPath)) {
     return {
       blocked: {
         fix: `claude plugin install ${CLAUDE_MEM_ID}`,
@@ -38479,7 +38572,7 @@ function readReady(paths) {
   return { read, version };
 }
 function gatewayConfig(paths) {
-  if (!existsSync53(paths.gatewayConfigFile))
+  if (!existsSync54(paths.gatewayConfigFile))
     return null;
   try {
     return loadConfigFile(paths.gatewayConfigFile);
@@ -38950,7 +39043,7 @@ async function takeOver(paths) {
 }
 
 // src/setup/auto-mode.ts
-import { join as join68 } from "path";
+import { join as join69 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -38962,9 +39055,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join68(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join69(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join68(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join69(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -39190,7 +39283,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join69(folder.folder, "dist", "router.js"),
+      bundle: join70(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -39958,7 +40051,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync54(folder) && statSync21(folder).isDirectory();
+    isFolder = existsSync55(folder) && statSync21(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -40030,7 +40123,7 @@ function browserTokenAction(action, body) {
   }
 }
 async function claudeMemTarget(action, text) {
-  if (!existsSync54(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+  if (!existsSync55(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const parsed = parseTarget(text);
@@ -40742,7 +40835,7 @@ async function workAnswer(deps) {
     const { repo } = found;
     const crewSessionIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
     const leadIds = new Set(leadRecords.map((one) => one.sessionId));
-    const others = savedSessions(join70(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
+    const others = savedSessions(join71(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
     const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
     sessions = others.map((session) => ({
@@ -40820,7 +40913,7 @@ async function crewAnswerFor(deps, ref) {
   }));
   let brief = null;
   try {
-    brief = readFileSync68(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
+    brief = readFileSync69(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
     byFile: [],
@@ -40985,7 +41078,7 @@ async function needsAnswer(deps) {
 async function breakersOf2(deps, now) {
   let text;
   try {
-    text = readFileSync68(deps.action.portal.paths.gatewayStateFile, "utf8");
+    text = readFileSync69(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -41030,7 +41123,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync68(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync69(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -41241,7 +41334,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync69(paths.portalProjectsFile, "utf8");
+    text = readFileSync70(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -41260,7 +41353,7 @@ function readAddedProjects(paths) {
 }
 function writeAddedProjects(paths, roots) {
   const file = paths.portalProjectsFile;
-  mkdirSync25(dirname25(file), { mode: 448, recursive: true });
+  mkdirSync26(dirname26(file), { mode: 448, recursive: true });
   const value = { roots, version: ADDED_VERSION };
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
@@ -41324,7 +41417,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf2(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync55(files.config);
+  const set = existsSync56(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -41605,7 +41698,7 @@ async function ghLoginOf(world, root) {
 }
 function configAt(root) {
   try {
-    const config = loadCcSmartDevKitConfig(join71(root, CONFIG_PATH));
+    const config = loadCcSmartDevKitConfig(join72(root, CONFIG_PATH));
     return config === null ? {
       ok: false,
       why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`
@@ -41668,8 +41761,8 @@ async function projectsAnswerFor(deps) {
 }
 
 // src/portal/command.ts
-import { existsSync as existsSync57 } from "fs";
-import { join as join73 } from "path";
+import { existsSync as existsSync58 } from "fs";
+import { join as join74 } from "path";
 
 // src/portal/health.ts
 var PORTAL_APP = "cc-smart-dev-kit-portal";
@@ -41731,8 +41824,8 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync56, readFileSync as readFileSync70, rmSync as rmSync12 } from "fs";
-import { join as join72 } from "path";
+import { existsSync as existsSync57, readFileSync as readFileSync71, rmSync as rmSync12 } from "fs";
+import { join as join73 } from "path";
 function portalStarterArgv(bunPath, bundle, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), bundle, "--ensure"];
 }
@@ -41749,22 +41842,22 @@ function portalServerArgv(bunPath, copy, pluginDir) {
 }
 var PORTAL_COPY_LOCK_WAIT_MS = 1e4;
 function refreshPortalCopy(paths, pluginFolder) {
-  const bundle = join72(pluginFolder, "dist", "portal.js");
-  if (!existsSync56(bundle)) {
+  const bundle = join73(pluginFolder, "dist", "portal.js");
+  if (!existsSync57(bundle)) {
     return {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync70(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync71(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
   return { copy: paths.portalCopy, ...refreshPortalExport(paths, pluginFolder) };
 }
 function refreshPortalExport(paths, pluginFolder) {
-  const source = join72(pluginFolder, "portal-ui");
+  const source = join73(pluginFolder, "portal-ui");
   try {
-    if (existsSync56(join72(source, "index.html"))) {
+    if (existsSync57(join73(source, "index.html"))) {
       writeManagedFolder(paths.portalUiFolder, source, { stateDir: paths.stateDir });
     } else {
       removeManagedFolder(paths.portalUiFolder, paths.stateDir);
@@ -41782,7 +41875,7 @@ async function refreshCopyLocked(deps) {
   } catch (error) {
     if (!(error instanceof LockBusyError))
       throw error;
-    if (existsSync56(deps.paths.portalCopy)) {
+    if (existsSync57(deps.paths.portalCopy)) {
       return {
         copy: deps.paths.portalCopy,
         note: "another cc-smart-dev-kit run holds the lock; the copy that is already there was used"
@@ -41853,7 +41946,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync70(paths.portalHeldFile, "utf8");
+    const text = readFileSync71(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -41925,20 +42018,20 @@ function claudeCodeProfileHere(machine, home) {
 }
 function installedPluginFolder(paths, fallback) {
   const installed = findUserInstall(paths.installedPluginsFile);
-  if (installed !== null && existsSync57(join73(installed.installPath, "dist", "portal.js"))) {
+  if (installed !== null && existsSync58(join74(installed.installPath, "dist", "portal.js"))) {
     return { folder: installed.installPath, source: "installed", version: installed.version };
   }
   return { folder: fallback, source: "fallback", version: installed?.version ?? null };
 }
 
 // src/portal/plugin-folder.ts
-import { existsSync as existsSync58 } from "fs";
+import { existsSync as existsSync59 } from "fs";
 function resolvePluginFolder(installedPluginsFile, fallback) {
   const installed = findUserInstall(installedPluginsFile);
-  if (installed !== null && existsSync58(installed.installPath)) {
+  if (installed !== null && existsSync59(installed.installPath)) {
     return { folder: installed.installPath };
   }
-  if (fallback !== null && existsSync58(fallback))
+  if (fallback !== null && existsSync59(fallback))
     return { folder: fallback };
   return {
     error: "the plugin's own folder is gone, and Claude Code records no installed version: an update or an uninstall removed it while this portal was running. Nothing can be restarted or checked from here. Stop the portal (Ctrl+C) and start it again."
@@ -41946,7 +42039,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname26, join as join75 } from "path";
+import { dirname as dirname27, join as join76 } from "path";
 
 // src/portal/api/data.ts
 var NO_ROUTER = {
@@ -43791,7 +43884,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync71 } from "fs";
+import { readFileSync as readFileSync72 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -43831,7 +43924,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync71(file, "utf8");
+      return readFileSync72(file, "utf8");
     } catch {
       return null;
     }
@@ -43910,7 +44003,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync71(file);
+      bytes = readFileSync72(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -43993,8 +44086,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync59, readFileSync as readFileSync72, statSync as statSync22 } from "fs";
-import { extname, join as join74, resolve as resolve14, sep as sep5 } from "path";
+import { existsSync as existsSync60, readFileSync as readFileSync73, statSync as statSync22 } from "fs";
+import { extname, join as join75, resolve as resolve14, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -44023,7 +44116,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve14(join74(folder, decoded));
+  const file = resolve14(join75(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
@@ -44045,7 +44138,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync72(join74(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync73(join75(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -44060,7 +44153,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve14(folder);
-  if (!existsSync59(join74(absolute, "index.html")))
+  if (!existsSync60(join75(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -44092,7 +44185,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync72(file);
+        const bytes = readFileSync73(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -45003,7 +45096,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join75(dirname26(import.meta.path), "portal-ui");
+  return join76(dirname27(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -45332,7 +45425,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join76(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join77(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -45389,7 +45482,7 @@ async function runServer(paths, options) {
       browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join76(folder, "dist", "router.js"),
+        bundle: join77(folder, "dist", "router.js"),
         machine,
         read: runRead,
         runner,
@@ -45405,10 +45498,10 @@ async function runServer(paths, options) {
         }
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join76(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join77(folder, "dist")) },
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join76(folder, "hooks", "hooks.json") },
+      project: { cwd: process.cwd(), pluginHooksFile: join77(folder, "hooks", "hooks.json") },
       read: runRead
     };
   };

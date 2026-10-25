@@ -6491,6 +6491,7 @@ var PLUGIN_HOOK_NAMES = [
   "message-guard",
   "agent-guard",
   "fable-session",
+  "tier-view",
   "after-merge",
   "review-record",
   "subagent-background",
@@ -14995,7 +14996,7 @@ function levelsText(levels) {
   return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
 }
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
@@ -19761,6 +19762,89 @@ function subagentBackground(context) {
   return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
 }
 
+// src/hooks/tier-view.ts
+import { existsSync as existsSync20, mkdirSync as mkdirSync16, readFileSync as readFileSync31, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname12, join as join34 } from "path";
+
+// src/models/tier-view.ts
+var TIERS = ["haiku", "sonnet", "opus", "fable"];
+var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
+function capitalised(family) {
+  return `${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+}
+function modelName(real) {
+  if (!real.claude)
+    return `${real.model} (a backend)`;
+  const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+  return family === null ? real.model : `Claude ${capitalised(family)}`;
+}
+function effortRule(real, gatewayOn) {
+  if (real.tier === "fable")
+    return "asks the person, with a `Fable reason:` line";
+  if (real.tier === "opus") {
+    const free = OPUS_FREE_EFFORTS;
+    return `${free[0]} to ${free[free.length - 1]}; ${OPUS_ASK_EFFORT} asks the person`;
+  }
+  if (isAffordable(real) && gatewayOn)
+    return `runs at ${AFFORDABLE_EFFORT}`;
+  return `the effort the task needs, ${ALLOWED_EFFORTS[0]} to ${ALLOWED_EFFORTS[ALLOWED_EFFORTS.length - 1]}`;
+}
+function tierLine(tier, gateway, env) {
+  const real = resolveLaunchModel(tier, gateway, env);
+  return `- ${tier} \u2192 ${modelName(real)}: ${effortRule(real, gateway.gatewayOn)}.`;
+}
+function tierNote(gateway, env) {
+  return [TIER_NOTE_HEADER, ...TIERS.map((tier) => tierLine(tier, gateway, env))].join(`
+`);
+}
+
+// src/hooks/tier-view.ts
+function tierNoteUnknown() {
+  return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
+}
+function tierViewMark(env, sessionId) {
+  return join34(namesDir(env), `${sessionId}.tiers`);
+}
+function currentNote(paths, env) {
+  const gateway = sessionGatewayOf(paths, env);
+  if (gateway.gatewayOn && gateway.config === null && existsSync20(paths.gatewayConfigFile)) {
+    return tierNoteUnknown();
+  }
+  return tierNote(gateway, env);
+}
+function lastSaid(mark) {
+  try {
+    return readFileSync31(mark, "utf8");
+  } catch {
+    return null;
+  }
+}
+function keep(mark, note) {
+  try {
+    mkdirSync16(dirname12(mark), { recursive: true });
+    writeFileSync7(mark, note);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function tierView(input, env, paths) {
+  const event = stringField(input.hook_event_name);
+  if (event !== "SessionStart" && event !== "UserPromptSubmit")
+    return SILENT;
+  const sessionId = input.session_id;
+  const mark = isSessionId(sessionId) ? tierViewMark(env, sessionId) : null;
+  const note = currentNote(paths, env);
+  if (event === "SessionStart") {
+    if (mark !== null)
+      keep(mark, note);
+    return addContext(event, note);
+  }
+  if (mark === null || lastSaid(mark) === note)
+    return SILENT;
+  return keep(mark, note) ? addContext(event, note) : SILENT;
+}
+
 // src/hooks/verify-gate.ts
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
@@ -20142,6 +20226,13 @@ var fableSessionHook = {
   outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
   run: ({ input, env, paths }) => fableSession(input, env, paths)
 };
+var tierViewHook = {
+  name: "tier-view",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (_message, input, _event, _checkout, context) => tierView(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
+  run: ({ input, env, paths }) => tierView(input, env, paths)
+};
 var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
@@ -20163,6 +20254,7 @@ var HOOKS = [
   agentGuardHook,
   sessionEscapeGuardHook,
   fableSessionHook,
+  tierViewHook,
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
@@ -20187,6 +20279,7 @@ var MACHINE_WIDE_HOOKS = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
+  "tier-view",
   "session-escape-guard",
   "crew-role",
   "lead-notes",

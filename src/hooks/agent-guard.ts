@@ -18,8 +18,10 @@
  * model: the guard refuses a launch whose `effort` is not `medium`, `high`, `xhigh` or `max`.
  * That list lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all
  * read it. `medium` is for searches and reads, `high` for building and reviews, `xhigh` for
- * the hardest judgment, and `max` only when the person asks. On top of it, an affordable slot
- * must be `max`, and an `opus`-tier launch asks the person at `OPUS_ASK_EFFORT` (`max`).
+ * the hardest judgment, and `max` on a Claude `haiku` or `sonnet` when the task wants it, with no
+ * restriction (the owner, 2026-10-25: the session-start note, `tier-view.ts`, tells Claude which
+ * tier is Claude). On top of it, an affordable slot must be `max`, and an `opus`-tier launch asks
+ * the person at `OPUS_ASK_EFFORT` (`max`).
  *
  * **The launch policy** — that list, the model resolution below and the Fable reason words —
  * has its one home in `src/models/launch-policy.ts`; this file is the hook around it.
@@ -1089,7 +1091,7 @@ const EFFORTS = levelsText(ALLOWED_EFFORTS);
 
 /** What each allowed level is for (the owner's decision D13), as every effort message says it. */
 const EFFORT_USE =
-  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
 
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",

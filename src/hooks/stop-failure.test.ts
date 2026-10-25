@@ -228,7 +228,7 @@ describe("which stops get an alert", () => {
         ctx({ sessionModel: "claude-sonnet-5-5", state: state("claude-sonnet-5-5", 1000) }),
       ),
     ).toEqual({
-      body: "claude-sonnet-5-5: five_hour, resets 13:00. cc-smart-dev-kit-worker answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+      body: "claude-sonnet-5-5: five_hour, which does not hold this session. cc-smart-dev-kit-worker answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
       title: "Claude usage limit reached",
     });
     // The opus chain and its switch on, in 0.5.0's own field (no `modelSlots`).
@@ -251,7 +251,7 @@ describe("which stops get an alert", () => {
       },
     });
     expect(planAlert(AT_LIMIT, ctx({ config: backendFirst }))?.body).toBe(
-      "claude-opus-5-5: five_hour, resets 13:00. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+      "claude-opus-5-5: five_hour, which does not hold this session. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
     );
   });
 
@@ -271,14 +271,6 @@ describe("which stops get an alert", () => {
       ["no opus chain, two affordable worker targets", ctx({ config: twoAffordable() })],
       ["a judge chain beside them", ctx({ config: config(judge) })],
       ["an Opus-only window", ctx({ config: twoAffordable(), state: opusOnly })],
-      [
-        "an opus chain of one Claude target",
-        ctx({
-          config: config({
-            slots: { ...config().slots, "cc-smart-dev-kit-opus": ["claude-opus-4-8"] },
-          }),
-        }),
-      ],
       [
         "an opus chain of two with its fallback off",
         ctx({
@@ -306,6 +298,34 @@ describe("which stops get an alert", () => {
         });
       }
     }
+    // TV1: a chain whose first target is another Claude model than the one at its limit is not held
+    // by that limit either (`claudeLimitHolds`, WF1's one reading): no reset date, and the slot's
+    // first target named.
+    expect(
+      planAlert(
+        AT_LIMIT,
+        ctx({
+          config: config({
+            slots: { ...config().slots, "cc-smart-dev-kit-opus": ["claude-opus-4-8"] },
+          }),
+        }),
+      )?.body,
+    ).toBe(
+      "claude-opus-5-5: five_hour, which does not hold this session. cc-smart-dev-kit-opus answers from claude-opus-4-8 first.",
+    );
+    // A Claude-first chain holds the session: the reset date stays.
+    expect(
+      planAlert(
+        AT_LIMIT,
+        ctx({
+          config: config({
+            slots: { ...config().slots, "cc-smart-dev-kit-opus": ["claude-opus-5-5"] },
+          }),
+        }),
+      )?.body,
+    ).toBe(
+      "claude-opus-5-5: five_hour, resets 13:00. Claude Code continues by itself after the reset.",
+    );
     // The model named is the one that hit the limit: no other model id comes from the plugin.
     const alert = planAlert(AT_LIMIT, ctx({ config: twoAffordable(), state: opusOnly }));
     expect(alert).toEqual({
@@ -452,7 +472,7 @@ describe("which stops get an alert", () => {
       // The profile's opus chain answers from a backend first: the alert says so, as for a
       // machine chain that does.
       expect(planAlert(AT_LIMIT, { ...ctx(), ...read, state: ctx().state })?.body).toBe(
-        "claude-opus-5-5: five_hour, resets 13:00. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+        "claude-opus-5-5: five_hour, which does not hold this session. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
       );
     });
 

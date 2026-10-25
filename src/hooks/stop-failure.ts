@@ -51,6 +51,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { claudeLimitHolds, targetsNow } from "../crew/wait";
 import { fallbackOn, type GatewayConfig } from "../gateway/config";
 import {
   type BreakerRecord,
@@ -315,21 +316,30 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   const chosen = own ?? slotted;
   const model = chosen?.[0] ?? null;
   const record = chosen?.[1] ?? null;
+  const slot = model === null ? null : slotKeyOf(model);
+  const view = slot === null || ctx.config === null || !ctx.gatewayOn ? null : ctx.config;
+  // Does this Claude limit hold the session? `claudeLimitHolds` is the one reading (the crew
+  // wait uses it): a slot whose chain in use starts with another target answers from that
+  // target, so the Claude model's reset date says nothing about when this session goes on.
+  const inUse = view === null ? null : targetsNow(view);
+  const first = slot === null ? undefined : inUse?.[slot]?.[0];
+  const holds = model === null || claudeLimitHolds(view === null ? null : slot, model, inUse);
   const reset =
     record?.resetsAt !== null && record?.resetsAt !== undefined
       ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}`
       : (/resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known");
-  const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
-  // Which limit and when it resets; a slot fact only where it explains a stop that should not
-  // have happened (`slotFact`), and only for a session a slot answers (`ctx.gatewayOn`). Never
-  // an offer: no model, no chain, no switch, no click — whatever the session is on.
-  const slot = model === null ? null : slotKeyOf(model);
-  const fact =
-    slot === null || ctx.config === null || !ctx.gatewayOn ? null : slotFact(ctx.config, slot);
-  return {
-    body: `${head} ${fact ?? "Claude Code continues by itself after the reset."}`,
-    title: "Claude usage limit reached",
-  };
+  const limit = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}`;
+  const head = holds ? `${limit}, ${reset}.` : `${limit}, which does not hold this session.`;
+  // Which limit and when it resets, when it holds; a slot fact only where it explains a stop
+  // that should not have happened (`slotFact`), and only for a session a slot answers
+  // (`view`). Never an offer: no model, no chain, no switch, no click — whatever the session is on.
+  const fact = view === null || slot === null ? null : slotFact(view, slot);
+  const tail =
+    fact ??
+    (holds || slot === null
+      ? "Claude Code continues by itself after the reset."
+      : `${slot} answers from ${first} first.`);
+  return { body: `${head} ${tail}`, title: "Claude usage limit reached" };
 }
 
 /**
