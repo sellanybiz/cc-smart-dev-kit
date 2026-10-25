@@ -495,11 +495,11 @@ describe("the SessionStart hook and the background check, end to end", () => {
     await m.hook();
     expect(await m.settled()).toMatchObject({
       detail:
-        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
       result: "updated",
     });
     expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
     );
   }, 30_000);
 
@@ -1032,7 +1032,7 @@ describe("the notification", () => {
       "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
     );
     expect(installedText("1.2.3", true, true)).toBe(
-      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
     );
   });
 

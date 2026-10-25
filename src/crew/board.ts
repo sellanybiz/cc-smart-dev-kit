@@ -45,7 +45,7 @@ import {
   openQuestionIndex,
   readCrewEvents,
 } from "./store";
-import { usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewSettingsFolder, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** How many events `crew status` shows. */
 export const STATUS_EVENTS = 6;
@@ -283,12 +283,12 @@ export async function capsOf(
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    // The project's gateway is read at the main checkout, the folder `crew start` reads it at
-    // (`caller.repo`): the board then shows the reason `crew start` would act on.
+    // The project's gateway is read at the lead's own folder, the one `crew start` reads it at
+    // (`crewSettingsFolder`): the board then shows the reason `crew start` would act on.
     const usage = usageFacts(
       ctx.paths,
       ctx.now(),
-      checkout === null ? ctx.cwd : (checkout.mainCheckout ?? checkout.root),
+      checkout === null ? ctx.cwd : crewSettingsFolder(checkout),
     );
     return {
       freeGb: await ctx.freeMemoryGb(),

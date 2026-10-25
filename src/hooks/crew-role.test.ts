@@ -152,7 +152,7 @@ function blockAnswer(): HookResult {
     stdout: JSON.stringify({
       decision: "block",
       reason:
-        "No report has been handed back for this phase. Hand it back with `cc-smart-dev-kit crew report --status done` (or `--status failed` and why), then end the turn.",
+        "No report has been handed back for this phase. Hand it back with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review), or `--status failed` and why, then end the turn.",
     }),
   };
 }
@@ -213,8 +213,8 @@ describe("SessionStart: the role card", () => {
       "You are the crew session `C app W2 hooks`, phase `W2` of `plan`, for the lead `LEAD app plan`.",
       `Your brief, which is your task: ${brief}`,
       "The files this phase owns: `src/hooks/a.ts`, `src/hooks/b.ts`. Say in your report why you changed any other file.",
-      "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done` waits until no task is open.",
-      "Hand the phase back with `cc-smart-dev-kit crew report --status done` (or `--status failed` and why), then end the turn.",
+      "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done --file -` waits until no task is open.",
+      "Hand the phase back with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review), or `--status failed` and why, then end the turn.",
       'Ask your lead, never the person: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`',
       'Tell another crew session only a contract change or a contract question: `cc-smart-dev-kit crew tell <name…> --kind contract|question "<text>"`',
       "Git: commit on your branch `crew/W2-hooks`; never push, never open a pull request, never merge — the lead handles git.",

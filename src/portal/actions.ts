@@ -1670,8 +1670,10 @@ async function claudeMemFallback(
  * asks first, in the card's own words.
  *
  * Nothing in claude-mem's file changes: each value stays exactly as it is until the person picks
- * another, and `restore` puts it back (a key is never written down, so restore leaves it as it
- * is and drops only the claim: `TAKEN_SECRET_LEFT`).
+ * another, and `restore` puts it back. A key's value is never written down, so a key the kit never
+ * replaced stays as it is and only the claim goes (`TAKEN_SECRET_LEFT`); one the kit replaced goes
+ * with its own address (RV6, `docs/design/claude-mem.md`): the person's key comes back from a
+ * backup when their address does, and the kit's key is removed when no backup holds it.
  */
 async function claudeMemTakeOver(
   action: ActionContext,

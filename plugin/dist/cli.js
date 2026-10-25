@@ -10053,13 +10053,13 @@ function readGatewaySettings(settingsPath) {
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   const modelKeys = [];
-  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+  if (typeof settings.model === "string") {
     modelKeys.push({ key: "model", value: settings.model });
   }
   for (const family of CLAUDE_FAMILIES) {
     const key = familyEnv(family);
     const value = env[key];
-    if (typeof value === "string" && value.trim() !== "")
+    if (typeof value === "string")
       modelKeys.push({ key: `env.${key}`, value });
   }
   return {
@@ -16794,6 +16794,7 @@ var LEAD_SKILL = `${PLUGIN}:lead`;
 
 // src/crew/brief.ts
 var REPORT_COMMAND = `${COMMAND} crew report`;
+var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
@@ -16831,7 +16832,7 @@ function briefFrame(facts) {
   if (facts.files.length > 0) {
     lines.push(`- The files this phase owns: ${facts.files.map((file) => `\`${file}\``).join(", ")}. Say in your report why you changed any other file.`);
   }
-  lines.push(`- Work by \`/${CREW_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`, "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.", "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.", `- When the phase is ready, hand it back with \`${REPORT_COMMAND} --status done\`; when it cannot be done, with \`--status failed\` and why.`, "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.", `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`);
+  lines.push(`- Work by \`/${CREW_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`, "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.", "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.", `- When the phase is ready, hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review); when it cannot be done, with \`--status failed\` and why.`, "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.", `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`);
   return lines.join(`
 `);
 }
@@ -19778,6 +19779,9 @@ function opusFallbackOf(facts) {
     return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
+function crewSettingsFolder(checkout) {
+  return checkout.root;
+}
 function crewGatewayOf(paths, folder) {
   const { effective } = projectGatewayState(folder, {
     configPath: paths.gatewayConfigFile,
@@ -19949,7 +19953,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
+    usage = usageFacts(input.paths, input.nowMs, crewSettingsFolder(input.checkout));
   } catch {
     return null;
   }
@@ -22962,10 +22966,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
-var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
+var loopbackFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: routerFetch,
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -22976,7 +22980,7 @@ function isJsonObject10(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = routerFetch) {
+async function routerHealth(port, fetchImpl = loopbackFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -23981,7 +23985,7 @@ async function plan(args, ctx) {
   const planFile = await leadPlanFile(lead, caller, ctx);
   const brief = await readBrief(args, ctx, planFile);
   const briefGiven = brief.text;
-  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
+  const chosen = chooseLaunch(args.kind, args, ctx, crewSettingsFolder(caller.checkout));
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -24048,7 +24052,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
-  const chosen = chooseLaunch(old.kind, changedLaunch({ effort: old.effort, model: old.model.named }, args), ctx, caller.repo);
+  const chosen = chooseLaunch(old.kind, changedLaunch({ effort: old.effort, model: old.model.named }, args), ctx, crewSettingsFolder(caller.checkout));
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -24434,7 +24438,7 @@ function phaseLine(record) {
 async function startPlanned(planned, ctx) {
   const { caller, chosen, lead } = planned;
   const crew = caller.resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
+  const usage = usageFacts(ctx.paths, ctx.now(), crewSettingsFolder(caller.checkout));
   let decided;
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -24547,7 +24551,7 @@ function specOf(planned) {
     worktree: planned.worktree
   };
 }
-async function startQueued(listed, ctx, resolved) {
+async function startQueued(listed, ctx, resolved, settingsFolder = listed.repo) {
   const early = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
   if (early === null || early.state !== "queued")
     return;
@@ -24556,7 +24560,7 @@ async function startQueued(listed, ctx, resolved) {
     return;
   } };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+  const usage = usageFacts(ctx.paths, ctx.now(), existsSync31(settingsFolder) ? settingsFolder : record.repo);
   const sha = await withPlacesLock(ctx.paths.stateDir, async () => {
     const now = readCrew(ctx.paths.stateDir, early.repo, early.id);
     if (now === null || now.state !== "queued")
@@ -26403,15 +26407,17 @@ function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
-function reportDetail(record) {
+function reportOfRecord(record) {
   if (record === null || record.reportPath === null)
     return null;
-  let report;
   try {
-    report = readReport(record.reportPath);
+    return readReport(record.reportPath);
   } catch {
     return null;
   }
+}
+function reportDetail(record) {
+  const report = reportOfRecord(record);
   if (report === null)
     return null;
   if (report.status === "blocked" && report.question !== null) {
@@ -26446,8 +26452,10 @@ function eventLine(event, record, waits, reviewed) {
       const detail = reportDetail(record);
       if (detail !== null)
         parts.push(detail);
-      if (status === "done" || status === "handoff")
-        parts.push(reviewed ? "review \u2713" : "review \u2717");
+      if (status === "done" || status === "handoff") {
+        const hasReview = reviewed || (reportOfRecord(record)?.ownReview ?? null) !== null;
+        parts.push(hasReview ? "review \u2713" : "review \u2717");
+      }
       if (status === "done" && waits.length > 0)
         parts.push(`unblocks ${waits.join(", ")}`);
       if (typeof record?.reportPath === "string")
@@ -26844,7 +26852,7 @@ async function watchPass(state, ctx, scope) {
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) {
     if (scope.mayStart !== false && await scope.goesOn?.() !== false) {
-      await startQueued(record, ctx, resolved);
+      await startQueued(record, ctx, resolved, scope.mergeInto);
     }
     const waitKey = `${record.id}:wait`;
     const stuck = stuckWaitLine(record, here);
@@ -29122,7 +29130,7 @@ async function capsOf(ctx, checkout) {
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now(), checkout === null ? ctx.cwd : checkout.mainCheckout ?? checkout.root);
+    const usage = usageFacts(ctx.paths, ctx.now(), checkout === null ? ctx.cwd : crewSettingsFolder(checkout));
     return {
       freeGb: await ctx.freeMemoryGb(),
       load: ctx.load(),
@@ -36037,7 +36045,7 @@ function routerNeedsSetup(paths) {
   const bundle = join57(install.installPath, "dist", "router.js");
   return existsSync47(bundle) && readFileSync54(bundle, "utf8") !== readFileSync54(paths.routerCopy, "utf8");
 }
-var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 function notifyCommand(text, platform, which, title = PLUGIN, critical = false) {
   if (platform === "linux") {
@@ -39590,7 +39598,7 @@ function readHealth(body) {
 }
 function realPortalProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -42491,9 +42499,19 @@ async function launchTarget(mode, ctx) {
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" \xB7 ${url}`, url };
 }
-function settingsNotes(mode, ctx) {
+function claudeArgsSetModel(claudeArgs) {
+  for (const arg of claudeArgs) {
+    if (arg === "--")
+      return false;
+    if (arg === "--model" || arg.startsWith("--model="))
+      return true;
+  }
+  return false;
+}
+function settingsNotes(mode, ctx, claudeArgs) {
   if (mode.kind === "default")
     return [];
+  const modelFromArgs = claudeArgsSetModel(claudeArgs);
   const state = projectGatewayState(ctx.cwd, {
     configPath: ctx.configPath,
     settingsFile: ctx.settingsFile
@@ -42511,6 +42529,8 @@ function settingsNotes(mode, ctx) {
       if (decided.has(fact.key))
         continue;
       decided.add(fact.key);
+      if (fact.key === "model" && modelFromArgs)
+        continue;
       if (!isSlotKey(fact.value.trim()))
         continue;
       lines.push(`launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`);
@@ -42563,7 +42583,7 @@ See: ${COMMAND} launch --help`);
     }
   }
   ctx.print(target.line);
-  for (const line of settingsNotes(parsed.mode, ctx))
+  for (const line of settingsNotes(parsed.mode, ctx, parsed.claudeArgs))
     ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
@@ -45889,7 +45909,7 @@ async function updateNow(paths, env, now, sinks) {
         const routerChanged = routerNeedsSetup(paths);
         record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
         if (routerChanged) {
-          print(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`);
+          print(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart). A machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it.`);
         }
         if (major !== null)
           print(majorSetupLine());
@@ -51085,7 +51105,7 @@ var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
 function reportStep() {
-  return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+  return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 function taskListStep() {
   return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
@@ -51150,8 +51170,8 @@ function roleCard(record, briefFile) {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
-    `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep2()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
     `Git: commit on your branch \`${record.branch}\`; never push, never open a pull request, never merge \u2014 the lead handles git.`
@@ -52620,14 +52640,14 @@ function untaggedTellRefusal(to, from) {
     `"${to}" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: ${COMMAND} crew tell "${to}" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("${tellTag(from.phase, "contract")} \u2026"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: ${COMMAND} crew report --status done.`
+    `That the phase is done, or how it goes, goes to the lead: ${REPORT_DONE_COMMAND} (with the JSON part).`
   ].join(`
 `);
 }
 function leadTellRefusal(to) {
   return [
     `"${to}" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: ${COMMAND} crew report --status done, or ${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: ${REPORT_DONE_COMMAND} (with the JSON part), or ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line."
   ].join(`
 `);
@@ -54720,7 +54740,7 @@ async function omnirouteCheck(paths, env, gateway) {
   const line = await omnirouteDoctorLine({
     confirm: null,
     env,
-    health: (url, init) => fetch(url, init),
+    health: loopbackFetch,
     now: () => Date.now(),
     paths,
     registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
@@ -58576,7 +58596,7 @@ function launchContext(paths) {
     cwd: process.cwd(),
     env: process.env,
     error: (line) => console.error(line),
-    fetch: routerFetch,
+    fetch: loopbackFetch,
     home: paths.home,
     platform: process.platform,
     print: (line) => console.log(line),
@@ -58590,7 +58610,7 @@ function omnirouteContext(paths) {
   return {
     confirm: ask,
     env: process.env,
-    health: (url, init) => fetch(url, init),
+    health: loopbackFetch,
     now: () => Date.now(),
     paths,
     registry: (url, init) => fetch(url, init),

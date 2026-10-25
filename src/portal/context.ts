@@ -13,7 +13,7 @@ import type { Runner } from "../gateway/service";
 import type { Machine } from "../machine/machine";
 import type { PluginFolder } from "./plugin-folder";
 
-/** The registry and health `fetch`: the real `fetch` in use, a fake in a test. */
+/** The registry and health `fetch`: `loopbackFetch` in use (a service on this machine is reached straight, a registry as `fetch` does), a fake in a test. */
 export type PortalFetch = HealthFetch;
 
 /** What a read command answered: its exit code, and its stdout and stderr together. */

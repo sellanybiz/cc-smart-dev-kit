@@ -29,7 +29,7 @@ import { legacyBrowserLeftovers, processCommandLinesAsync } from "../browser/leg
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
-import { realProbe } from "../gateway/health";
+import { loopbackFetch, realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import { startDetached } from "../hooks/detached";
 import { type Machine, realMachine } from "../machine/machine";
@@ -171,11 +171,7 @@ async function runEnsure(
     paths,
     pluginFolder: installed.folder,
     port: DEFAULT_PORTAL_PORT,
-    probe: {
-      fetch: (url, init) => fetch(url, init),
-      now: () => Date.now(),
-      sleep: (ms) => Bun.sleep(ms),
-    },
+    probe: realPortalProbe(),
     spawn: (argv) =>
       startDetached(process.platform, argv, {
         cwd: paths.home,
@@ -200,7 +196,7 @@ async function runServer(
   const ctx: PortalContext = {
     bunVersion: Bun.version,
     env: process.env,
-    fetch: (url, init) => fetch(url, init),
+    fetch: loopbackFetch,
     machine,
     now: () => Date.now(),
     openBrowser: (url) => openBrowser(machine, url),

@@ -13306,13 +13306,13 @@ function readGatewaySettings(settingsPath) {
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   const modelKeys = [];
-  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+  if (typeof settings.model === "string") {
     modelKeys.push({ key: "model", value: settings.model });
   }
   for (const family of CLAUDE_FAMILIES) {
     const key = familyEnv(family);
     const value = env[key];
-    if (typeof value === "string" && value.trim() !== "")
+    if (typeof value === "string")
       modelKeys.push({ key: `env.${key}`, value });
   }
   return {
@@ -13532,6 +13532,9 @@ function opusFallbackOf(facts) {
     return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
+function crewSettingsFolder(checkout) {
+  return checkout.root;
+}
 function crewGatewayOf(paths, folder) {
   const { effective } = projectGatewayState(folder, {
     configPath: paths.gatewayConfigFile,
@@ -13673,7 +13676,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
+    usage = usageFacts(input.paths, input.nowMs, crewSettingsFolder(input.checkout));
   } catch {
     return null;
   }
@@ -15666,6 +15669,7 @@ var LEAD_SKILL = `${PLUGIN}:lead`;
 
 // src/crew/brief.ts
 var REPORT_COMMAND = `${COMMAND} crew report`;
+var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
@@ -15948,7 +15952,7 @@ var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
 function reportStep() {
-  return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+  return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 function taskListStep() {
   return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
@@ -16013,8 +16017,8 @@ function roleCard(record, briefFile) {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
-    `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep2()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
     `Git: commit on your branch \`${record.branch}\`; never push, never open a pull request, never merge \u2014 the lead handles git.`
@@ -17979,15 +17983,17 @@ function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
-function reportDetail(record) {
+function reportOfRecord(record) {
   if (record === null || record.reportPath === null)
     return null;
-  let report;
   try {
-    report = readReport(record.reportPath);
+    return readReport(record.reportPath);
   } catch {
     return null;
   }
+}
+function reportDetail(record) {
+  const report = reportOfRecord(record);
   if (report === null)
     return null;
   if (report.status === "blocked" && report.question !== null) {
@@ -18022,8 +18028,10 @@ function eventLine(event, record, waits, reviewed) {
       const detail = reportDetail(record);
       if (detail !== null)
         parts.push(detail);
-      if (status === "done" || status === "handoff")
-        parts.push(reviewed ? "review \u2713" : "review \u2717");
+      if (status === "done" || status === "handoff") {
+        const hasReview = reviewed || (reportOfRecord(record)?.ownReview ?? null) !== null;
+        parts.push(hasReview ? "review \u2713" : "review \u2717");
+      }
       if (status === "done" && waits.length > 0)
         parts.push(`unblocks ${waits.join(", ")}`);
       if (typeof record?.reportPath === "string")
@@ -18816,14 +18824,14 @@ function untaggedTellRefusal(to, from) {
     `"${to}" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: ${COMMAND} crew tell "${to}" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("${tellTag(from.phase, "contract")} \u2026"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: ${COMMAND} crew report --status done.`
+    `That the phase is done, or how it goes, goes to the lead: ${REPORT_DONE_COMMAND} (with the JSON part).`
   ].join(`
 `);
 }
 function leadTellRefusal(to) {
   return [
     `"${to}" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: ${COMMAND} crew report --status done, or ${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: ${REPORT_DONE_COMMAND} (with the JSON part), or ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line."
   ].join(`
 `);

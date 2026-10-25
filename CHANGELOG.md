@@ -8,6 +8,25 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 The lead and its crew, made dependable: a resume that keeps track of its session, a watch that
 says each piece of news once, and a removed crew session's conversation kept out of your way.
 
+- **A service on this machine no longer looks down behind a proxy.** With `HTTP_PROXY` set and no
+  `NO_PROXY`, `doctor`, the portal's start and the OmniRoute checks asked a loopback address
+  through the proxy, so a running portal or OmniRoute looked down. Every probe of a service on
+  this machine now goes straight (one helper, `loopbackFetch`); a remote address (the npm
+  registry) keeps your proxy.
+- **The portal shows an unknown wait as unknown.** A paused crew session whose wait the watch
+  could not name was shown as waiting for a Claude limit on no model; it now says it waits for an
+  answer it could not name, with its slot.
+- **`launch`'s notes are right in two more places.** A `model` key set to an empty text in a
+  higher settings file blanks a lower file's slot name (Claude Code does that), so the lower
+  file is no longer named; and `launch -- --model <id>` no longer names a file's `model`, which
+  the argument overrides.
+- **A crew session reads its lead's own team file.** The effort, the opus usage guard, the board's
+  caps and a queued start now read the project's gateway at the lead's own folder, where the crew
+  session's worktree is cut from, not at the main checkout: Claude Code reads the team file of
+  the folder a session runs in. It changes the answer only for a lead in a linked worktree whose
+  branch changed `.claude/settings.json`. A done report, an own review and the update hints say
+  what is true: `--status done --file -` with its JSON part, an own review counted as a review,
+  and `cc-smart-dev-kit setup` once for a machine set up before Claude became the default.
 - **Setup turns Remote Control's auto-connect on.** `cc-smart-dev-kit setup` writes
   `remoteControlAtStartup: true` into `~/.claude/settings.json` only while the key is absent: a
   `true` or `false` you set stays, and `restore` removes the key only while it still holds the

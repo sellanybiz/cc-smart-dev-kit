@@ -1059,13 +1059,13 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     `"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.`,
+    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done --file - (with the JSON part).`,
   ].join("\n");
 
   /** The refusal of a message to the lead, in the guard's own words. */
   const TO_LEAD = [
     `"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: cc-smart-dev-kit crew report --status done --file - (with the JSON part), or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line.",
   ].join("\n");
 

@@ -17,8 +17,7 @@
  * without a real port.
  */
 
-import type { HealthFetch } from "../gateway/health";
-import { isConnectionRefused } from "../gateway/health";
+import { type HealthFetch, isConnectionRefused, loopbackFetch } from "../gateway/health";
 
 /** The portal's own name in its health answer: never another program's. */
 export const PORTAL_APP = "cc-smart-dev-kit-portal";
@@ -83,7 +82,7 @@ export interface PortalProbe {
 /** The real network and clock. */
 export function realPortalProbe(): PortalProbe {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms),
   };

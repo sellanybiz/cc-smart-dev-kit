@@ -140,7 +140,7 @@ import {
   writeJsonFile,
   writeStoreFile,
 } from "./store";
-import { crewGatewayOf, usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewGatewayOf, crewSettingsFolder, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
@@ -552,7 +552,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   const planFile = await leadPlanFile(lead, caller, ctx);
   const brief = await readBrief(args, ctx, planFile);
   const briefGiven = brief.text;
-  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
+  const chosen = chooseLaunch(args.kind, args, ctx, crewSettingsFolder(caller.checkout));
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
@@ -654,7 +654,7 @@ async function planContinuation(
     old.kind,
     changedLaunch({ effort: old.effort, model: old.model.named }, args),
     ctx,
-    caller.repo,
+    crewSettingsFolder(caller.checkout),
   );
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
@@ -1322,7 +1322,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const crew = caller.resolved.crew;
   // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
   // nothing about who takes which place.
-  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
+  const usage = usageFacts(ctx.paths, ctx.now(), crewSettingsFolder(caller.checkout));
   let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -1471,6 +1471,12 @@ export async function startQueued(
   listed: CrewRecord,
   ctx: CrewContext,
   resolved: ResolvedWorkflow,
+  /**
+   * The lead's own folder, where the session's worktree is cut from and whose settings it will
+   * run on (`crewSettingsFolder`); the watch gives its `mergeInto`. Default, and when that folder
+   * is gone (the lead's worktree was removed while its watch runs): the repository.
+   */
+  settingsFolder: string = listed.repo,
 ): Promise<void> {
   // The record as it is now, not as the watch listed it a moment ago: the lead may have changed
   // its model or effort since (`crew model`), or the crew session may have left the queue.
@@ -1481,7 +1487,11 @@ export async function startQueued(
   let record: CrewRecord = early;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+  const usage = usageFacts(
+    ctx.paths,
+    ctx.now(),
+    existsSync(settingsFolder) ? settingsFolder : record.repo,
+  );
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     // A compare-and-set: the copy the caller holds may be stale (a watch takeover leaves two
     // starters of one record, WF1), so the store says whether it is still queued. Only the starter

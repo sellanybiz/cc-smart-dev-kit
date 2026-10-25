@@ -169,19 +169,22 @@ function clip(text: string): string {
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}…`;
 }
 
+/** The crew session's report; null when there is none or it cannot be read (the line then says its status alone). */
+function reportOfRecord(record: null | CrewRecord): ReturnType<typeof readReport> {
+  if (record === null || record.reportPath === null) return null;
+  try {
+    return readReport(record.reportPath);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * What a blocked or failed crew session's report says about why, in a few words; null for any other
  * report, or one that cannot be read (the line then says the status alone).
  */
 function reportDetail(record: null | CrewRecord): null | string {
-  if (record === null || record.reportPath === null) return null;
-  let report: ReturnType<typeof readReport>;
-  try {
-    report = readReport(record.reportPath);
-  } catch {
-    // A report that cannot be read leaves the line with its status alone.
-    return null;
-  }
+  const report = reportOfRecord(record);
   if (report === null) return null;
   if (report.status === "blocked" && report.question !== null) {
     return `waits on: ${clip(report.question)}`;
@@ -232,7 +235,11 @@ export function eventLine(
       const parts = [`${name}: ${status}`];
       const detail = reportDetail(record);
       if (detail !== null) parts.push(detail);
-      if (status === "done" || status === "handoff") parts.push(reviewed ? "review ✓" : "review ✗");
+      if (status === "done" || status === "handoff") {
+        // A review is the record's, or the report's own review (RG1: a brief that asked for no second opinion).
+        const hasReview = reviewed || (reportOfRecord(record)?.ownReview ?? null) !== null;
+        parts.push(hasReview ? "review ✓" : "review ✗");
+      }
       if (status === "done" && waits.length > 0) parts.push(`unblocks ${waits.join(", ")}`);
       if (typeof record?.reportPath === "string") parts.push(`report ${record.reportPath}`);
       return parts.join(" · ");
@@ -1044,7 +1051,7 @@ export async function watchPass(
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.
     if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
-      await startQueued(record, ctx, resolved);
+      await startQueued(record, ctx, resolved, scope.mergeInto);
     }
     // A phase that was removed before its work was merged releases nothing, so this one never
     // starts by itself: say it once, with the way to drop the wait (a phase that was merged

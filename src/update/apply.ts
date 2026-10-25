@@ -141,7 +141,7 @@ export function routerNeedsSetup(paths: CliPaths): boolean {
 }
 
 /** Said after an update whose router changed. */
-export const ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+export const ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 
 /**
  * Said after an update when agent view's user-level notification hook is missing: only a
