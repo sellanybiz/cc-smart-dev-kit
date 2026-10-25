@@ -21,6 +21,7 @@
 3. RV6: after `restore`, claude-mem's key always belongs to the address in its file: the person's own key comes back with their address, or the kit's key is removed (it was sent to the wrong host before).
 4. RV6 and UI1 were started by hand: the installed watch never marked GF1's or RV5's merge (noted for 1.2.1).
 5. UA1 (`user-unavailable` / `user-available`) is briefed for 1.2.1 by your ask.
+6. Remote Control (DF1's proof): Claude Code turns it off only while `ANTHROPIC_BASE_URL` is not Anthropic's, and `gateway off` writes Anthropic's address, so it comes back by itself; the kit never touched it. Auto-connect at start is your own `remoteControlAtStartup` (true on your machine). The lead chose not to have setup write it for every machine (remote access is each person's choice). Say "write it" and a small follow-up makes it a managed key that `restore` removes.
 
 ## Decisions
 
