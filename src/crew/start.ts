@@ -76,6 +76,7 @@ import {
 } from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
+import { findCrew } from "./board";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
 import { type Caller, readCaller, reasonOf, requireSession } from "./caller";
 import {
@@ -503,13 +504,11 @@ async function planContinuation(
   claude: string,
 ): Promise<Plan> {
   const records = listCrew(ctx.paths.stateDir, caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
-  if (old === undefined) {
-    throw refusal(
-      `no crew session named "${args.continueFrom}" is recorded in this repository`,
-      `the crew here: ${records.map((one) => one.name).join(", ")}`,
-    );
-  }
+  // The one finder of every crew command (`findCrew`): a name shared with removed records means
+  // the live one, and two live ones ask for an id.
+  const found = findCrew(records, args.continueFrom as string, "start");
+  if ("refusal" in found) throw new Refusal(found.refusal.lines, found.refusal.code);
+  const old = found.record;
   const pending = pendingDiscardWhy(old);
   if (pending !== null) throw refusal(pending);
   if (old.phase !== args.phase) {
@@ -540,8 +539,12 @@ async function planContinuation(
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
-  const number =
-    records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
+  // The phase's real sessions: those that started. A record removed before it began never ran, and
+  // took no number. The old one handed off, so a next one is at least a second.
+  const started = records.filter(
+    (one) => one.phase === old.phase && one.slug === old.slug && one.base !== null,
+  ).length;
+  const number = Math.max(started, 1) + 1;
   let name: string;
   try {
     name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
@@ -875,7 +878,7 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
   }
   const code = await startPlanned(planned, ctx);
   if (code === 0 && args.continueFrom !== null) {
-    await stopContinued(planned, args, ctx);
+    await stopContinued(planned, ctx);
   }
   return code;
 }
@@ -886,9 +889,10 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
  * for "handed off to a next crew session, and ended" — and so do its branch and its worktree, so the
  * lead can read what it did and `crew rm` can clean it up once the lead has merged.
  */
-async function stopContinued(planned: Plan, args: StartArgs, ctx: CrewContext): Promise<void> {
+async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
   const records = listCrew(ctx.paths.stateDir, planned.caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
+  // By the id the plan recorded: a name may be shared with removed records.
+  const old = records.find((one) => one.id === planned.continues);
   if (old === undefined || old.shortId === null) return;
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) return;
