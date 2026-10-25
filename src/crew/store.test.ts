@@ -768,6 +768,20 @@ describe("what a paused crew session waits for", () => {
     expect(after?.lastPause?.backoffMs).toBe(300_000);
   });
 
+  test("an unknown wait keeps the state key of the session's own slot, in a profile too (RV3)", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const unknown = {
+      kind: "unknown",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "my-project/cc-smart-dev-kit-worker",
+    } as const;
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "paused", waitingFor: unknown }, T1);
+    const saved = JSON.parse(readFileSync(crewFile(state, REPO, "crew-K-contracts"), "utf8"));
+    expect(saved.waitingFor).toEqual(unknown);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.waitingFor).toEqual(unknown);
+  });
+
   test("when the crew session goes on, the wait is cleared and leaves nothing in the file", async () => {
     const state = tempDir("state");
     await createCrew(state, queued(), T0);

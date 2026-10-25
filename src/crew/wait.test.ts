@@ -136,6 +136,7 @@ describe("what a pause waits for, from the router's state file", () => {
     expect(waitFor(paused(), read, NOW)).toEqual({
       kind: "unknown",
       since: "2026-10-21T22:00:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
     });
   });
 

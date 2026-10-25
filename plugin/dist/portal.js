@@ -13291,7 +13291,8 @@ var waitingForSchema = discriminatedUnion("kind", [
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text
+    since: text,
+    slot: text.exactOptional()
   })
 ]);
 var crewFields = object({
@@ -31562,7 +31563,7 @@ function waitFor(record, facts, nowMs, profile = null) {
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
-  return { kind: "unknown", since: iso2(nowMs) };
+  return { kind: "unknown", since: iso2(nowMs), ...slot === null ? {} : { slot } };
 }
 function pauseBackoff(previous, nowMs) {
   if (previous === undefined)

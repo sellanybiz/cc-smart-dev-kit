@@ -319,7 +319,7 @@ export function waitFor(
       resetsAt: limit[1].resetsAt === null ? null : iso(limit[1].resetsAt * 1000),
     };
   }
-  return { kind: "unknown", since: iso(nowMs) };
+  return { kind: "unknown", since: iso(nowMs), ...(slot === null ? {} : { slot }) };
 }
 
 /**
@@ -424,13 +424,13 @@ export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): b
     }
     default: {
       // Nothing the pause named: no breaker on its slot, no limit on its model, and the
-      // backoff has passed.
+      // backoff has passed. The slot is the key the pause looked under (`<profile>/<slot>` in
+      // a profile): the machine's breaker is another session's.
       const limited = [record.model.resolved, record.model.named].some(
         (name) => facts.limits[withoutContextSuffix(name)] !== undefined,
       );
-      return (
-        (record.model.slot === null || facts.breakers[record.model.slot] === undefined) && !limited
-      );
+      const key = (waiting.kind === "unknown" ? waiting.slot : undefined) ?? record.model.slot;
+      return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }
 }

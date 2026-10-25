@@ -14996,7 +14996,8 @@ var waitingForSchema = discriminatedUnion("kind", [
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text
+    since: text,
+    slot: text.exactOptional()
   })
 ]);
 var crewFields = object({
@@ -22111,7 +22112,7 @@ function waitFor(record, facts, nowMs, profile = null) {
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
-  return { kind: "unknown", since: iso2(nowMs) };
+  return { kind: "unknown", since: iso2(nowMs), ...slot === null ? {} : { slot } };
 }
 function pauseBackoff(previous, nowMs) {
   if (previous === undefined)
@@ -22174,7 +22175,8 @@ function waitOver(record, facts, nowMs) {
     }
     default: {
       const limited = [record.model.resolved, record.model.named].some((name) => facts.limits[withoutContextSuffix(name)] !== undefined);
-      return (record.model.slot === null || facts.breakers[record.model.slot] === undefined) && !limited;
+      const key = (waiting.kind === "unknown" ? waiting.slot : undefined) ?? record.model.slot;
+      return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }
 }
