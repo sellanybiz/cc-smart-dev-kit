@@ -783,6 +783,16 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   settings' declaration; the owner's machine unblocked with a repeat `marketplace add`, proved on
   2.1.310). **GI3 removed and GI4 started by hand** on `release-1.3.0` (`0da2ece`): the installed
   1.1.2 watch never marks a `stopped` record merged, so a `--waits-for` on it never releases.
+- 2026-10-25 (night): **Merged on `release-1.2.1`:** IF1 (`3cbc92b`), RX2 (`a1e785e`), RX3
+  (`766ca59`), RX1 (`f8292ff`). Each fix came with a test that failed first and its own opus
+  `xhigh` review. The lead's seam fix: the Work page skips every session a crew record has had
+  (`63a947f`, by a builder), and the README's crew-watch and `crew rm` rows. PowerShell never ran
+  here: the Windows CI job is the first proof of `install.ps1` and of `windows-hook-smoke.sh` case
+  6. **GI4 merged on `release-1.3.0`** (`d6f6ad0`, full check 7,886 pass). **D67, GI4's open
+  question:** a marker counts only when the kit's own `gh` login wrote it. The lead keeps that as a
+  documented limit, not a fix: a second account's marker is ignored, never trusted. IF1, RX1, RX2
+  and RX3's records stay until `release-1.2.1` merges into `release-1.3.0` (`crew rm` checks the
+  lead folder's branch).
 
 ### For the owner in the morning
 
