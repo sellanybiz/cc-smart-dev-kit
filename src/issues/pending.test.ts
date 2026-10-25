@@ -17,7 +17,12 @@ import {
   readPending,
   settleMarks,
 } from "./pending";
-import { phaseIssues, recordIssueNumbers } from "./phase-issues";
+import {
+  briefIssueNumbers,
+  checkPhaseIssues,
+  phaseIssues,
+  recordIssueNumbers,
+} from "./phase-issues";
 
 const MARK: FixedMark = {
   base: "release-1.3.0",
@@ -297,6 +302,26 @@ describe("phaseIssues", () => {
     const record = { issue: { number: 3, repo: "example-org/my-app", url: "u" } };
     expect(phaseIssues(record, { issues: [9, 3, 1] })).toEqual([1, 3, 9]);
     expect(phaseIssues({}, null)).toEqual([]);
+  });
+
+  test("IX2-5: a brief names an issue by #n or by its address, outside the quoted lines", () => {
+    expect(
+      briefIssueNumbers(
+        "Fix #12 and https://github.com/example-org/my-app/issues/7, not 5 or #0 or #x.\n> and #99\n  > and #98\n",
+      ),
+    ).toEqual([7, 12]);
+  });
+
+  test("IX2-5: only the record's issue and the brief's numbers are marked; the rest are named", () => {
+    const record = { issue: { number: 3 } };
+    expect(checkPhaseIssues(record, { issues: [1, 2, 3] }, "Fix #1.")).toEqual({
+      marks: [1, 3],
+      unnamed: [2],
+    });
+    // No brief to read: the record's issue alone.
+    expect(checkPhaseIssues(record, { issues: [1, 3] }, null)).toEqual({ marks: [3], unnamed: [1] });
+    // A brief naming an issue the report does not: nothing is added.
+    expect(checkPhaseIssues({}, { issues: [] }, "Fix #4.")).toEqual({ marks: [], unnamed: [] });
   });
 
   test("a record's issue that is not a whole number above 0 counts for nothing", () => {

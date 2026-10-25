@@ -50,12 +50,13 @@
  * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
 import { type FeedMemory, newFeedMemory, pollIssueFeed } from "../issues/feed";
 import { type PassBudget, passBudget, queueMarks, settleMarks } from "../issues/pending";
-import { phaseIssues } from "../issues/phase-issues";
+import { checkPhaseIssues, unnamedIssueLine } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
@@ -89,6 +90,7 @@ import {
   appendCrewEvent,
   type CrewEvent,
   type CrewRecord,
+  crewBriefFile,
   crewStoreDir,
   ISSUE_DATA_NOTE,
   ISSUE_EVENT_CREW,
@@ -616,21 +618,33 @@ export function issueMarksFile(stateDir: string, repo: string, leadSessionId: st
  * mark for each issue its phase fixes. The marks are sent by `settleMarks`, in this pass and
  * every later one until GitHub has taken them. A report that cannot be read has no issues to
  * name; the record's own issue (`crew start --issue`) still counts.
+ *
+ * **The report is the crew session's own word** (IX2-5): a number it names is queued only when the
+ * record's issue or the lead's brief names it too (`checkPhaseIssues`). Each other number is one
+ * line returned for the lead, with the way to close it if the lead agrees after reading the diff.
  */
 function queueIssueMarks(
   record: CrewRecord,
   proof: NonNullable<CrewRecord["mergeProof"]>,
   file: string,
-): void {
+  briefFile: string,
+): string[] {
   let report: ReturnType<typeof readReport> = null;
   try {
     report = record.reportPath === null ? null : readReport(record.reportPath);
   } catch {
     // A report that cannot be read names no issue; the record's own still counts.
   }
+  let brief: null | string = null;
+  try {
+    brief = readFileSync(briefFile, "utf8");
+  } catch {
+    // Said by the lines below when it matters: no brief, only the record's issue counts.
+  }
+  const checked = checkPhaseIssues(record, report, brief);
   queueMarks(
     file,
-    phaseIssues(record, report).map((issue) => ({
+    checked.marks.map((issue) => ({
       base: proof.leadRef,
       branch: record.branch,
       issue,
@@ -638,6 +652,7 @@ function queueIssueMarks(
       tip: proof.head,
     })),
   );
+  return checked.unnamed.map((issue) => unnamedIssueLine(record.name, issue, brief !== null));
 }
 
 /**
@@ -1046,11 +1061,14 @@ export async function watchPass(
         // Queued before the mark, so a pass that stops between the two loses nothing: the
         // next pass queues the same marks again, and the queue keeps each once (D67).
         try {
-          queueIssueMarks(
+          for (const line of queueIssueMarks(
             record,
             proof,
             issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
-          );
+            crewBriefFile(ctx.paths.stateDir, repo, record.id),
+          )) {
+            say(line);
+          }
         } catch (error) {
           // A queue that cannot be written never stops the merge from counting (D67).
           say(`issues: the marks for ${record.name} could not be queued (${reasonOf(error)})`);

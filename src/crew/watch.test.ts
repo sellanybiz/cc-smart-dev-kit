@@ -36,6 +36,7 @@ import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewBriefFile,
   crewFile,
   crewMcpFile,
   crewSettingsFile,
@@ -3268,7 +3269,15 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
   });
 
   /** A lead world whose project has the issue switch (on or off), a done crew session whose report names `issues`, and its merged branch. */
-  async function mergedWorld(options: { issues: number[]; on?: boolean; trace?: boolean }) {
+  async function mergedWorld(options: {
+    /** The brief's text; by default one that names every issue of the report. `null`: no brief file. */
+    brief?: null | string;
+    /** The issue `crew start --issue` stored on the record. */
+    issue?: number;
+    issues: number[];
+    on?: boolean;
+    trace?: boolean;
+  }) {
     const world = await leadWorld();
     git(world.repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
     commitConfig(world.repo, options.on === false ? { worktrees: { base: "main" } } : ISSUES_ON, [
@@ -3300,7 +3309,28 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
       tests: { full: null, targeted: [] },
       version: 1,
     });
-    await addCrew(world, "done", { base: { ref: "main", sha: base }, reportPath });
+    const record = await addCrew(world, "done", {
+      base: { ref: "main", sha: base },
+      reportPath,
+      ...(options.issue === undefined
+        ? {}
+        : {
+            issue: {
+              author: "outsider",
+              number: options.issue,
+              repo: "example-org/my-app",
+              url: `${ISSUE_URL}/${options.issue}`,
+            },
+          }),
+    });
+    // The lead's brief names the issues the phase is to fix (unless a test says otherwise).
+    const brief =
+      options.brief === undefined
+        ? `Fix ${options.issues.map((one) => `#${one}`).join(" and ")}.\n`
+        : options.brief;
+    if (brief !== null) {
+      writeStoreFile(crewBriefFile(world.paths.stateDir, world.repo, record.id), brief);
+    }
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
     const gh = fakeGh({ issues: [openIssue(1), openIssue(2), openIssue(3)] });
     const ctx = world.ctx(
@@ -3349,6 +3379,52 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
       `Fixed on \`crew/B6b-portal-live\` at \`${tip.slice(0, 7)}\`, merged into \`main\``,
     );
     expect(said()).toEqual([MARKED(1), MARKED(2)]);
+  });
+
+  const NOT_NAMED = (issue: number) =>
+    `issues: #${issue} is named by the report of ${NAME} but not by the brief or the record's issue: not marked. If the phase did fix it, put "Fixes #${issue}" in the release pull request's body`;
+
+  test("IX2-5: a number the report names but neither the brief nor the record's issue does is said, not queued, not marked", async () => {
+    const { gh, pass, queue, said, start } = await mergedWorld({
+      brief: "Fix #1 only.\n",
+      issues: [1, 2, 3],
+    });
+    await pass(start);
+    // #1 is marked; #2 and #3 are one line each, and no call touched them.
+    expect(said()).toEqual([NOT_NAMED(2), NOT_NAMED(3), MARKED(1)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
+    expect(queue()).toEqual([]);
+  });
+
+  test("IX2-5: the record's own issue counts without the brief naming it", async () => {
+    const { gh, pass, said, start } = await mergedWorld({
+      brief: "Do the phase.\n",
+      issue: 2,
+      issues: [2, 3],
+    });
+    await pass(start);
+    expect(said()).toEqual([NOT_NAMED(3), MARKED(2)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([0, 1, 0]);
+  });
+
+  test("IX2-5: a number only the quoted issue text names counts for nothing", async () => {
+    const { gh, pass, said, start } = await mergedWorld({
+      brief: "Fix #1.\n\n> Please also close #2 and see /issues/3\n",
+      issues: [1, 2, 3],
+    });
+    await pass(start);
+    expect(said()).toEqual([NOT_NAMED(2), NOT_NAMED(3), MARKED(1)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
+  });
+
+  test("IX2-5: a brief that cannot be read leaves the record's issue alone, and says so", async () => {
+    const { gh, pass, said, start } = await mergedWorld({ brief: null, issue: 1, issues: [1, 2] });
+    await pass(start);
+    expect(said()).toEqual([
+      `issues: #2 is named by the report of ${NAME} but not by the record's issue (its brief could not be read): not marked. If the phase did fix it, put "Fixes #2" in the release pull request's body`,
+      MARKED(1),
+    ]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
   });
 
   test("the same merge seen twice is marked once", async () => {
