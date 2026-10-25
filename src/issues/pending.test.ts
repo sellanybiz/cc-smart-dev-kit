@@ -6,8 +6,10 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { issuesWorld } from "../testing/issues-world";
 import { tempDir } from "../testing/temp";
+import type { GhExec } from "../workflow/merge-check";
 import type { FixedMark } from "./fixed";
 import {
+  budgetedGh,
   MARKS_PER_PASS,
   passBudget,
   queueMarks,
@@ -199,6 +201,94 @@ describe("GI4: a pass has one budget for its issue work", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.length).toBeLessThan(MARKS_PER_PASS + 1);
     expect(readPending(path).length).toBeGreaterThan(5 - MARKS_PER_PASS);
+  });
+});
+
+describe("IX2-4: no call outlives the pass's budget", () => {
+  const issue = {
+    body: "",
+    labels: [],
+    number: 1,
+    title: "t",
+    url: "https://github.com/example-org/my-app/issues/1",
+  };
+
+  /** A `gh` that, like the real one, runs until its own time limit and then times out. */
+  function hanging(): { calls: number[]; exec: GhExec } {
+    const calls: number[] = [];
+    return {
+      calls,
+      exec: async (_args, call) => {
+        calls.push(call.timeoutMs);
+        await Bun.sleep(call.timeoutMs);
+        return { code: null, err: "", kind: "timeout", out: "" };
+      },
+    };
+  }
+
+  test("a gh that never answers: the pass ends near its budget, not after the call's own 10 s", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const slow = hanging();
+    made.world.gh = slow.exec;
+    const path = file();
+    queueMarks(path, [MARK]);
+    const started = Date.now();
+    const lines = await settleMarks(path, made.world, 0, passBudget(Date.now, { ms: 1_500 }));
+    expect(Date.now() - started).toBeLessThan(2_300);
+    expect(slow.calls).toHaveLength(1);
+    expect(slow.calls[0]).toBeLessThanOrEqual(1_500);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("gh timed out");
+    expect(readPending(path)).toHaveLength(1);
+  });
+
+  test("a write cut short says it may have been posted, and the retry reads before it writes", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const real = made.world.gh;
+    // The comment reaches GitHub, but the answer does not come back in time.
+    made.world.gh = async (args, call) => {
+      if (args[0] === "issue" && args[1] === "comment") {
+        await real(args, call);
+        await Bun.sleep(call.timeoutMs);
+        return { code: null, err: "", kind: "timeout", out: "" };
+      }
+      return await real(args, call);
+    };
+    const path = file();
+    queueMarks(path, [MARK]);
+    const started = Date.now();
+    const first = await settleMarks(path, made.world, 0, passBudget(Date.now, { ms: 1_500 }));
+    expect(Date.now() - started).toBeLessThan(2_300);
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("may have been posted");
+    expect(made.gh.issues[0]?.comments).toHaveLength(1);
+    // The retry: the issue is read first, the marker is found, nothing is posted again.
+    const second = await settleMarks(path, made.world, RETRY_MS, passBudget(Date.now));
+    expect(made.gh.issues[0]?.comments).toHaveLength(1);
+    expect(second).toEqual([
+      expect.stringContaining("marked fixed on release-1.3.0"),
+    ]);
+    expect(readPending(path)).toEqual([]);
+  });
+
+  test("budgetedGh: a call gets the smaller of its limit and the time left; under a second it is not made", async () => {
+    let clock = 0;
+    const seen: number[] = [];
+    const gh = budgetedGh(
+      async (_args, call) => {
+        seen.push(call.timeoutMs);
+        return { code: 0, err: "", kind: "ok", out: "" };
+      },
+      passBudget(() => clock, { ms: 12_000 }),
+    );
+    const call = { env: {}, folder: "/tmp", timeoutMs: 10_000 };
+    expect((await gh(["a"], call)).kind).toBe("ok");
+    clock = 5_000;
+    expect((await gh(["b"], call)).kind).toBe("ok");
+    clock = 11_001;
+    const skipped = await gh(["c"], call);
+    expect(skipped.kind).toBe("timeout");
+    expect(seen).toEqual([10_000, 7_000]);
   });
 });
 

@@ -51,7 +51,7 @@ import {
   sameAccount,
 } from "./file";
 import { hasKitMarker } from "./marker";
-import { hasTime, type PassBudget } from "./pending";
+import { budgetedGh, callTime, hasTime, MIN_CALL_MS, type PassBudget } from "./pending";
 
 /** What a look found: the lines that quote GitHub (data), and the feed's own words (state). */
 export interface FeedResult {
@@ -217,7 +217,8 @@ class Look {
   /** One conditional read of `path`; `etag` is the tag of the last answer for this very URL. */
   async read(path: string, etag: null | string): Promise<Read> {
     const { budget, now, world } = this.input;
-    if (!hasTime(budget)) return { kind: "late" };
+    // Too little time for a call to finish is the same as none: late, never a false "unreachable".
+    if (callTime(budget, GH_TIMEOUT_MS) < MIN_CALL_MS) return { kind: "late" };
     const result = await world.gh(
       [
         "api",
@@ -357,7 +358,9 @@ export async function pollIssueFeed(input: FeedInput): Promise<FeedResult> {
     const known = readIssueFeed(stateDir, repo);
     const state = known !== null && known.source === name ? known : null;
     if (state !== null && state.nextAt > now) return NOTHING;
-    return await look(input, new Look(input), name, state, intervalMs);
+    // Every `gh` call of the look gets the time the pass has left, no more (IX2-4).
+    const bounded = { ...input, world: { ...world, gh: budgetedGh(world.gh, input.budget) } };
+    return await look(input, new Look(bounded), name, state, intervalMs);
   });
   return held.held ? held.value : NOTHING;
 }

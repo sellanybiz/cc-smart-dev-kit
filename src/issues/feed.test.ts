@@ -505,6 +505,56 @@ describe("the interval", () => {
     expect(feed.requests).toHaveLength(2);
   });
 
+  test("IX2-4: a gh that never answers: the look ends near the pass's budget, not after 10 s a read", async () => {
+    const { made, world } = feedWorld();
+    const limits: number[] = [];
+    const hanging: typeof world.gh = async (_args, call) => {
+      limits.push(call.timeoutMs);
+      await Bun.sleep(call.timeoutMs);
+      return { code: null, err: "", kind: "timeout", out: "" };
+    };
+    const started = Date.now();
+    const result = await pollIssueFeed({
+      budget: passBudget(Date.now, { ms: 1_500 }),
+      now: T0,
+      repo: made.repo,
+      stateDir: made.paths.stateDir,
+      world: { ...world, gh: hanging },
+    });
+    expect(Date.now() - started).toBeLessThan(2_300);
+    expect(limits).toHaveLength(1);
+    expect(limits[0]).toBeLessThanOrEqual(1_500);
+    // The one read timed out: it is the feed's "unreachable" line, said once.
+    expect(result.notices).toHaveLength(1);
+  });
+
+  test("IX2-4: with under a second left no read is made, and nothing is said", async () => {
+    const { feed, made, world } = feedWorld();
+    history(feed);
+    let clock = 0;
+    const result = await pollIssueFeed({
+      budget: passBudget(() => clock, { ms: 5_000 }),
+      now: T0,
+      repo: made.repo,
+      stateDir: made.paths.stateDir,
+      world,
+    });
+    expect(result).toEqual({ news: [], notices: [] });
+    expect(feed.requests).toHaveLength(2);
+    // The next look, with 500 ms left: late, no request, no notice, state untouched.
+    clock = 4_500;
+    feed.requests.length = 0;
+    const later = await pollIssueFeed({
+      budget: { clock: () => clock, deadline: 5_000, marks: 3 },
+      now: T0 + 5 * MINUTE,
+      repo: made.repo,
+      stateDir: made.paths.stateDir,
+      world,
+    });
+    expect(later).toEqual({ news: [], notices: [] });
+    expect(feed.requests).toEqual([]);
+  });
+
   test("the setting is the interval, down to its floor of two minutes", async () => {
     const { feed, poll, state } = feedWorld({ enabled: true, watch: true, watchMinutes: 2 });
     history(feed);
