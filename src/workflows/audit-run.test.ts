@@ -93,7 +93,9 @@ describe("the audit-run workflow", () => {
       args: { budget: 2, question: "q", target: "src", tracks: ["one"] },
     });
     expect(run.calls.filter(isVerify).length).toBe(2);
-    expect(run.logs.join("\n")).toContain("3 finding(s) reported; 2 checked");
+    expect(run.logs.join("\n")).toContain(
+      "3 finding(s) reported; 2 verified against the code, 1 not",
+    );
   });
 
   test("only a confirmed finding reaches the writer; refuted and unproven do not", async () => {
@@ -163,6 +165,110 @@ describe("the audit-run workflow", () => {
     const report = run.calls.find(isReport);
     expect(report?.prompt).toContain("Return the whole report");
     expect(run.result).toBe("the report");
+  });
+
+  test("more findings than the budget: the most severe are verified, the rest go to the writer unchecked", async () => {
+    const at = (title: string, severity: string, file: string) => ({
+      ...finding(title),
+      file,
+      severity,
+    });
+    const run = await runScript(AUDIT_RUN, {
+      answer: (call) => {
+        if (isAudit(call)) {
+          return {
+            findings: [
+              at("s1", "suggestion", "src/s1.ts"),
+              at("w1", "warning", "src/w1.ts"),
+              at("c1", "critical", "src/c1.ts"),
+            ],
+            hunches: [],
+          };
+        }
+        if (isVerify(call)) return { reason: "checked", verdict: "confirmed" };
+        return "the report";
+      },
+      args: { budget: 2, question: "q", target: "src", tracks: ["one"] },
+    });
+    const verified = run.calls.filter(isVerify).map((call) => call.prompt);
+    expect(verified.length).toBe(2);
+    expect(verified.some((prompt) => prompt.includes('"title": "c1"'))).toBe(true);
+    expect(verified.some((prompt) => prompt.includes('"title": "w1"'))).toBe(true);
+    const report = run.calls.find(isReport);
+    expect(report?.prompt).toContain("Unchecked findings (1, not verified:");
+    expect(report?.prompt).toContain("- [SUGGESTION] s1 — src/s1.ts:1");
+    expect(run.logs.join("\n")).toContain("2 verified against the code, 1 not");
+  });
+
+  test("a critical finding in the last track is verified even when an earlier track fills the budget", async () => {
+    const run = await runScript(AUDIT_RUN, {
+      answer: (call) => {
+        if (isAudit(call)) {
+          return labelOf(call) === "audit: busy"
+            ? {
+                findings: [1, 2, 3].map((n) => ({
+                  ...finding(`busy ${n}`),
+                  severity: "suggestion",
+                })),
+              }
+            : { findings: [{ ...finding("the critical one"), severity: "critical" }] };
+        }
+        if (isVerify(call)) return { reason: "checked", verdict: "confirmed" };
+        return "the report";
+      },
+      args: { budget: 1, question: "q", target: "src", tracks: ["busy", "last"] },
+    });
+    const verified = run.calls.filter(isVerify);
+    expect(verified.length).toBe(1);
+    expect(verified[0]?.prompt).toContain('"title": "the critical one"');
+  });
+
+  test("nothing past the budget: the writer is told there is nothing unchecked", async () => {
+    const run = await runScript(AUDIT_RUN, {
+      answer: (call) =>
+        isAudit(call) ? { findings: [finding("A")] } : { reason: "x", verdict: "confirmed" },
+      args: { question: "q", target: "src", tracks: ["one"] },
+    });
+    expect(run.calls.find(isReport)?.prompt).toContain("Unchecked findings: none");
+  });
+
+  test("a string argument is refused with one line that names the expected object, and no agent starts", async () => {
+    const calls: unknown[] = [];
+    const attempt = runScript(AUDIT_RUN, {
+      answer: (call) => {
+        calls.push(call);
+        return null;
+      },
+      args: '{"target":"src"}',
+    });
+    await expect(attempt).rejects.toThrow(/audit-run refused its arguments \(got a string/);
+    await expect(attempt).rejects.toThrow(/Pass one object: \{ target\?: string/);
+    await attempt.catch((error: Error) => expect(error.message.includes("\n")).toBe(false));
+    expect(calls).toEqual([]);
+  });
+
+  test("an unknown key or a wrong type is refused, and the message names the key", async () => {
+    await expect(runScript(AUDIT_RUN, { args: { path: "x", target: "src" } })).rejects.toThrow(
+      /unknown key "path"/,
+    );
+    const bad: Array<[string, unknown]> = [
+      ["budget", "12"],
+      ["budget", -1],
+      ["tracks", "one"],
+      ["target", 1],
+      ["question", null],
+      ["findingsPath", 3],
+    ];
+    for (const [key, value] of bad) {
+      await expect(runScript(AUDIT_RUN, { args: { [key]: value } })).rejects.toThrow(
+        new RegExp(`"${key}" must be`),
+      );
+    }
+    for (const args of [null, ["src"], 12]) {
+      await expect(runScript(AUDIT_RUN, { args })).rejects.toThrow(
+        /audit-run refused its arguments/,
+      );
+    }
   });
 
   test("with the gateway on and an affordable worker slot, the guard still allows every launch", () => {
