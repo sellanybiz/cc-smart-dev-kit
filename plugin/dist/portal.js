@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.2.0",
+  version: "1.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -14869,7 +14869,18 @@ var WORKFLOW_CREW_KEYS_SINCE = {
   perLead: "1.1.0",
   perLeadOpus: "1.1.0",
   usagePercent: "1.1.0",
-  keep: "1.1.0"
+  keep: "1.1.0",
+  handoffTokens: "1.2.0",
+  loadPerCore: "1.3.0",
+  archiveDays: "1.3.0"
+};
+var OWN_HOOK_NAMES_SINCE = {
+  "subagent-background": "1.0.0",
+  "crew-role": "1.0.0",
+  "lead-notes": "1.0.0",
+  "verify-gate": "1.1.0",
+  "agent-usage": "1.1.0",
+  "tier-view": "1.3.0"
 };
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
@@ -17523,6 +17534,11 @@ function requiresFloor(file) {
   const needs = [];
   if (Object.hasOwn(file, "checks"))
     needs.push(CHECKS_SINCE);
+  const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
+  for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
+    if (ownHooks.includes(name))
+      needs.push(since);
+  }
   for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
     if (Object.hasOwn(crew, key))
       needs.push(since);

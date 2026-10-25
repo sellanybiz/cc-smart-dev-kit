@@ -114,7 +114,7 @@ shipped script against fakes and checks the guard the plugin ships allows every 
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
 
-*The arguments and the budget (1.2.1).* The Workflow tool hands `args` to the script verbatim,
+*The arguments and the budget (1.3.0).* The Workflow tool hands `args` to the script verbatim,
 so a caller that passes the text of an object gets a string. Both scripts refuse that at the
 start: a string, `null`, an array, an unknown key or a wrong type throws one line that names the
 problem and the expected object, before any agent starts; no `args` at all still runs on the
