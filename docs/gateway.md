@@ -536,7 +536,9 @@ The words, each one command (`gateway slot <slot> …`):
 reasoning effort in that slot. Levels are `none`, `low`, `medium`, `high`, `xhigh`, `max`;
 `off` removes the pin and follows Claude Code again. The target must already be in the
 slot's active chain. A `claude-…` target is refused: its request still gets only the fields
-that model refuses changed.
+that model refuses changed. The portal's Slots page sets it the same way (its `slot.effort`
+action runs this command, asks first, and shows the test request and a refusal in place),
+only while the slot is Custom.
 
 Before saving, the command sends one test request through the judge test's shared sender,
 at the chosen effort and with only the backend's key. A refusal shows the backend's reason,

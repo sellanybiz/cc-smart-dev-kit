@@ -98,6 +98,7 @@ import {
   planRemoteControl,
   REMOTE_CONTROL_KEY,
   REMOTE_CONTROL_VALUE,
+  remoteControlReleasedFile,
 } from "../setup/remote-control";
 import {
   RETRY_WATCHDOG_DECLINED_NOTE,
@@ -369,6 +370,11 @@ function applySetup(
   // is let go once (`src/setup/remote-control.ts`).
   const remoteControl = planRemoteControl(paths);
   if (remoteControl === "set") set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
+  // The record of the release comes before the claim goes: a crash between the two plans
+  // "drop" again, and the record is never missing once the claim is gone.
+  if (remoteControl === "drop" && !dryRun) {
+    atomicWrite(remoteControlReleasedFile(paths.stateDir), "released\n", 0o600);
+  }
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
   if (managed.tavilyKeyPlan.kind === "write") {

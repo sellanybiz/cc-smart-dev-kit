@@ -41,8 +41,18 @@ it is a minor version.
 - **Setup turns Remote Control's auto-connect on.** `cc-smart-dev-kit setup` writes
   `remoteControlAtStartup: true` into `~/.claude/settings.json` only while the key is absent: a
   `true` or `false` you set stays, and `restore` removes the key only while it still holds the
-  value setup wrote. It connects with a claude.ai login; `gateway on` still turns Remote Control
-  off (`gateway off` brings it back).
+  value setup wrote. A key you delete or change after setup wrote it is let go of once, and
+  never written again (a record in the state folder, `remote-control-released`). It connects with
+  a claude.ai login; `gateway on` still turns Remote Control off (`gateway off` brings it back).
+- **A project file's `requires` is mended, and `doctor` says when it is too low.** 1.2.0 could
+  leave a file that sets `workflow.crew.handoffTokens` under `requires: ">=1.0"`, so a teammate on
+  1.1 had the whole file refused instead of hearing "update". `workflow set … --project` now
+  raises a `requires` below what the file's fields need on any write (never lowers one; a file
+  that said `>=0.1` becomes `>=0.5.2`) and the line it prints names the raise, and `doctor` warns
+  about such a file and names the fix.
+- **The portal's header no longer starts heavy children on every refresh.** The Needs and Work
+  reads (`crew cleanup --json`, `claude agents --json --all`) are kept for 5 seconds and shared
+  while one runs. A removal still reads fresh facts.
 - **A crew resume keeps track of the session it brings back.** Claude Code starts every crew
   resume as a copy with a new id; the record used to keep the old one, so the watch called a
   working session `stopped` a few seconds later. The record now takes the new session in the

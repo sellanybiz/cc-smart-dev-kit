@@ -198,6 +198,18 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
   return floor;
 }
 
+/**
+ * True when the file's own `requires` is a range read here whose lowest version is below
+ * `floorVersion`: an older plugin in that range still refuses a file with the fields the floor
+ * names. A missing `requires`, or a range in a form not read here, is not "too low" — the
+ * caller decides what those mean. The one test `workflow set` and `doctor` share.
+ */
+export function requiresTooLow(existing: unknown, floorVersion: string): boolean {
+  if (typeof existing !== "string") return false;
+  const lowest = lowestAllowed(existing);
+  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
+}
+
 /** One alternative of a range: its first comparator and version (`>=1.1`, `^1.1`, `~1.1.0`, `1.1`). */
 const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
 

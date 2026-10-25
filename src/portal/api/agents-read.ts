@@ -2,7 +2,39 @@
 import { CLAUDE_TIMEOUT_MS, claudeArgv, findClaude, parseAgentPresence } from "../../crew/claude";
 import { sessionAgentRows } from "../../sessions/finished";
 import { commandContext } from "../../update/apply";
+import { PAGE_READ_FRESH_MS, shortCache } from "../cli-child";
 import type { PortalContext } from "../context";
+
+type AgentsRead = Awaited<ReturnType<typeof readPortalAgents>>;
+
+/**
+ * One agent list per folder, kept like the worktrees scan (`shortCache`'s rules). The cache
+ * holds `{ read }` for a list that answered and `{ error }` for one that did not, which
+ * `shortCache` never keeps.
+ */
+const lists = shortCache<string, { read: AgentsRead } | { error: AgentsRead }>(PAGE_READ_FRESH_MS);
+
+/** Drops this portal's kept agent lists: an action may have started or ended a session. */
+export function forgetAgentLists(ctx: PortalContext): void {
+  lists.forget(ctx);
+}
+
+/**
+ * What a GET answer reads (`/api/work`, a crew page): the same list as `readPortalAgents`, kept
+ * for `PAGE_READ_FRESH_MS` and shared by reads that overlap, because `claude agents --json
+ * --all` is a heavy child and the header asks on every event. A list that could not be read
+ * (`crew: null`) is returned and never kept. A removal does not come through here.
+ */
+export async function readPortalAgentsForPage(
+  ctx: PortalContext,
+  cwd: string,
+): Promise<AgentsRead> {
+  const answer = await lists.read(ctx, cwd, async () => {
+    const read = await readPortalAgents(ctx, cwd);
+    return read.crew === null ? { error: read } : { read };
+  });
+  return "error" in answer ? answer.error : answer.read;
+}
 
 /** No cache: a removal must see today's ownership and terminal state, not a page's earlier view. */
 export async function readPortalAgents(ctx: PortalContext, cwd: string) {

@@ -17514,6 +17514,12 @@ function raisedRequires(existing, floor, floorVersion) {
   }
   return floor;
 }
+function requiresTooLow(existing, floorVersion) {
+  if (typeof existing !== "string")
+    return false;
+  const lowest = lowestAllowed(existing);
+  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
+}
 var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
 function lowestAllowed(range) {
   let lowest = null;
@@ -17873,7 +17879,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   else
     setLeaf(data, path, value);
   const needed = requiresFloor(data);
-  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0 || requiresTooLow(data.requires, needed.version)) {
     data.requires = raisedRequires(data.requires, needed.floor, needed.version);
   }
   checkCcSmartDevKitConfig(data, file);
@@ -17881,7 +17887,18 @@ function writeProjectFile(cwd, path, key, value, env) {
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
   atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 420);
-  return shownWrite(file, key, value, text === null);
+  return shownProjectWrite(file, key, value, text === null, before, data);
+}
+function shownProjectWrite(file, key, value, created, before, after) {
+  if (before.requires === after.requires)
+    return shownWrite(file, key, value, created);
+  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const { requires: _was, ...restBefore } = before;
+  const { requires: _now, ...restAfter } = after;
+  if (Bun.deepEquals(restBefore, restAfter, true)) {
+    return `~ ${file}: ${raised}; ${saidValue(key, value)}${value === undefined ? "" : " (already set)"}`;
+  }
+  return `${shownWrite(file, key, value, created)}; ${raised}`;
 }
 function switchValue(key, value) {
   if (value === undefined)
@@ -30873,6 +30890,7 @@ async function runCliChildText(ctx, args, options) {
     };
   }
 }
+var PAGE_READ_FRESH_MS = 5000;
 function shortCache(freshMs) {
   const kept = new WeakMap;
   return {
@@ -36829,6 +36847,27 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
+function requiresLines(configFile, projectDir, home) {
+  let file;
+  try {
+    file = readUserJson(configFile);
+  } catch {
+    return [];
+  }
+  if (!isObject2(file))
+    return [];
+  const needed = requiresFloor(file);
+  if (!requiresTooLow(file.requires, needed.version))
+    return [];
+  return [
+    {
+      ok: true,
+      warn: true,
+      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      fix: `${COMMAND} project init (or any ${COMMAND} workflow set \u2026 --project) raises it to "${needed.floor}"`
+    }
+  ];
+}
 async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
@@ -36845,8 +36884,9 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   const sources = projectSettingsFiles(projectDir);
   const engine = engineLines(sources, projectDir, paths.home);
   let config;
+  let configFile;
   try {
-    config = loadProjectConfig(checkout).config;
+    ({ config, configFile } = loadProjectConfig(checkout));
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError))
       throw error;
@@ -36862,6 +36902,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
+    ...configFile === null ? [] : requiresLines(configFile, projectDir, paths.home),
     ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
@@ -38733,6 +38774,17 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/portal/api/agents-read.ts
+var lists = shortCache(PAGE_READ_FRESH_MS);
+function forgetAgentLists(ctx) {
+  lists.forget(ctx);
+}
+async function readPortalAgentsForPage(ctx, cwd) {
+  const answer = await lists.read(ctx, cwd, async () => {
+    const read = await readPortalAgents(ctx, cwd);
+    return read.crew === null ? { error: read } : { read };
+  });
+  return "error" in answer ? answer.error : answer.read;
+}
 async function readPortalAgents(ctx, cwd) {
   const binary = findClaude({
     home: ctx.paths.home,
@@ -38796,6 +38848,17 @@ var cleanupSchema = object({
     discard: object({ facts: discardSchema.nullable(), error: string2().nullable() })
   }))
 });
+var cleanups = shortCache(PAGE_READ_FRESH_MS);
+function forgetCleanups(ctx) {
+  cleanups.forget(ctx);
+}
+async function readCleanupForPage(ctx, cwd) {
+  const read = await cleanups.read(ctx, cwd, async () => {
+    const answer = await readCleanupOffLoop(ctx, cwd);
+    return answer.error === null ? { answer } : { error: answer.error };
+  });
+  return "error" in read ? { stopped: [], error: read.error } : read.answer;
+}
 async function readCleanupOffLoop(ctx, cwd) {
   const run = await runCliChild(ctx, ["crew", "cleanup", "--json"], { cwd });
   if (run.error !== null)
@@ -38815,6 +38878,12 @@ async function readCleanupOffLoop(ctx, cwd) {
   } catch {
     return { stopped: [], error: "the cleanup answer was not one this portal reads" };
   }
+}
+
+// src/portal/api/page-reads.ts
+function forgetPageReads(ctx) {
+  forgetAgentLists(ctx);
+  forgetCleanups(ctx);
 }
 
 // src/portal/context.ts
@@ -39986,6 +40055,13 @@ async function removeFinishedSession(action, body) {
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
 }
 async function runAction(name, body, action) {
+  try {
+    return await runActionByName(name, body, action);
+  } finally {
+    forgetPageReads(action.portal);
+  }
+}
+async function runActionByName(name, body, action) {
   switch (name) {
     case "slot.test":
       return testTargets(action, body);
@@ -40462,7 +40538,7 @@ async function workAnswer(deps) {
   } catch (error) {
     note = note ?? `the crew store could not be read: ${reasonOf6(error)}`;
   }
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const finished = readFinishedSessions(paths, { agents: () => agents.sessions, now });
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now, leadGone(leadRecords.find((lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId) ?? null, agents.crew, now)));
@@ -40595,7 +40671,7 @@ async function crewAnswerFor(deps, ref) {
     }
   }
   const reviews = Object.entries(readReviews(reviewsFile(paths.stateDir, repo))).filter(([, entry]) => entry.branches?.includes(record.branch) === true).map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha })).sort((a, b) => b.at.localeCompare(a.at));
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const lead = listAllLeads(paths.stateDir).records.find((one) => one.repo === record.repo && one.sessionId === record.leadSessionId) ?? null;
   const gone = leadGone(lead, agents.crew, deps.action.portal.now());
   const mergeCheck = await mergeCheckOf(deps, repo, record.branch, record.base?.ref ?? record.baseRef);
@@ -40703,7 +40779,7 @@ async function needsAnswer(deps) {
   }
   const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
   const permissions = "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
-  const cleanup = await readCleanupOffLoop(deps.action.portal, deps.action.cwd);
+  const cleanup = await readCleanupForPage(deps.action.portal, deps.action.cwd);
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
@@ -43644,6 +43720,8 @@ function createLiveSources(deps) {
           continue;
         const read = readCrewEvents(deps.paths.stateDir, repo, offset);
         offsets.set(repo, read.offset);
+        if (read.events.length > 0)
+          deps.forgetPageReads?.();
         for (const event of read.events)
           deps.publish("crew", event);
       } catch {}
@@ -44860,6 +44938,7 @@ async function startPortal(ctx, options) {
     paths: ctx.paths,
     pollMs: options.livePollMs,
     publish: (event, data) => hub.publish(event, data),
+    forgetPageReads: () => forgetPageReads(ctx),
     routerPort: () => {
       const found = readConfig(ctx);
       return "config" in found ? found.config.port : null;

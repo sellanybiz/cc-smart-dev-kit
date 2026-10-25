@@ -1,7 +1,7 @@
 /** Read synchronous cleanup facts off the server loop, through the CLI's one builder. */
 import { z } from "zod";
 import type { CrewCleanupAnswer } from "../../crew/cleanup-read";
-import { runCliChild } from "../cli-child";
+import { PAGE_READ_FRESH_MS, runCliChild, shortCache } from "../cli-child";
 import type { PortalContext } from "../context";
 
 const discardSchema = z.object({
@@ -34,6 +34,34 @@ const cleanupSchema = z.object({
     }),
   ),
 });
+
+/** One cleanup answer per folder (`shortCache`'s rules); an error answer is never kept. */
+const cleanups = shortCache<string, { answer: CrewCleanupAnswer } | { error: string }>(
+  PAGE_READ_FRESH_MS,
+);
+
+/** Drops this portal's kept cleanup answers: an action may have stopped, resumed or removed one. */
+export function forgetCleanups(ctx: PortalContext): void {
+  cleanups.forget(ctx);
+}
+
+/**
+ * What `/api/needs` reads: the same facts as `readCleanupOffLoop`, kept for
+ * `PAGE_READ_FRESH_MS` and shared by reads that overlap, because each read builds the discard
+ * facts of every stopped record (about ten git children each, and a whole-worktree diff). The
+ * facts only show a preview: a removal reads them again with `readCleanupOffLoop` and compares
+ * the confirmation token, so a kept preview can never authorize one.
+ */
+export async function readCleanupForPage(
+  ctx: PortalContext,
+  cwd: string,
+): Promise<CrewCleanupAnswer> {
+  const read = await cleanups.read(ctx, cwd, async () => {
+    const answer = await readCleanupOffLoop(ctx, cwd);
+    return answer.error === null ? { answer } : { error: answer.error };
+  });
+  return "error" in read ? { stopped: [], error: read.error } : read.answer;
+}
 
 /** A new read on every request: stale confirmation facts must not authorize a removal. */
 export async function readCleanupOffLoop(
