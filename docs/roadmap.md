@@ -469,3 +469,10 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   copy, as the merge guard does.
 - **`claudeLimitHolds` (`src/crew/wait.ts`) compares exact Claude model ids.** Check whether a
   variant of one model's id should count as the same model.
+- **A merge-guard test left its fake `gh` running.** In one full run on a loaded machine (load
+  average about 30), "a gh call that hangs" (`src/hooks/merge-guard.test.ts`) passed but left its
+  fake `gh` alive with its parent gone. The fake's `read x < /dev/zero` spins, so it ran 12
+  minutes at 75% CPU until it was stopped by hand. It did not ignore SIGTERM, so no SIGTERM
+  reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
+  stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
+  person's machine.
