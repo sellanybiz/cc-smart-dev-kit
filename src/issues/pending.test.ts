@@ -6,8 +6,10 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { issuesWorld } from "../testing/issues-world";
 import { tempDir } from "../testing/temp";
+import type { GhExec } from "../workflow/merge-check";
 import type { FixedMark } from "./fixed";
 import {
+  budgetedGh,
   MARKS_PER_PASS,
   passBudget,
   queueMarks,
@@ -15,7 +17,12 @@ import {
   readPending,
   settleMarks,
 } from "./pending";
-import { phaseIssues, recordIssueNumbers } from "./phase-issues";
+import {
+  briefIssueNumbers,
+  checkPhaseIssues,
+  phaseIssues,
+  recordIssueNumbers,
+} from "./phase-issues";
 
 const MARK: FixedMark = {
   base: "release-1.3.0",
@@ -202,11 +209,155 @@ describe("GI4: a pass has one budget for its issue work", () => {
   });
 });
 
+describe("IX2-4: no call outlives the pass's budget", () => {
+  const issue = {
+    body: "",
+    labels: [],
+    number: 1,
+    title: "t",
+    url: "https://github.com/example-org/my-app/issues/1",
+  };
+
+  /** A `gh` that, like the real one, runs until its own time limit and then times out. */
+  function hanging(): { calls: number[]; exec: GhExec } {
+    const calls: number[] = [];
+    return {
+      calls,
+      exec: async (_args, call) => {
+        calls.push(call.timeoutMs);
+        await Bun.sleep(call.timeoutMs);
+        return { code: null, err: "", kind: "timeout", out: "" };
+      },
+    };
+  }
+
+  test("a gh that never answers: the pass ends near its budget, not after the call's own 10 s", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const slow = hanging();
+    made.world.gh = slow.exec;
+    const path = file();
+    queueMarks(path, [MARK]);
+    const started = Date.now();
+    const lines = await settleMarks(path, made.world, 0, passBudget(Date.now, { ms: 1_500 }));
+    expect(Date.now() - started).toBeLessThan(2_300);
+    expect(slow.calls).toHaveLength(1);
+    expect(slow.calls[0]).toBeLessThanOrEqual(1_500);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("gh timed out");
+    expect(readPending(path)).toHaveLength(1);
+  });
+
+  test("a write cut short says it may have been posted, and the retry reads before it writes", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const real = made.world.gh;
+    // The comment reaches GitHub, but the answer does not come back in time.
+    made.world.gh = async (args, call) => {
+      if (args[0] === "issue" && args[1] === "comment") {
+        await real(args, call);
+        await Bun.sleep(call.timeoutMs);
+        return { code: null, err: "", kind: "timeout", out: "" };
+      }
+      return await real(args, call);
+    };
+    const path = file();
+    queueMarks(path, [MARK]);
+    const started = Date.now();
+    const first = await settleMarks(path, made.world, 0, passBudget(Date.now, { ms: 1_500 }));
+    expect(Date.now() - started).toBeLessThan(2_300);
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("may have been posted");
+    expect(made.gh.issues[0]?.comments).toHaveLength(1);
+    // The retry: the issue is read first, the marker is found, nothing is posted again.
+    const second = await settleMarks(path, made.world, RETRY_MS, passBudget(Date.now));
+    expect(made.gh.issues[0]?.comments).toHaveLength(1);
+    expect(second).toEqual([expect.stringContaining("marked fixed on release-1.3.0")]);
+    expect(readPending(path)).toEqual([]);
+  });
+
+  test("IX2 review: under a second left, the marks wait untouched: no call, no line, nobody told", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const path = file();
+    queueMarks(path, [MARK]);
+    let clock = 0;
+    const budget = passBudget(() => clock, { ms: 5_000 });
+    clock = 4_500;
+    expect(await settleMarks(path, made.world, 0, budget)).toEqual([]);
+    expect(made.gh.calls).toEqual([]);
+    const [left] = readPending(path);
+    expect(left?.told).toBe(false);
+    expect(left?.triedAt).toBeUndefined();
+  });
+
+  test("budgetedGh: a call gets the smaller of its limit and the time left; under a second it is not made", async () => {
+    let clock = 0;
+    const seen: number[] = [];
+    const gh = budgetedGh(
+      async (_args, call) => {
+        seen.push(call.timeoutMs);
+        return { code: 0, err: "", kind: "ok", out: "" };
+      },
+      passBudget(() => clock, { ms: 12_000 }),
+    );
+    const call = { env: {}, folder: "/tmp", timeoutMs: 10_000 };
+    expect((await gh(["a"], call)).kind).toBe("ok");
+    clock = 5_000;
+    expect((await gh(["b"], call)).kind).toBe("ok");
+    clock = 11_001;
+    const skipped = await gh(["c"], call);
+    expect(skipped.kind).toBe("timeout");
+    expect(seen).toEqual([10_000, 7_000]);
+  });
+});
+
 describe("phaseIssues", () => {
   test("joins the report's list and the record's issue, each once, ascending", () => {
     const record = { issue: { number: 3, repo: "example-org/my-app", url: "u" } };
     expect(phaseIssues(record, { issues: [9, 3, 1] })).toEqual([1, 3, 9]);
     expect(phaseIssues({}, null)).toEqual([]);
+  });
+
+  test("IX2-5: a brief names an issue by #n, outside the quoted lines; an address names none", () => {
+    expect(
+      briefIssueNumbers(
+        "Fix #12 and https://github.com/example-org/lib/issues/7, not 5 or #0 or #x.\n> and #99\n  > and #98\n",
+      ),
+    ).toEqual([12]);
+  });
+
+  test("IX2 review: a continuation's brief counts only what the lead wrote, not the old report's words", () => {
+    // The shape `continuationBrief` writes: the lead's text, then `## What <phase> left behind`
+    // with the crew session's own words (`start.ts` › `reportBlock`).
+    const brief = [
+      "Fix #1.",
+      "",
+      "## What B6b left behind",
+      "",
+      "- What is still open: also fixes #99.",
+      "",
+      "Its own words:",
+      "",
+      "I also closed #98.",
+    ].join("\n");
+    expect(briefIssueNumbers(brief)).toEqual([1]);
+    expect(checkPhaseIssues({}, { issues: [1, 98, 99] }, brief)).toEqual({
+      marks: [1],
+      unnamed: [98, 99],
+    });
+  });
+
+  test("IX2-5: only the record's issue and the brief's numbers are marked; the rest are named", () => {
+    const record = { issue: { number: 3 } };
+    expect(checkPhaseIssues(record, { issues: [1, 2, 3] }, "Fix #1.")).toEqual({
+      marks: [1, 3],
+      unnamed: [2],
+    });
+    // No brief to read: the record's issue alone.
+    expect(checkPhaseIssues(record, { issues: [1, 3] }, null)).toEqual({
+      marks: [3],
+      unnamed: [1],
+    });
+    // A brief naming an issue the report does not: nothing is added.
+    expect(checkPhaseIssues({}, { issues: [] }, "Fix #4.")).toEqual({ marks: [], unnamed: [] });
   });
 
   test("a record's issue that is not a whole number above 0 counts for nothing", () => {

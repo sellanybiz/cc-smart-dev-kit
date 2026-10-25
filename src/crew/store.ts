@@ -130,7 +130,7 @@ export function isKnownState(state: string): state is CrewState {
  * new crew session whose `--files` another lead's crew session holds too (D55); `merge` is a pull
  * request merged into the base, for the other leads (D55); `issue` is news from GitHub (GI4): a
  * new issue or comment, or the feed's own change of state — one event for each lead of the
- * repository, written by whichever watch made the look. It names no crew session (`crew` is
+ * repository whose watch runs (`watchIsAlive`), written by whichever watch made the look. It names no crew session (`crew` is
  * `ISSUE_EVENT_CREW`, `state` is `working`), and its `note` is `ISSUE_DATA_NOTE` when `text`
  * quotes GitHub's words.
  *
@@ -1909,6 +1909,24 @@ export function readWatchLease(
     // Half a file a crash left, or not JSON: no holder can be read from it, so the lease is free.
     return null;
   }
+}
+
+/**
+ * True when a watch of this lead runs: it holds a lease and the process that took it is not gone
+ * (`holderIsGone`). The one test of "this lead can hear an event written now" — lead records are
+ * never removed, so a record alone says nothing about a lead (IX2-3). A lease no one can read is
+ * free (`readWatchLease`), so it is not alive either.
+ */
+export function watchIsAlive(stateDir: string, repo: string, leadSessionId: string): boolean {
+  let lease: null | WatchLease;
+  try {
+    lease = readWatchLease(stateDir, repo, leadSessionId);
+  } catch {
+    // A lease file this process cannot read says nothing about a watch: that lead is not heard,
+    // and one unreadable file must not stop the look for every other lead.
+    return false;
+  }
+  return lease !== null && !holderIsGone(lease, lease.at, FALLBACK_STALE_MS);
 }
 
 /**

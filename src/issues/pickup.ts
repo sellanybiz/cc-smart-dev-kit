@@ -173,19 +173,201 @@ function parseEdits(out: string): undefined | { edits: BodyEdit[]; more: boolean
 const HIDDEN_CHARACTER =
   /(\p{Extended_Pictographic}[\uFE0E\uFE0F])|[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 
+/** A character named by its code point, the way every hidden one is shown: `[U+202E]`. */
+function named(char: string): string {
+  return `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
+}
+
+/** True when one character draws nothing (`HIDDEN_CHARACTER`) or is a control but a tab or a newline. */
+function isHidden(char: string): boolean {
+  if (char === "\t" || char === "\n") return false;
+  return /^(?:[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]|\p{Cc})$/u.test(char);
+}
+
 /**
- * The issue's text as the labeller could see it: line separators made real lines, an HTML comment
- * (hidden by GitHub's rendering) shown in plain view and marked, and every invisible character
- * (`HIDDEN_CHARACTER`) or control character named by its code. The
- * person chose the text they saw; nothing in the brief may be hidden from them.
+ * The first line of a link reference definition (`[label]: destination "title"`). CommonMark
+ * renders the whole definition as nothing, so `[//]: # (text)` is a comment a reader never sees.
+ * Four spaces of indent make code instead, so they are not matched. A definition cannot interrupt
+ * a paragraph in CommonMark, so one right after a text line is shown there; it is marked anyway:
+ * marking a visible line costs a reader a few words, missing a hidden one costs the point.
+ */
+const DEFINITION_START = /^ {0,3}\[(?:\\.|[^\]\\])+\]:/;
+
+/**
+ * What a definition can sit behind: block-quote marks and list markers (`> `, `- `, `1. `). A
+ * definition inside a quote or a list item is rendered as nothing too. Indent alone is not
+ * stripped, so four spaces stay code.
+ */
+const CONTAINER_PREFIX = /^(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)])[ \t]*)*/;
+
+/** A label is at most 999 characters (CommonMark): how far a multi-line label is looked for. */
+const LABEL_WINDOW = 1_100;
+
+/**
+ * True when the line that starts at `offset` of `text` starts a link reference definition. Its
+ * label may span lines, so the next `LABEL_WINDOW` characters are looked at, up to a blank line;
+ * the cost of one line is bounded by that window, however long the text is.
+ */
+function startsDefinition(text: string, offset: number): boolean {
+  let window = text.slice(offset, offset + LABEL_WINDOW + 100);
+  const blank = /\n[ \t]*\n/.exec(window);
+  if (blank !== null) window = window.slice(0, blank.index);
+  return DEFINITION_START.test(window.replace(CONTAINER_PREFIX, "").slice(0, LABEL_WINDOW));
+}
+
+/**
+ * Marks every link reference definition, from its first line to the end of its block (the next
+ * blank line or the end). A definition's destination and title may sit on the lines after the
+ * label, so the block is the only edge that holds without parsing titles.
+ */
+function markDefinitions(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let offset = 0;
+  for (let at = 0; at < lines.length; at++) {
+    const lineStart = offset;
+    offset += (lines[at] ?? "").length + 1;
+    if (!startsDefinition(text, lineStart)) {
+      out.push(lines[at] ?? "");
+      continue;
+    }
+    let end = at;
+    while (end + 1 < lines.length && (lines[end + 1] ?? "").trim() !== "") {
+      end++;
+      offset += (lines[end] ?? "").length + 1;
+    }
+    out.push(`[hidden link reference definition: ${lines.slice(at, end + 1).join("\n")}]`);
+    at = end;
+  }
+  return out.join("\n");
+}
+
+/**
+ * The elements whose content GitHub's sanitizer removes with the tag, so the labeller never sees
+ * it. Source: the default `remove_contents` of Selma's sanitizer config (the library behind
+ * html-pipeline's `SanitizationFilter`, which renders GitHub's Markdown):
+ * iframe, math, noembed, noframes, noscript, plaintext, script, style, svg, xmp. `template` is
+ * added: it is in no allowlist of html-pipeline, and a browser never draws its content.
+ * Any other tag the sanitizer drops keeps its inner text, which the labeller sees.
+ *
+ * Some of these (script, style, xmp, iframe, noembed, noframes, plaintext) may be shown as literal
+ * text by GitHub's Markdown step instead (GFM's tagfilter), and are marked as hidden all the same:
+ * marking text a reader can see costs a few words, missing text they cannot see costs the point.
+ */
+const STRIPPED_CONTENT_TAGS = [
+  "iframe",
+  "math",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "script",
+  "style",
+  "svg",
+  "template",
+  "xmp",
+] as const;
+
+const STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+
+/** For each stripped tag, its opening and closing tags (`<svg …>`, `</svg>`), to count nesting. */
+const STRIPPED_PAIRS = new Map(
+  STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]),
+);
+
+/**
+ * Shows the content of every stripped tag, marked: from the opening tag to its own closing tag
+ * (a tag of the same name inside it opens a level, so `<svg><svg>a</svg>b</svg>` is one block), or
+ * to the end of the text when it is never closed. An element written self-closed (`<svg/>`) has
+ * no content.
+ */
+function markStrippedContent(text: string): string {
+  let out = "";
+  let from = 0;
+  STRIPPED_OPEN.lastIndex = 0;
+  for (let open = STRIPPED_OPEN.exec(text); open !== null; open = STRIPPED_OPEN.exec(text)) {
+    if (open[0].endsWith("/>")) continue;
+    const tag = (open[1] ?? "").toLowerCase();
+    const pairs = STRIPPED_PAIRS.get(tag as (typeof STRIPPED_CONTENT_TAGS)[number]);
+    if (pairs === undefined) continue;
+    const start = open.index + open[0].length;
+    let contentEnd = text.length;
+    let after = text.length;
+    let depth = 1;
+    pairs.lastIndex = start;
+    for (let next = pairs.exec(text); next !== null; next = pairs.exec(text)) {
+      if (next[1] === "" && next[0].endsWith("/>")) continue;
+      depth += next[1] === "/" ? -1 : 1;
+      if (depth === 0) {
+        contentEnd = next.index;
+        after = next.index + next[0].length;
+        break;
+      }
+    }
+    out += `${text.slice(from, open.index)}[hidden <${tag}> content: ${text.slice(start, contentEnd)}]`;
+    from = after;
+    STRIPPED_OPEN.lastIndex = after;
+  }
+  return out + text.slice(from);
+}
+
+/**
+ * The named character references whose characters all draw nothing, from the WHATWG list
+ * (https://html.spec.whatwg.org/entities.json, filtered by `isHidden`; `&Tab;` and `&NewLine;` are
+ * left out on purpose). Numeric references are decoded by code, not by this table.
+ */
+const HIDDEN_ENTITIES: Readonly<Record<string, number>> = {
+  ApplyFunction: 0x2061,
+  InvisibleComma: 0x2063,
+  InvisibleTimes: 0x2062,
+  NegativeMediumSpace: 0x200b,
+  NegativeThickSpace: 0x200b,
+  NegativeThinSpace: 0x200b,
+  NegativeVeryThinSpace: 0x200b,
+  NoBreak: 0x2060,
+  ZeroWidthSpace: 0x200b,
+  af: 0x2061,
+  ic: 0x2063,
+  it: 0x2062,
+  lrm: 0x200e,
+  rlm: 0x200f,
+  shy: 0xad,
+  zwj: 0x200d,
+  zwnj: 0x200c,
+};
+
+/**
+ * A character reference, named or numeric, that draws a hidden character: shown as its code. A
+ * reference without its `;`, past U+10FFFF, or of a visible character is left as written, as a
+ * Markdown renderer leaves it.
+ */
+function namedEntity(match: string, hex?: string, decimal?: string, name?: string): string {
+  let point: number | undefined;
+  if (hex !== undefined) point = Number.parseInt(hex, 16);
+  else if (decimal !== undefined) point = Number.parseInt(decimal, 10);
+  else if (name !== undefined) point = HIDDEN_ENTITIES[name];
+  if (point === undefined || point > 0x10ffff) return match;
+  const char = String.fromCodePoint(point);
+  return isHidden(char) ? named(char) : match;
+}
+
+/**
+ * The issue's text as the labeller could see it: line separators made real lines; what GitHub's
+ * rendering hides shown in plain view and marked: an HTML comment, declaration, processing
+ * instruction or CDATA section, a link reference definition, the content of a tag its sanitizer
+ * strips; and every invisible character (`HIDDEN_CHARACTER`), control character, or character
+ * reference of one named by its code. The person chose the text they saw; nothing in the brief may
+ * be hidden from them. Visible Markdown is left alone. (Not covered: the values of a tag's
+ * attributes, and a link's title or an image's alt text, which a reader can reach by hovering.)
  */
 export function visibleText(text: string): string {
-  const named = (char: string) =>
-    `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
-  return text
-    .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
+  return markStrippedContent(markDefinitions(text.replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")))
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "[hidden CDATA: $1]")
+    .replace(/<!([A-Za-z][^>]*)>/g, "[hidden HTML declaration: $1]")
+    .replace(/<\?([\s\S]*?)\?>/g, "[hidden processing instruction: $1]")
     .replace(/<!--/g, "[hidden HTML comment: ")
     .replace(/-->/g, "]")
+    .replace(/&(?:#[xX]0*([0-9a-fA-F]{1,6})|#0*([0-9]{1,7})|([A-Za-z][A-Za-z0-9]*));/g, namedEntity)
     .replace(HIDDEN_CHARACTER, (match, emoji: string | undefined) =>
       emoji === undefined ? named(match) : match,
     )

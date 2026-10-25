@@ -62,6 +62,7 @@ import {
 } from "./reviews";
 import type { WorkflowKey } from "./schema";
 import {
+  INBOUND_KEYS,
   OUTBOUND_KEYS,
   parseWorkflowValue,
   REVIEW_GATE_KEYS,
@@ -102,8 +103,10 @@ project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>
 show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
 Code, set, unset and propose of those refuse: run them in your own terminal (propose, and the
 pull request's review, are the gate).
-${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file): set and
-unset refuse them inside Claude Code too; propose does not, since a person reviews its pull request.
+${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
+${INBOUND_KEYS.join(" and ")} decide which issues are ready and whether the lead hears new ones:
+set and unset refuse all four inside Claude Code too; propose does not, since a person reviews its
+pull request.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -300,12 +303,27 @@ function gateKeyRefusal(sub: "propose" | "set" | "unset", key: WorkflowKey): str
 }
 
 /**
- * The refusal of an outbound key (`OUTBOUND_KEYS`) in `set` and `unset` inside a Claude Code
- * session: the switch that lets text leave for GitHub is the person's. `propose` stays open,
- * because its pull request is reviewed and merged by a person.
+ * Why each key of `OUTBOUND_KEYS` and `INBOUND_KEYS` is the person's: what it lets through. The
+ * one home of the words of `issueKeyRefusal`.
  */
-function outboundKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
-  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} lets text leave this machine for GitHub, which only you switch. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it — the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
+function issueKeyReason(key: WorkflowKey): string {
+  if (key === "issues.readyLabel") {
+    return "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose";
+  }
+  if (key === "issues.watch") {
+    return "opens the channel that puts text from GitHub into the lead's context, which only you open";
+  }
+  return "lets text leave this machine for GitHub, which only you switch";
+}
+
+/**
+ * The refusal of an outbound or inbound key (`OUTBOUND_KEYS`, `INBOUND_KEYS`) in `set` and
+ * `unset` inside a Claude Code session: the switch that lets text leave for GitHub, the label
+ * that says which issues are ready, and the feed that brings GitHub's text in are the person's.
+ * `propose` stays open, because its pull request is reviewed and merged by a person.
+ */
+function issueKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} ${issueKeyReason(key)}. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it — the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
 }
 
 /**
@@ -493,8 +511,11 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     context.error(gateKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
-  if (OUTBOUND_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
-    context.error(outboundKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+  if (
+    (OUTBOUND_KEYS.includes(wanted) || INBOUND_KEYS.includes(wanted)) &&
+    insideClaudeCode(context.env)
+  ) {
+    context.error(issueKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
   let value: unknown;

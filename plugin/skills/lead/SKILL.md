@@ -243,9 +243,14 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
    to a new crew session.
 5. **In the same turn,** check that the watch started the phases that waited for this merge,
    and start any phase it unblocked that was never started (§ 3).
-6. **Issues the phase fixes** (the report's `issues`): with `workflow.issues.enabled` on, the
-   watch comments "fixed on `<branch>` at `<commit>`" on each and labels it `fixed-unreleased`
-   (`issues.fixedLabel`), by itself, once per merge. Do not repeat it. One line that GitHub could
+6. **Issues the phase fixes** (the report's `issues`): **before the merge, check each reported
+   number against the record's issue and your brief.** The report is the crew session's own word;
+   a number it names that neither names is a claim to read the diff for. With
+   `workflow.issues.enabled` on, the watch marks only the numbers the record's issue or your brief
+   names: it comments "fixed on `<branch>` at `<commit>`" on each and labels it `fixed-unreleased`
+   (`issues.fixedLabel`), by itself, once per merge. Do not repeat it. A number only the report
+   names gets one line ("not marked"); when the diff shows the phase did fix it, put `Fixes #<n>`
+   in the release pull request's body and note it in the plan. One line that GitHub could
    not be reached is not a failed merge: the watch queues the mark and tries again every few
    minutes. The release closes the issue, not the merge (`/cc-smart-dev-kit:pull-request`).
 

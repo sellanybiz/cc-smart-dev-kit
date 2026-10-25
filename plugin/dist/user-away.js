@@ -18667,6 +18667,7 @@ var pendingSchema = object({
 });
 
 // src/issues/feed.ts
+var FAR_AHEAD_MIN_MS = 60 * 60000;
 var PAGE = 100;
 var ISSUES_QUERY = `state=all&sort=created&direction=desc&per_page=${PAGE}`;
 var COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
@@ -18941,6 +18942,23 @@ function crewRecordsOf(paths, repo) {
     return [];
   }
 }
+
+// src/issues/pickup.ts
+var STRIPPED_CONTENT_TAGS = [
+  "iframe",
+  "math",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "script",
+  "style",
+  "svg",
+  "template",
+  "xmp"
+];
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [

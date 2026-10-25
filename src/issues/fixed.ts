@@ -170,6 +170,17 @@ export async function openGate(world: IssueWorld): Promise<Gate> {
   };
 }
 
+/**
+ * What a failed `gh` call of a mark stops, and what is known after a timeout. A write cut short
+ * (the pass's budget, `budgetedGh`, or its own limit) may have reached GitHub, so the words say
+ * so; the next try reads the issue first and finds the marker, so nothing is posted twice.
+ */
+const MARK_WORDS = {
+  afterTimeout:
+    "it may have been posted; the next try reads the issue first, so nothing is posted twice",
+  stops: "no issue can be marked",
+} as const;
+
 export type MarkOutcome =
   | { commented: boolean; kind: "marked"; labeled: boolean }
   | { kind: "closed" }
@@ -266,7 +277,7 @@ export async function markFixed(
       text,
     );
     if (posted.kind !== "ok") {
-      return { kind: "failed", why: ghProblem(`commented on #${number}`, posted) };
+      return { kind: "failed", why: ghProblem(`commented on #${number}`, posted, MARK_WORDS) };
     }
     commented = true;
   }
@@ -296,7 +307,10 @@ export async function markFixed(
     if (!names.includes(gate.fixedLabel.toLowerCase())) {
       const made = await createLabel(gate.write, gate.repo, gate.fixedLabel);
       if (made.kind !== "ok") {
-        return { kind: "failed", why: ghProblem(`created the label ${gate.fixedLabel}`, made) };
+        return {
+          kind: "failed",
+          why: ghProblem(`created the label ${gate.fixedLabel}`, made, MARK_WORDS),
+        };
       }
     }
     const added = await gate.write([
@@ -309,7 +323,7 @@ export async function markFixed(
       gate.fixedLabel,
     ]);
     if (added.kind !== "ok") {
-      return { kind: "failed", why: ghProblem(`labelled #${number}`, added) };
+      return { kind: "failed", why: ghProblem(`labelled #${number}`, added, MARK_WORDS) };
     }
     labeled = true;
   }

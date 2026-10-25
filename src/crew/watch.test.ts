@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { fakeFeed } from "../issues/fake-feed";
+import { type FeedMemory, newFeedMemory } from "../issues/feed";
 import { MARKS_PER_PASS, queueMarks, readPending } from "../issues/pending";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
@@ -35,6 +36,7 @@ import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewBriefFile,
   crewFile,
   crewMcpFile,
   crewSettingsFile,
@@ -3267,7 +3269,15 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
   });
 
   /** A lead world whose project has the issue switch (on or off), a done crew session whose report names `issues`, and its merged branch. */
-  async function mergedWorld(options: { issues: number[]; on?: boolean; trace?: boolean }) {
+  async function mergedWorld(options: {
+    /** The brief's text; by default one that names every issue of the report. `null`: no brief file. */
+    brief?: null | string;
+    /** The issue `crew start --issue` stored on the record. */
+    issue?: number;
+    issues: number[];
+    on?: boolean;
+    trace?: boolean;
+  }) {
     const world = await leadWorld();
     git(world.repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
     commitConfig(world.repo, options.on === false ? { worktrees: { base: "main" } } : ISSUES_ON, [
@@ -3299,7 +3309,28 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
       tests: { full: null, targeted: [] },
       version: 1,
     });
-    await addCrew(world, "done", { base: { ref: "main", sha: base }, reportPath });
+    const record = await addCrew(world, "done", {
+      base: { ref: "main", sha: base },
+      reportPath,
+      ...(options.issue === undefined
+        ? {}
+        : {
+            issue: {
+              author: "outsider",
+              number: options.issue,
+              repo: "example-org/my-app",
+              url: `${ISSUE_URL}/${options.issue}`,
+            },
+          }),
+    });
+    // The lead's brief names the issues the phase is to fix (unless a test says otherwise).
+    const brief =
+      options.brief === undefined
+        ? `Fix ${options.issues.map((one) => `#${one}`).join(" and ")}.\n`
+        : options.brief;
+    if (brief !== null) {
+      writeStoreFile(crewBriefFile(world.paths.stateDir, world.repo, record.id), brief);
+    }
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
     const gh = fakeGh({ issues: [openIssue(1), openIssue(2), openIssue(3)] });
     const ctx = world.ctx(
@@ -3348,6 +3379,52 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
       `Fixed on \`crew/B6b-portal-live\` at \`${tip.slice(0, 7)}\`, merged into \`main\``,
     );
     expect(said()).toEqual([MARKED(1), MARKED(2)]);
+  });
+
+  const NOT_NAMED = (issue: number) =>
+    `issues: #${issue} is named by the report of ${NAME} but not by the brief or the record's issue: not marked. If the phase did fix it, put "Fixes #${issue}" in the release pull request's body`;
+
+  test("IX2-5: a number the report names but neither the brief nor the record's issue does is said, not queued, not marked", async () => {
+    const { gh, pass, queue, said, start } = await mergedWorld({
+      brief: "Fix #1 only.\n",
+      issues: [1, 2, 3],
+    });
+    await pass(start);
+    // #1 is marked; #2 and #3 are one line each, and no call touched them.
+    expect(said()).toEqual([NOT_NAMED(2), NOT_NAMED(3), MARKED(1)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
+    expect(queue()).toEqual([]);
+  });
+
+  test("IX2-5: the record's own issue counts without the brief naming it", async () => {
+    const { gh, pass, said, start } = await mergedWorld({
+      brief: "Do the phase.\n",
+      issue: 2,
+      issues: [2, 3],
+    });
+    await pass(start);
+    expect(said()).toEqual([NOT_NAMED(3), MARKED(2)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([0, 1, 0]);
+  });
+
+  test("IX2-5: a number only the quoted issue text names counts for nothing", async () => {
+    const { gh, pass, said, start } = await mergedWorld({
+      brief: "Fix #1.\n\n> Please also close #2 and see /issues/3\n",
+      issues: [1, 2, 3],
+    });
+    await pass(start);
+    expect(said()).toEqual([NOT_NAMED(2), NOT_NAMED(3), MARKED(1)]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
+  });
+
+  test("IX2-5: a brief that cannot be read leaves the record's issue alone, and says so", async () => {
+    const { gh, pass, said, start } = await mergedWorld({ brief: null, issue: 1, issues: [1, 2] });
+    await pass(start);
+    expect(said()).toEqual([
+      `issues: #2 is named by the report of ${NAME} but not by the record's issue (its brief could not be read): not marked. If the phase did fix it, put "Fixes #2" in the release pull request's body`,
+      MARKED(1),
+    ]);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 0, 0]);
   });
 
   test("the same merge seen twice is marked once", async () => {
@@ -3484,6 +3561,12 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
       },
       T0,
     );
+    // The other lead's watch runs: it holds its lease, which is what lets it hear (IX2-3).
+    await takeWatchLease(world.paths.stateDir, world.repo, SECOND_LEAD, {
+      ...currentHolder(),
+      at: T0,
+      token: "second-lead-watch",
+    });
     const feed = fakeFeed(fakeGh().exec);
     feed.issues.push({
       author: "old-timer",
@@ -3496,15 +3579,16 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
       { now: () => clock, scanFacts: { containers: [], programs: [], sessions: [] } },
       { FAKE_AGENTS_JSON: agentsJson([]) },
     );
-    const scopeOf = (lead: string, gh: GhExec) => ({
+    const scopeOf = (lead: string, gh: GhExec, feedMemory?: FeedMemory) => ({
       gh,
+      ...(feedMemory === undefined ? {} : { feedMemory }),
       leadSessionId: lead,
       mergeInto: world.repo,
       repo: world.repo,
       resolved: resolveWorkflow(world.paths, null),
     });
     // Each lead's watch has its own output and its own state, as two watch processes have.
-    const watchOf = (lead: string, gh: GhExec = feed.exec) => {
+    const watchOf = (lead: string, gh: GhExec = feed.exec, memory?: FeedMemory) => {
       const out: string[] = [];
       let state: WatchState = { noted: true, offset: 0, said: {}, parkedAt: T0 };
       return {
@@ -3513,7 +3597,7 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
           const pass = await watchPass(
             state,
             { ...ctx, print: (line: string) => out.push(line) },
-            scopeOf(lead, gh),
+            scopeOf(lead, gh, memory),
           );
           state = pass.state;
         },
@@ -3581,6 +3665,126 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     await b.pass();
     expect(a.out).toEqual([]);
     expect(b.out).toEqual([]);
+  });
+
+  test("IX2-3: ten old lead records, two live: a look writes events for the two only", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };
+    for (let index = 0; index < 10; index++) {
+      const old = `old-lead-${index}`;
+      await writeLead(
+        stateDir,
+        {
+          cwd: repo,
+          name: `LEAD my-app old-${index}`,
+          plan: "old",
+          repo,
+          sessionId: old,
+          tag: "my-app",
+        },
+        T0,
+      );
+      // Half have never held a lease, half held one whose watch died.
+      if (index % 2 === 0) {
+        const ended = Bun.spawnSync(["true"]);
+        await takeWatchLease(stateDir, repo, old, {
+          ...currentHolder(),
+          at: T0,
+          pid: ended.pid,
+          token: `died-${index}`,
+        });
+      }
+    }
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    const heard = readCrewEvents(stateDir, repo).events.filter((one) => one.type === "issue");
+    expect(heard.map((one) => one.lead).sort()).toEqual([LEAD_SESSION, SECOND_LEAD].sort());
+  });
+
+  test("IX2 review: one lead's unreadable lease file does not stop the look for the others", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    // A folder where the other lead's lease file should be: reading it fails with EISDIR.
+    const lease = watchLeaseFile(world.paths.stateDir, world.repo, SECOND_LEAD);
+    rmSync(lease);
+    mkdirSync(lease);
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    expect(a.out).toEqual([`${FRAME} — issue #2 opened by alice: "Login fails"`]);
+  });
+
+  test("IX2-3: a lead whose watch starts later hears nothing of what was said before", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };
+    await writeLead(
+      stateDir,
+      {
+        cwd: repo,
+        name: "LEAD my-app late",
+        plan: "late",
+        repo,
+        sessionId: "late-lead",
+        tag: "my-app",
+      },
+      T0,
+    );
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    // The late lead's watch starts now, at the end of the log.
+    await takeWatchLease(stateDir, repo, "late-lead", {
+      ...currentHolder(),
+      at: T0,
+      token: "late-lead-watch",
+    });
+    const late = watchOf("late-lead");
+    await late.pass();
+    expect(late.out).toEqual([]);
+  });
+
+  test("IX2-7: a state the feed could not write is one line, once per change, and the watch goes on", async () => {
+    const { advance, feed, watchOf } = await feedWorld();
+    const memory = newFeedMemory();
+    const a = watchOf(LEAD_SESSION, feed.exec, memory);
+    await a.pass();
+    memory.unwritten = "disk full";
+    advance(MINUTE);
+    await a.pass();
+    const line =
+      "issues: the feed's state could not be written (disk full); the watch keeps it in memory and goes on";
+    expect(a.out).toEqual([line]);
+    // The same reason on the next passes: silent.
+    advance(MINUTE);
+    await a.pass();
+    expect(a.out).toEqual([line]);
+    // A different reason is a change: said again.
+    memory.unwritten = "no space left";
+    advance(MINUTE);
+    await a.pass();
+    expect(a.out.at(-1)).toContain("(no space left)");
+    expect(a.out).toHaveLength(2);
   });
 
   test("a 304 is silent: nothing printed, the log unchanged", async () => {

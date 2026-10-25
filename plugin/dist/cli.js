@@ -12165,6 +12165,31 @@ function phaseIssues(record, report) {
   return [...new Set([...report?.issues ?? [], ...recordIssueNumbers(record)])].sort((a, b) => a - b);
 }
 var MAX_PHASE_ISSUES = 10;
+var LEFT_BEHIND_HEADING = /^## What .+ left behind[ \t]*$/m;
+function briefIssueNumbers(text) {
+  const cut = LEFT_BEHIND_HEADING.exec(text);
+  const lead = cut === null ? text : text.slice(0, cut.index);
+  const own = lead.split(`
+`).filter((line) => !line.trimStart().startsWith(">")).join(`
+`);
+  const numbers = [...own.matchAll(/#([1-9][0-9]{0,8})\b/g)].map((one) => Number(one[1]));
+  return [...new Set(numbers)].sort((a, b) => a - b);
+}
+function checkPhaseIssues(record, report, brief) {
+  const known = new Set([
+    ...recordIssueNumbers(record),
+    ...brief === null ? [] : briefIssueNumbers(brief)
+  ]);
+  const all = phaseIssues(record, report);
+  return {
+    marks: all.filter((one) => known.has(one)),
+    unnamed: all.filter((one) => !known.has(one))
+  };
+}
+function unnamedIssueLine(name, issue, briefRead) {
+  const where = briefRead ? "the brief or the record's issue" : "the record's issue (its brief could not be read)";
+  return `issues: #${issue} is named by the report of ${name} but not by ${where}: not marked. If the phase did fix it, put "Fixes #${issue}" in the release pull request's body`;
+}
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync2 } from "fs";
@@ -12787,6 +12812,7 @@ var REVIEW_GATE_KEYS = [
   "fixesAfterReview.percent"
 ];
 var OUTBOUND_KEYS = ["issues.enabled", "issues.allowPublic"];
+var INBOUND_KEYS = ["issues.readyLabel", "issues.watch"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
 function isSwitchKey(key) {
@@ -15189,10 +15215,131 @@ function parseEdits(out) {
   return { edits, more: list.pageInfo.hasNextPage === true };
 }
 var HIDDEN_CHARACTER = /(\p{Extended_Pictographic}[\uFE0E\uFE0F])|[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+function named(char) {
+  return `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
+}
+function isHidden(char) {
+  if (char === "\t" || char === `
+`)
+    return false;
+  return /^(?:[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]|\p{Cc})$/u.test(char);
+}
+var DEFINITION_START = /^ {0,3}\[(?:\\.|[^\]\\])+\]:/;
+var CONTAINER_PREFIX = /^(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)])[ \t]*)*/;
+var LABEL_WINDOW = 1100;
+function startsDefinition(text, offset) {
+  let window = text.slice(offset, offset + LABEL_WINDOW + 100);
+  const blank = /\n[ \t]*\n/.exec(window);
+  if (blank !== null)
+    window = window.slice(0, blank.index);
+  return DEFINITION_START.test(window.replace(CONTAINER_PREFIX, "").slice(0, LABEL_WINDOW));
+}
+function markDefinitions(text) {
+  const lines = text.split(`
+`);
+  const out = [];
+  let offset = 0;
+  for (let at = 0;at < lines.length; at++) {
+    const lineStart = offset;
+    offset += (lines[at] ?? "").length + 1;
+    if (!startsDefinition(text, lineStart)) {
+      out.push(lines[at] ?? "");
+      continue;
+    }
+    let end = at;
+    while (end + 1 < lines.length && (lines[end + 1] ?? "").trim() !== "") {
+      end++;
+      offset += (lines[end] ?? "").length + 1;
+    }
+    out.push(`[hidden link reference definition: ${lines.slice(at, end + 1).join(`
+`)}]`);
+    at = end;
+  }
+  return out.join(`
+`);
+}
+var STRIPPED_CONTENT_TAGS = [
+  "iframe",
+  "math",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "script",
+  "style",
+  "svg",
+  "template",
+  "xmp"
+];
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
+function markStrippedContent(text) {
+  let out = "";
+  let from = 0;
+  STRIPPED_OPEN.lastIndex = 0;
+  for (let open = STRIPPED_OPEN.exec(text);open !== null; open = STRIPPED_OPEN.exec(text)) {
+    if (open[0].endsWith("/>"))
+      continue;
+    const tag = (open[1] ?? "").toLowerCase();
+    const pairs = STRIPPED_PAIRS.get(tag);
+    if (pairs === undefined)
+      continue;
+    const start = open.index + open[0].length;
+    let contentEnd = text.length;
+    let after = text.length;
+    let depth = 1;
+    pairs.lastIndex = start;
+    for (let next = pairs.exec(text);next !== null; next = pairs.exec(text)) {
+      if (next[1] === "" && next[0].endsWith("/>"))
+        continue;
+      depth += next[1] === "/" ? -1 : 1;
+      if (depth === 0) {
+        contentEnd = next.index;
+        after = next.index + next[0].length;
+        break;
+      }
+    }
+    out += `${text.slice(from, open.index)}[hidden <${tag}> content: ${text.slice(start, contentEnd)}]`;
+    from = after;
+    STRIPPED_OPEN.lastIndex = after;
+  }
+  return out + text.slice(from);
+}
+var HIDDEN_ENTITIES = {
+  ApplyFunction: 8289,
+  InvisibleComma: 8291,
+  InvisibleTimes: 8290,
+  NegativeMediumSpace: 8203,
+  NegativeThickSpace: 8203,
+  NegativeThinSpace: 8203,
+  NegativeVeryThinSpace: 8203,
+  NoBreak: 8288,
+  ZeroWidthSpace: 8203,
+  af: 8289,
+  ic: 8291,
+  it: 8290,
+  lrm: 8206,
+  rlm: 8207,
+  shy: 173,
+  zwj: 8205,
+  zwnj: 8204
+};
+function namedEntity(match, hex, decimal, name) {
+  let point;
+  if (hex !== undefined)
+    point = Number.parseInt(hex, 16);
+  else if (decimal !== undefined)
+    point = Number.parseInt(decimal, 10);
+  else if (name !== undefined)
+    point = HIDDEN_ENTITIES[name];
+  if (point === undefined || point > 1114111)
+    return match;
+  const char = String.fromCodePoint(point);
+  return isHidden(char) ? named(char) : match;
+}
 function visibleText(text) {
-  const named = (char) => `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
-  return text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
-`).replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(HIDDEN_CHARACTER, (match, emoji) => emoji === undefined ? named(match) : match).replace(/(?![\n\t])\p{Cc}/gu, named);
+  return markStrippedContent(markDefinitions(text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
+`))).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "[hidden CDATA: $1]").replace(/<!([A-Za-z][^>]*)>/g, "[hidden HTML declaration: $1]").replace(/<\?([\s\S]*?)\?>/g, "[hidden processing instruction: $1]").replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(/&(?:#[xX]0*([0-9a-fA-F]{1,6})|#0*([0-9]{1,7})|([A-Za-z][A-Za-z0-9]*));/g, namedEntity).replace(HIDDEN_CHARACTER, (match, emoji) => emoji === undefined ? named(match) : match).replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 async function pickIssue(world, ref) {
   const given = parseIssueRef(ref);
@@ -16285,7 +16432,7 @@ function liveSessions(claudeConfigDir) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync36, readFileSync as readFileSync47, statSync as statSync18 } from "fs";
+import { existsSync as existsSync36, readFileSync as readFileSync48, statSync as statSync18 } from "fs";
 import { basename as basename12, isAbsolute as isAbsolute3, join as join50, resolve as resolve8 } from "path";
 
 // src/crew/store.ts
@@ -17608,6 +17755,15 @@ function readWatchLease(stateDir, repo, leadSessionId) {
     return null;
   }
 }
+function watchIsAlive(stateDir, repo, leadSessionId) {
+  let lease;
+  try {
+    lease = readWatchLease(stateDir, repo, leadSessionId);
+  } catch {
+    return false;
+  }
+  return lease !== null && !holderIsGone(lease, lease.at, FALLBACK_STALE_MS);
+}
 async function takeWatchLease(stateDir, repo, leadSessionId, lease) {
   await underStoreLock(stateDir, repo, () => {
     writeStoreFile(watchLeaseFile(stateDir, repo, leadSessionId), `${JSON.stringify(lease, null, 2)}
@@ -18280,7 +18436,7 @@ import {
   mkdtempSync as mkdtempSync4,
   openSync as openSync10,
   readdirSync as readdirSync18,
-  readFileSync as readFileSync46,
+  readFileSync as readFileSync47,
   readlinkSync as readlinkSync6,
   readSync as readSync5,
   renameSync as renameSync5,
@@ -18291,7 +18447,7 @@ import { tmpdir as tmpdir6 } from "os";
 import { dirname as dirname16, join as join49 } from "path";
 
 // src/crew/end.ts
-import { existsSync as existsSync35, readFileSync as readFileSync45 } from "fs";
+import { existsSync as existsSync35, readFileSync as readFileSync46 } from "fs";
 
 // src/jobs/windows.ts
 import { spawnSync } from "child_process";
@@ -24935,6 +25091,7 @@ function resumeText(record, waiting, nowMs, timeZone) {
 
 // src/crew/watch.ts
 import { randomUUID as randomUUID4 } from "crypto";
+import { readFileSync as readFileSync45 } from "fs";
 import { join as join48 } from "path";
 
 // src/issues/pending.ts
@@ -25025,6 +25182,10 @@ async function openGate(world) {
     write
   };
 }
+var MARK_WORDS = {
+  afterTimeout: "it may have been posted; the next try reads the issue first, so nothing is posted twice",
+  stops: "no issue can be marked"
+};
 function ownBodies(comments, login) {
   return comments.flatMap((one) => typeof one.body === "string" && sameAccount(one.author?.login, login) ? [one.body] : []);
 }
@@ -25075,7 +25236,7 @@ async function markFixed(gate, mark) {
     }
     const posted = await gate.write(["issue", "comment", number, "--repo", gate.repo, "--body-file", "-"], text);
     if (posted.kind !== "ok") {
-      return { kind: "failed", why: ghProblem(`commented on #${number}`, posted) };
+      return { kind: "failed", why: ghProblem(`commented on #${number}`, posted, MARK_WORDS) };
     }
     commented = true;
   }
@@ -25105,7 +25266,10 @@ async function markFixed(gate, mark) {
     if (!names.includes(gate.fixedLabel.toLowerCase())) {
       const made = await createLabel(gate.write, gate.repo, gate.fixedLabel);
       if (made.kind !== "ok") {
-        return { kind: "failed", why: ghProblem(`created the label ${gate.fixedLabel}`, made) };
+        return {
+          kind: "failed",
+          why: ghProblem(`created the label ${gate.fixedLabel}`, made, MARK_WORDS)
+        };
       }
     }
     const added = await gate.write([
@@ -25118,7 +25282,7 @@ async function markFixed(gate, mark) {
       gate.fixedLabel
     ]);
     if (added.kind !== "ok") {
-      return { kind: "failed", why: ghProblem(`labelled #${number}`, added) };
+      return { kind: "failed", why: ghProblem(`labelled #${number}`, added, MARK_WORDS) };
     }
     labeled = true;
   }
@@ -25251,18 +25415,31 @@ function passBudget(clock, limits = {}) {
     marks: limits.marks ?? MARKS_PER_PASS
   };
 }
-function hasTime(budget) {
-  return budget.clock() < budget.deadline;
+var MIN_CALL_MS = 1000;
+function callTime(budget, limitMs) {
+  return Math.min(limitMs, budget.deadline - budget.clock());
+}
+function hasCallTime(budget) {
+  return callTime(budget, GH_TIMEOUT_MS) >= MIN_CALL_MS;
+}
+function budgetedGh(gh, budget) {
+  return async (args, call) => {
+    const timeoutMs = callTime(budget, call.timeoutMs);
+    if (timeoutMs < MIN_CALL_MS) {
+      return { code: null, err: "the pass's time for GitHub is used up", kind: "timeout", out: "" };
+    }
+    return await gh(args, { ...call, timeoutMs });
+  };
 }
 var where = (mark) => `#${mark.issue} (${mark.branch})`;
 async function settleMarks(file, world, now, budget = passBudget(() => now)) {
   const queued = readPending(file);
   const allDue = queued.filter((mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS);
-  if (allDue.length === 0 || budget.marks <= 0 || !hasTime(budget))
+  if (allDue.length === 0 || budget.marks <= 0 || !hasCallTime(budget))
     return [];
   const due = allDue.slice(0, budget.marks);
   const lines = [];
-  const gate = await openGate(world);
+  const gate = await openGate({ ...world, gh: budgetedGh(world.gh, budget) });
   const left = queued.filter((mark) => !due.includes(mark));
   if (gate.kind === "off") {
     writePending(file, left);
@@ -25279,7 +25456,7 @@ async function settleMarks(file, world, now, budget = passBudget(() => now)) {
     return lines;
   }
   for (const mark of due) {
-    if (!hasTime(budget)) {
+    if (!hasCallTime(budget)) {
       left.push(mark);
       continue;
     }
@@ -25303,6 +25480,24 @@ async function settleMarks(file, world, now, budget = passBudget(() => now)) {
 }
 
 // src/issues/feed.ts
+function newFeedMemory() {
+  return { held: null, unwritten: null };
+}
+function stateFrom2(file, memory) {
+  const held = memory?.held ?? null;
+  if (memory === undefined || held === null)
+    return file;
+  if (file !== null && file.source === held.source && file.nextAt >= held.nextAt) {
+    memory.held = null;
+    memory.unwritten = null;
+    return file;
+  }
+  return held;
+}
+var FAR_AHEAD_MIN_MS = 60 * 60000;
+function notYetDue(state, now, intervalMs) {
+  return state.nextAt > now && state.nextAt <= now + Math.max(intervalMs, FAR_AHEAD_MIN_MS);
+}
 var NOTHING = { news: [], notices: [] };
 var MAX_NEWS = 10;
 var TITLE_CHARS = 100;
@@ -25367,7 +25562,7 @@ class Look {
   }
   async read(path, etag) {
     const { budget, now, world } = this.input;
-    if (!hasTime(budget))
+    if (!hasCallTime(budget))
       return { kind: "late" };
     const result = await world.gh([
       "api",
@@ -25449,24 +25644,28 @@ async function pollIssueFeed(input) {
   const { resolved } = policy;
   if (issuesOff(resolved, policy.base) !== null || !resolved.issues.watch.value) {
     clearIssueFeed(stateDir, repo);
+    if (input.memory !== undefined)
+      Object.assign(input.memory, newFeedMemory());
     return NOTHING;
   }
   const own = ownRepository(world.cwd, world.env);
   if ("why" in own)
     return NOTHING;
   const name = own.repo.replace(/^github\.com\//, "");
-  const early = readIssueFeed(stateDir, repo);
-  if (early !== null && early.source === name && early.nextAt > now)
-    return NOTHING;
-  if (!hasTime(input.budget))
-    return NOTHING;
   const intervalMs = resolved.issues.watchMinutes.value * 60000;
+  const early = stateFrom2(readIssueFeed(stateDir, repo), input.memory);
+  if (early !== null && early.source === name && notYetDue(early, now, intervalMs)) {
+    return NOTHING;
+  }
+  if (!hasCallTime(input.budget))
+    return NOTHING;
   const held = await underIssueFeedLock(stateDir, repo, async () => {
-    const known = readIssueFeed(stateDir, repo);
+    const known = stateFrom2(readIssueFeed(stateDir, repo), input.memory);
     const state = known !== null && known.source === name ? known : null;
-    if (state !== null && state.nextAt > now)
+    if (state !== null && notYetDue(state, now, intervalMs))
       return NOTHING;
-    return await look(input, new Look(input), name, state, intervalMs);
+    const bounded = { ...input, world: { ...world, gh: budgetedGh(world.gh, input.budget) } };
+    return await look(input, new Look(bounded), name, state, intervalMs);
   });
   return held.held ? held.value : NOTHING;
 }
@@ -25474,7 +25673,18 @@ async function look(input, reader, name, state, intervalMs) {
   const { now, repo, stateDir } = input;
   const finish = async (result, next) => {
     await input.deliver?.(result);
-    writeIssueFeed(stateDir, repo, next);
+    const write = input.write ?? ((state) => writeIssueFeed(stateDir, repo, state));
+    try {
+      write(next);
+      if (input.memory !== undefined)
+        Object.assign(input.memory, newFeedMemory());
+    } catch (error) {
+      if (input.memory === undefined)
+        throw error;
+      input.memory.held = next;
+      const code = error?.code;
+      input.memory.unwritten = typeof code === "string" ? code : error instanceof Error ? error.message : String(error);
+    }
     return result;
   };
   const fail = (problem) => finish({ news: [], notices: state?.problem === problem.problem ? [] : [problem.line] }, {
@@ -28931,6 +29141,7 @@ function quotesGitHub(event) {
 }
 async function lookAtGitHub(scope, ctx, budget, said, say) {
   const key = "issues:feed";
+  const unwrittenKey = "issues:feed-state";
   try {
     await pollIssueFeed({
       budget,
@@ -28939,7 +29150,7 @@ async function lookAtGitHub(scope, ctx, budget, said, say) {
           return;
         const leads = new Set([
           scope.leadSessionId,
-          ...listLeads(ctx.paths.stateDir, scope.repo).records.map((one) => one.sessionId)
+          ...listLeads(ctx.paths.stateDir, scope.repo).records.map((one) => one.sessionId).filter((id) => watchIsAlive(ctx.paths.stateDir, scope.repo, id))
         ]);
         const lines = [
           ...found.notices.map((text) => ({ data: false, text: `issues: ${text}` })),
@@ -28959,6 +29170,7 @@ async function lookAtGitHub(scope, ctx, budget, said, say) {
           }
         }
       },
+      ...scope.feedMemory === undefined ? {} : { memory: scope.feedMemory },
       now: ctx.now(),
       repo: scope.repo,
       stateDir: ctx.paths.stateDir,
@@ -28971,6 +29183,16 @@ async function lookAtGitHub(scope, ctx, budget, said, say) {
       }
     });
     delete said[key];
+    const unwritten = scope.feedMemory?.unwritten ?? null;
+    if (unwritten === null) {
+      delete said[unwrittenKey];
+    } else {
+      const line = `issues: the feed's state could not be written (${unwritten}); the watch keeps it in memory and goes on`;
+      if (said[unwrittenKey] !== line) {
+        say(line);
+        said[unwrittenKey] = line;
+      }
+    }
   } catch (error) {
     const line = `issues: the watch could not look at GitHub (${reasonOf2(error)})`;
     if (said[key] !== line) {
@@ -28982,18 +29204,24 @@ async function lookAtGitHub(scope, ctx, budget, said, say) {
 function issueMarksFile(stateDir, repo, leadSessionId) {
   return join48(crewStoreDir(stateDir, repo), "issue-marks", `${leadSessionId}.json`);
 }
-function queueIssueMarks(record, proof, file) {
+function queueIssueMarks(record, proof, file, briefFile) {
   let report = null;
   try {
     report = record.reportPath === null ? null : readReport(record.reportPath);
   } catch {}
-  queueMarks(file, phaseIssues(record, report).map((issue) => ({
+  let brief = null;
+  try {
+    brief = readFileSync45(briefFile, "utf8");
+  } catch {}
+  const checked = checkPhaseIssues(record, report, brief);
+  queueMarks(file, checked.marks.map((issue) => ({
     base: proof.leadRef,
     branch: record.branch,
     issue,
     merge: proof.leadCommit,
     tip: proof.head
   })));
+  return checked.unnamed.map((issue) => unnamedIssueLine(record.name, issue, brief !== null));
 }
 async function stopSession2(record, ctx) {
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
@@ -29179,7 +29407,9 @@ async function watchPass(state, ctx, scope) {
         if (proof === undefined)
           continue;
         try {
-          queueIssueMarks(record, proof, issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId));
+          for (const line of queueIssueMarks(record, proof, issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId), crewBriefFile(ctx.paths.stateDir, repo, record.id))) {
+            say(line);
+          }
         } catch (error) {
           say(`issues: the marks for ${record.name} could not be queued (${reasonOf2(error)})`);
         }
@@ -29449,6 +29679,7 @@ async function watchLoop(args, ctx, start) {
   let state = known ?? { noted: false, offset: 0, said: {} };
   let caps = resolved;
   let capsSaid = false;
+  const feedMemory = newFeedMemory();
   const deadline = args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;; ) {
     if (!await goesOn()) {
@@ -29470,7 +29701,7 @@ async function watchLoop(args, ctx, start) {
         capsSaid = true;
       }
     }
-    const scope = { ...start, mayStart, resolved: caps };
+    const scope = { ...start, feedMemory, mayStart, resolved: caps };
     let pass;
     try {
       pass = await watchPass(state, ctx, scope);
@@ -29592,7 +29823,7 @@ function signal(pid, sig) {
 function procEnviron(pid) {
   try {
     const environment = {};
-    for (const entry of readFileSync45(`/proc/${String(pid)}/environ`, "utf8").split("\x00")) {
+    for (const entry of readFileSync46(`/proc/${String(pid)}/environ`, "utf8").split("\x00")) {
       const at = entry.indexOf("=");
       if (at > 0)
         environment[entry.slice(0, at)] = entry.slice(at + 1);
@@ -29859,9 +30090,9 @@ async function rollbackCrewDiscard(record, ctx) {
     checkedGit(record.repo, ["update-ref", `refs/heads/${record.branch}`, pending.head, pending.archivedHead], ctx);
   else if (branch !== pending.head)
     throw new Error("the crew branch changed after discard was prepared");
-  const currentIndex = readFileSync46(pending.indexPath);
-  const originalIndex = readFileSync46(pending.indexBackup);
-  const preparedIndex = readFileSync46(pending.indexArchived);
+  const currentIndex = readFileSync47(pending.indexPath);
+  const originalIndex = readFileSync47(pending.indexBackup);
+  const preparedIndex = readFileSync47(pending.indexArchived);
   if (!currentIndex.equals(originalIndex)) {
     if (!currentIndex.equals(preparedIndex))
       throw new Error("the crew index changed after discard was prepared");
@@ -30012,7 +30243,7 @@ function buildCrewDiscardFacts(record, ctx) {
       ignoredBytes += stat.size;
       if (!stat.isFile() || stat.size > DISCARD_IGNORED_FILE_MAX_BYTES || ignoredBytes > DISCARD_IGNORED_TOTAL_MAX_BYTES)
         throw new Error(`ignored file ${JSON.stringify(file)} is not safe to archive: ${TEXT_RULE}`);
-      const bytes = readFileSync46(path);
+      const bytes = readFileSync47(path);
       let text;
       try {
         text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -30104,7 +30335,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
         }
         throw error;
       }
-      const bytes = stat.isSymbolicLink() ? Buffer.from(readlinkSync6(path)) : readFileSync46(path);
+      const bytes = stat.isSymbolicLink() ? Buffer.from(readlinkSync6(path)) : readFileSync47(path);
       const blob = rawGit(record.repo, ["hash-object", "-w", "--stdin"], ctx, bytes).toString().trim();
       const mode = stat.isSymbolicLink() ? "120000" : (stat.mode & 73) !== 0 ? "100755" : "100644";
       checkedGit(record.worktree, ["update-index", "--add", "--cacheinfo", mode, blob, file], ctx, own);
@@ -30141,9 +30372,9 @@ async function archiveCrewDiscard(record, facts, ctx) {
       const lock = `${indexPath}.lock`;
       const fd = openSync10(lock, "wx", 384);
       try {
-        if (!readFileSync46(indexPath).equals(readFileSync46(indexBackup)))
+        if (!readFileSync47(indexPath).equals(readFileSync47(indexBackup)))
           throw new Error("the index changed during discard");
-        writeFileSync6(fd, readFileSync46(indexArchived));
+        writeFileSync6(fd, readFileSync47(indexArchived));
         closeSync10(fd);
         renameSync5(lock, indexPath);
       } catch (error) {
@@ -30610,7 +30841,7 @@ var IDLE_MINUTES2 = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync47(join50(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync48(join50(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
@@ -32481,7 +32712,7 @@ async function runCrewStep(step, note, ctx) {
 }
 
 // src/crew/tasks.ts
-import { readdirSync as readdirSync20, readFileSync as readFileSync48 } from "fs";
+import { readdirSync as readdirSync20, readFileSync as readFileSync49 } from "fs";
 import { join as join52 } from "path";
 var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
 var OPEN_TASK_STATUSES = ["pending", "in_progress"];
@@ -32502,7 +32733,7 @@ function byNumber(a, b) {
 function taskOf(file, name) {
   let value;
   try {
-    value = JSON.parse(readFileSync48(file, "utf8"));
+    value = JSON.parse(readFileSync49(file, "utf8"));
   } catch {
     return null;
   }
@@ -32547,7 +32778,7 @@ function taskGateFile(stateDir, repo, id) {
 function readTaskGate(stateDir, repo, id) {
   let text;
   try {
-    text = readFileSync48(taskGateFile(stateDir, repo, id), "utf8");
+    text = readFileSync49(taskGateFile(stateDir, repo, id), "utf8");
   } catch {
     return null;
   }
@@ -33125,7 +33356,7 @@ async function runCrewHistory(args, ctx) {
 import { statSync as statSync21 } from "fs";
 
 // src/machine/claude-settings.ts
-import { readFileSync as readFileSync49, statSync as statSync20 } from "fs";
+import { readFileSync as readFileSync50, statSync as statSync20 } from "fs";
 import { basename as basename13, dirname as dirname17, join as join54, resolve as resolve10 } from "path";
 var AUTOCOMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 var AUTOCOMPACT_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
@@ -33257,7 +33488,7 @@ function checkoutRootAt(dir) {
   try {
     if (statSync20(entry).isDirectory())
       return dir;
-    const line = readFileSync49(entry, "utf8").split(`
+    const line = readFileSync50(entry, "utf8").split(`
 `, 1)[0] ?? "";
     if (!line.startsWith("gitdir:"))
       return dir;
@@ -33271,7 +33502,7 @@ function checkoutRootAt(dir) {
 }
 
 // src/crew/context-window.ts
-import { existsSync as existsSync42, readFileSync as readFileSync50 } from "fs";
+import { existsSync as existsSync42, readFileSync as readFileSync51 } from "fs";
 import { join as join55 } from "path";
 var CONTEXT_WINDOW_1M = 1e6;
 var CONTEXT_WINDOW_SMALL = 200000;
@@ -33313,7 +33544,7 @@ function readClaudeStored(file) {
   if (!existsSync42(file))
     return {};
   try {
-    const parsed = claudeStoredSchema.safeParse(JSON.parse(readFileSync50(file, "utf8")));
+    const parsed = claudeStoredSchema.safeParse(JSON.parse(readFileSync51(file, "utf8")));
     return parsed.success ? parsed.data : {};
   } catch {
     return {};
@@ -33366,7 +33597,7 @@ function readKept(paths) {
   if (!existsSync42(file))
     return {};
   try {
-    const parsed = keptSchema2.safeParse(JSON.parse(readFileSync50(file, "utf8")));
+    const parsed = keptSchema2.safeParse(JSON.parse(readFileSync51(file, "utf8")));
     return parsed.success ? parsed.data : {};
   } catch {
     return {};
@@ -34569,7 +34800,7 @@ function parseWatchArgs(argv) {
 }
 
 // src/gateway/commands.ts
-import { existsSync as existsSync46, readdirSync as readdirSync21, readFileSync as readFileSync53 } from "fs";
+import { existsSync as existsSync46, readdirSync as readdirSync21, readFileSync as readFileSync54 } from "fs";
 
 // src/gateway/commands-out.ts
 function gatewayOut(ctx) {
@@ -34925,7 +35156,7 @@ var PROFILE_HELP = `  profile <name> <command>
 import { resolve as resolve11 } from "path";
 
 // src/setup/managed-line.ts
-import { existsSync as existsSync44, readFileSync as readFileSync51 } from "fs";
+import { existsSync as existsSync44, readFileSync as readFileSync52 } from "fs";
 function renderWithLine(current, line) {
   const text = current === "" || current.endsWith(`
 `) ? current : `${current}
@@ -34942,7 +35173,7 @@ function renderWithoutLines(current, lines) {
 function writeRendered(file, stateDir, render, options) {
   const target = realTarget(file);
   return retryOnConcurrentChange(target, () => {
-    const current = existsSync44(target) ? readFileSync51(target, "utf8") : null;
+    const current = existsSync44(target) ? readFileSync52(target, "utf8") : null;
     const { removed, text } = render(current ?? "");
     if (current === null && text === "") {
       return { backup: null, outcome: "unchanged", removed: removed ?? [] };
@@ -35864,7 +36095,7 @@ async function createOmnirouteKey(options) {
 }
 
 // src/gateway/service.ts
-import { existsSync as existsSync45, readFileSync as readFileSync52, rmSync as rmSync11 } from "fs";
+import { existsSync as existsSync45, readFileSync as readFileSync53, rmSync as rmSync11 } from "fs";
 import { basename as basename14, dirname as dirname18, join as join56 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
@@ -35995,7 +36226,7 @@ async function installRouter(options) {
   const { service } = options;
   const { listenerUp } = await checkRouterPort(options);
   const short = (path) => tildify(path, options.home);
-  const copyText = readFileSync52(options.bundle, "utf8");
+  const copyText = readFileSync53(options.bundle, "utf8");
   const definitions = service.definitions(options);
   const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
@@ -36128,7 +36359,7 @@ function systemdService(options) {
       if (!plan.listenerUp) {
         return plan.outcomes.socket === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
       }
-      const oldPort = existsSync45(options.socketPath) ? socketPort(readFileSync52(options.socketPath, "utf8")) : null;
+      const oldPort = existsSync45(options.socketPath) ? socketPort(readFileSync53(options.socketPath, "utf8")) : null;
       return oldPort !== null && oldPort !== input.port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
     },
     running(runner) {
@@ -36910,7 +37141,7 @@ function withPortalChains(config, remembered) {
 function portalMemoryText(path) {
   if (path === undefined || !existsSync46(path))
     return null;
-  return readFileSync53(path, "utf8");
+  return readFileSync54(path, "utf8");
 }
 var PORTAL_SLOT_FIELDS = ["fallback", "judge", "switches"];
 function withoutPortalSlots(text) {
@@ -37203,7 +37434,7 @@ async function testWorkerTargets(ctx, config) {
 function dropFallbackRecord(statePath, slot) {
   let state;
   try {
-    state = parseLimitState(readFileSync53(statePath, "utf8"));
+    state = parseLimitState(readFileSync54(statePath, "utf8"));
   } catch {
     return;
   }
@@ -38141,7 +38372,7 @@ ${USAGE}`);
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync48, mkdirSync as mkdirSync22, readFileSync as readFileSync57, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync48, mkdirSync as mkdirSync22, readFileSync as readFileSync58, writeFileSync as writeFileSync8 } from "fs";
 import { join as join61 } from "path";
 
 // src/workflow/alerts.ts
@@ -38179,11 +38410,11 @@ function inBackgroundSession(env) {
 }
 
 // src/hooks/desktop-alert.ts
-import { readFileSync as readFileSync56, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
+import { readFileSync as readFileSync57, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
 import { join as join60 } from "path";
 
 // src/update/apply.ts
-import { existsSync as existsSync47, readFileSync as readFileSync55 } from "fs";
+import { existsSync as existsSync47, readFileSync as readFileSync56 } from "fs";
 import { join as join59 } from "path";
 
 // src/hooks/windows-toast.ts
@@ -38363,7 +38594,7 @@ function remotePluginVersion(url, ref, baseEnv) {
 }
 
 // src/update/major.ts
-import { readFileSync as readFileSync54 } from "fs";
+import { readFileSync as readFileSync55 } from "fs";
 import { join as join58 } from "path";
 var MAJOR_NOTES_PATH = join58("src", "update", "major-notes.json");
 var NOTE_MAX = 120;
@@ -38405,7 +38636,7 @@ function readMajorNotes(location, from, to) {
   if (location === null)
     return [];
   try {
-    return majorNotesBetween(readFileSync54(join58(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+    return majorNotesBetween(readFileSync55(join58(location, MAJOR_NOTES_PATH), "utf8"), from, to);
   } catch {
     return [];
   }
@@ -38475,7 +38706,7 @@ function routerNeedsSetup(paths) {
   if (install === null || !existsSync47(paths.routerCopy))
     return false;
   const bundle = join59(install.installPath, "dist", "router.js");
-  return existsSync47(bundle) && readFileSync55(bundle, "utf8") !== readFileSync55(paths.routerCopy, "utf8");
+  return existsSync47(bundle) && readFileSync56(bundle, "utf8") !== readFileSync56(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
@@ -38665,7 +38896,7 @@ function shownStateFile(stateDir, session) {
 }
 function readShownId(file) {
   try {
-    const value = readFileSync56(file, "utf8").trim();
+    const value = readFileSync57(file, "utf8").trim();
     return /^\d+$/.test(value) ? Number(value) : null;
   } catch {
     return null;
@@ -38928,7 +39159,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync57(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync58(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -38956,7 +39187,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync57(join61(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync58(join61(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject14(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
@@ -39042,7 +39273,7 @@ function runAlert(alert, platform, run) {
 }
 
 // src/issues/command.ts
-import { readFileSync as readFileSync58 } from "fs";
+import { readFileSync as readFileSync59 } from "fs";
 import { resolve as resolve12 } from "path";
 var ISSUE_USAGE = `Usage: ${COMMAND} issue file --title <title> --body-file <file|-> --fingerprint <key> [--label <label>\u2026]
        ${COMMAND} issue fixed --base <branch> --head <branch>
@@ -39161,7 +39392,7 @@ ${ISSUE_USAGE}`);
   }
   let body;
   try {
-    body = parsed.bodyFile === "-" ? await context.readStdin() : readFileSync58(resolve12(context.cwd, parsed.bodyFile), "utf8");
+    body = parsed.bodyFile === "-" ? await context.readStdin() : readFileSync59(resolve12(context.cwd, parsed.bodyFile), "utf8");
   } catch (error) {
     context.error(`Cannot read the body: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -41780,7 +42011,7 @@ ${USAGE2}`);
 }
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync51, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync51, readFileSync as readFileSync61 } from "fs";
 
 // src/omniroute/install.ts
 import {
@@ -41788,7 +42019,7 @@ import {
   constants as constants2,
   existsSync as existsSync50,
   readdirSync as readdirSync24,
-  readFileSync as readFileSync59,
+  readFileSync as readFileSync60,
   realpathSync as realpathSync6
 } from "fs";
 import { dirname as dirname19, join as join63 } from "path";
@@ -41866,7 +42097,7 @@ function userUnits(dir) {
     const file = join63(dir, name);
     let argv;
     try {
-      argv = unitExecStart(readFileSync59(file, "utf8"));
+      argv = unitExecStart(readFileSync60(file, "utf8"));
     } catch {
       continue;
     }
@@ -41877,7 +42108,7 @@ function userUnits(dir) {
 }
 function versionOf(folder, name) {
   try {
-    const manifest = JSON.parse(readFileSync59(join63(folder, "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync60(join63(folder, "package.json"), "utf8"));
     const wanted = manifest;
     if (wanted.name !== name || typeof wanted.version !== "string")
       return null;
@@ -42121,7 +42352,7 @@ function parseState(text) {
 }
 function readState2(file) {
   try {
-    return parseState(readFileSync60(file, "utf8")) ?? emptyState();
+    return parseState(readFileSync61(file, "utf8")) ?? emptyState();
   } catch {
     return emptyState();
   }
@@ -42135,7 +42366,7 @@ function stateFile(paths) {
 }
 function readOrNull(path) {
   try {
-    return readFileSync60(path, "utf8");
+    return readFileSync61(path, "utf8");
   } catch {
     return null;
   }
@@ -42581,7 +42812,7 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync53, readFileSync as readFileSync62, rmSync as rmSync15 } from "fs";
+import { existsSync as existsSync53, readFileSync as readFileSync63, rmSync as rmSync15 } from "fs";
 import { join as join65 } from "path";
 
 // src/setup/managed-folder.ts
@@ -42590,7 +42821,7 @@ import {
   existsSync as existsSync52,
   mkdirSync as mkdirSync24,
   readdirSync as readdirSync25,
-  readFileSync as readFileSync61,
+  readFileSync as readFileSync62,
   renameSync as renameSync6,
   rmSync as rmSync14,
   writeFileSync as writeFileSync9
@@ -42608,7 +42839,7 @@ function listFiles(folder) {
   return readdirSync25(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative4(folder, join64(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
 }
 function hashFile(file) {
-  return createHash8("sha256").update(readFileSync61(file)).digest("base64");
+  return createHash8("sha256").update(readFileSync62(file)).digest("base64");
 }
 function sameFolder(target, source, files) {
   if (!existsSync52(target) || !markedOwned(target))
@@ -42626,7 +42857,7 @@ function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
   if (!existsSync52(file))
     return [];
-  const parsed = JSON.parse(readFileSync61(file, "utf8"));
+  const parsed = JSON.parse(readFileSync62(file, "utf8"));
   const folders = parsed?.folders;
   if (!Array.isArray(folders) || !folders.every((one) => typeof one === "string")) {
     throw new Error(`Invalid ${file}: expected { "folders": [<path>, \u2026] }`);
@@ -42655,7 +42886,7 @@ function copyFolder(source, into, files) {
   for (const file of files) {
     const to = join64(into, ...file.split("/"));
     mkdirSync24(dirname20(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync9(to, readFileSync61(join64(source, ...file.split("/"))), { mode: FILE_MODE2 });
+    writeFileSync9(to, readFileSync62(join64(source, ...file.split("/"))), { mode: FILE_MODE2 });
     setFileMode(to, FILE_MODE2);
   }
   mkdirSync24(into, { recursive: true, mode: DIR_MODE });
@@ -42730,7 +42961,7 @@ function refreshPortalCopy(paths, pluginFolder) {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync62(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync63(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
@@ -42866,7 +43097,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync62(paths.portalHeldFile, "utf8");
+    const text = readFileSync63(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -43034,7 +43265,7 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/setup/managed-hook.ts
-import { existsSync as existsSync54, readFileSync as readFileSync63 } from "fs";
+import { existsSync as existsSync54, readFileSync as readFileSync64 } from "fs";
 import { join as join66 } from "path";
 var OWNED_HOOKS_FILE = "owned-hooks.json";
 function isHookHandler(value) {
@@ -43065,7 +43296,7 @@ function readOwnedHooks(stateDir) {
   const file = join66(stateDir, OWNED_HOOKS_FILE);
   if (!existsSync54(file))
     return {};
-  const parsed = JSON.parse(readFileSync63(file, "utf8"));
+  const parsed = JSON.parse(readFileSync64(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((events) => isObject(events) && Object.values(events).every(isOwnedHookRecord));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <event>: { entry, created } } }`);
@@ -43381,7 +43612,7 @@ import { existsSync as existsSync57 } from "fs";
 import { join as join68 } from "path";
 
 // src/hooks/settings-hooks.ts
-import { existsSync as existsSync56, readFileSync as readFileSync64 } from "fs";
+import { existsSync as existsSync56, readFileSync as readFileSync65 } from "fs";
 import { join as join67 } from "path";
 var RETIRED_ENGINE_HOOKS = [
   "worktree-create",
@@ -43412,7 +43643,7 @@ function hooksOf(file) {
   if (!existsSync56(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync64(file, "utf8"));
+    const parsed = JSON.parse(readFileSync65(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const hooks = parsed.hooks;
@@ -44498,8 +44729,10 @@ project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>
 show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
 Code, set, unset and propose of those refuse: run them in your own terminal (propose, and the
 pull request's review, are the gate).
-${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file): set and
-unset refuse them inside Claude Code too; propose does not, since a person reviews its pull request.
+${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
+${INBOUND_KEYS.join(" and ")} decide which issues are ready and whether the lead hears new ones:
+set and unset refuse all four inside Claude Code too; propose does not, since a person reviews its
+pull request.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -44629,8 +44862,17 @@ function gateKeyRefusal(sub, key) {
   const fix = sub === "propose" ? `Run it in your own terminal (\`${COMMAND} workflow propose ${key} <value>\`): the pull request is the gate.` : `Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the merge guard reads only the committed file.`;
   return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is part of the merge guard's review gate, which only you change. ${fix}`;
 }
-function outboundKeyRefusal(sub, key) {
-  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} lets text leave this machine for GitHub, which only you switch. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
+function issueKeyReason(key) {
+  if (key === "issues.readyLabel") {
+    return "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose";
+  }
+  if (key === "issues.watch") {
+    return "opens the channel that puts text from GitHub into the lead's context, which only you open";
+  }
+  return "lets text leave this machine for GitHub, which only you switch";
+}
+function issueKeyRefusal(sub, key) {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} ${issueKeyReason(key)}. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
 }
 async function reviewDone(context, argv) {
   if (insideClaudeCode(context.env)) {
@@ -44793,8 +45035,8 @@ ${WORKFLOW_USAGE}` : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS
     context.error(gateKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
-  if (OUTBOUND_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
-    context.error(outboundKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+  if ((OUTBOUND_KEYS.includes(wanted) || INBOUND_KEYS.includes(wanted)) && insideClaudeCode(context.env)) {
+    context.error(issueKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
   let value;
@@ -45193,7 +45435,7 @@ See: ${COMMAND} launch --help`);
 }
 
 // src/cli/project-init.ts
-import { existsSync as existsSync59, readFileSync as readFileSync65 } from "fs";
+import { existsSync as existsSync59, readFileSync as readFileSync66 } from "fs";
 import { join as join71, relative as relative6 } from "path";
 var RUN_TIMEOUT_MS = 1e4;
 async function runGh2(ghPath, args, env) {
@@ -45325,7 +45567,7 @@ function defaultFastCheck(root) {
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync65(file, "utf8"));
+    const parsed = parseUserJson(readFileSync66(file, "utf8"));
     scripts = isObject(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -45620,7 +45862,7 @@ function printPlan(plan, context) {
   return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText2(file) {
-  return existsSync59(file) ? readFileSync65(file, "utf8") : null;
+  return existsSync59(file) ? readFileSync66(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText2(file);
@@ -45761,28 +46003,28 @@ ${PROJECT_INIT_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync11, mkdirSync as mkdirSync27, openSync as openSync11, readFileSync as readFileSync69, readSync as readSync6, statSync as statSync25 } from "fs";
+import { closeSync as closeSync11, mkdirSync as mkdirSync27, openSync as openSync11, readFileSync as readFileSync70, readSync as readSync6, statSync as statSync25 } from "fs";
 import { dirname as dirname23, join as join73 } from "path";
 
 // src/cli/usage.ts
 import { basename as basename16, resolve as resolve14 } from "path";
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync66 } from "fs";
+import { readFileSync as readFileSync67 } from "fs";
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync66(file, "utf8"));
+    return parseSafetyCheckState(readFileSync67(file, "utf8"));
   } catch {
     return null;
   }
 }
 
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync68 } from "fs";
+import { readFileSync as readFileSync69 } from "fs";
 import { join as join72 } from "path";
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync26, readFileSync as readFileSync67, statSync as statSync24 } from "fs";
+import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync26, readFileSync as readFileSync68, statSync as statSync24 } from "fs";
 import { dirname as dirname22 } from "path";
 function cutBack(file) {
   let size;
@@ -45793,7 +46035,7 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync67(file, "utf8");
+  const text = readFileSync68(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
@@ -45954,7 +46196,7 @@ function agentKey2(one) {
 function readAgentUsage(file, sinceMs) {
   let text;
   try {
-    text = readFileSync68(file, "utf8");
+    text = readFileSync69(file, "utf8");
   } catch {
     return [];
   }
@@ -45984,7 +46226,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync68(transcript, "utf8");
+    text = readFileSync69(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -46577,7 +46819,7 @@ function readAskLog(file) {
   let skipped = 0;
   let text;
   try {
-    text = readFileSync69(file, "utf8");
+    text = readFileSync70(file, "utf8");
   } catch {
     return { asks, skipped };
   }
@@ -47292,7 +47534,7 @@ function readFlow(paths, options) {
     const cacheFile = join73(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
-      cache = parseCache(readFileSync69(cacheFile, "utf8"), project);
+      cache = parseCache(readFileSync70(cacheFile, "utf8"), project);
     } catch {}
     let dirty = false;
     for (const [id, found] of ids) {
@@ -47604,7 +47846,7 @@ ${REPORT_USAGE}`);
 }
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync61, readFileSync as readFileSync72 } from "fs";
+import { existsSync as existsSync61, readFileSync as readFileSync73 } from "fs";
 import { join as join76, relative as relative7 } from "path";
 
 // src/sessions/command.ts
@@ -47614,7 +47856,7 @@ import {
   mkdirSync as mkdirSync28,
   openSync as openSync12,
   readdirSync as readdirSync26,
-  readFileSync as readFileSync71,
+  readFileSync as readFileSync72,
   readSync as readSync7,
   rmSync as rmSync17,
   statSync as statSync27,
@@ -47624,7 +47866,7 @@ import { platform as platform2 } from "os";
 import { dirname as dirname24, join as join75, resolve as resolve15 } from "path";
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync70, statSync as statSync26 } from "fs";
+import { readFileSync as readFileSync71, statSync as statSync26 } from "fs";
 import { join as join74 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -47683,7 +47925,7 @@ function sessionTerminalAt(paths, row) {
   if (!/^[0-9a-f]{8}$/.test(row.id))
     return null;
   try {
-    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync70(join74(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
+    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync71(join74(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
     if (!parsed.success || parsed.data.sessionId !== row.sessionId || parsed.data.state !== row.state)
       return null;
     return Math.max(Date.parse(parsed.data.lastTerminalAt), Date.parse(parsed.data.updatedAt));
@@ -47935,7 +48177,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
     const path = join75(dir, name);
     let text;
     try {
-      text = readFileSync71(path, "utf8");
+      text = readFileSync72(path, "utf8");
     } catch {
       continue;
     }
@@ -47972,7 +48214,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
     return false;
   let text;
   try {
-    text = readFileSync71(file, "utf8").trim();
+    text = readFileSync72(file, "utf8").trim();
   } catch {
     return false;
   }
@@ -48352,7 +48594,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
   let error = null;
   if (existsSync61(config)) {
     try {
-      fields = retiredFieldsOf(parseUserJson(readFileSync72(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync73(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
       error = messageOf4(cause);
     }
@@ -49168,11 +49410,11 @@ async function runClaudeMem(argv, deps) {
 }
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync78, readFileSync as readFileSync89 } from "fs";
+import { accessSync as accessSync2, constants as constants3, existsSync as existsSync78, readFileSync as readFileSync90 } from "fs";
 import { dirname as dirname32, join as join91 } from "path";
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync64, readFileSync as readFileSync73 } from "fs";
+import { existsSync as existsSync64, readFileSync as readFileSync74 } from "fs";
 
 // src/gateway/claude-defaults.ts
 import { existsSync as existsSync63 } from "fs";
@@ -49396,7 +49638,7 @@ async function gatewayChecks(options) {
   }
   if (!existsSync64(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync64(options.bundle) && readFileSync73(paths.routerCopy, "utf8") !== readFileSync73(options.bundle, "utf8")) {
+  } else if (existsSync64(options.bundle) && readFileSync74(paths.routerCopy, "utf8") !== readFileSync74(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -49696,7 +49938,7 @@ async function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (readFileSync73(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+  if (readFileSync74(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
       check: {
         ok: false,
@@ -49735,7 +49977,7 @@ async function socketCheck(options, port) {
 }
 
 // src/machine/warp.ts
-import { chmodSync as chmodSync3, existsSync as existsSync65, mkdirSync as mkdirSync29, readFileSync as readFileSync74, rmSync as rmSync18, writeFileSync as writeFileSync11 } from "fs";
+import { chmodSync as chmodSync3, existsSync as existsSync65, mkdirSync as mkdirSync29, readFileSync as readFileSync75, rmSync as rmSync18, writeFileSync as writeFileSync11 } from "fs";
 import { join as join78 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
@@ -50041,7 +50283,7 @@ function warpPluginSteps(paths) {
 }
 function otherPluginFrom(paths, marketplace, except) {
   try {
-    const parsed = JSON.parse(readFileSync74(paths.installedPluginsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync75(paths.installedPluginsFile, "utf8"));
     return Object.keys(parsed.plugins ?? {}).some((id) => id !== except && id.endsWith(`@${marketplace}`));
   } catch {
     return false;
@@ -50114,7 +50356,7 @@ function clearWarpStage(paths) {
 }
 
 // src/mcp/records.ts
-import { existsSync as existsSync66, readFileSync as readFileSync75 } from "fs";
+import { existsSync as existsSync66, readFileSync as readFileSync76 } from "fs";
 import { join as join79 } from "path";
 var RECORD_FILE2 = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
@@ -50129,7 +50371,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync66(file))
     return {};
-  const parsed = JSON.parse(readFileSync75(file, "utf8"));
+  const parsed = JSON.parse(readFileSync76(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -50172,12 +50414,12 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 }
 
 // src/mcp/register.ts
-import { existsSync as existsSync67, readFileSync as readFileSync76 } from "fs";
+import { existsSync as existsSync67, readFileSync as readFileSync77 } from "fs";
 import { dirname as dirname26, join as join80, resolve as resolve16 } from "path";
 function readUserServers(file) {
   let text;
   try {
-    text = readFileSync76(file, "utf8");
+    text = readFileSync77(file, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? {} : null;
   }
@@ -50476,7 +50718,7 @@ import {
   existsSync as existsSync68,
   lstatSync as lstatSync6,
   readdirSync as readdirSync27,
-  readFileSync as readFileSync77,
+  readFileSync as readFileSync78,
   rmdirSync as rmdirSync2,
   rmSync as rmSync19,
   statSync as statSync28
@@ -50614,7 +50856,7 @@ function mentions2(value, text) {
 function registrationsNaming(userConfigFile, file, takenBack) {
   let text;
   try {
-    text = readFileSync77(userConfigFile, "utf8");
+    text = readFileSync78(userConfigFile, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? [] : null;
   }
@@ -50897,11 +51139,11 @@ function autoUpdateState(paths) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync72, readdirSync as readdirSync29, readFileSync as readFileSync81, rmSync as rmSync20 } from "fs";
+import { existsSync as existsSync72, readdirSync as readdirSync29, readFileSync as readFileSync82, rmSync as rmSync20 } from "fs";
 import { join as join83, relative as relative8, sep as sep4 } from "path";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync69, readFileSync as readFileSync78 } from "fs";
+import { existsSync as existsSync69, readFileSync as readFileSync79 } from "fs";
 var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
 var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
@@ -50963,7 +51205,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync69(file) ? readFileSync78(file, "utf8") : null;
+    const text = existsSync69(file) ? readFileSync79(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -50985,11 +51227,11 @@ function removeManagedMarkdown(options) {
 }
 
 // src/setup/restore.ts
-import { existsSync as existsSync71, readdirSync as readdirSync28, readFileSync as readFileSync80, rmdirSync as rmdirSync3 } from "fs";
+import { existsSync as existsSync71, readdirSync as readdirSync28, readFileSync as readFileSync81, rmdirSync as rmdirSync3 } from "fs";
 import { dirname as dirname27 } from "path";
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync70, readFileSync as readFileSync79 } from "fs";
+import { existsSync as existsSync70, readFileSync as readFileSync80 } from "fs";
 import { join as join82 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -51003,7 +51245,7 @@ function readOwnedEntries(stateDir) {
   const file = join82(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync70(file))
     return {};
-  const parsed = JSON.parse(readFileSync79(file, "utf8"));
+  const parsed = JSON.parse(readFileSync80(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((lists) => isObject(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -51198,7 +51440,7 @@ function restoreWholeFile(file, entry, stateDir) {
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync80(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync81(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -51215,7 +51457,7 @@ function restoreWholeFile(file, entry, stateDir) {
 function isEmpty(file) {
   if (!existsSync71(file))
     return false;
-  const text = readFileSync80(file, "utf8").trim();
+  const text = readFileSync81(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir, options) {
@@ -51343,7 +51585,7 @@ function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
   if (!existsSync72(file))
     return null;
-  const version = readFileSync81(file, "utf8").trim();
+  const version = readFileSync82(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
@@ -51423,7 +51665,7 @@ function copyDifferences(paths) {
     const copy = join83(paths.target, name);
     if (!existsSync72(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync81(copy, "utf8") !== readFileSync81(join83(paths.source, name), "utf8")) {
+    else if (readFileSync82(copy, "utf8") !== readFileSync82(join83(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
@@ -51479,7 +51721,7 @@ function installCopy(paths, dryRun, version) {
   for (const name of files) {
     const file = join83(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync81(join83(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync82(join83(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -51506,7 +51748,7 @@ function installCopy(paths, dryRun, version) {
 }
 function installInstructions(paths, dryRun, version) {
   const lines = installCopy(paths, dryRun, version);
-  const before = existsSync72(paths.claudeMd) ? readFileSync81(paths.claudeMd, "utf8") : null;
+  const before = existsSync72(paths.claudeMd) ? readFileSync82(paths.claudeMd, "utf8") : null;
   const block = applyManagedMarkdown({
     file: paths.claudeMd,
     stateDir: paths.stateDir,
@@ -51532,7 +51774,7 @@ function installInstructions(paths, dryRun, version) {
 function removeInstructions(paths, dryRun) {
   const lines = [];
   const claudeMd = realTarget(paths.claudeMd);
-  const text = existsSync72(claudeMd) ? readFileSync81(claudeMd, "utf8") : null;
+  const text = existsSync72(claudeMd) ? readFileSync82(claudeMd, "utf8") : null;
   const entry = readChanged(paths.stateDir)[claudeMd];
   if (text?.includes(BLOCK_BEGIN)) {
     if (dryRun) {
@@ -51556,13 +51798,13 @@ function removeInstructions(paths, dryRun) {
 }
 
 // src/setup/tmux.ts
-import { readFileSync as readFileSync82 } from "fs";
+import { readFileSync as readFileSync83 } from "fs";
 var TMUX_LINE = "set -g allow-passthrough all";
 var TMUX_NOW_COMMAND = "tmux set -g allow-passthrough all";
 var TMUX_MIN_VERSION = "3.3";
 function tmuxLineIn(file) {
   try {
-    return readFileSync82(file, "utf8").split(`
+    return readFileSync83(file, "utf8").split(`
 `).includes(TMUX_LINE);
   } catch {
     return false;
@@ -51673,7 +51915,7 @@ import {
   existsSync as existsSync73,
   mkdirSync as mkdirSync31,
   mkdtempSync as mkdtempSync7,
-  readFileSync as readFileSync84,
+  readFileSync as readFileSync85,
   realpathSync as realpathSync7,
   rmSync as rmSync21,
   writeFileSync as writeFileSync12
@@ -51685,7 +51927,7 @@ import { dirname as dirname28, join as join85 } from "path";
 var ASK_LOG_FILE = "guard-asks.jsonl";
 
 // src/user-away/state.ts
-import { mkdirSync as mkdirSync30, readFileSync as readFileSync83 } from "fs";
+import { mkdirSync as mkdirSync30, readFileSync as readFileSync84 } from "fs";
 import { join as join84 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
@@ -51729,7 +51971,7 @@ function readAway(stateDir) {
   const file = awayStateFile(stateDir);
   let text;
   try {
-    text = readFileSync83(file, "utf8");
+    text = readFileSync84(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return freshState();
@@ -52059,7 +52301,7 @@ function liveRecordFile(stateDir) {
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync84(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync85(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -52072,7 +52314,7 @@ var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then ru
 function readLog(file) {
   if (!existsSync73(file))
     return [];
-  return readFileSync84(file, "utf8").split(`
+  return readFileSync85(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -52191,7 +52433,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync77, readFileSync as readFileSync88 } from "fs";
+import { existsSync as existsSync77, readFileSync as readFileSync89 } from "fs";
 import { join as join90 } from "path";
 
 // src/hooks/after-merge.ts
@@ -54206,12 +54448,12 @@ function requestsIssueWrite(command, dialect) {
 }
 
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync85 } from "fs";
+import { readFileSync as readFileSync86 } from "fs";
 import { join as join88 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync85(join88(folder, "package.json"), "utf8");
+    text = readFileSync86(join88(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -55973,7 +56215,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync86 } from "fs";
+import { readFileSync as readFileSync87 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -56071,7 +56313,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync86(transcript, "utf8");
+    text = readFileSync87(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -56079,7 +56321,7 @@ function subagentBackground(context) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync76, mkdirSync as mkdirSync34, readFileSync as readFileSync87, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync76, mkdirSync as mkdirSync34, readFileSync as readFileSync88, writeFileSync as writeFileSync15 } from "fs";
 import { dirname as dirname31, join as join89 } from "path";
 
 // src/models/tier-view.ts
@@ -56130,7 +56372,7 @@ function currentNote(paths, env) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync87(mark, "utf8");
+    return readFileSync88(mark, "utf8");
   } catch {
     return null;
   }
@@ -56822,7 +57064,7 @@ function baseRefOf(sources) {
     if (!existsSync77(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync88(file, "utf8"));
+      const parsed = JSON.parse(readFileSync89(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -56836,7 +57078,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync88(file, "utf8"));
+  const parsed = JSON.parse(readFileSync89(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -57083,7 +57325,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync89(launcher, "utf8");
+  const script = readFileSync90(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -57119,7 +57361,7 @@ async function checkLauncherCmd(paths, shLauncher, read) {
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync89(cmd, "utf8");
+  const script = readFileSync90(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -57478,7 +57720,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync78(where.claudeMd) ? readFileSync89(where.claudeMd, "utf8") : "";
+  const text = existsSync78(where.claudeMd) ? readFileSync90(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -57540,7 +57782,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync89(from, "utf8");
+        text = readFileSync90(from, "utf8");
       } catch {
         continue;
       }
@@ -57976,7 +58218,7 @@ async function runDoctor(paths, env, options, out, print = { json: false, verbos
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync79, readdirSync as readdirSync30, readFileSync as readFileSync90, renameSync as renameSync7, rmSync as rmSync22, statSync as statSync29 } from "fs";
+import { existsSync as existsSync79, readdirSync as readdirSync30, readFileSync as readFileSync91, renameSync as renameSync7, rmSync as rmSync22, statSync as statSync29 } from "fs";
 import { basename as basename18, dirname as dirname33, join as join92 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -58112,7 +58354,7 @@ function progressFile(stateDir) {
 }
 function readProgress(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync90(progressFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync91(progressFile(stateDir), "utf8"));
     if (!isObject(parsed) || !Array.isArray(parsed.steps))
       return null;
     const steps = parsed.steps.filter((step) => MIGRATE_STEPS.includes(String(step)));
@@ -58165,7 +58407,7 @@ function oldStateFolder(old) {
 }
 function readText3(file) {
   try {
-    return readFileSync90(file, "utf8");
+    return readFileSync91(file, "utf8");
   } catch {
     return null;
   }
@@ -58266,7 +58508,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     const file = join92(stateDir, name);
     if (!existsSync79(file))
       return;
-    const text = readFileSync90(file, "utf8");
+    const text = readFileSync91(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
 `;
     if (next === text)
@@ -58331,7 +58573,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const kept = [];
   if (!existsSync79(settingsFile))
     return { set, remove, kept };
-  const parsed = JSON.parse(readFileSync90(settingsFile, "utf8"));
+  const parsed = JSON.parse(readFileSync91(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -58361,7 +58603,7 @@ function readOldConfig(file, platform = hostPlatform()) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
   try {
-    const parsed = JSON.parse(readFileSync90(file, "utf8"));
+    const parsed = JSON.parse(readFileSync91(file, "utf8"));
     if (!isObject(parsed))
       throw new Error("not an object");
     return parsed;
@@ -58407,7 +58649,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
     return 0;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync90(file, "utf8"));
+    parsed = JSON.parse(readFileSync91(file, "utf8"));
   } catch {
     return 0;
   }
@@ -58442,7 +58684,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync79(claudeMd) ? readFileSync90(claudeMd, "utf8") : null;
+  const text = existsSync79(claudeMd) ? readFileSync91(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -58508,7 +58750,7 @@ ${parsed.error}` };
   const stateDir = oldStateFolder(old);
   if (existsSync79(paths.settingsFile)) {
     try {
-      const parsed = JSON.parse(readFileSync90(paths.settingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync91(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`
@@ -59911,7 +60153,7 @@ function setupVerdict(counts, run) {
 }
 
 // src/cli/statusline.ts
-import { readFileSync as readFileSync91 } from "fs";
+import { readFileSync as readFileSync92 } from "fs";
 
 // src/cli/statusline-context.ts
 function isJsonObject20(value) {
@@ -60079,7 +60321,7 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync91(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync92(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -60181,7 +60423,7 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync83, readFileSync as readFileSync92, rmSync as rmSync25, statSync as statSync30, writeFileSync as writeFileSync16 } from "fs";
+import { existsSync as existsSync83, readFileSync as readFileSync93, rmSync as rmSync25, statSync as statSync30, writeFileSync as writeFileSync16 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
 import { basename as basename21, join as join98 } from "path";
 
@@ -60283,7 +60525,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync92(join98(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync93(join98(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject22(settings) || !isJsonObject22(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -60292,7 +60534,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync92(join98(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync93(join98(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject22(installed) || !isJsonObject22(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -60469,7 +60711,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync92(file, "utf8").trim();
+    const text = readFileSync93(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -60521,7 +60763,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync92(file, "utf8"));
+    parsed = JSON.parse(readFileSync93(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -60787,14 +61029,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync85, readFileSync as readFileSync93 } from "fs";
+import { existsSync as existsSync85, readFileSync as readFileSync94 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
     exists: (path) => existsSync85(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync85("/etc/os-release") ? readFileSync93("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync85("/etc/os-release") ? readFileSync94("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -60875,7 +61117,7 @@ function realMachine(env, confirm) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync86, mkdirSync as mkdirSync36, readFileSync as readFileSync94 } from "fs";
+import { existsSync as existsSync86, mkdirSync as mkdirSync36, readFileSync as readFileSync95 } from "fs";
 import { basename as basename23, dirname as dirname36, join as join102, relative as relative11 } from "path";
 
 // src/portal/facts.ts
@@ -61002,7 +61244,7 @@ async function mapLimit(items, atOnce, read) {
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync94(paths.portalProjectsFile, "utf8");
+    text = readFileSync95(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }

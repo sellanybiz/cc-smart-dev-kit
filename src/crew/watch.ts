@@ -50,12 +50,13 @@
  * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
-import { pollIssueFeed } from "../issues/feed";
+import { type FeedMemory, newFeedMemory, pollIssueFeed } from "../issues/feed";
 import { type PassBudget, passBudget, queueMarks, settleMarks } from "../issues/pending";
-import { phaseIssues } from "../issues/phase-issues";
+import { checkPhaseIssues, unnamedIssueLine } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
@@ -89,6 +90,7 @@ import {
   appendCrewEvent,
   type CrewEvent,
   type CrewRecord,
+  crewBriefFile,
   crewStoreDir,
   ISSUE_DATA_NOTE,
   ISSUE_EVENT_CREW,
@@ -104,6 +106,7 @@ import {
   updateCrewIfState,
   type WatchLease,
   type WatchState,
+  watchIsAlive,
   writeWatchState,
 } from "./store";
 import { monitorsRunHere } from "./telemetry";
@@ -473,6 +476,11 @@ export interface WatchScope {
    */
   mayStart?: boolean;
   /**
+   * What this watch keeps of the issue feed's state when it cannot write it (`FeedMemory`), made
+   * once for the watch's life by `watchLoop`. Left out, the feed has no memory, as in a test.
+   */
+  feedMemory?: FeedMemory;
+  /**
    * What the gateway says at a moment (D42), for the paused crew sessions. Left out, one pass
    * reads the state file, the config and the router's health page. A test hands in its own: no
    * test reaches a real router's port.
@@ -510,7 +518,7 @@ export function quotesGitHub(event: CrewEvent): boolean {
 
 /**
  * One look at GitHub (`src/issues/feed.ts`) inside this pass, and what it found written as one
- * event for each lead of the repository: every lead hears it, and none twice. The lead's own
+ * event for each lead of the repository whose watch runs: each hears it, and none twice. The lead's own
  * watch says the events in this pass or its next (`sayEvents`). Only the watch that holds its
  * lead's lease looks (WF1), and two watches share one look (the feed's own lock). A failure of
  * the look itself — the store cannot be written — is one line while it lasts, and the watch goes on.
@@ -523,6 +531,7 @@ async function lookAtGitHub(
   say: (line: string) => void,
 ): Promise<void> {
   const key = "issues:feed";
+  const unwrittenKey = "issues:feed-state";
   try {
     await pollIssueFeed({
       budget,
@@ -530,10 +539,15 @@ async function lookAtGitHub(
       // cursor, and the next look finds the same items again.
       deliver: async (found) => {
         if (found.news.length + found.notices.length === 0) return;
-        // This lead too, whether or not it is recorded yet.
+        // This lead, whether or not it is recorded yet, and every other lead whose watch runs
+        // (`watchIsAlive`). Lead records are never removed, so the records alone would write an
+        // event for every lead the repository ever had at every look; a lead that comes back
+        // starts silent, as a first look does.
         const leads = new Set([
           scope.leadSessionId,
-          ...listLeads(ctx.paths.stateDir, scope.repo).records.map((one) => one.sessionId),
+          ...listLeads(ctx.paths.stateDir, scope.repo)
+            .records.map((one) => one.sessionId)
+            .filter((id) => watchIsAlive(ctx.paths.stateDir, scope.repo, id)),
         ]);
         const lines = [
           ...found.notices.map((text) => ({ data: false, text: `issues: ${text}` })),
@@ -558,6 +572,7 @@ async function lookAtGitHub(
           }
         }
       },
+      ...(scope.feedMemory === undefined ? {} : { memory: scope.feedMemory }),
       now: ctx.now(),
       repo: scope.repo,
       stateDir: ctx.paths.stateDir,
@@ -570,6 +585,17 @@ async function lookAtGitHub(
       },
     });
     delete said[key];
+    // A state the look could not write is kept in memory (`FeedMemory`): one line, once per change.
+    const unwritten = scope.feedMemory?.unwritten ?? null;
+    if (unwritten === null) {
+      delete said[unwrittenKey];
+    } else {
+      const line = `issues: the feed's state could not be written (${unwritten}); the watch keeps it in memory and goes on`;
+      if (said[unwrittenKey] !== line) {
+        say(line);
+        said[unwrittenKey] = line;
+      }
+    }
   } catch (error) {
     const line = `issues: the watch could not look at GitHub (${reasonOf(error)})`;
     if (said[key] !== line) {
@@ -592,21 +618,33 @@ export function issueMarksFile(stateDir: string, repo: string, leadSessionId: st
  * mark for each issue its phase fixes. The marks are sent by `settleMarks`, in this pass and
  * every later one until GitHub has taken them. A report that cannot be read has no issues to
  * name; the record's own issue (`crew start --issue`) still counts.
+ *
+ * **The report is the crew session's own word** (IX2-5): a number it names is queued only when the
+ * record's issue or the lead's brief names it too (`checkPhaseIssues`). Each other number is one
+ * line returned for the lead, with the way to close it if the lead agrees after reading the diff.
  */
 function queueIssueMarks(
   record: CrewRecord,
   proof: NonNullable<CrewRecord["mergeProof"]>,
   file: string,
-): void {
+  briefFile: string,
+): string[] {
   let report: ReturnType<typeof readReport> = null;
   try {
     report = record.reportPath === null ? null : readReport(record.reportPath);
   } catch {
     // A report that cannot be read names no issue; the record's own still counts.
   }
+  let brief: null | string = null;
+  try {
+    brief = readFileSync(briefFile, "utf8");
+  } catch {
+    // Said by the lines below when it matters: no brief, only the record's issue counts.
+  }
+  const checked = checkPhaseIssues(record, report, brief);
   queueMarks(
     file,
-    phaseIssues(record, report).map((issue) => ({
+    checked.marks.map((issue) => ({
       base: proof.leadRef,
       branch: record.branch,
       issue,
@@ -614,6 +652,7 @@ function queueIssueMarks(
       tip: proof.head,
     })),
   );
+  return checked.unnamed.map((issue) => unnamedIssueLine(record.name, issue, brief !== null));
 }
 
 /**
@@ -1022,11 +1061,14 @@ export async function watchPass(
         // Queued before the mark, so a pass that stops between the two loses nothing: the
         // next pass queues the same marks again, and the queue keeps each once (D67).
         try {
-          queueIssueMarks(
+          for (const line of queueIssueMarks(
             record,
             proof,
             issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
-          );
+            crewBriefFile(ctx.paths.stateDir, repo, record.id),
+          )) {
+            say(line);
+          }
         } catch (error) {
           // A queue that cannot be written never stops the merge from counting (D67).
           say(`issues: the marks for ${record.name} could not be queued (${reasonOf(error)})`);
@@ -1469,6 +1511,8 @@ async function watchLoop(
   // the last good value for that pass's read-only decisions, and starts nothing (see below).
   let caps = resolved;
   let capsSaid = false;
+  // The issue feed's state, when this watch cannot write it: kept for as long as the watch runs.
+  const feedMemory = newFeedMemory();
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
@@ -1495,7 +1539,7 @@ async function watchLoop(
         capsSaid = true;
       }
     }
-    const scope: WatchScope = { ...start, mayStart, resolved: caps };
+    const scope: WatchScope = { ...start, feedMemory, mayStart, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);

@@ -775,6 +775,51 @@ describe("the review gate (CM-1)", () => {
     },
   );
 
+  test.each([
+    [
+      "set",
+      "issues.readyLabel",
+      ["ready"],
+      "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose",
+    ],
+    [
+      "unset",
+      "issues.readyLabel",
+      [],
+      "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose",
+    ],
+    [
+      "set",
+      "issues.watch",
+      ["true"],
+      "opens the channel that puts text from GitHub into the lead's context, which only you open",
+    ],
+    [
+      "unset",
+      "issues.watch",
+      [],
+      "opens the channel that puts text from GitHub into the lead's context, which only you open",
+    ],
+  ] as const)(
+    "IX2-2: workflow %s %s refuses inside Claude Code, in both files: a session does not pick what counts as ready or open the feed",
+    async (sub, key, value, reason) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([
+          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} ${reason}. Run it in your own terminal; for the project's policy, change .claude/cc-smart-dev-kit.json there, commit it to the base and push it — the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`,
+        ]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
   test("D67: outside Claude Code the switch is set in the person's file and shown with its source", async () => {
     const env = hookEnv();
     const repo = makeRepo();

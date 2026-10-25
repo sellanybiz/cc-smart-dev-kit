@@ -51,7 +51,7 @@ import {
   sameAccount,
 } from "./file";
 import { hasKitMarker } from "./marker";
-import { hasTime, type PassBudget } from "./pending";
+import { budgetedGh, hasCallTime, type PassBudget } from "./pending";
 
 /** What a look found: the lines that quote GitHub (data), and the feed's own words (state). */
 export interface FeedResult {
@@ -70,11 +70,64 @@ export interface FeedInput {
    * and the next look finds the same items again (a line twice beats a line lost).
    */
   deliver?: (result: FeedResult) => Promise<void>;
+  /**
+   * What the watch keeps when the state cannot be written (`newFeedMemory`). Left out, a failed
+   * write throws, as it did before: the look is then found again and told again.
+   */
+  memory?: FeedMemory;
   now: number;
   /** The store's key for the repository (the main checkout's path). */
   repo: string;
   stateDir: string;
+  /** Writes the feed's state; the store's writer when left out (a test hands in its own). */
+  write?: (state: IssueFeedState) => void;
   world: IssueWorld;
+}
+
+/**
+ * The watch's memory of a state it could not write (a full disk, a store folder it cannot reach).
+ * The state a finished look would have written (`held`: its cursors and its `nextAt`) stands in
+ * for the file until a write works again, so the next pass neither tells the same lines again nor
+ * retries a rate-limited look at once. `unwritten` is why, for the one line the watch says.
+ */
+export interface FeedMemory {
+  held: IssueFeedState | null;
+  unwritten: null | string;
+}
+
+/** A fresh memory: one for each watch, kept for as long as it runs. */
+export function newFeedMemory(): FeedMemory {
+  return { held: null, unwritten: null };
+}
+
+/**
+ * The state the look goes on from: the file's, unless the memory holds a newer one the file never
+ * got. A file that has caught up (another watch's look wrote past it) wins, and the memory is let go.
+ */
+function stateFrom(
+  file: IssueFeedState | null,
+  memory: FeedMemory | undefined,
+): IssueFeedState | null {
+  const held = memory?.held ?? null;
+  if (memory === undefined || held === null) return file;
+  if (file !== null && file.source === held.source && file.nextAt >= held.nextAt) {
+    memory.held = null;
+    memory.unwritten = null;
+    return file;
+  }
+  return held;
+}
+
+/**
+ * The longest a stored `nextAt` may be ahead of now before it counts as due anyway: the interval,
+ * or an hour, whichever is more. A clock moved back, or a rate limit's reset on GitHub's clock
+ * (`problemOf`), would otherwise leave the feed silent until our clock caught up with it.
+ */
+const FAR_AHEAD_MIN_MS = 60 * 60_000;
+
+/** True when the stored state says "not yet": its `nextAt` is ahead, and not absurdly far ahead. */
+function notYetDue(state: IssueFeedState, now: number, intervalMs: number): boolean {
+  return state.nextAt > now && state.nextAt <= now + Math.max(intervalMs, FAR_AHEAD_MIN_MS);
 }
 
 const NOTHING: FeedResult = { news: [], notices: [] };
@@ -217,7 +270,8 @@ class Look {
   /** One conditional read of `path`; `etag` is the tag of the last answer for this very URL. */
   async read(path: string, etag: null | string): Promise<Read> {
     const { budget, now, world } = this.input;
-    if (!hasTime(budget)) return { kind: "late" };
+    // Too little time for a call to finish is the same as none: late, never a false "unreachable".
+    if (!hasCallTime(budget)) return { kind: "late" };
     const result = await world.gh(
       [
         "api",
@@ -342,22 +396,27 @@ export async function pollIssueFeed(input: FeedInput): Promise<FeedResult> {
   const { resolved } = policy;
   if (issuesOff(resolved, policy.base) !== null || !resolved.issues.watch.value) {
     clearIssueFeed(stateDir, repo);
+    if (input.memory !== undefined) Object.assign(input.memory, newFeedMemory());
     return NOTHING;
   }
   const own = ownRepository(world.cwd, world.env);
   if ("why" in own) return NOTHING;
   const name = own.repo.replace(/^github\.com\//, "");
-  // Not due: no lock, no request.
-  const early = readIssueFeed(stateDir, repo);
-  if (early !== null && early.source === name && early.nextAt > now) return NOTHING;
-  if (!hasTime(input.budget)) return NOTHING;
   const intervalMs = resolved.issues.watchMinutes.value * 60_000;
+  // Not due: no lock, no request.
+  const early = stateFrom(readIssueFeed(stateDir, repo), input.memory);
+  if (early !== null && early.source === name && notYetDue(early, now, intervalMs)) {
+    return NOTHING;
+  }
+  if (!hasCallTime(input.budget)) return NOTHING;
   const held = await underIssueFeedLock(stateDir, repo, async () => {
     // Another look may have finished while this one waited for the lock's file.
-    const known = readIssueFeed(stateDir, repo);
+    const known = stateFrom(readIssueFeed(stateDir, repo), input.memory);
     const state = known !== null && known.source === name ? known : null;
-    if (state !== null && state.nextAt > now) return NOTHING;
-    return await look(input, new Look(input), name, state, intervalMs);
+    if (state !== null && notYetDue(state, now, intervalMs)) return NOTHING;
+    // Every `gh` call of the look gets the time the pass has left, no more (IX2-4).
+    const bounded = { ...input, world: { ...world, gh: budgetedGh(world.gh, input.budget) } };
+    return await look(input, new Look(bounded), name, state, intervalMs);
   });
   return held.held ? held.value : NOTHING;
 }
@@ -377,7 +436,21 @@ async function look(
   // delivery that fails leaves the cursor where it was, so the next look finds it all again.
   const finish = async (result: FeedResult, next: IssueFeedState): Promise<FeedResult> => {
     await input.deliver?.(result);
-    writeIssueFeed(stateDir, repo, next);
+    const write = input.write ?? ((state: IssueFeedState) => writeIssueFeed(stateDir, repo, state));
+    try {
+      write(next);
+      if (input.memory !== undefined) Object.assign(input.memory, newFeedMemory());
+    } catch (error) {
+      // Told already: the state stays in the watch's memory, so the next pass does not tell it
+      // again (a line twice beat a line lost only while the delivery could fail).
+      if (input.memory === undefined) throw error;
+      input.memory.held = next;
+      // The error's code when it has one (ENOSPC, EACCES): its message may name a temporary file
+      // that differs at every try, and the line is said once per change of reason.
+      const code = (error as { code?: unknown } | null)?.code;
+      input.memory.unwritten =
+        typeof code === "string" ? code : error instanceof Error ? error.message : String(error);
+    }
     return result;
   };
   const fail = (problem: Extract<Read, { kind: "problem" }>): Promise<FeedResult> =>
