@@ -71,6 +71,10 @@ version and rebuilds the bundle counts as a small fix.
    - No output and exit 0: the switch is off or no issue waits. Add nothing.
    - Exit 1: GitHub or a branch could not be read. Put the reason it printed under "Still
      owed" in the body. Never read an empty list from a failed call as complete.
+   - A number the lead's watch refused to mark ("not marked": neither the brief nor the crew
+     record's issue named it) shows in the watch's line and in the plan. `issue fixed` does not
+     list it. If the lead agreed after reading the diff, write `Fixes #<n>` for it in the body
+     by hand.
 
    The command's contract is in `README.md` (the `issue fixed` row) and
    `docs/design/issues.md` § Resolved when it ships.

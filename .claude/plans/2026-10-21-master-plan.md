@@ -815,6 +815,22 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   by the lead's probes. **IX1 and IX2 started** at once on `release-1.3.0` (`71ed72f`). The lead's
   decision: `issues.readyLabel` and `issues.watch` refuse `set`/`unset` inside Claude Code, like
   `enabled` (GI4's builder had left `watch` open; no owner decision said so).
+- 2026-10-25 (night): **PR #25 green** on Linux and Windows (third run): `install.ps1`'s 30 cases on
+  PowerShell 7 and 5.1, IF1's re-declare cases, and the hook smoke's ESRCH case all passed; the
+  merge waits for the owner. **IX2 merged** (`fd7944e`, full check 8,020 pass) and **IX1 merged**
+  (`5e2ee25`; IX1's own run 8,107 pass), each with an opus `xhigh` review. IX2's question (how the
+  lead marks a number the brief does not name): **no new command** — a kit command that writes to
+  GitHub is one a crew session could run itself; the lead names it as `Fixes #<n>` in the release
+  pull request by hand. The repo's release skill still needs that line. **IX3 started**
+  (`e3a16ca`): IX1 made any `$` in a GraphQL query a write, which asks about (and in a crew
+  session denies) a plain read with GraphQL's own `$n` in single quotes; the shell reader now
+  says which words the shell fills in. **Open after IX1/IX2 (for the 1.4.0 PR's Still owed):**
+  `visibleText` leaves attribute values, link titles and alt text unmarked (reached by hovering);
+  the feed's lead liveness is judged by pid on this host; the portal's settings writer has no
+  OUTBOUND/INBOUND check of its own (the portal's door); `resolveSwitch` takes the base's name from
+  the working copy (the accepted pattern of the merge guard); `issue file` needs `gh api user` (an
+  App token may get 403); a `gh` command word list (`GH_COMMANDS`) must follow gh's own commands,
+  or a crew session is denied a new one.
 
 ### For the owner in the morning
 
