@@ -7584,7 +7584,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {

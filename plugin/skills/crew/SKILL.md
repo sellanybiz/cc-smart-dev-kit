@@ -78,7 +78,7 @@ report with an empty field is refused.
   "checks": [{ "name": "typecheck", "ok": true, "note": null }],
   "review": { "agent": "cc-smart-dev-kit:reviewer", "model": "sonnet", "effort": "high",
               "findings": [{ "finding": "…", "fix": "…" }] },
-  "docs": ["docs/design/x.md"],
+  "docs": ["docs/design/crew.md"],
   "needsLead": ["the version bump"],
   "open": []
 }

@@ -192,13 +192,23 @@ repository, under the state folder:
   (`openQuestionIndex`, one rule every reader shares): `done`, `failed`, `handoff`, `merged` and
   `removed` need no answer, so the Needs page, `crew list`, `crew status` and `crew answer` agree.
   A `stopped` crew session's question stays open — D35's answer resumes it with the question still
-  waiting.
+  waiting. **A new question supersedes the crew session's own older open one** (RG1): the older
+  one is closed with `supersededBy`, the index of the newer, and stays on the record, never
+  deleted. `isQuestionOpen` is the one home for "is it open" (no answer, not superseded), and
+  `openQuestionIndex`, `crew answer`, the report's blocked question and the `crew-role` hook all
+  read it, so the lead, `crew list`, the Needs page and the watch see the newest open question
+  alone. `answerCrewQuestion` refuses an answer to a superseded question with the line that names
+  the newest (`question 0 … was superseded by question 1 ("…"): answer that one`): `crew answer`
+  always answers the open question, so the refusal guards a question that arrives while the lead
+  is answering. An answered question is never superseded: a question after it is a new one.
 - **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
   the other checks, the one review (agent, model, effort, the commit it read, each finding and its
-  fix), the docs it changed, what only the lead may do, what is still open — and, when blocked,
-  the question it waits on (a blocked report without one is refused).
+  fix) or the crew session's own review where its brief asked for no second opinion (`ownReview`:
+  the reason and each finding with its fix), the docs it changed, what only the lead may do, what
+  is still open — and, when blocked, the question it waits on (a blocked report without one is
+  refused).
 - **The events log is read from an offset**, whole lines only: a line a writer has not finished
   is left for the next read, a line that cannot be read is counted and skipped, and a log shorter
   than the offset (replaced) is read from its start.
@@ -653,6 +663,20 @@ it with `TaskUpdate status completed`, or to delete it (`status deleted`) and sa
 `handoff`, `blocked` or `failed` report is never held: those exist because the phase could not be
 finished. No list at all — a session that never got the tools, or one whose folder cannot be read —
 lets the report through with one `note:` line on stdout, so the lead can tell the two apart.
+
+**A `done` report is held for red or missing work too** (RG1, `doneReportRefusal`), the line the
+lead's gate draws (`plugin/skills/lead/SKILL.md` § 6), read from the report's own fields and never
+from its prose. It is refused, with one line that says what is wrong and a `Fix:` line that names
+the step, when: a test run or the whole suite it lists failed (`ok` false or `failed` above 0); a
+check it lists failed; the whole suite is missing (`tests.full` null); or neither a `review` nor an
+`ownReview` is there. A `review` with an empty `findings` list is a clean review, and an `ownReview`
+stands for the reviewer only with its `reason` (the brief asked for no second opinion). The suite
+that never ran is refused as well as the one that failed: a report that makes no green claim is not
+a green one, and a phase that truly cannot run the suite reports `failed` or `blocked`, which carry
+red work on purpose and are never held (`handoff` too). The empty fields of 2026-10-25 had one cause:
+the crew skill told a crew session what to give but never to pass it as JSON with `--file -`, so a
+`done` report came with prose and every field empty; the skill now shows the JSON, and the gate
+refuses the empty one with the step.
 
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the

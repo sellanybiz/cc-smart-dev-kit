@@ -50,6 +50,7 @@ import {
   claimResume,
   crewMcpFile,
   crewSettingsFile,
+  isQuestionOpen,
   listCrew,
   openQuestionIndex,
   questionClosed,
@@ -141,7 +142,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   if (index === null) {
     // A question left behind at the end of the phase needs no answer: the crew session is
     // finished, and nothing would read one (one rule for every reader, `openQuestionIndex`).
-    if (questionClosed(record.state) && record.questions.some((one) => one.answer === null)) {
+    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
       ctx.error(
         `crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`,
       );

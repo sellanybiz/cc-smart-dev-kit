@@ -15,6 +15,7 @@ import {
   createCrew,
   crewReportFile,
   listCrew,
+  openQuestionIndex,
   readCrewEvents,
   readReport,
   writeLead,
@@ -706,5 +707,38 @@ describe("crew report", () => {
         );
       },
     );
+  });
+
+  describe("RG1: a new question closes the crew session's own older one", () => {
+    test("two questions through the command: the first is superseded, and the blocked report names the newest", async () => {
+      const world = await crewWorld1();
+      const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
+      const ask = (question: string) =>
+        runCrew(["report", "--question", question, "--option", "a", "--option", "b"], ctx);
+      expect(await ask("which port?")).toBe(0);
+      expect(await ask("which port, 3210 or 3211?")).toBe(0);
+      const [record] = listCrew(world.paths.stateDir, world.repo).records;
+      expect(record?.questions).toHaveLength(2);
+      expect(record?.questions[0]).toMatchObject({ question: "which port?", supersededBy: 1 });
+      expect(record === undefined ? null : openQuestionIndex(record)).toBe(1);
+      expect(await runCrew(["report", "--status", "blocked"], ctx)).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.question).toBe("which port, 3210 or 3211?");
+    });
+
+    test("a blocked report never waits on a superseded question", async () => {
+      const world = await crewWorld1();
+      const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
+      const ask = (question: string) =>
+        runCrew(["report", "--question", question, "--option", "a", "--option", "b"], ctx);
+      await ask("old?");
+      await ask("new?");
+      // The newest is answered: nothing is open, and the blocked report has no question of its
+      // own to name (the old one is superseded, not open).
+      const { answerCrewQuestion } = await import("./store");
+      await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "yes", T0);
+      expect(await runCrew(["report", "--status", "blocked"], ctx)).toBe(1);
+      expect(world.err[0]).toContain("question");
+    });
   });
 });

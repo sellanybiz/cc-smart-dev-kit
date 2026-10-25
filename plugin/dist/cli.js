@@ -14637,7 +14637,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -14675,11 +14676,15 @@ var QUESTION_CLOSED_STATES = [
 function questionClosed(state) {
   return QUESTION_CLOSED_STATES.includes(state);
 }
+function isQuestionOpen(asked) {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
+}
 function openQuestionIndex(record2) {
   if (questionClosed(record2.state))
     return null;
   for (let index = record2.questions.length - 1;index >= 0; index -= 1) {
-    if (record2.questions[index]?.answer === null)
+    const asked = record2.questions[index];
+    if (asked !== undefined && isQuestionOpen(asked))
       return index;
   }
   return null;
@@ -14960,7 +14965,10 @@ async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text 
 async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }]
+      questions: [
+        ...before.questions.map((one) => isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one),
+        { ...asked, answer: null, answeredAt: null, askedAt: at }
+      ]
     },
     event: (after) => eventOf(after, at, "question", asked.question)
   }));
@@ -14973,6 +14981,13 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       throw new CrewStoreError(`crew "${id}" has no question ${index}`);
     if (asked.answer !== null) {
       throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
+    }
+    if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
+      let newest = asked.supersededBy;
+      for (let next = before.questions[newest]?.supersededBy;next !== undefined && next !== null; next = before.questions[newest]?.supersededBy) {
+        newest = next;
+      }
+      throw new CrewStoreError(`question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`);
     }
     const questions = before.questions.map((one, which) => which === index ? { ...one, answer, answeredAt: at } : one);
     const waiting = before.state === "blocked" || before.state === "stopped";
@@ -28197,7 +28212,7 @@ async function runCrewAnswer(args, ctx) {
   }
   const index = openQuestionIndex(record);
   if (index === null) {
-    if (questionClosed(record.state) && record.questions.some((one) => one.answer === null)) {
+    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
       ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`);
       return 1;
     }
@@ -29058,7 +29073,7 @@ function doneReportRefusal(model) {
 function openQuestion(record) {
   for (let index = record.questions.length - 1;index >= 0; index -= 1) {
     const asked = record.questions[index];
-    if (asked?.answer === null)
+    if (asked !== undefined && isQuestionOpen(asked))
       return asked.question;
   }
   return null;
@@ -48615,7 +48630,7 @@ function isPersonPrompt(record, prompt2, briefFile, nowMs) {
     return false;
   if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt2))

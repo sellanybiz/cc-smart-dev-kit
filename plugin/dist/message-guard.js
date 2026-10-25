@@ -8871,7 +8871,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -8897,6 +8898,9 @@ function crewOfWorktree(records, path) {
     found = one;
   }
   return found;
+}
+function isQuestionOpen(asked) {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
 }
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
@@ -14931,7 +14935,7 @@ function isPersonPrompt(record, prompt, briefFile, nowMs) {
     return false;
   if (isLaunchPrompt(record, prompt, briefFile))
     return false;
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt))

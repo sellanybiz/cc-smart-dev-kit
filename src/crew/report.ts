@@ -27,7 +27,13 @@ import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
 import { DiffError, type DiffFacts, diffAgainstBase, outsideBrief } from "./diff";
 import { headSha } from "./step";
-import { addCrewQuestion, type CrewRecord, type HandBackReport, recordCrewReport } from "./store";
+import {
+  addCrewQuestion,
+  type CrewRecord,
+  type HandBackReport,
+  isQuestionOpen,
+  recordCrewReport,
+} from "./store";
 import {
   openTasks,
   readSessionTasks,
@@ -322,11 +328,11 @@ export function doneReportRefusal(model: ModelReport): ReportRefusal | null {
   return new ReportRefusal(lines, 1);
 }
 
-/** The crew session's own question it has not been answered yet, the newest first. */
+/** The crew session's own question that still waits for an answer, the newest first. */
 function openQuestion(record: CrewRecord): null | string {
   for (let index = record.questions.length - 1; index >= 0; index -= 1) {
     const asked = record.questions[index];
-    if (asked?.answer === null) return asked.question;
+    if (asked !== undefined && isQuestionOpen(asked)) return asked.question;
   }
   return null;
 }
