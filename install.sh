@@ -221,7 +221,7 @@ ask_yes() { # <question>
 json_out() { # <file> <javascript>
   [ -f "$1" ] || return 0
   [ -n "$BUN" ] || return 0
-  "$BUN" -e "try{const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const v=($2);if(v!==undefined&&v!==null)console.log(String(v))}catch{}" \
+  "$BUN" -e "try{const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8').replace(/^\\uFEFF/,''));const v=($2);if(v!==undefined&&v!==null)console.log(String(v))}catch{}" \
     "$1" 2>/dev/null
 }
 
@@ -272,8 +272,14 @@ marketplace_added() { # <name>
 # add writes the entry whole, so only the add repairs it: proved live that a repeat add of a
 # marketplace already on disk declares it again and fetches nothing
 # (docs/claude-code-contract.md).
+#
+# The same test `setup` makes (`marketplaceKnown`): the entry is an object. Three answers: a
+# missing file is "not declared"; a file this reader cannot parse is NOT judged here — `setup`
+# reads it with the plugin's own reader, and a repair loop cannot fix a file Claude Code reads
+# differently — so it counts as declared; a parsed file answers by the entry.
 marketplace_declared() { # <name>
-  [ "$(json_out "$SETTINGS_FILE" "Object.prototype.hasOwnProperty.call((d.extraKnownMarketplaces||{}),'$1')")" = "true" ]
+  [ -f "$SETTINGS_FILE" ] || return 1
+  [ "$(json_out "$SETTINGS_FILE" "(v=>v!==null&&typeof v==='object'&&!Array.isArray(v))((d.extraKnownMarketplaces||{})['$1'])")" != "false" ]
 }
 
 # True when this machine can run the gateway's router: systemd's user units are what its
@@ -635,11 +641,14 @@ main() {
   for pair in "$MARKETPLACE|$REPO" $COMPANION_MARKETPLACES; do
     name="${pair%%|*}"
     source="${pair#*|}"
-    # Added means BOTH of Claude Code's records hold it: known_marketplaces.json and the user
-    # settings. Only the first: the same add runs again, and says it is a repair.
+    # This repository's marketplace is added only when BOTH of Claude Code's records hold it:
+    # known_marketplaces.json and the user settings, which is what `setup` reads. Only the
+    # first: the same add runs again, and says it is a repair. The two companions stay on the
+    # first record alone: `setup` reads nothing of them in the settings, and Claude Code
+    # registers Anthropic's own marketplace by itself, which may leave no settings entry.
     on_disk="no"
     if marketplace_added "$name"; then
-      if marketplace_declared "$name"; then continue; fi
+      if [ "$name" != "$MARKETPLACE" ] || marketplace_declared "$name"; then continue; fi
       on_disk="yes"
     fi
     if [ "$DRY_RUN" = "no" ]; then
@@ -665,7 +674,7 @@ main() {
       fi
       # The add is what writes the settings entry: if it is still missing, `setup` would stop
       # on it, so stop here with the command.
-      if ! marketplace_declared "$name"; then
+      if [ "$name" = "$MARKETPLACE" ] && ! marketplace_declared "$name"; then
         failed "the settings still do not list the $name marketplace after adding $source" \
           "claude plugin marketplace add $source"
       fi

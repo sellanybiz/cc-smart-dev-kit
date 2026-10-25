@@ -147,6 +147,8 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     Set-Content -Path (Join-Path $configDir "plugins\known_marketplaces.json") -Value ($known | ConvertTo-Json -Depth 8)
     $settings = @{}
     if ($Options["MarketplacesOnDisk"] -eq "declared") { $settings["extraKnownMarketplaces"] = $declared }
+    # "repo-declared": the settings hold this repository's marketplace and neither companion.
+    if ($Options["MarketplacesOnDisk"] -eq "repo-declared") { $settings["extraKnownMarketplaces"] = @{ "cc-smart-dev-kit" = $declared["cc-smart-dev-kit"] } }
     Set-Content -Path (Join-Path $configDir "settings.json") -Value ($settings | ConvertTo-Json -Depth 8)
   }
   if ($Options["ProgressFile"] -eq $true) {
@@ -637,18 +639,19 @@ try {
   #      adds them again and says it is a repair, and setup passes. Both records holding them:
   #      "already added" and no add. -DryRun on the lost state: the plan, no add. An add that
   #      leaves the settings alone: step 4 fails with the command.
-  $allSources = "$repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  #      Only this repository's marketplace is held to both records: `setup` reads nothing of the
+  #      two companions in the settings.
   $lost = New-World "lost" @{ Answers = @("y", ("A" * 43), "n", "n"); MarketplacesOnDisk = "lost" }
   $result = Invoke-Install $lost @($repo)
   Assert-Code "the settings lost the marketplaces" $result 0 $lost
-  Assert-Contains "the settings lost the marketplaces" $result.out "[ok] 4/8 re-declared in your settings: $allSources"
+  Assert-Contains "the settings lost the marketplaces" $result.out "[ok] 4/8 re-declared in your settings: $repo"
   $adds = @(Get-Calls $lost | Where-Object { $_ -like "claude plugin marketplace add *" })
-  if ($adds.Count -ne 3) {
-    Stop-Smoke "the settings lost the marketplaces: expected three adds, the log is:`n$((Get-Calls $lost) -join "`n")"
+  if ($adds.Count -ne 1 -or $adds -notcontains "claude plugin marketplace add $repo") {
+    Stop-Smoke "the settings lost the marketplaces: expected the one add of $repo, the log is:`n$((Get-Calls $lost) -join "`n")"
   }
   $declaredNow = (Get-Content -Raw -Path (Join-Path $lost.home ".claude\settings.json") | ConvertFrom-Json).extraKnownMarketplaces
   $declaredNames = @($declaredNow.PSObject.Properties | ForEach-Object { $_.Name })
-  if ($declaredNames.Count -ne 3) {
+  if ($declaredNames.Count -ne 1 -or $declaredNames -notcontains "cc-smart-dev-kit") {
     Stop-Smoke "the settings lost the marketplaces: the settings declare $($declaredNames -join ', ') afterwards"
   }
   if (-not (Test-Called $lost "setup")) { Stop-Smoke "the settings lost the marketplaces: setup did not run" }
@@ -665,10 +668,20 @@ try {
   $passed++
   $names.Add("marketplaces on disk and declared")
 
+  $companionsBare = New-World "companions-bare" @{ Answers = @("y", ("A" * 43), "n", "n"); MarketplacesOnDisk = "repo-declared" }
+  $result = Invoke-Install $companionsBare @($repo)
+  Assert-Code "companions on disk without a settings entry" $result 0 $companionsBare
+  Assert-Contains "companions on disk without a settings entry" $result.out "[ok] 4/8 all three marketplaces are already added"
+  if (Get-Calls $companionsBare | Where-Object { $_ -like "*marketplace add*" }) {
+    Stop-Smoke "companions on disk without a settings entry: an add ran:`n$((Get-Calls $companionsBare) -join "`n")"
+  }
+  $passed++
+  $names.Add("companions on disk without a settings entry")
+
   $lostDry = New-World "lost-dry" @{ MarketplacesOnDisk = "lost" }
   $result = Invoke-Install $lostDry @("-DryRun", $repo)
   Assert-Code "-DryRun, the settings lost the marketplaces" $result 0 $lostDry
-  Assert-Contains "-DryRun, the settings lost the marketplaces" $result.out "- 4/8 the plan re-declares in your settings: $allSources"
+  Assert-Contains "-DryRun, the settings lost the marketplaces" $result.out "- 4/8 the plan re-declares in your settings: $repo"
   if (Get-Calls $lostDry | Where-Object { $_ -like "claude *" }) {
     Stop-Smoke "-DryRun, the settings lost the marketplaces: claude ran:`n$((Get-Calls $lostDry) -join "`n")"
   }

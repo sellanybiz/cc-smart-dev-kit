@@ -276,6 +276,12 @@ case "$*" in
 esac
 case "$*" in
 *dist/cli.js\\ setup*)
+  # The real setup's gate (marketplaceKnown, src/cli/setup.ts): the user settings must declare
+  # the cc-smart-dev-kit marketplace as an object, or setup stops. So does this fake.
+  if ! ${JSON.stringify(REAL_BUN)} -e 'let d={};try{d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").replace(/^\\uFEFF/,""))}catch{}const e=(d.extraKnownMarketplaces||{})["cc-smart-dev-kit"];process.exit(e!==null&&typeof e==="object"&&!Array.isArray(e)?0:1)' "$CLAUDE_CONFIG_DIR/settings.json"; then
+    printf '~/.claude/settings.json does not list the cc-smart-dev-kit marketplace yet.\\n' >&2
+    exit 1
+  fi
   # The real setup writes the launcher; the machine then has a command to run. The fake one
   # does what the real launcher does — it runs the plugin's own CLI — so doctor's answer
   # comes from the fake doctor below.
@@ -918,34 +924,76 @@ describe("install.sh: a machine, step by step", () => {
   // The live bug (Windows, installer from main, plugin 1.2.0): the marketplaces were on disk
   // (known_marketplaces.json) but the user settings no longer declared them, so step 4 skipped
   // the add and `setup` stopped with "does not list the cc-smart-dev-kit marketplace yet". A
-  // marketplace is added only when BOTH records hold it.
-  const ALL_SOURCES = `${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official`;
+  // marketplace is added only when BOTH records hold it. The two companions stay on the first
+  // record: `setup` reads nothing of them in the settings.
   const settingsMarketplaces = (w: World): string[] =>
     Object.keys(
       (JSON.parse(w.read(join(w.configDir, "settings.json"))).extraKnownMarketplaces ??
         {}) as Record<string, unknown>,
     ).sort();
 
-  test("on disk but not in the settings: step 4 adds them again, and setup passes", () => {
+  test("on disk but not in the settings: step 4 adds it again, and setup passes", () => {
     const w = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
     expect(settingsMarketplaces(w)).toEqual([]);
     const { code, out } = w.run();
     expect(code).toBe(0);
-    expect(out).toContain(`✓ 4/8 re-declared in your settings: ${ALL_SOURCES}\n`);
+    expect(out).toContain(`✓ 4/8 re-declared in your settings: ${REPO}\n`);
     expect(out).not.toContain("already added");
+    // Only this repository's marketplace: the companions are on disk and stay as they are.
     expect(w.callsOf("claude").filter((call) => call.startsWith("plugin marketplace add"))).toEqual(
-      [
-        `plugin marketplace add ${REPO}`,
-        "plugin marketplace add thedotmack/claude-mem",
-        "plugin marketplace add anthropics/claude-plugins-official",
-      ],
+      [`plugin marketplace add ${REPO}`],
     );
-    expect(settingsMarketplaces(w)).toEqual([
-      "cc-smart-dev-kit",
-      "claude-plugins-official",
-      "thedotmack",
-    ]);
+    expect(settingsMarketplaces(w)).toEqual(["cc-smart-dev-kit"]);
+    // The fake setup has the real gate: it would have stopped on the lost entry.
     expect(w.callsOf("bun")).toContain(`${w.cli} setup`);
+    expect(out).toContain("setup finished");
+  });
+
+  test("a settings file this reader cannot judge is left to setup: no repair, no failure", () => {
+    // Invalid JSON; a BOM is read fine (Windows editors write one); an entry that is not an
+    // object is NOT declared (setup's own test).
+    const settings = (w: World) => join(w.configDir, "settings.json");
+    const invalid = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
+    invalid.file(settings(invalid), "{not json");
+    const first = invalid.run();
+    expect(first.out).toContain("✓ 4/8 all three marketplaces are already added\n");
+    expect(invalid.callsOf("claude").filter((call) => call.includes("marketplace add"))).toEqual(
+      [],
+    );
+
+    const bom = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
+    bom.file(
+      settings(bom),
+      `﻿${JSON.stringify({ extraKnownMarketplaces: { "cc-smart-dev-kit": { source: {} } } })}`,
+    );
+    const second = bom.run();
+    // Step 4 only: the fake `claude` that installs the plugin later rewrites the settings with
+    // a reader that does not know a BOM. That is the fake's limit, not the installer's.
+    expect(second.out).toContain("✓ 4/8 all three marketplaces are already added\n");
+    expect(bom.callsOf("claude").filter((call) => call.includes("marketplace add"))).toEqual([]);
+
+    const notObject = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
+    notObject.file(
+      settings(notObject),
+      JSON.stringify({ extraKnownMarketplaces: { "cc-smart-dev-kit": null } }),
+    );
+    const third = notObject.run();
+    expect(third.code).toBe(0);
+    expect(third.out).toContain(`✓ 4/8 re-declared in your settings: ${REPO}\n`);
+  });
+
+  test("the companions on disk without a settings entry are left alone", () => {
+    // Claude Code registers Anthropic's own marketplace by itself, and setup reads no entry
+    // for either companion: only this repository's marketplace is held to both records.
+    const w = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
+    w.file(
+      join(w.configDir, "settings.json"),
+      JSON.stringify({ extraKnownMarketplaces: { "cc-smart-dev-kit": { source: {} } } }),
+    );
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain("✓ 4/8 all three marketplaces are already added\n");
+    expect(w.callsOf("claude").filter((call) => call.includes("marketplace add"))).toEqual([]);
   });
 
   test("on disk and in the settings: step 4 says already added and runs no add", () => {
@@ -961,7 +1009,7 @@ describe("install.sh: a machine, step by step", () => {
     const w = world({ marketplacesOnDisk: "lost" });
     const { code, out } = w.run(["--dry-run", REPO]);
     expect(code).toBe(0);
-    expect(out).toContain(`· 4/8 the plan re-declares in your settings: ${ALL_SOURCES}\n`);
+    expect(out).toContain(`· 4/8 the plan re-declares in your settings: ${REPO}\n`);
     expect(w.callsOf("claude")).toEqual([]);
     expect(settingsMarketplaces(w)).toEqual([]);
   });
@@ -1761,6 +1809,24 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
       "thedotmack",
     ]);
     expect(known["cc-smart-dev-kit"].source.repo).toBe(REPO);
+    // Claude Code declares the marketplace in the user settings too, with its source.
+    expect(
+      JSON.parse(readFileSync(join(w.configDir, "settings.json"), "utf8")).extraKnownMarketplaces[
+        "cc-smart-dev-kit"
+      ],
+    ).toEqual({ source: { source: "github", repo: REPO } });
+    // A world where the add leaves the settings alone writes the record and no declaration.
+    const bare = fakeWorld();
+    claude(["plugin", "marketplace", "add", REPO], {
+      addNotFound: false,
+      addNoDeclare: true,
+      addSshRefused: false,
+      configDir: bare.configDir,
+      log: bare.log,
+      version: MARKETPLACE_VERSION,
+    });
+    expect(existsSync(join(bare.configDir, "plugins/known_marketplaces.json"))).toBe(true);
+    expect(existsSync(join(bare.configDir, "settings.json"))).toBe(false);
     expect(
       JSON.parse(
         readFileSync(

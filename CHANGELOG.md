@@ -14,10 +14,10 @@ it is a minor version.
 
 - **The installer repairs a marketplace your settings lost.** When Claude Code's own list had a
   marketplace but your `settings.json` no longer declared it, the installer skipped the add and
-  `setup` stopped with "does not list the cc-smart-dev-kit marketplace yet". Step 4 now counts a
-  marketplace as added only when both records hold it, runs the add again for one that only the
-  list holds (`re-declared in your settings: …`), and stops with the command when the settings
-  still lack it. `setup` run by hand says what is true and gives that one command, and no longer
+  `setup` stopped with "does not list the cc-smart-dev-kit marketplace yet". Step 4 now counts
+  this repository's marketplace as added only when both records hold it, runs the add again when
+  only the list holds it (`re-declared in your settings: …`), and stops with the command when the
+  settings still lack it. The two companion marketplaces stay judged by the list alone. `setup` run by hand says what is true and gives that one command, and no longer
   asks you to install a plugin that is installed.
 - **A service on this machine no longer looks down behind a proxy.** With `HTTP_PROXY` set and no
   `NO_PROXY`, `doctor`, the portal's start and the OmniRoute checks asked a loopback address

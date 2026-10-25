@@ -342,12 +342,19 @@ function Test-MarketplaceAdded([string]$Name) {
 # writes the entry whole, so only the add repairs it: proved live that a repeat add of a
 # marketplace already on disk declares it again and fetches nothing
 # (docs/claude-code-contract.md).
+#
+# The same test `setup` makes (`marketplaceKnown`): the entry is an object. Three answers: a
+# missing file is "not declared"; a file this reader cannot parse (ConvertFrom-Json refuses
+# keys that differ only in case, which Claude Code and setup read fine) is NOT judged here --
+# `setup` reads it with the plugin's own reader, and a repair loop cannot fix a file Claude
+# Code reads differently -- so it counts as declared; a parsed file answers by the entry.
 function Test-MarketplaceDeclared([string]$Name) {
   if (-not (Test-Path $SettingsFile)) { return $false }
-  try { $data = Get-Content -Raw -Path $SettingsFile | ConvertFrom-Json } catch { return $false }
+  try { $data = Get-Content -Raw -Path $SettingsFile | ConvertFrom-Json } catch { return $true }
   $declared = $data.extraKnownMarketplaces
   if ($null -eq $declared) { return $false }
-  return $null -ne $declared.PSObject.Properties[$Name]
+  $entry = $declared.PSObject.Properties[$Name]
+  return $null -ne $entry -and $entry.Value -is [System.Management.Automation.PSCustomObject]
 }
 
 # True when this machine can run the gateway's router: on Windows it is a per-user Scheduled
@@ -680,11 +687,14 @@ if (-not $DryRun -and -not (Test-MarketplaceAdded $Marketplace)) { Assert-RepoRe
 foreach ($entry in $MarketplacesToAdd) {
   $name = $entry.Name
   $source = $entry.Source
-  # Added means BOTH of Claude Code's records hold it: known_marketplaces.json and the user
-  # settings. Only the first: the same add runs again, and says it is a repair.
+  # This repository's marketplace is added only when BOTH of Claude Code's records hold it:
+  # known_marketplaces.json and the user settings, which is what `setup` reads. Only the
+  # first: the same add runs again, and says it is a repair. The two companions stay on the
+  # first record alone: `setup` reads nothing of them in the settings, and Claude Code
+  # registers Anthropic's own marketplace by itself, which may leave no settings entry.
   $onDisk = $false
   if (Test-MarketplaceAdded $name) {
-    if (Test-MarketplaceDeclared $name) { continue }
+    if ($name -ne $Marketplace -or (Test-MarketplaceDeclared $name)) { continue }
     $onDisk = $true
   }
   if (-not $DryRun) {
@@ -708,7 +718,7 @@ foreach ($entry in $MarketplacesToAdd) {
     }
     # The add is what writes the settings entry: if it is still missing, `setup` would stop on
     # it, so stop here with the command.
-    if (-not (Test-MarketplaceDeclared $name)) {
+    if ($name -eq $Marketplace -and -not (Test-MarketplaceDeclared $name)) {
       Stop-Failed "the settings still do not list the $name marketplace after adding $source" @("claude plugin marketplace add $source")
     }
   }
