@@ -519,6 +519,7 @@ async function crewLeftoversPart(
     const outcome = await archiveConversation({
       neverTaken,
       nowMs: deps.now,
+      only: new Set(current.sessionIds),
       paths,
       record: current.record,
       running,

@@ -15483,7 +15483,8 @@ var crewFields = object({
 });
 var crewRecordSchema = crewFields.loose();
 function crewSessions(record2) {
-  const current = record2.sessionId === null ? [] : [{ sessionId: record2.sessionId, shortId: record2.shortId ?? record2.sessionId.slice(0, 8) }];
+  const shortId = record2.shortId ?? record2.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record2.sessionId, shortId }];
   const earlier = [...record2.earlierSessions ?? []].reverse();
   return [...current, ...earlier.filter((one) => one.sessionId !== record2.sessionId)].map((one) => ({ sessionId: one.sessionId, shortId: one.shortId }));
 }
@@ -15834,8 +15835,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
-      merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
     if (merged.state !== "stopped")
       delete merged.stoppedByWatch;
@@ -16046,6 +16047,8 @@ async function recordCrewReport(stateDir, repo, id, report, atMs, contextTokens 
       updatedAt: at,
       version: Math.max(before.version, CREW_STORE_VERSION)
     }, recordFile);
+    if (after.state !== "stopped")
+      delete after.stoppedByWatch;
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
@@ -25809,9 +25812,11 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
     const archived = ARCHIVED_STATES.includes(record.state) || record.id === exceptCrew;
-    if (!archived)
+    if (!archived) {
       for (const one of crewSessions(record))
-        kept.add(one.sessionId);
+        if (one.sessionId !== null)
+          kept.add(one.sessionId);
+    }
   }
   return kept;
 }
@@ -25897,9 +25902,9 @@ function differingArchivedCopy(paths, record, found) {
   return null;
 }
 async function archiveConversation(input) {
-  const ids = crewSessions(input.record).map((one) => one.sessionId).filter(isSessionId2);
+  const ids = crewSessions(input.record).map((one) => one.sessionId).filter((one) => one !== null && isSessionId2(one)).filter((one) => input.only === undefined || input.only.has(one));
   let archived;
-  let kept;
+  const kept = [];
   let nothing = {
     folderGone: false,
     kind: "nothing"
@@ -25913,7 +25918,8 @@ async function archiveConversation(input) {
       moved += one.files;
       archived = { ...one, files: moved };
     } else if (one.kind === "kept") {
-      kept ??= one.why;
+      if (!kept.includes(one.why))
+        kept.push(one.why);
     } else {
       nothing = one;
     }
@@ -25922,10 +25928,10 @@ async function archiveConversation(input) {
     return {
       ...archived,
       folderGone: archived.folderGone || nothing.folderGone,
-      ...kept === undefined ? {} : { stayed: [kept] }
+      ...kept.length === 0 ? {} : { stayed: kept }
     };
   }
-  return kept === undefined ? nothing : { kind: "kept", why: kept };
+  return kept[0] === undefined ? nothing : { kind: "kept", why: kept.join("; ") };
 }
 async function archiveSession(input, sessionId) {
   const { paths, record } = input;
@@ -26725,11 +26731,11 @@ function failedStopLine(record) {
 function doneStopLine(record) {
   return `${record.name}: its session stopped \u2014 its turn ended; the record stays done`;
 }
-async function stopCrew(record, state, reason, ctx, row) {
+async function stopCrew(record, state, reason, ctx) {
   const why = await stopSession2(record, ctx);
   if (why !== null)
     return why;
-  await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state, ...state === "stopped" ? { stoppedByWatch: true } : {} }, ctx.now(), reason, memoryMbOf(row?.pid ?? null));
+  await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, [record.state], { state, ...state === "stopped" ? { stoppedByWatch: true } : {} }, ctx.now(), reason);
   return null;
 }
 function sayEvents(from, scope, ctx, say) {
@@ -26982,7 +26988,7 @@ async function watchPass(state, ctx, scope) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
       if (Number.isFinite(idle) && idle > resolved.crew.idleStopMinutes.value * 60000) {
         const minutes = Math.round(idle / 60000);
-        refusal = await stopCrew(record, "stopped", `it has been blocked for ${minutes} minutes; an answer brings it back`, ctx, row);
+        refusal = await stopCrew(record, "stopped", `it has been blocked for ${minutes} minutes; an answer brings it back`, ctx);
       }
     }
     const saidLine = refusal ?? news;
@@ -27345,6 +27351,9 @@ async function runCrewStop(ref, ctx) {
   }
   const id = record.shortId;
   if (record.state === "stopped") {
+    if (record.stoppedByWatch === true) {
+      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { stoppedByWatch: undefined }, ctx.now());
+    }
     ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
     return 0;
   }
@@ -45285,7 +45294,8 @@ function readFinishedSessions(paths, deps) {
     const excluded = new Set;
     for (const record of crew.records) {
       for (const one of crewSessions(record)) {
-        excluded.add(one.sessionId);
+        if (one.sessionId !== null)
+          excluded.add(one.sessionId);
         excluded.add(one.shortId);
       }
       excluded.add(record.leadSessionId);
@@ -45349,11 +45359,16 @@ function readCrewLeftovers(paths, deps) {
     const out = none("");
     out.error = null;
     const removals = removalTimes(paths.stateDir);
+    const keep = (record, why) => {
+      if (!out.kept.some((one) => one.record.id === record.id && one.why === why)) {
+        out.kept.push({ record, why });
+      }
+    };
     for (const record of crew.records) {
       if (!ARCHIVED_STATES.includes(record.state))
         continue;
       for (const { sessionId } of crewSessions(record)) {
-        if (!isSessionId2(sessionId) || neverTaken.has(sessionId))
+        if (sessionId === null || !isSessionId2(sessionId) || neverTaken.has(sessionId))
           continue;
         const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
         if (found.files.length === 0) {
@@ -45362,21 +45377,18 @@ function readCrewLeftovers(paths, deps) {
           continue;
         }
         if (running.has(sessionId)) {
-          out.kept.push({ record, why: "a running Claude session holds it" });
+          keep(record, "a running Claude session holds it");
           continue;
         }
         const differing = differingArchivedCopy(paths, record, found);
         if (differing !== null) {
-          out.kept.push({
-            record,
-            why: `${differing} differs from its archived copy, so neither is overwritten`
-          });
+          keep(record, `${differing} differs from its archived copy, so neither is overwritten`);
           continue;
         }
         const removedAt = removals.at(record);
         const newest = Math.max(...found.files.map((file) => statSync26(join73(found.projectDir, file)).mtimeMs));
         if (newest > removedAt) {
-          out.kept.push({ record, why: "it was written after its crew session was removed" });
+          keep(record, "it was written after its crew session was removed");
           continue;
         }
         const listed = out.conversations.find((one) => one.record.id === record.id && one.record.repo === record.repo);
@@ -45384,10 +45396,12 @@ function readCrewLeftovers(paths, deps) {
           out.conversations.push({
             files: found.files.length,
             projectDir: found.projectDir,
-            record
+            record,
+            sessionIds: [sessionId]
           });
         } else {
           listed.files += found.files.length;
+          listed.sessionIds.push(sessionId);
         }
       }
     }
@@ -45667,6 +45681,7 @@ async function crewLeftoversPart(paths, options, deps, out, term) {
     const outcome = await archiveConversation({
       neverTaken,
       nowMs: deps.now,
+      only: new Set(current.sessionIds),
       paths,
       record: current.record,
       running

@@ -42,6 +42,7 @@ import {
   readCrewEvents,
   readLead,
   readReport,
+  recordCrewReport,
   updateCrew,
   updateCrewIfState,
   writeLead,
@@ -316,6 +317,23 @@ describe("the crew record", () => {
       { sessionId: first, shortId: "aaaaaaaa" },
       { sessionId: second, shortId: "bbbbbbbb" },
     ]);
+  });
+
+  test("RX1: stoppedByWatch lasts while the record is stopped, whichever write leaves it", async () => {
+    const state = tempDir("state");
+    const id = "crew-K-contracts";
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBe(true);
+    // A hand-back report moves the state without `changeCrew`.
+    await recordCrewReport(state, REPO, id, { ...report(), status: "done" }, T1 + 1000);
+    expect(readCrew(state, REPO, id)).toMatchObject({ state: "done" });
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
+    // A merge of a record the watch stopped is not "merged while stopped": the lead never stopped it.
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1 + 2000);
+    await updateCrew(state, REPO, id, { state: "merged" }, T1 + 3000);
+    expect(readCrew(state, REPO, id)?.mergedWhileStopped).toBe(false);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
   });
 
   test("H101: a conditional change is written while the state is the one judged, with its event", async () => {

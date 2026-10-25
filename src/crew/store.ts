@@ -591,9 +591,12 @@ const crewFields = z.object({
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
 
-/** One Claude session of a crew session: its id and the short id `claude agents` shows. */
+/**
+ * One Claude session of a crew session: its id and the short id `claude agents` shows. A start
+ * that could not read agent view records the short id alone, so the id may be null.
+ */
 export interface CrewSession {
-  sessionId: string;
+  sessionId: null | string;
   shortId: string;
 }
 
@@ -602,10 +605,8 @@ export interface CrewSession {
  * newest first (`earlierSessions`). Empty while it has no session.
  */
 export function crewSessions(record: CrewRecord): CrewSession[] {
-  const current =
-    record.sessionId === null
-      ? []
-      : [{ sessionId: record.sessionId, shortId: record.shortId ?? record.sessionId.slice(0, 8) }];
+  const shortId = record.shortId ?? record.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record.sessionId, shortId }];
   const earlier = [...(record.earlierSessions ?? [])].reverse();
   return [...current, ...earlier.filter((one) => one.sessionId !== record.sessionId)].map(
     (one) => ({ sessionId: one.sessionId, shortId: one.shortId }),
@@ -1345,8 +1346,11 @@ async function changeCrew(
     }
     // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
     // here, from the state the record was in, so the watch cannot forget it on a later pass.
-    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
-      merged.mergedWhileStopped = true;
+    // The watch's own idle stop is not the lead's call (`stoppedByWatch`): the fact is set false,
+    // not left unset, because an unset one lets the watch's legacy reading of the events log
+    // ("stopped, then merged") make it true on a later pass.
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
     // Who stopped it is kept only while it is stopped.
     if (merged.state !== "stopped") delete merged.stoppedByWatch;
@@ -1706,6 +1710,9 @@ export async function recordCrewReport(
       },
       recordFile,
     );
+    // This write does not go through `changeCrew`, so the fact that holds only while `stopped`
+    // goes here too.
+    if (after.state !== "stopped") delete after.stoppedByWatch;
     // The report file first: a record that names a report the file lacks is the worse half-write.
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);

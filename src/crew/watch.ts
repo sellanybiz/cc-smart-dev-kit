@@ -92,6 +92,7 @@ import {
   setCrewMemory,
   takeWatchLease,
   updateCrew,
+  updateCrewIfState,
   type WatchLease,
   type WatchState,
   writeWatchState,
@@ -143,6 +144,7 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
  * because the merge can come after the crew session was stopped. A `stopped` one is marked merged
  * too — what waits for its phase starts on the merge — but **never removed by the watch (D62)**:
  * stopping it was the lead's call, and so is its removal (`mergedWhileStopped`, `store.ts`).
+ * The watch's own idle stop of a blocked session is not the lead's call (`stoppedByWatch`).
  */
 const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
@@ -513,19 +515,20 @@ async function stopCrew(
   state: "merged" | "stopped",
   reason: string,
   ctx: CrewContext,
-  row: null | AgentRow,
 ): Promise<null | string> {
   const why = await stopSession(record, ctx);
   if (why !== null) return why;
-  await updateCrew(
+  // The record was read a pass ago: a record that moved on while the session stopped (the lead's
+  // answer brought it back as a copy) is not written over. The next pass reads it again.
+  await updateCrewIfState(
     ctx.paths.stateDir,
     record.repo,
     record.id,
+    [record.state],
     // A stop the watch makes is its own, not the lead's call (`stoppedByWatch`).
     { state, ...(state === "stopped" ? { stoppedByWatch: true } : {}) },
     ctx.now(),
     reason,
-    memoryMbOf(row?.pid ?? null),
   );
   return null;
 }
@@ -1021,7 +1024,6 @@ export async function watchPass(
           "stopped",
           `it has been blocked for ${minutes} minutes; an answer brings it back`,
           ctx,
-          row,
         );
       }
     }

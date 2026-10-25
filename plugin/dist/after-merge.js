@@ -10084,8 +10084,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
-      merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
     if (merged.state !== "stopped")
       delete merged.stoppedByWatch;

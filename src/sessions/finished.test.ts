@@ -543,6 +543,24 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     ]);
   });
 
+  test("RX1: a session written after the removal stays, though a sibling of the same record moves", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const earlier = "e4e4e4e4-1111-2222-3333-444444444444";
+    const { project } = await removedCrew(w, {
+      earlierSessions: [{ sessionId: earlier, shortId: "e4e4e4e4" }],
+    });
+    conversation(project);
+    // The person went on with the earlier session by hand after the record was removed.
+    const resumed = conversation(project, earlier, OLD + 60_000);
+
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+
+    expect(w.out.join("\n")).toContain("stays: it was written after its crew session was removed");
+    expect(existsSync(resumed)).toBe(true);
+    expect(existsSync(join(project, `${CREW_SESSION}.jsonl`))).toBe(false);
+  });
+
   test("--remove asks once, then moves each conversation, removes each empty folder and deletes each expired archive", async () => {
     const w = world();
     w.rows.length = 0;

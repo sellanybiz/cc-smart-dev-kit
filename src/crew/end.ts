@@ -422,6 +422,16 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   }
   const id = record.shortId;
   if (record.state === "stopped") {
+    // The lead's own stop makes it the lead's call to remove it, also when the watch stopped it first.
+    if (record.stoppedByWatch === true) {
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { stoppedByWatch: undefined },
+        ctx.now(),
+      );
+    }
     ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
     return 0;
   }

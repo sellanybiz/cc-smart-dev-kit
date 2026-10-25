@@ -203,6 +203,24 @@ describe("crew stop", () => {
     ).toEqual([]);
   });
 
+  test("RX1: the lead's own stop of a session the watch stopped makes the removal the lead's call", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "working" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "stopped", stoppedByWatch: true },
+      NOW,
+    );
+
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("stopped");
+    expect(after?.stoppedByWatch).toBeUndefined();
+  });
+
   test("a session Claude Code no longer lists is stopped all the same, and the line says so", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();

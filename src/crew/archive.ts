@@ -212,7 +212,9 @@ export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string):
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
     const archived = ARCHIVED_STATES.includes(record.state) || record.id === exceptCrew;
-    if (!archived) for (const one of crewSessions(record)) kept.add(one.sessionId);
+    if (!archived) {
+      for (const one of crewSessions(record)) if (one.sessionId !== null) kept.add(one.sessionId);
+    }
   }
   return kept;
 }
@@ -241,6 +243,11 @@ export interface ArchiveInput {
   neverTaken: ReadonlySet<string>;
   /** The sessions a running Claude process holds (`liveSessions`). */
   running: ReadonlySet<string>;
+  /**
+   * The sessions to move, when not every session of the record: the sweep judges each session
+   * (one written after the removal is the person's) and hands in the ones it passed.
+   */
+  only?: ReadonlySet<string>;
   nowMs: number;
   /** How long to wait for another run that holds the archive; `ARCHIVE_LOCK_WAIT_MS` by default. */
   lockWaitMs?: number;
@@ -393,9 +400,10 @@ export function differingArchivedCopy(
 export async function archiveConversation(input: ArchiveInput): Promise<ArchiveOutcome> {
   const ids = crewSessions(input.record)
     .map((one) => one.sessionId)
-    .filter(isSessionId);
+    .filter((one): one is string => one !== null && isSessionId(one))
+    .filter((one) => input.only === undefined || input.only.has(one));
   let archived: Extract<ArchiveOutcome, { kind: "archived" }> | undefined;
-  let kept: string | undefined;
+  const kept: string[] = [];
   let nothing: Extract<ArchiveOutcome, { kind: "nothing" }> = {
     folderGone: false,
     kind: "nothing",
@@ -408,7 +416,7 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
       moved += one.files;
       archived = { ...one, files: moved };
     } else if (one.kind === "kept") {
-      kept ??= one.why;
+      if (!kept.includes(one.why)) kept.push(one.why);
     } else {
       nothing = one;
     }
@@ -417,10 +425,10 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
     return {
       ...archived,
       folderGone: archived.folderGone || nothing.folderGone,
-      ...(kept === undefined ? {} : { stayed: [kept] }),
+      ...(kept.length === 0 ? {} : { stayed: kept }),
     };
   }
-  return kept === undefined ? nothing : { kind: "kept", why: kept };
+  return kept[0] === undefined ? nothing : { kind: "kept", why: kept.join("; ") };
 }
 
 /** One session's conversation into the archive. */

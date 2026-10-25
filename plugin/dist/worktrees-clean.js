@@ -7524,7 +7524,8 @@ var crewFields = object({
 });
 var crewRecordSchema = crewFields.loose();
 function crewSessions(record2) {
-  const current = record2.sessionId === null ? [] : [{ sessionId: record2.sessionId, shortId: record2.shortId ?? record2.sessionId.slice(0, 8) }];
+  const shortId = record2.shortId ?? record2.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record2.sessionId, shortId }];
   const earlier = [...record2.earlierSessions ?? []].reverse();
   return [...current, ...earlier.filter((one) => one.sessionId !== record2.sessionId)].map((one) => ({ sessionId: one.sessionId, shortId: one.shortId }));
 }
@@ -7767,8 +7768,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
-      merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
     if (merged.state !== "stopped")
       delete merged.stoppedByWatch;
@@ -10567,9 +10568,11 @@ function sessionsNeverTaken(stateDir, exceptCrew) {
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
     const archived = ARCHIVED_STATES.includes(record.state) || record.id === exceptCrew;
-    if (!archived)
+    if (!archived) {
       for (const one of crewSessions(record))
-        kept.add(one.sessionId);
+        if (one.sessionId !== null)
+          kept.add(one.sessionId);
+    }
   }
   return kept;
 }
@@ -10655,9 +10658,9 @@ function differingArchivedCopy(paths, record, found) {
   return null;
 }
 async function archiveConversation(input) {
-  const ids = crewSessions(input.record).map((one) => one.sessionId).filter(isSessionId2);
+  const ids = crewSessions(input.record).map((one) => one.sessionId).filter((one) => one !== null && isSessionId2(one)).filter((one) => input.only === undefined || input.only.has(one));
   let archived;
-  let kept;
+  const kept = [];
   let nothing = {
     folderGone: false,
     kind: "nothing"
@@ -10671,7 +10674,8 @@ async function archiveConversation(input) {
       moved += one.files;
       archived = { ...one, files: moved };
     } else if (one.kind === "kept") {
-      kept ??= one.why;
+      if (!kept.includes(one.why))
+        kept.push(one.why);
     } else {
       nothing = one;
     }
@@ -10680,10 +10684,10 @@ async function archiveConversation(input) {
     return {
       ...archived,
       folderGone: archived.folderGone || nothing.folderGone,
-      ...kept === undefined ? {} : { stayed: [kept] }
+      ...kept.length === 0 ? {} : { stayed: kept }
     };
   }
-  return kept === undefined ? nothing : { kind: "kept", why: kept };
+  return kept[0] === undefined ? nothing : { kind: "kept", why: kept.join("; ") };
 }
 async function archiveSession(input, sessionId) {
   const { paths, record } = input;

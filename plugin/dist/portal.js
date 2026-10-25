@@ -13903,7 +13903,8 @@ var crewFields = object({
 });
 var crewRecordSchema = crewFields.loose();
 function crewSessions(record2) {
-  const current = record2.sessionId === null ? [] : [{ sessionId: record2.sessionId, shortId: record2.shortId ?? record2.sessionId.slice(0, 8) }];
+  const shortId = record2.shortId ?? record2.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record2.sessionId, shortId }];
   const earlier = [...record2.earlierSessions ?? []].reverse();
   return [...current, ...earlier.filter((one) => one.sessionId !== record2.sessionId)].map((one) => ({ sessionId: one.sessionId, shortId: one.shortId }));
 }
@@ -14146,8 +14147,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
-      merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
     if (merged.state !== "stopped")
       delete merged.stoppedByWatch;
@@ -16247,7 +16248,8 @@ function readFinishedSessions(paths, deps) {
     const excluded = new Set;
     for (const record of crew.records) {
       for (const one of crewSessions(record)) {
-        excluded.add(one.sessionId);
+        if (one.sessionId !== null)
+          excluded.add(one.sessionId);
         excluded.add(one.shortId);
       }
       excluded.add(record.leadSessionId);

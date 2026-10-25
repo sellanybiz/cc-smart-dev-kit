@@ -5,7 +5,14 @@
  * store and Claude Code's projects folder in temp folders, the fake `claude` of the board world.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
@@ -17,7 +24,7 @@ import { ARCHIVE_MANIFEST, crewArchiveDir, DAY_MS } from "./archive";
 import { crewArchiveRoot } from "./archive-read";
 import { runCrew } from "./command";
 import { archiveAfterRemoval, crewRemovalLockDir } from "./remove";
-import { readCrew, updateCrew, writeLead } from "./store";
+import { crewFile, readCrew, updateCrew, writeLead } from "./store";
 import { transcriptFile } from "./transcript";
 
 const SESSION = "a1b2c3d4-0000-1111-2222-333333333333";
@@ -135,6 +142,23 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     const dir = crewArchiveDir(world.paths.stateDir, world.repo, record.id);
     const into = join(dir, "projects", project.split("/").at(-1) ?? "");
     expect(readdirSync(into).sort()).toEqual([SESSION, `${SESSION}.jsonl.gz`, `${copy}.jsonl.gz`]);
+  });
+
+  test("RX1: a record that has a short id and no session id (a failed start) still gets its claude rm", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "failed" });
+    // `crew start` records `{ shortId }` alone when agent view cannot say the session id.
+    const file = crewFile(world.paths.stateDir, world.repo, record.id);
+    writeFileSync(
+      file,
+      JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), sessionId: null }),
+    );
+
+    expect(
+      await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
+    ).toBe(0);
+
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "a1b2c3d4"]]);
   });
 
   test("RX1: an earlier session Claude Code no longer lists is gone already", async () => {

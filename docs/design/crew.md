@@ -171,7 +171,8 @@ repository, under the state folder:
   Every change of a crew record goes through one read-modify-write (`changeCrew`).
 - **A crew record** holds who it is (its id — a plain file name, known before any session
   exists: `<phase>-<slug>-<6 hex>`, so a second try of a phase never meets the first's record —,
-  its name, its session's id and short id, its lead), what it does (the repository, the plan, the
+  its name, its session's id and short id, the sessions it had before (`earlierSessions`, RX1:
+  set by the store when a write replaces the session id), its lead), what it does (the repository, the plan, the
   phase and slug, the kind, the model as named with the slot and the model that answer it
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
@@ -189,8 +190,10 @@ repository, under the state folder:
   work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
   `removed`, from the state the record was in — the fact a phase that waits for it starts on),
   whether it was merged while it was `stopped` (`mergedWhileStopped`, optional: set by the store
-  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62),
-  and when it was recorded and changed. The states are `queued`, `starting`,
+  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62;
+  false when the watch's own idle stop made it `stopped`), whether the watch itself stopped it
+  for idling (`stoppedByWatch`, RX1, optional: kept only while it is `stopped`), and when it was
+  recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
   id, name, repository, plan, the tag its crew sessions' names carry, and folder, and may hold
@@ -671,7 +674,9 @@ start reads its own (`startedRow`, `claude.ts`). **The record takes the new `ses
 `shortId` in the same write that makes it `working`** — `crew answer`, `crew resume`, `crew
 resume --paused` and the watch alike — so it never names a session that is gone, and the line
 says it: `resumed C kit B6b portal-live as session d7a54fc8 (a copy of c7186986)`. The old session
-is a stopped row with no process, left to the cleanup that removes finished sessions.
+is a stopped row with no process. The record keeps it (`earlierSessions`, RX1), so `crew rm`
+removes it with the rest (§ A removed crew session's conversation); `sessions --finished` never
+offers it, because it is the crew's own.
 
 A resume that printed **no such line**, a note that names another id than the line, or a copy
 agent view cannot show is said with the reason, and the record keeps its state and its session —
@@ -1006,8 +1011,9 @@ the store records — a session the kit does not know is the person's own:
   record is `stopped`, and a merge of such a record removes it like any other. One removal of a
   record runs at a time (a lock in the record's files folder, `crewRemovalLockDir`): a second one —
   the watch's after the person's `crew rm --discard` changed the worktree — refuses at once and
-  rolls nothing back. A pass reads the events log (it only grows) only for a record that needs it,
-  a stopped-session reminder or a legacy merge. The branch must hold a commit of its own (its tip is not
+  rolls nothing back. A pass reads the events log (it only grows) only when a record needs it, a
+  stopped-session reminder (a `done`, `stopped` or `failed` record of this lead not reminded yet) or
+  a legacy merge: on a log of 3 000 events (1.3 MB) the read takes about 23 ms, on 30 000 about 190 ms. The branch must hold a commit of its own (its tip is not
   the base it was cut from — a crew session that failed before it committed is an ancestor of the
   base for that reason alone), and its work must be on the commit **the branch it was cut from**
   (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record

@@ -163,7 +163,7 @@ export function readFinishedSessions(
     for (const record of crew.records) {
       // Every session of the record is the crew's own to remove (`crew rm`), not a finished one.
       for (const one of crewSessions(record)) {
-        excluded.add(one.sessionId);
+        if (one.sessionId !== null) excluded.add(one.sessionId);
         excluded.add(one.shortId);
       }
       excluded.add(record.leadSessionId);
@@ -193,6 +193,8 @@ export interface LeftConversation {
   /** Its files there: the transcript, its subagents' and its tool results. */
   files: number;
   projectDir: string;
+  /** The sessions of the record that passed every check; the move takes these and no others. */
+  sessionIds: string[];
 }
 
 /**
@@ -266,11 +268,17 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
     const out = none("");
     out.error = null;
     const removals = removalTimes(paths.stateDir);
+    // One line per reason for a record, however many of its sessions stay for it.
+    const keep = (record: CrewRecord, why: string): void => {
+      if (!out.kept.some((one) => one.record.id === record.id && one.why === why)) {
+        out.kept.push({ record, why });
+      }
+    };
     for (const record of crew.records) {
       if (!ARCHIVED_STATES.includes(record.state)) continue;
       // Every session the record had (a resume is a copy with a new id, WF1): one entry per record.
       for (const { sessionId } of crewSessions(record)) {
-        if (!isSessionId(sessionId) || neverTaken.has(sessionId)) continue;
+        if (sessionId === null || !isSessionId(sessionId) || neverTaken.has(sessionId)) continue;
         const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
         if (found.files.length === 0) {
           if (holdsNothing(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
@@ -278,15 +286,12 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
           continue;
         }
         if (running.has(sessionId)) {
-          out.kept.push({ record, why: "a running Claude session holds it" });
+          keep(record, "a running Claude session holds it");
           continue;
         }
         const differing = differingArchivedCopy(paths, record, found);
         if (differing !== null) {
-          out.kept.push({
-            record,
-            why: `${differing} differs from its archived copy, so neither is overwritten`,
-          });
+          keep(record, `${differing} differs from its archived copy, so neither is overwritten`);
           continue;
         }
         const removedAt = removals.at(record);
@@ -294,7 +299,7 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
           ...found.files.map((file) => statSync(join(found.projectDir, file)).mtimeMs),
         );
         if (newest > removedAt) {
-          out.kept.push({ record, why: "it was written after its crew session was removed" });
+          keep(record, "it was written after its crew session was removed");
           continue;
         }
         const listed = out.conversations.find(
@@ -305,9 +310,11 @@ export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number
             files: found.files.length,
             projectDir: found.projectDir,
             record,
+            sessionIds: [sessionId],
           });
         } else {
           listed.files += found.files.length;
+          listed.sessionIds.push(sessionId);
         }
       }
     }

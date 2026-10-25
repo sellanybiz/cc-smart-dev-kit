@@ -49,9 +49,10 @@ it is a minor version.
   and `crew rm`, the archive and `sessions --finished --remove` go through all of them. Also
   fixed: a model change that waited for a cap no longer resumes a session that reported `done`
   meanwhile; a second removal of one crew session refuses instead of rolling back the first one's
-  discard; the watch no longer waits for a continuation that was removed, discarded or failed; and
-  a stop the watch made for an idle blocked session no longer keeps the merged session from being
-  removed.
+  discard; the watch no longer waits for a continuation that was removed, discarded or failed; a
+  stop (the lead's `crew stop`, a `crew rm`, or the watch's idle stop) no longer writes `stopped`
+  over a session that reported `done` or was answered meanwhile; and a stop the watch made for an
+  idle blocked session no longer keeps the merged session from being removed.
 - **A removed crew session's conversation moves to the crew archive.** `crew rm` (and the watch's
   removal after a merge) moves the conversation Claude Code keeps after `claude rm` to
   `<state>/crew-archive/`, so `/resume` no longer lists every crew session ever removed; it is
