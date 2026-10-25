@@ -3484,6 +3484,12 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
       },
       T0,
     );
+    // The other lead's watch runs: it holds its lease, which is what lets it hear (IX2-3).
+    await takeWatchLease(world.paths.stateDir, world.repo, SECOND_LEAD, {
+      ...currentHolder(),
+      at: T0,
+      token: "second-lead-watch",
+    });
     const feed = fakeFeed(fakeGh().exec);
     feed.issues.push({
       author: "old-timer",
@@ -3581,6 +3587,70 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     await b.pass();
     expect(a.out).toEqual([]);
     expect(b.out).toEqual([]);
+  });
+
+  test("IX2-3: ten old lead records, two live: a look writes events for the two only", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };
+    for (let index = 0; index < 10; index++) {
+      const old = `old-lead-${index}`;
+      await writeLead(
+        stateDir,
+        { cwd: repo, name: `LEAD my-app old-${index}`, plan: "old", repo, sessionId: old, tag: "my-app" },
+        T0,
+      );
+      // Half have never held a lease, half held one whose watch died.
+      if (index % 2 === 0) {
+        const ended = Bun.spawnSync(["true"]);
+        await takeWatchLease(stateDir, repo, old, {
+          ...currentHolder(),
+          at: T0,
+          pid: ended.pid,
+          token: `died-${index}`,
+        });
+      }
+    }
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    const heard = readCrewEvents(stateDir, repo).events.filter((one) => one.type === "issue");
+    expect(heard.map((one) => one.lead).sort()).toEqual([LEAD_SESSION, SECOND_LEAD].sort());
+  });
+
+  test("IX2-3: a lead whose watch starts later hears nothing of what was said before", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };
+    await writeLead(
+      stateDir,
+      { cwd: repo, name: "LEAD my-app late", plan: "late", repo, sessionId: "late-lead", tag: "my-app" },
+      T0,
+    );
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    // The late lead's watch starts now, at the end of the log.
+    await takeWatchLease(stateDir, repo, "late-lead", {
+      ...currentHolder(),
+      at: T0,
+      token: "late-lead-watch",
+    });
+    const late = watchOf("late-lead");
+    await late.pass();
+    expect(late.out).toEqual([]);
   });
 
   test("a 304 is silent: nothing printed, the log unchanged", async () => {

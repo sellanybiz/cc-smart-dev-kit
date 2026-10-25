@@ -1912,6 +1912,17 @@ export function readWatchLease(
 }
 
 /**
+ * True when a watch of this lead runs: it holds a lease and the process that took it is not gone
+ * (`holderIsGone`). The one test of "this lead can hear an event written now" — lead records are
+ * never removed, so a record alone says nothing about a lead (IX2-3). A lease no one can read is
+ * free (`readWatchLease`), so it is not alive either.
+ */
+export function watchIsAlive(stateDir: string, repo: string, leadSessionId: string): boolean {
+  const lease = readWatchLease(stateDir, repo, leadSessionId);
+  return lease !== null && !holderIsGone(lease, lease.at, FALLBACK_STALE_MS);
+}
+
+/**
  * Takes the lead's watch lease for `lease`, whoever holds it: **the newest watch wins** — a
  * monitor the lead restarts is its intent, and the watch it replaces ends at its next pass
  * (`keepWatchLease`). Under the store's lock, so it never lands between another watch's look

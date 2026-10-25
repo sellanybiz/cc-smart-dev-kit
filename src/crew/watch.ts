@@ -104,6 +104,7 @@ import {
   updateCrewIfState,
   type WatchLease,
   type WatchState,
+  watchIsAlive,
   writeWatchState,
 } from "./store";
 import { monitorsRunHere } from "./telemetry";
@@ -530,10 +531,15 @@ async function lookAtGitHub(
       // cursor, and the next look finds the same items again.
       deliver: async (found) => {
         if (found.news.length + found.notices.length === 0) return;
-        // This lead too, whether or not it is recorded yet.
+        // This lead, whether or not it is recorded yet, and every other lead whose watch runs
+        // (`watchIsAlive`). Lead records are never removed, so the records alone would write an
+        // event for every lead the repository ever had at every look; a lead that comes back
+        // starts silent, as a first look does.
         const leads = new Set([
           scope.leadSessionId,
-          ...listLeads(ctx.paths.stateDir, scope.repo).records.map((one) => one.sessionId),
+          ...listLeads(ctx.paths.stateDir, scope.repo)
+            .records.map((one) => one.sessionId)
+            .filter((id) => watchIsAlive(ctx.paths.stateDir, scope.repo, id)),
         ]);
         const lines = [
           ...found.notices.map((text) => ({ data: false, text: `issues: ${text}` })),
