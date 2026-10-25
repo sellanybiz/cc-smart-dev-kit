@@ -961,7 +961,8 @@ export async function answerCrewQuestion(
               {
                 answer: one.answer,
                 answeredAt: one.answeredAt,
-                deliveredAt: one.deliveredAt ?? null,
+                // A record from before the field has none, and its answer was heard.
+                ...(one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }),
               },
             ]
           : one.superseded;
@@ -1018,17 +1019,35 @@ export async function markAnswerDelivered(
 }
 
 /**
- * The index of the answer the crew session's monitor still has to print (AN1): the newest
- * question's, when it has an answer and its `deliveredAt` is null. Null when it is delivered, or
- * has no answer. Only the newest question counts: an older one was answered before the newer one
- * was asked. A record from before the field has no `deliveredAt` at all (not null): its answers
+ * The indexes of the answers the crew session's monitor still has to print (AN1), oldest first:
+ * every question with an answer whose `deliveredAt` is null. A crew session may have several
+ * questions open, and the lead answers the newest first (`openQuestionIndex`), so any of them can
+ * be waiting. A record from before the field has no `deliveredAt` at all (not null): its answers
  * were sent by hand, so none is printed again.
  */
-export function undeliveredAnswerIndex(record: CrewRecord): null | number {
-  const index = record.questions.length - 1;
-  const asked = record.questions[index];
-  if (asked === undefined || asked.answer === null) return null;
-  return asked.deliveredAt === null ? index : null;
+export function undeliveredAnswerIndexes(record: CrewRecord): number[] {
+  const waiting: number[] = [];
+  record.questions.forEach((asked, index) => {
+    if (asked.answer !== null && asked.deliveredAt === null) waiting.push(index);
+  });
+  return waiting;
+}
+
+/**
+ * The newest answer to `asked` the crew session heard (AN1), for the words of a correction: a
+ * superseded answer that was delivered, or — with `withCurrent` — the answer on record when it was
+ * delivered too. An answer the monitor never printed was never heard, so a correction does not
+ * claim to replace it. A record from before the field has no `deliveredAt` (its answers were
+ * sent by hand and heard). Null when nothing was heard.
+ */
+export function lastHeardAnswer(asked: CrewQuestion, withCurrent: boolean): null | string {
+  const answers = [
+    ...(asked.superseded ?? []).map((one) => ({ answer: one.answer, at: one.deliveredAt })),
+    ...(withCurrent && asked.answer !== null
+      ? [{ answer: asked.answer, at: asked.deliveredAt }]
+      : []),
+  ];
+  return answers.filter((one) => one.at !== null).at(-1)?.answer ?? null;
 }
 
 /** One line of the events log about `crew`, of `type`, with `text` as its line. */

@@ -674,16 +674,23 @@ an idle one**, a blocked crew session included (`docs/claude-code-contract.md`).
 *recorded* from *delivered*: each question carries `deliveredAt` (null until delivered), and the
 monitor claims the answer under the store's lock **before** it prints (`markAnswerDelivered`, which
 gives back the claimed question), so two monitors of one crew session — the original and a copy a
-resume started — never both print it. A record from before the field has no `deliveredAt` at all:
-its answers were sent by hand and are not printed again. The monitor writes a heartbeat every 15 s
-(`<store>/answer-watch/<id>.json`); `crew answer` reads it, waits up to 10 s for the delivery, and
+resume started — never both print it. The claim covers *every* waiting answer, oldest first (a
+crew session may have several questions open, and the lead answers the newest first), and an answer
+is printed at most once: the claim comes before the print, so a line that fails to print is not
+tried again. A record from before the field has no `deliveredAt` at all: its answers were sent by
+hand and are not printed again. The monitor writes a heartbeat every 15 s (a one-shot `--once` run
+writes none) (`<store>/answer-watch/<id>.json`); `crew answer` reads it, waits up to 10 s for the delivery, and
 says which happened — `delivered`, or `recorded, not delivered` (no heartbeat, one older than 60 s,
-or a monitor that did not pass it on in time) with the one line the lead sends it with by hand —
+or a monitor that did not pass it on in time) with the one line the lead sends it with by hand
+(the person's click in the portal gets words instead — they cannot send it; and an answer sent by
+hand while the monitor lives arrives twice) —
 `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a quote or a
 line break in the answer is escaped and never changed. The lead is never left without a way. **A
 second answer to the same question is a correction**: the first is kept in the question's
 `superseded` list (never deleted), the new one is delivered the same way, and its words say it
-replaces the earlier answer. A question already closed by the phase's end takes no correction
+replaces the earlier answer — the last one the session *heard* (`lastHeardAnswer`): a correction
+that lands before the first answer was printed claims to replace nothing. A question already closed
+by the phase's end takes no correction
 (`questionClosed`). A **stopped** crew session (D35: the watch stops a blocked crew session that
 idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt
 (that prompt is the delivery, and the same write records it as delivered; a correction's prompt

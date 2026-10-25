@@ -385,10 +385,88 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     expect(world.out).toEqual([]);
   });
 
+  test("a one-shot run is no monitor: it writes no heartbeat", async () => {
+    const world = await crewWorldWith(20_000);
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBeNull();
+  });
+
+  test("two questions open at once: both answers are delivered, the older first", async () => {
+    const world = await crewWorldWith(20_000);
+    for (const question of ["which port?", "which host?"]) {
+      await addCrewQuestion(
+        world.paths.stateDir,
+        world.repo,
+        ID,
+        { options: ["a", "b"], question, recommended: null },
+        T0,
+      );
+    }
+    // The lead answers the newest first (`openQuestionIndex`), then the older one.
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "localhost", T0);
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "3210", T0);
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual([
+      'Your lead answers your question "which port?": "3210"',
+      'Your lead answers your question "which host?": "localhost"',
+    ]);
+  });
+
+  test("a correction of an answer the session never heard does not claim it replaces one", async () => {
+    const world = await answeredWorld();
+    // The first answer is still undelivered when the correction lands.
+    await answerCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      0,
+      "sorry, 3211",
+      T0 + 5000,
+      null,
+      null,
+      {
+        correction: true,
+      },
+    );
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual(['Your lead answers your question "which port?": "sorry, 3211"']);
+  });
+
+  test("a correction names the last answer the session did hear, not one it missed", async () => {
+    const world = await answeredWorld("A1");
+    const ctx = world.ctx({ cwd: world.worktree }, env);
+    await runCrew(["self-watch", "--once"], ctx);
+    world.out.length = 0;
+    const correct = (text: string, at: number) =>
+      answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, text, at, null, null, {
+        correction: true,
+      });
+    await correct("A2", T0 + 1000);
+    await correct("A3", T0 + 2000);
+    await runCrew(["self-watch", "--once"], ctx);
+    expect(world.out).toEqual([
+      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("A1"). Follow this one instead: "A3"',
+    ]);
+  });
+
   test("the monitor writes its heartbeat, so crew answer can tell it runs", async () => {
     const world = await crewWorldWith(20_000);
     expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBeNull();
-    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    let ticks = 0;
+    const ctx = world.ctx(
+      {
+        cwd: world.worktree,
+        sleep: async () => {
+          ticks += 1;
+          if (ticks === 2) {
+            const { updateCrew } = await import("./store");
+            await updateCrew(world.paths.stateDir, world.repo, ID, { state: "done" }, T0 + 9000);
+          }
+        },
+      },
+      env,
+    );
+    await runCrew(["self-watch"], ctx);
     expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBe(T0);
   });
 

@@ -8,7 +8,7 @@
   {
     "name": "crew-self",
     "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" crew self-watch",
-    "description": "The crew session's own line about its context and its time: hand off when the context or the time runs out.",
+    "description": "The crew session's own lines: hand off when the context or the time runs out, and the lead's answer to its question.",
     "when": "on-skill-invoke:cc-smart-dev-kit:crew"
   }
 ]

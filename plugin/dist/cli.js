@@ -14990,7 +14990,7 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
         {
           answer: one.answer,
           answeredAt: one.answeredAt,
-          deliveredAt: one.deliveredAt ?? null
+          ...one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }
         }
       ] : one.superseded;
       return {
@@ -15026,12 +15026,20 @@ async function markAnswerDelivered(stateDir, repo, id, index, atMs) {
   });
   return changed ? record2.questions[index] ?? null : null;
 }
-function undeliveredAnswerIndex(record2) {
-  const index = record2.questions.length - 1;
-  const asked = record2.questions[index];
-  if (asked === undefined || asked.answer === null)
-    return null;
-  return asked.deliveredAt === null ? index : null;
+function undeliveredAnswerIndexes(record2) {
+  const waiting = [];
+  record2.questions.forEach((asked, index) => {
+    if (asked.answer !== null && asked.deliveredAt === null)
+      waiting.push(index);
+  });
+  return waiting;
+}
+function lastHeardAnswer(asked, withCurrent) {
+  const answers = [
+    ...(asked.superseded ?? []).map((one) => ({ answer: one.answer, at: one.deliveredAt })),
+    ...withCurrent && asked.answer !== null ? [{ answer: asked.answer, at: asked.deliveredAt }] : []
+  ];
+  return answers.filter((one) => one.at !== null).at(-1)?.answer ?? null;
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -28295,7 +28303,7 @@ async function runCrewAnswer(args, ctx) {
   }
   const asked = record.questions[index];
   const question = asked?.question ?? "";
-  const earlier = correcting ? asked?.answer ?? null : null;
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
   const text = deliveryText(question, args.text, earlier);
   let way = "message";
   if (record.state === "stopped") {
@@ -28335,18 +28343,21 @@ async function runCrewAnswer(args, ctx) {
     return 0;
   }
   ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
-  for (const line of await deliveryReport(ctx, repo, record, index, correcting, text)) {
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
     ctx.print(line);
   }
   return 0;
 }
-async function deliveryReport(ctx, repo, record, index, correcting, text) {
+async function deliveryReport(ctx, repo, record, index, how, text) {
   const { stateDir } = ctx.paths;
   const beat = readAnswerWatchBeat(stateDir, repo, record.id);
   const age = beat === null ? null : Math.max(0, ctx.now() - beat);
   if (age === null || age > ANSWER_BEAT_STALE_MS) {
     const why = age === null ? "no heartbeat from its monitor" : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
-    return [
+    return how.asPerson ? [
+      `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`
+    ] : [
       `recorded, not delivered: ${why}, so send it yourself:`,
       sendMessageLine(record.name, text)
     ];
@@ -28356,12 +28367,13 @@ async function deliveryReport(ctx, repo, record, index, correcting, text) {
     const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
     if (now !== null) {
       return [
-        correcting ? "delivered: its monitor gave the session your correction, which replaces your earlier answer" : "delivered: its monitor gave it to the session"
+        how.replaces ? "delivered: its monitor gave the session your correction, which replaces your earlier answer" : "delivered: its monitor gave it to the session"
       ];
     }
   }
-  return [
-    `recorded, not delivered yet: its monitor is running but did not pass it on within ${CONFIRM_LOOKS * CONFIRM_WAIT_MS / 1000} s; it still will, or send it yourself:`,
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${CONFIRM_LOOKS * CONFIRM_WAIT_MS / 1000} s;`;
+  return how.asPerson ? [`${late} it still will`] : [
+    `${late} if the session stays silent, send it yourself (it then arrives twice):`,
     sendMessageLine(record.name, text)
   ];
 }
@@ -29518,7 +29530,7 @@ async function runCrewSelfWatch(ctx, once = false) {
         record = fresh;
       } catch {}
     }
-    if (now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
+    if (!once && now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
       lastBeat = now;
       try {
         writeAnswerWatchBeat(ctx.paths.stateDir, repo, record.id, now);
@@ -29538,23 +29550,24 @@ async function runCrewSelfWatch(ctx, once = false) {
 }
 function mtimeOf(file) {
   try {
-    return statSync20(file).mtimeMs;
+    const stat = statSync20(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     return null;
   }
 }
 async function deliverAnswer(ctx, repo, record, now) {
-  const index = undeliveredAnswerIndex(record);
-  if (index === null)
-    return;
-  try {
-    const claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+  for (const index of undeliveredAnswerIndexes(record)) {
+    let claimed;
+    try {
+      claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+    } catch (error) {
+      ctx.error(`crew self-watch: the store could not claim the answer: ${reasonOf2(error)}`);
+      continue;
+    }
     if (claimed === null || claimed.answer === null)
-      return;
-    const earlier = claimed.superseded?.at(-1)?.answer ?? null;
-    ctx.print(deliveryLine(claimed.question, claimed.answer, earlier));
-  } catch (error) {
-    ctx.error(`crew self-watch: the store could not deliver the answer: ${reasonOf2(error)}`);
+      continue;
+    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
   }
 }
 async function adviseOnce(ctx, repo, record, thresholds, windows, now) {
@@ -29872,8 +29885,10 @@ Commands:
                  everything the question does not block.
   answer <crew session> "<the answer>"
                  The lead's answer to a crew session's question. A running crew session
-                 gets it as a message (the command prints the line the lead
-                 sends); a stopped one is resumed with it.
+                 gets it from its own monitor, even when idle (the command says
+                 delivered, or recorded and prints the line the lead sends by hand);
+                 a stopped one is resumed with it. A second answer to the same
+                 question is a correction that says it replaces the first.
   tell ${TELL_ARGS}
                  ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for your lead, and prints one SendMessage
@@ -29888,9 +29903,11 @@ Commands:
                  each event. --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
-                 at the context share, a note when the phase runs long. It says
-                 nothing else, and repeats its line every 15 minutes while it is
-                 ignored. --once checks once and exits.
+                 at the context share, a note when the phase runs long; it repeats
+                 its line every 15 minutes while it is ignored. It also prints
+                 the lead's answer to the crew session's question, once, and
+                 writes the heartbeat crew answer reads. --once checks once and
+                 exits (no heartbeat).
 
 The board and the end of a crew session (a command's own help: crew <command> --help):
 ${OTHER_COMMANDS}

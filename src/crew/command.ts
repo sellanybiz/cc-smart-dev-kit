@@ -123,8 +123,10 @@ Commands:
                  everything the question does not block.
   answer <crew session> "<the answer>"
                  The lead's answer to a crew session's question. A running crew session
-                 gets it as a message (the command prints the line the lead
-                 sends); a stopped one is resumed with it.
+                 gets it from its own monitor, even when idle (the command says
+                 delivered, or recorded and prints the line the lead sends by hand);
+                 a stopped one is resumed with it. A second answer to the same
+                 question is a correction that says it replaces the first.
   tell ${TELL_ARGS}
                  ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for your lead, and prints one SendMessage
@@ -139,9 +141,11 @@ Commands:
                  each event. --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
-                 at the context share, a note when the phase runs long. It says
-                 nothing else, and repeats its line every 15 minutes while it is
-                 ignored. --once checks once and exits.
+                 at the context share, a note when the phase runs long; it repeats
+                 its line every 15 minutes while it is ignored. It also prints
+                 the lead's answer to the crew session's question, once, and
+                 writes the heartbeat crew answer reads. --once checks once and
+                 exits (no heartbeat).
 
 The board and the end of a crew session (a command's own help: crew <command> --help):
 ${OTHER_COMMANDS}

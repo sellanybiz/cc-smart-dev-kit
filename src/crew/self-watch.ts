@@ -20,7 +20,7 @@
  *   heartbeat, which `crew answer` reads to know the answer will arrive. It looks at the crew
  *   record only when its file changed (a stat, never a re-read each tick).
  *
- * **Nothing else is printed.** A crew session that is fine sees nothing. The line is repeated every
+ * **Nothing else is printed.** A crew session with no answer waiting and room to work sees nothing. The line is repeated every
  * 15 minutes while it is ignored, so a crew session that missed it sees it again.
  *
  * **The window.** The model that wrote the last reply decides it (`context-window.ts`): Claude
@@ -40,10 +40,11 @@ import {
   ANSWER_WATCH_POLL_MS,
   type CrewRecord,
   crewFile,
+  lastHeardAnswer,
   markAnswerDelivered,
   readCrew,
   readSelfWatchState,
-  undeliveredAnswerIndex,
+  undeliveredAnswerIndexes,
   writeAnswerWatchBeat,
   writeSelfWatchState,
 } from "./store";
@@ -146,7 +147,7 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
   // until the crew session's phase is over: a crew session that hands off or reports ends its work, and
   // its monitor has nothing more to say.
   const file = crewFile(ctx.paths.stateDir, repo, record.id);
-  let seen: null | number = null;
+  let seen: null | string = null;
   let lastBeat = Number.NEGATIVE_INFINITY;
   let lastAdvice = Number.NEGATIVE_INFINITY;
   for (;;) {
@@ -163,7 +164,8 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
         // The record cannot be read this round: keep the one we have, and look again.
       }
     }
-    if (now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
+    // A one-shot run is no monitor: its heartbeat would tell `crew answer` an answer will be delivered.
+    if (!once && now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
       lastBeat = now;
       try {
         writeAnswerWatchBeat(ctx.paths.stateDir, repo, record.id, now);
@@ -181,19 +183,25 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
   }
 }
 
-/** When the file last changed, in ms; null when it cannot be read (the record read says why). */
-function mtimeOf(file: string): null | number {
+/**
+ * A stamp of the file's last change: its mtime, size and inode (a write is an atomic rename, so the
+ * inode moves even where two writes share one timestamp); null when it cannot be read (the record
+ * read says why).
+ */
+function mtimeOf(file: string): null | string {
   try {
-    return statSync(file).mtimeMs;
+    const stat = statSync(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     return null;
   }
 }
 
 /**
- * Prints the lead's answer when it is on record and not delivered yet (AN1): the claim comes first
- * (`markAnswerDelivered`, atomic), so only the monitor that wins it prints. The words say when the
- * answer replaces an earlier one.
+ * Prints the lead's answers that are on record and not delivered yet (AN1), oldest first: the claim
+ * comes first (`markAnswerDelivered`, atomic), so only the monitor that wins it prints — and an
+ * answer is printed at most once, even when the line then fails to print. The words say when the
+ * answer replaces an earlier one the session heard.
  */
 async function deliverAnswer(
   ctx: CrewContext,
@@ -201,16 +209,18 @@ async function deliverAnswer(
   record: CrewRecord,
   now: number,
 ): Promise<void> {
-  const index = undeliveredAnswerIndex(record);
-  if (index === null) return;
-  try {
-    const claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
-    if (claimed === null || claimed.answer === null) return;
-    const earlier = claimed.superseded?.at(-1)?.answer ?? null;
-    ctx.print(deliveryLine(claimed.question, claimed.answer, earlier));
-  } catch (error) {
-    // Not claimed, so the next tick tries again: an answer is never lost to a busy lock.
-    ctx.error(`crew self-watch: the store could not deliver the answer: ${reasonOf(error)}`);
+  for (const index of undeliveredAnswerIndexes(record)) {
+    let claimed: Awaited<ReturnType<typeof markAnswerDelivered>>;
+    try {
+      claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+    } catch (error) {
+      // Not claimed, so the next tick tries again: an answer is never lost to a busy lock.
+      ctx.error(`crew self-watch: the store could not claim the answer: ${reasonOf(error)}`);
+      continue;
+    }
+    if (claimed === null || claimed.answer === null) continue;
+    // The claim came first, so a line that fails to print is not printed again: at most once.
+    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
   }
 }
 

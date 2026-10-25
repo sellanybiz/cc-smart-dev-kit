@@ -60,6 +60,7 @@ import {
   claimResume,
   crewMcpFile,
   crewSettingsFile,
+  lastHeardAnswer,
   listCrew,
   openQuestionIndex,
   questionClosed,
@@ -216,7 +217,8 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   const asked = record.questions[index];
   const question = asked?.question ?? "";
   // What the answer replaces: the answer on record now.
-  const earlier = correcting ? (asked?.answer ?? null) : null;
+  // Only an answer the session heard is replaced: the monitor may not have printed the one on record.
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
   const text = deliveryText(question, args.text, earlier);
   // How the answer reaches the crew session: a message, or a resume of a session that is gone.
   let way: "message" | "resume" = "message";
@@ -281,7 +283,8 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 0;
   }
   ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
-  for (const line of await deliveryReport(ctx, repo, record, index, correcting, text)) {
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
     ctx.print(line);
   }
   return 0;
@@ -292,13 +295,15 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
  * heartbeat decides. A live one is given a few seconds to pass the answer on, and the command says
  * which happened; with no live monitor, or one that did not pass it on in time, the answer is
  * only recorded, and the line says why and carries the `SendMessage` line the lead sends it with.
+ * The person's click (`asPerson`) gets no such line — they cannot send it — and is told when the
+ * session will hear it instead.
  */
 async function deliveryReport(
   ctx: CrewContext,
   repo: string,
   record: CrewRecord,
   index: number,
-  correcting: boolean,
+  how: { asPerson: boolean; replaces: boolean },
   text: string,
 ): Promise<string[]> {
   const { stateDir } = ctx.paths;
@@ -309,26 +314,33 @@ async function deliveryReport(
       age === null
         ? "no heartbeat from its monitor"
         : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
-    return [
-      `recorded, not delivered: ${why}, so send it yourself:`,
-      sendMessageLine(record.name, text),
-    ];
+    return how.asPerson
+      ? [
+          `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`,
+        ]
+      : [
+          `recorded, not delivered: ${why}, so send it yourself:`,
+          sendMessageLine(record.name, text),
+        ];
   }
   for (let look = 0; look < CONFIRM_LOOKS; look += 1) {
     await ctx.sleep(CONFIRM_WAIT_MS);
     const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
     if (now !== null) {
       return [
-        correcting
+        how.replaces
           ? "delivered: its monitor gave the session your correction, which replaces your earlier answer"
           : "delivered: its monitor gave it to the session",
       ];
     }
   }
-  return [
-    `recorded, not delivered yet: its monitor is running but did not pass it on within ${(CONFIRM_LOOKS * CONFIRM_WAIT_MS) / 1000} s; it still will, or send it yourself:`,
-    sendMessageLine(record.name, text),
-  ];
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${(CONFIRM_LOOKS * CONFIRM_WAIT_MS) / 1000} s;`;
+  return how.asPerson
+    ? [`${late} it still will`]
+    : [
+        `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+        sendMessageLine(record.name, text),
+      ];
 }
 
 /** The session a resume brought back: the same one, or the copy Claude Code started instead. */

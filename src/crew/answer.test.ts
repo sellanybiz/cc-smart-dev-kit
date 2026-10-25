@@ -160,7 +160,7 @@ describe("crew answer", () => {
     expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
-      "recorded, not delivered yet: its monitor is running but did not pass it on within 10 s; it still will, or send it yourself:",
+      "recorded, not delivered yet: its monitor is running but did not pass it on within 10 s; if the session stays silent, send it yourself (it then arrives twice):",
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     ]);
   });
@@ -179,6 +179,8 @@ describe("crew answer", () => {
   test("AN1: a second answer is a correction: the first is kept as superseded, the new one says it replaces it", async () => {
     const world = await askedWorld();
     expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    // The session heard the first one (sent by hand, then marked by its monitor).
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
     world.out.length = 0;
     expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
     expect(world.err).toEqual([]);
@@ -191,14 +193,41 @@ describe("crew answer", () => {
     expect(record?.questions[0]).toMatchObject({
       answer: "sorry, 3211",
       deliveredAt: null,
-      superseded: [{ answer: "the port is 3210", answeredAt: "2026-10-21T10:00:00.000Z" }],
+      superseded: [
+        {
+          answer: "the port is 3210",
+          answeredAt: "2026-10-21T10:00:00.000Z",
+          deliveredAt: "2026-10-21T10:00:00.000Z",
+        },
+      ],
     });
+  });
+
+  test("AN1: a correction of an answer the session never heard says nothing of replacing it", async () => {
+    const world = await askedWorld();
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    world.out.length = 0;
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
+    expect(world.out[2]).toBe(
+      'SendMessage {"to":"C my-app B6b portal-live","message":"sorry, 3211"}',
+    );
+  });
+
+  test("AN1: the person's click with no monitor running is told no SendMessage line: they cannot send it", async () => {
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({ processes: { commandLineOf: () => null, parentOf: () => null } });
+    expect(await runCrew(["answer", "--as-person", "--", NAME, "3210"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      "recorded, not delivered: no heartbeat from its monitor, so it hears the answer when its monitor next runs, or when its lead sends it",
+    ]);
   });
 
   test("AN1: a correction through a live monitor is delivered the same way", async () => {
     const world = await askedWorld();
     writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 5000);
     await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
     world.out.length = 0;
     const ctx = world.ctx({
       sleep: async () => {
@@ -230,6 +259,7 @@ describe("crew answer", () => {
     const world = await askedWorld("stopped");
     // The first answer was recorded while it ran; it stopped before it read it.
     await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "the port is 3210", T0);
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
     expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
     expect(world.err).toEqual([]);
     const resume = world.claudeCalls().find((call) => call[0] === "--bg");
@@ -732,8 +762,7 @@ describe("crew answer", () => {
     expect(code).toBe(0);
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
-      "recorded, not delivered: no heartbeat from its monitor, so send it yourself:",
-      'SendMessage {"to":"C my-app B6b portal-live","message":"-- 3210 it is"}',
+      "recorded, not delivered: no heartbeat from its monitor, so it hears the answer when its monitor next runs, or when its lead sends it",
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("-- 3210 it is");
