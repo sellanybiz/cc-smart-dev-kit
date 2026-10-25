@@ -1941,6 +1941,22 @@ function programsIn(command: string, dialect: Dialect): string[] {
   return found;
 }
 
+/** Does the shell fill in the word with this text? A reader of a command's arguments asks this. */
+export type FillTest = (word: string) => boolean;
+
+/**
+ * The test for text no shell read: any `$` or backtick counts as filled. A reader falls back to
+ * it for words that came from somewhere else (a gh alias's expansion) or that its caller did
+ * not read with `wordsWithFill`, so it errs toward "cannot be read".
+ */
+export const anyFill: FillTest = (word) => /[$`]/.test(word);
+
+/** The test for a command whose filled words are known (`RunInvocation.filled`). */
+export function fillTest(filled: readonly string[]): FillTest {
+  const set = new Set(filled);
+  return (word) => set.has(word);
+}
+
 /** What the shell fills in for one step of a line (`fillOfStep`). */
 export interface StepFill {
   /** The texts of the step's words the shell fills in; all of them when the line was filled in. */
