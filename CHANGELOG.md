@@ -106,11 +106,12 @@ own repository, instead of losing them as a line in a summary.
 
 **What to run for 1.4.0:** nothing for the update itself (`router.js` did not change, and the
 session start refreshes the general instructions); restart your sessions so each carries the new
-guard. To turn issues on for a project, in your own terminal (`issues.enabled` and
-`issues.allowPublic` refuse inside Claude Code): `gh auth login` for github.com, then `cc-smart-dev-kit workflow set issues.enabled true
---project` (and `issues.allowPublic true` for a public repository, `issues.watch true` for the
-lead to hear new issues), and commit the file to the base: the switches are read from the base as
-committed. The file then needs `"requires": ">=1.4"`, which `workflow set` writes for you.
+guard. To turn issues on for a project, in your own terminal (`issues.enabled`,
+`issues.allowPublic`, `issues.watch` and `issues.readyLabel` refuse inside Claude Code): `gh auth
+login` for github.com, then `cc-smart-dev-kit workflow set issues.enabled true --project` (and
+`issues.allowPublic true` for a public repository, `issues.watch true` for the lead to hear new
+issues), and commit the file to the base: the switches are read from the base as committed. The
+file then needs `"requires": ">=1.4"`, which `workflow set` writes for you.
 
 ## 1.3.0
 
