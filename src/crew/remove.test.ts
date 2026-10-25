@@ -16,7 +16,7 @@ import { git } from "../testing/temp";
 import { ARCHIVE_MANIFEST, crewArchiveDir, DAY_MS } from "./archive";
 import { crewArchiveRoot } from "./archive-read";
 import { runCrew } from "./command";
-import { archiveAfterRemoval } from "./remove";
+import { archiveAfterRemoval, crewRemovalLockDir } from "./remove";
 import { readCrew, updateCrew, writeLead } from "./store";
 import { transcriptFile } from "./transcript";
 
@@ -162,6 +162,56 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     expect(world.out).toContain("session a1b2c3d4 was gone already");
     expect(world.out).toContain("session f9e8d7c6 was gone already");
     expect(existsSync(project)).toBe(false);
+  });
+
+  test("RX1: a removal that runs holds the record: a second one refuses, and rolls nothing back", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "merged" });
+    // The person's `crew rm --discard` is mid-way: its rollback bytes are on the record.
+    const pending = {
+      archivedHead: "a".repeat(40),
+      head: "b".repeat(40),
+      indexArchived: join(world.home, "index.new"),
+      indexBackup: join(world.home, "index.bak"),
+      indexPath: join(world.home, "index"),
+    };
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { discardPending: pending }, NOW);
+    const first = crewRemovalLockDir(world.paths.stateDir, world.repo, record.id);
+    mkdirSync(first, { recursive: true });
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    void withLock(
+      first,
+      async () => {
+        ready();
+        await held;
+      },
+      { waitMs: 1000 },
+    );
+    await started;
+    let code: number;
+    try {
+      // The lead's watch tries the same record while the person's removal runs.
+      code = await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree }));
+    } finally {
+      release();
+    }
+
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew rm: ${record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      discardPending: pending,
+      state: "merged",
+    });
   });
 
   test("a failed claude rm moves nothing: Claude Code still knows the session", async () => {

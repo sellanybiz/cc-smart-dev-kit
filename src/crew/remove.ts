@@ -33,8 +33,10 @@
  * A folder git does not list as a worktree is not ours to delete: it is said, and the command
  * stops there. Nothing is called gone that is not.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { LockBusyError, withLock } from "../setup/lock";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
 import { liveSessions } from "../hooks/sessions";
@@ -92,7 +94,7 @@ import {
   stopSession,
 } from "./end";
 import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, type CrewRecord, crewSessions, listCrew } from "./store";
+import { appendCrewEvent, type CrewRecord, crewFilesDir, crewSessions, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -147,19 +149,72 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
   }
 }
 
-/** `crew rm <name|id>`; the exit code. */
+/** What `crew rm` may be given besides the crew session. */
+interface CrewRmOptions {
+  skipParked?: boolean;
+  against?: { label: string; ref: string };
+  discard?: boolean;
+  yes?: boolean;
+  expectedDiscardToken?: string;
+  /** Called only by the interactive command; automated callers cannot prompt. */
+  confirm?: (question: string) => boolean;
+}
+
+/**
+ * The folder whose lock one crew session's removal holds (RX1): beside its other files, so it goes
+ * with them. A person's `crew rm` and the lead's watch both remove a record, and a discard changes
+ * the worktree under the watch's feet (its signature moves, so the watch tries again): without the
+ * lock the second run finds `discardPending`, takes the first run's work for a crash and rolls it
+ * back under the person's process.
+ */
+export function crewRemovalLockDir(stateDir: string, repo: string, id: string): string {
+  return join(crewFilesDir(stateDir, repo, id), "removal");
+}
+
+/**
+ * `crew rm <name|id>`; the exit code. One removal of a crew session runs at a time: a second one
+ * (the watch's after the person's, or two of the person's) refuses at once and changes nothing.
+ * A removal that crashed leaves no lock behind (`withLock` judges its holder), so a later run
+ * recovers it as before.
+ */
 export async function runCrewRm(
   ref: string,
   ctx: CrewContext,
-  options: {
-    skipParked?: boolean;
-    against?: { label: string; ref: string };
-    discard?: boolean;
-    yes?: boolean;
-    expectedDiscardToken?: string;
-    /** Called only by the interactive command; automated callers cannot prompt. */
-    confirm?: (question: string) => boolean;
-  } = {},
+  options: CrewRmOptions = {},
+): Promise<number> {
+  const first = actOn(ref, "rm", ctx);
+  if (isRefusal(first)) return refuse(first, ctx);
+  const dir = crewRemovalLockDir(ctx.paths.stateDir, first.record.repo, first.record.id);
+  let entered = false;
+  try {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+    return await withLock(
+      dir,
+      async () => {
+        entered = true;
+        return await removeCrewSession(ref, ctx, options);
+      },
+      { waitMs: 0 },
+    );
+  } catch (error) {
+    // Only the lock being held is "busy": a LockBusyError from inside the removal is its own.
+    if (error instanceof LockBusyError && !entered) {
+      return refuse(
+        failure(
+          `crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`,
+        ),
+        ctx,
+      );
+    }
+    throw error;
+  }
+}
+
+/** The removal itself; the caller holds the record's removal lock. */
+async function removeCrewSession(
+  ref: string,
+  ctx: CrewContext,
+  options: CrewRmOptions,
 ): Promise<number> {
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
