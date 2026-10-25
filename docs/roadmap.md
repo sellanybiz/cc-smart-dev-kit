@@ -476,3 +476,11 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
   stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
   person's machine.
+- **Plugin monitors with telemetry off.** Claude Code 2.1.310's changelog says a plugin's
+  monitors now run with telemetry off too. The kit still assumes they do not:
+  `monitorsRunHere` (`src/crew/telemetry.ts`), the `crew watch --once` fallback
+  (`src/crew/watch.ts`), the lead skill, `docs/design/crew.md` and the contract's monitors row.
+  Prove it in a throwaway session, then let the kit follow (a plugin change: a version bump).
+  Until then a lead with telemetry off keeps polling with `--once`, which works either way.
+- **Windows on Claude Code 2.1.310, by a person.** `doctor --live` on a Windows machine, and a
+  `PreToolUse` hook that still blocks with Git Bash absent (`docs/windows-setup.md`).
