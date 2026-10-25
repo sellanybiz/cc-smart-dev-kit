@@ -48,6 +48,14 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
   Claude Code wrote them" and "a slot's Claude target: only the fields it refuses change"
   must keep passing.
+- **A stream that goes silent is ended, Anthropic's too (the owner, 2026-10-25).** Every 2xx
+  `/v1/messages` event stream the router relays (`relayAnswer` → `endIfSilent`) fails its body
+  once `timeouts.streamIdleMs` pass with no byte, counted from its headers; any byte resets it
+  (events, `ping`, comment lines). Ending a stream changes no byte, status or header before it
+  and adds none: it is the one thing the router does to an Anthropic answer beyond the named
+  translations. A backend's stall rests the target; a Claude target's rests nothing and is no
+  capacity failure (it fails mid-answer). An error status, JSON and every other path are never
+  bounded. Its tests: `gateway.test.ts` › "streaming" › "SC1: …".
 - **Log an upstream's reason, never the request.** A 4xx / 5xx to a model call from any
   target gets a `WARN` line with at most 300 characters of its answer (read from its first
   2 KB), through `maskSecrets` with the keys the router knows. **The log never delays an
@@ -123,7 +131,8 @@ safety checks), their ids in § Names. One rule set for all of them:
   when one rests. A used-up chain returns its last answer, or a 502 — **except with the slot's
   breaker on**: when every target failed for want of capacity (`isCapacityFailure`) and the last
   one is a backend, the request is held and then answered with the breaker's 429
-  (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged**, its quota
+  (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged** (a stream silent for
+  `timeouts.streamIdleMs` is ended, above, and nothing else), its quota
   429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
   real headers. A last target that is Anthropic is never held. **The one exception (the
   owner's D65):** a Claude target behind the first, at a plan limit the router already knows

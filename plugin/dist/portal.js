@@ -7474,6 +7474,9 @@ var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
 var DEFAULT_STREAM_IDLE_MS = 120000;
 var MAX_TIMER_MS = 2147483647;
+function timerTooLong(consequence) {
+  return `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and ${consequence})`;
+}
 var BREAKER_HOLD_CEILING_MS = 240000;
 var BREAKER_HOLD_NON_STREAMING_MS = 60000;
 var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
@@ -7517,8 +7520,8 @@ var gatewayConfigSchema = looseObject({
   slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
-    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS),
-    streamIdleMs: int().positive().max(MAX_TIMER_MS, `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)`).optional()
+    firstByteMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every request would be cut")).default(DEFAULT_FIRST_BYTE_MS),
+    streamIdleMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every stream would be cut")).optional()
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -10283,22 +10286,21 @@ function createRouter(deps) {
       })
     };
   }
-  function endsStalledStream(target) {
-    return target.kind === "backend";
+  function restsAfterStall(target) {
+    return target?.kind === "backend";
   }
-  function endIfSilent(response, label, idleMs) {
+  function endIfSilent(response, label, idleMs, rests) {
     const body = response.body;
     if (body === null)
       return response;
     const reader = body.getReader();
-    let started = false;
     const guarded = new ReadableStream({
       cancel: (reason) => reader.cancel(reason),
       async pull(controller) {
-        const timer = started ? deadline(idleMs) : null;
+        const timer = deadline(idleMs);
         const read = reader.read();
         try {
-          const step = await (timer === null ? read : Promise.race([read, timer.done]));
+          const step = await Promise.race([read, timer.done]);
           if (step === "timeout") {
             read.catch(() => {
               return;
@@ -10306,11 +10308,9 @@ function createRouter(deps) {
             reader.cancel().catch((error) => {
               deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
             });
-            deps.log(`WARN ${label} sent no byte for ${idleMs} ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests`);
-            noteCooldown(label, {
-              failure: `no byte for ${idleMs} ms after the first`,
-              status: null
-            });
+            deps.log(`WARN ${label} sent no byte for ${idleMs} ms (timeouts.streamIdleMs); its stream was ended${rests ? " and the target rests" : ""}`);
+            if (rests)
+              noteCooldown(label, { failure: `no byte for ${idleMs} ms`, status: null });
             controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
             return;
           }
@@ -10318,12 +10318,11 @@ function createRouter(deps) {
             controller.close();
             return;
           }
-          started = true;
           controller.enqueue(step.value);
         } catch (error) {
           controller.error(error);
         } finally {
-          timer?.clear();
+          timer.clear();
         }
       }
     });
@@ -10332,6 +10331,10 @@ function createRouter(deps) {
       status: response.status,
       statusText: response.statusText
     });
+  }
+  function relayAnswer(upstream, target, label, config, url) {
+    const bounded = url.pathname === MESSAGES_PATH && upstream.ok && (upstream.headers.get("content-type") ?? "").includes("text/event-stream") ? endIfSilent(upstream, label, streamIdleMs(config), restsAfterStall(target)) : upstream;
+    return relay(bounded, target);
   }
   function relay(upstream, target) {
     const headers = responseHeaders(upstream.headers, target?.kind === "backend" ? deps.now() : null);
@@ -10634,7 +10637,7 @@ function createRouter(deps) {
         }
         const answer = {
           fallbacks,
-          response: relay(url.pathname === MESSAGES_PATH && endsStalledStream(target) && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream") ? endIfSilent(result.response, label, streamIdleMs(config)) : result.response, target),
+          response: relayAnswer(result.response, target, label, config, url),
           skipped,
           target: label
         };
@@ -11039,7 +11042,7 @@ function createRouter(deps) {
       if (isMessages && "response" in result && result.response.status >= 400) {
         logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, observed === null ? undefined : signatureWarn(observed, result.response.status));
       }
-      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
+      const response = "response" in result ? relayAnswer(result.response, null, "anthropic", config, url) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
     const direct = async (body = bytes, observed = null) => answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);

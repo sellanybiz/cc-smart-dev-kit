@@ -313,6 +313,20 @@ describe("timeouts.breakerHoldMs", () => {
   });
 });
 
+describe("timeouts.firstByteMs (SC1)", () => {
+  it("takes up to the longest wait a timer has, and refuses more: above it the wait is 1 ms", () => {
+    expect(parsed(raw({ timeouts: { firstByteMs: 2_147_483_647 } })).timeouts.firstByteMs).toBe(
+      2_147_483_647,
+    );
+    expect(parseConfig(raw({ timeouts: { firstByteMs: 2_147_483_648 } }))).toEqual({
+      error: [
+        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every request would be cut)",
+        "  → at timeouts.firstByteMs",
+      ].join("\n"),
+    });
+  });
+});
+
 describe("timeouts.streamIdleMs (SC1)", () => {
   it("is 120 s when the config does not say, and adds no key to a config that has none", () => {
     expect(streamIdleMs(parsed(raw()))).toBe(120_000);

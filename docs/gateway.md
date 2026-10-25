@@ -33,7 +33,8 @@ The rules for changing it: `.claude/rules/gateway.md`.
   last answer, or a 502. One exception, with the slot's breaker on (the default): when every
   target failed for want of capacity and the last one is a backend, the request is held for a
   while and then answered with a 429 Claude Code retries (§ The breaker). Anthropic's own
-  answers always pass unchanged, but for one exception (the owner's D65): a Claude target
+  answers always pass unchanged (a stream silent for `timeouts.streamIdleMs` is ended: § Fallback
+  rules), but for one exception (the owner's D65): a Claude target
   behind the first, resting at a plan limit the router already knows, is not asked as the last
   target, so a hiccup of the target before it is held, not ended on Claude's limit.
 - **A request that carries one of Anthropic's server tools** (web search) goes to Anthropic
@@ -1358,15 +1359,20 @@ reaches Claude Code**.
 - **Deadline:** `timeouts.firstByteMs`, 60 s by default. For a safety check on a backend (the
   judge), on every target, the last too, and for a stream until its first real event; when
   the last one misses it, the answer is a 504 `timeout_error` in Anthropic's shape.
-- **The stream idle limit (SC1).** `timeouts.firstByteMs` covers only the wait for the first
-  byte. After it, a stream that went silent had no bound: on 2026-10-24, 12 of 4,957 answers
-  from one OmniRoute target in 3 hours sent a 200 and then nothing, and one crew session waited
-  21 minutes, until Claude Code gave up. Claude Code ended no stalled stream by itself in the
-  179 s a probe watched (`docs/claude-code-contract.md` § The gateway). So `"timeouts":
-  {"streamIdleMs": <ms>}` is how long an affordable backend's streaming answer may send **no
-  byte** after its first. Any byte counts: an event, a `ping`, or OmniRoute's `: keepalive`
-  comment line. At most 2147483647 (the longest a timer waits; above it the wait would be 1 ms
-  and every stream would be cut). Absent, it is **120000** (120 s, `DEFAULT_STREAM_IDLE_MS`),
+- **The stream idle limit (SC1).** `timeouts.firstByteMs` covers only a held stream's wait for
+  its first real event. Any other stream that went silent had no bound: on 2026-10-24, 12 of
+  4,957 answers from one OmniRoute target in 3 hours sent a 200 and then nothing, and one crew
+  session waited 21 minutes, until Claude Code gave up. Claude Code ended no stalled stream by
+  itself in the 179 s a probe watched (`docs/claude-code-contract.md` § The gateway). So
+  `"timeouts": {"streamIdleMs": <ms>}` is how long **any streaming answer the router relays**
+  (a `/v1/messages` 2xx event stream: an affordable backend's, a Claude target's in a chain,
+  and one sent straight to Anthropic; the owner, 2026-10-25) may send **no byte**, counted from
+  its headers. Any byte resets it: an event, a `ping`, OmniRoute's `: keepalive` comment line,
+  so a slow but live first token is never cut. A held stream's wait for its first real event
+  is `firstByteMs`'s and is over when this starts; the last backend with no deadline of its
+  own (the breaker off or `breakerHoldMs` 0), and every Claude target, have this one alone.
+  At most 2147483647 (the longest a timer waits; above it the wait would be 1 ms and every
+  stream would be cut; `firstByteMs` has the same cap). Absent, it is **120000** (120 s, `DEFAULT_STREAM_IDLE_MS`),
   **a judgment, not a measurement**: the request history is metadata only and its `ms` is the
   time to the answer's headers (the first real event, for a held stream), never the gaps
   between events. On 88,926 rows that time is at most 60 s for 99 of 100 answers on the
@@ -1374,25 +1380,26 @@ reaches Claude Code**.
   120 s sits above the longest wait seen and still ends a stall in two minutes. When it passes, the
   router cancels the upstream and fails the body (`endIfSilent`), the way a cut connection
   does: Claude Code then sends the same request again within a second, as a stream (proved on
-  2.1.310, P14 and P15). The router logs `WARN <target> sent no byte for <ms> ms after its first
-  byte (timeouts.streamIdleMs); its stream was ended and the target rests`, and the target
-  rests like any failure (30 s, the cooldown below, never a second timer), so the retry goes to
-  the next target when the fallback switch is on. With it off, or a chain of one, the retry asks
-  the same target again: the last target is always tried. The clock starts at the first byte, so
-  it never replaces `firstByteMs`; it runs only while the router waits for the upstream (a
-  client slow to read pauses it); a request that does not stream is not covered. **Not covered:
-  a last backend that sends its headers and then no byte at all**, when it has no deadline of
-  its own (the breaker off or `breakerHoldMs` 0: § The breaker, list item 4). The history
-  records a cut answer as the 200 its headers were, with the tokens read before the cut; the
-  `WARN` line is the only mark. A stream that breaks on the network after its first byte rests
-  nothing, as before. **A Claude
-  target's stalled stream is not cut** (the owner, 2026-10-25): every answer from Anthropic
-  passes unchanged, and an ended stream is a changed answer. `endsStalledStream` is the one
-  place to widen it. Bun logs the failed body as an `error:` stack on the router's stderr
-  beside the `WARN` line; it is that same cut, not a second failure. A keep-alive comment
-  sent forever by a stalled upstream would count as bytes and never be cut. The 2026-10-24
-  stalls sent nothing at all, and whether OmniRoute keeps its keep-alives going after a real
-  event is not known; a rule that counts only real events waits for a stall that shows it.
+  2.1.310, P14 and P15). The router logs `WARN <target> sent no byte for <ms> ms
+  (timeouts.streamIdleMs); its stream was ended`, with `and the target rests` for a backend
+  (`anthropic` names a request sent straight to Anthropic). **A backend's stall rests it** like
+  any failure (30 s, the cooldown below, never a second timer), so the retry goes to the next
+  target when the fallback switch is on; with it off, or a chain of one, the retry asks the
+  same target again: the last target is always tried. **A Claude target's stall rests
+  nothing, and is no capacity failure for the breaker or the fallback**: it fails in the
+  middle of an answer, which the router already treats so (a stream that breaks after its first
+  byte rests nothing; a plan limit is read from headers only; the breaker and the fallback act
+  before an answer reaches Claude Code), so Claude Code's retry asks the same chain again.
+  Until the stream is ended, an Anthropic answer's status, headers and bytes pass as they came;
+  an error status or a JSON answer is never bounded. The clock runs only while the router
+  waits for the upstream (a client slow to read pauses it), and a client that hangs up cancels
+  the upstream and rests nothing. The history records a cut answer as the 200 its headers
+  were, with the tokens read before the cut; the `WARN` line is the only mark. Bun logs the
+  failed body as an `error:` stack on the router's stderr beside the `WARN` line; it is that
+  same cut, not a second failure. A keep-alive comment or `ping` sent forever by a stalled
+  upstream would count as bytes and never be cut: the 2026-10-24 stalls sent nothing at all,
+  and whether OmniRoute keeps its keep-alives going after a real event is not known; a rule
+  that counts only real events waits for a stall that shows it.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last (and, with an open breaker, a

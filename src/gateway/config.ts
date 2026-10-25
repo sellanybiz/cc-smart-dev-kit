@@ -44,8 +44,8 @@ export const DEFAULT_PORT = 20100;
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_FIRST_BYTE_MS = 60_000;
 /**
- * The default of `timeouts.streamIdleMs`: how long a streaming answer may send no byte after
- * its first before the router ends it. A judgment, not a measurement: the request history
+ * The default of `timeouts.streamIdleMs`: how long a streaming answer may send no byte, from
+ * its headers, before the router ends it. A judgment, not a measurement: the request history
  * holds each answer's time to its headers (the first real event, for a held stream), never
  * the gaps between events (88,926 rows, 2026-10: that time is at most 60 s for 99 of 100 answers
  * on the slowest target and 102 s at most). A pause inside an answer (a reasoning pause, a large
@@ -56,6 +56,11 @@ export const DEFAULT_FIRST_BYTE_MS = 60_000;
 export const DEFAULT_STREAM_IDLE_MS = 120_000;
 /** The longest a `setTimeout` waits (2^31 - 1 ms); a longer one fires after 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/** The refusal of a timeout above `MAX_TIMER_MS`, with what such a value would do. */
+function timerTooLong(consequence: string): string {
+  return `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and ${consequence})`;
+}
 
 /**
  * The longest the breaker holds a request while every target of its slot is limited or down,
@@ -241,19 +246,20 @@ export const gatewayConfigSchema = z
             `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`,
           )
           .optional(),
-        firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS),
+        firstByteMs: z
+          .int()
+          .positive()
+          .max(MAX_TIMER_MS, timerTooLong("every request would be cut"))
+          .default(DEFAULT_FIRST_BYTE_MS),
         /**
          * How long a streaming answer may send no byte (an event, a ping or a comment line
-         * all count) after its first before the router ends it, in whole milliseconds. Absent:
+         * all count), counted from its headers, before the router ends it, in whole ms. Absent:
          * `DEFAULT_STREAM_IDLE_MS`, read through `streamIdleMs`.
          */
         streamIdleMs: z
           .int()
           .positive()
-          .max(
-            MAX_TIMER_MS,
-            `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)`,
-          )
+          .max(MAX_TIMER_MS, timerTooLong("every stream would be cut"))
           .optional(),
       })
       .default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
@@ -531,7 +537,7 @@ export function breakerHoldMs(config: Pick<GatewayConfig, "timeouts">): number {
 }
 
 /**
- * How long a streaming answer may send no byte after its first, in milliseconds: the
+ * How long a streaming answer may send no byte, from its headers, in milliseconds: the
  * config's `timeouts.streamIdleMs`, else `DEFAULT_STREAM_IDLE_MS`.
  */
 export function streamIdleMs(config: Pick<GatewayConfig, "timeouts">): number {

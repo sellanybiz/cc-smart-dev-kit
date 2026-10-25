@@ -1774,37 +1774,45 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * Whose stalled stream the router ends (`endIfSilent`). A backend's only: an Anthropic
-   * stream passes untouched, as every Anthropic answer does (the owner, 2026-10-25). The one
-   * place to widen it.
+   * Whether a stalled stream rests its target: a backend's does, like any failure it has
+   * (`noteCooldown`). A Claude target's does not: it fails in the middle of an answer, and the
+   * router rests nothing for that (a Claude plan limit is read from headers only:
+   * `observeClaude`; the breaker and the fallback act only before an answer reaches Claude
+   * Code). Claude Code's retry is the recovery.
    */
-  function endsStalledStream(target: Target): boolean {
-    return target.kind === "backend";
+  function restsAfterStall(target: null | Target): boolean {
+    return target?.kind === "backend";
   }
 
   /**
-   * A streaming answer that goes silent after its first byte is ended once `idleMs` pass
-   * with no byte (an event, a ping or a comment line all count): the body fails, the way a
+   * A streaming answer that goes silent is ended once `idleMs` pass with no byte (an event, a
+   * ping or a comment line all count), counted from its headers: the body fails, the way a
    * cut connection does, which Claude Code answers by sending the request again at once
    * (`docs/claude-code-contract.md`, P14); it has no limit of its own once a stream has
-   * started. The target rests like any failure (`noteCooldown`, the existing rest rules);
-   * the log line names the target and the idle time. The clock starts at the first byte:
-   * the wait for it is `firstByteMs`'s (`holdFirstEvent`). It runs only while the router
-   * waits on the upstream: a client slow to read stops the pulls, and so the clock. A
-   * client that hangs up cancels the upstream and rests nothing.
+   * started. A held stream's wait for its first event is `firstByteMs`'s (`holdFirstEvent`),
+   * over when this starts; every other stream has no deadline but this one. The log line
+   * names the target and the idle time; a backend's target rests like any failure
+   * (`restsAfterStall`, `noteCooldown`, the existing rest rules). The clock runs only while
+   * the router waits on the upstream: a client slow to read stops the pulls, and so the clock.
+   * A client that hangs up cancels the upstream and rests nothing. Until the stream is ended
+   * its status, headers and bytes pass as they came.
    */
-  function endIfSilent(response: Response, label: string, idleMs: number): Response {
+  function endIfSilent(
+    response: Response,
+    label: string,
+    idleMs: number,
+    rests: boolean,
+  ): Response {
     const body = response.body;
     if (body === null) return response;
     const reader = body.getReader();
-    let started = false;
     const guarded = new ReadableStream<Uint8Array>({
       cancel: (reason) => reader.cancel(reason),
       async pull(controller) {
-        const timer = started ? deadline(idleMs) : null;
+        const timer = deadline(idleMs);
         const read = reader.read();
         try {
-          const step = await (timer === null ? read : Promise.race([read, timer.done]));
+          const step = await Promise.race([read, timer.done]);
           if (step === "timeout") {
             // Not awaited: a stalled upstream may never settle its cancel. The pending read
             // ends with the cancel, or fails on its own: neither is news.
@@ -1813,12 +1821,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
               deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
             });
             deps.log(
-              `WARN ${label} sent no byte for ${idleMs} ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests`,
+              `WARN ${label} sent no byte for ${idleMs} ms (timeouts.streamIdleMs); its stream was ended${rests ? " and the target rests" : ""}`,
             );
-            noteCooldown(label, {
-              failure: `no byte for ${idleMs} ms after the first`,
-              status: null,
-            });
+            if (rests) noteCooldown(label, { failure: `no byte for ${idleMs} ms`, status: null });
             controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
             return;
           }
@@ -1826,12 +1831,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             controller.close();
             return;
           }
-          started = true;
           controller.enqueue(step.value);
         } catch (error) {
           controller.error(error);
         } finally {
-          timer?.clear();
+          timer.clear();
         }
       },
     });
@@ -1840,6 +1844,27 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       status: response.status,
       statusText: response.statusText,
     });
+  }
+
+  /**
+   * A model call's answer from any target, as Claude Code gets it: a 2xx event stream of
+   * `/v1/messages` is bounded by `endIfSilent` (Anthropic's too: the owner, 2026-10-25); every
+   * other answer — an error status, JSON, another path — passes as it is.
+   */
+  function relayAnswer(
+    upstream: Response,
+    target: null | Target,
+    label: string,
+    config: GatewayConfig,
+    url: URL,
+  ): Response {
+    const bounded =
+      url.pathname === MESSAGES_PATH &&
+      upstream.ok &&
+      (upstream.headers.get("content-type") ?? "").includes("text/event-stream")
+        ? endIfSilent(upstream, label, streamIdleMs(config), restsAfterStall(target))
+        : upstream;
+    return relay(bounded, target);
   }
 
   /** The upstream response, as Claude Code gets it: status, headers, streamed body. */
@@ -2415,15 +2440,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         }
         const answer: Outcome = {
           fallbacks,
-          response: relay(
-            url.pathname === MESSAGES_PATH &&
-              endsStalledStream(target) &&
-              result.response.ok &&
-              (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
-              ? endIfSilent(result.response, label, streamIdleMs(config))
-              : result.response,
-            target,
-          ),
+          response: relayAnswer(result.response, target, label, config, url),
           skipped,
           target: label,
         };
@@ -3083,7 +3100,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       const response =
         "response" in result
-          ? relay(result.response, null)
+          ? relayAnswer(result.response, null, "anthropic", config, url)
           : anthropicError(
               502,
               "api_error",

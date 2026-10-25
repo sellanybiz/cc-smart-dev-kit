@@ -2827,7 +2827,7 @@ describe("streaming", () => {
     expect(two.push("\n")).toBe("error");
   });
 
-  describe("SC1: a stream that goes silent after its first byte", () => {
+  describe("SC1: a stream that goes silent", () => {
     const START = 'event: message_start\ndata: {"type":"message_start"}\n\n';
     const DELTA = 'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n';
     const IDLE_MS = 80;
@@ -2885,7 +2885,7 @@ describe("streaming", () => {
       expect(Date.now() - started).toBeLessThan(IDLE_MS + 500);
       expect(stalled.state.cancelled).toBe(true);
       expect(logs).toContain(
-        "WARN omniroute:glm-5.3-flash sent no byte for 80 ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests",
+        "WARN omniroute:glm-5.3-flash sent no byte for 80 ms (timeouts.streamIdleMs); its stream was ended and the target rests",
       );
       const health: unknown = await (
         await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
@@ -3000,26 +3000,125 @@ describe("streaming", () => {
       expect(health).toMatchObject({ cooling: {} });
     });
 
-    it("a Claude target's stalled stream is not cut (the owner: Anthropic's answers pass untouched)", async () => {
+    /** What the next read comes to: its failure's words, a chunk, the end, or no answer in 1 s. */
+    async function nextRead(reader: {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    }): Promise<string> {
+      return await Promise.race([
+        reader.read().then(
+          (step) => (step.done ? "the end, clean" : "a chunk"),
+          (error: unknown) => String(error),
+        ),
+        Bun.sleep(1000).then(() => "still waiting after 1 s"),
+      ]);
+    }
+
+    /** Headers and then nothing, ever. */
+    function silentStream() {
+      const state = { cancelled: false };
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          state.cancelled = true;
+        },
+      });
+      return {
+        response: new Response(body, { headers: { "content-type": "text/event-stream" } }),
+        state,
+      };
+    }
+
+    it("a Claude target's stalled stream is ended too (the owner, 2026-10-25); nothing rests", async () => {
       const stalled = gatedStream([START, DELTA]);
       const { handle, logs } = router([() => stalled.response], { config: idleConfig() });
       const res = await handle(
         clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-mixed")) }),
       );
+      expect(res.status).toBe(200);
       const reader = res.body?.getReader();
       if (reader === undefined) throw new Error("no body");
       expect(await readSoon(reader)).toBe(START);
-      const outcome = await Promise.race([
-        reader.read().then(
-          () => "a chunk or the end",
-          (error: unknown) => String(error),
-        ),
-        Bun.sleep(IDLE_MS * 3).then(() => "still waiting"),
-      ]);
-      expect(outcome).toBe("still waiting");
-      expect(stalled.state.cancelled).toBe(false);
-      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
-      await reader.cancel();
+      expect(await nextRead(reader)).toContain("sent no byte for 80 ms");
+      expect(stalled.state.cancelled).toBe(true);
+      // A Claude target fails in the middle of an answer: nothing rests, as for a stream
+      // that breaks after its first byte, and the line does not say it does.
+      expect(logs).toContain(
+        "WARN claude-sonnet-5-5 sent no byte for 80 ms (timeouts.streamIdleMs); its stream was ended",
+      );
+      const health: unknown = await (
+        await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
+      ).json();
+      expect(health).toMatchObject({ cooling: {} });
+    });
+
+    it("an answer sent straight to Anthropic that stalls is ended too, its bytes as they came until then", async () => {
+      const stalled = gatedStream([START, DELTA]);
+      const { calls, handle, logs } = router([() => stalled.response], {
+        config: idleConfig(),
+      });
+      // No chain for Opus: the request goes to Anthropic as sent.
+      const res = await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      expect(await readSoon(reader)).toBe(START);
+      expect(await nextRead(reader)).toContain("sent no byte for 80 ms");
+      expect(logs).toContain(
+        "WARN anthropic sent no byte for 80 ms (timeouts.streamIdleMs); its stream was ended",
+      );
+    });
+
+    it("headers and then nothing: the last backend, with no deadline of its own, is ended at the limit", async () => {
+      const silent = silentStream();
+      // Fallback off: the one target is the last, so no first-event deadline holds it.
+      const { handle, logs } = router([() => silent.response], {
+        config: { ...idleConfig(), fallback: {} },
+      });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      expect(res.status).toBe(200);
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      expect(await nextRead(reader)).toContain("sent no byte for 80 ms");
+      expect(silent.state.cancelled).toBe(true);
+      expect(logs).toContain(
+        "WARN omniroute:glm-5.3-flash sent no byte for 80 ms (timeouts.streamIdleMs); its stream was ended and the target rests",
+      );
+    });
+
+    it("headers, then keep-alives or pings, then a late first event: not ended", async () => {
+      const keepalives = pacedStream(
+        [
+          ...Array.from({ length: 4 }, () => ({ afterMs: 50, text: ": keepalive\n\n" })),
+          { afterMs: 50, text: START },
+        ],
+        "text/event-stream",
+      );
+      const pings = pacedStream(
+        [
+          ...Array.from({ length: 4 }, () => ({ afterMs: 50, text: "event: ping\ndata: {}\n\n" })),
+          { afterMs: 50, text: START },
+        ],
+        "text/event-stream",
+      );
+      // The last backend, then a Claude target: both wait 250 ms for a first event, which is
+      // more than three limits, with a byte in every gap.
+      const last = router([() => keepalives.response], {
+        config: { ...idleConfig(), fallback: {} },
+      });
+      const backendRes = await last.handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      expect(await backendRes.text()).toBe(`${": keepalive\n\n".repeat(4)}${START}`);
+      const claude = router([() => pings.response], { config: idleConfig() });
+      const claudeRes = await claude.handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-mixed")) }),
+      );
+      expect(await claudeRes.text()).toBe(`${"event: ping\ndata: {}\n\n".repeat(4)}${START}`);
+      for (const logs of [last.logs, claude.logs]) {
+        expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+      }
     });
 
     it("the limit is a config field: its default is 120 s", () => {
