@@ -22,6 +22,7 @@ import type { HealthFetch } from "../gateway/health";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
+  forwardedSignals,
   type LaunchContext,
   launchSettingsFile,
   parseLaunchArgs,
@@ -551,6 +552,34 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
       }
     }
   }
+
+  test("a session ended by a signal gives the shell's code for it, 128 plus the number", async () => {
+    const dir = tempDir("launch-killed");
+    const claude = join(dir, "claude");
+    writeFileSync(claude, ["#!/bin/sh", "kill -KILL $$"].join("\n"));
+    chmodSync(claude, 0o755);
+    const runner = join(dir, "runner.ts");
+    writeFileSync(
+      runner,
+      [
+        `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, verbatim: false });`,
+      ].join("\n"),
+    );
+    const guard = subprocessGuard();
+    const launcher = Bun.spawn([process.execPath, ...guard.args, runner], {
+      env: { ...process.env, ...guard.env },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(await launcher.exited).toBe(137);
+  });
+
+  test("Windows hands no signal on: its console gives them to the session itself, and kill ends it outright", () => {
+    expect(forwardedSignals("win32")).toEqual([]);
+    expect(forwardedSignals("linux")).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+    expect(forwardedSignals("darwin")).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+  });
 
   test.each([
     ["SIGTERM", "TERM", 7],

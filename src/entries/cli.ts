@@ -41,7 +41,7 @@ import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
-import { realProbe } from "../gateway/health";
+import { realProbe, routerFetch } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
 import {
@@ -205,7 +205,7 @@ function launchContext(paths: ReturnType<typeof cliPaths>) {
     cwd: process.cwd(),
     env: process.env,
     error: (line: string) => console.error(line),
-    fetch: (url: string, init: RequestInit) => fetch(url, init),
+    fetch: routerFetch,
     home: paths.home,
     platform: process.platform,
     print: (line: string) => console.log(line),

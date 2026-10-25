@@ -7890,10 +7890,6 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
-// src/gateway/router.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname5 } from "path";
-
 // src/gateway/hosts.ts
 function ipv4Parts(host) {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
@@ -7960,6 +7956,10 @@ function directIfLoopback(url) {
 function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
   return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
+
+// src/gateway/router.ts
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
 
 // src/gateway/plain-text.ts
 var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
@@ -11309,9 +11309,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
+var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -11322,7 +11323,7 @@ function isJsonObject6(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
+async function routerHealth(port, fetchImpl = routerFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {

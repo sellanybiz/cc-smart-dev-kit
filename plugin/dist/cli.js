@@ -21886,9 +21886,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
+var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -21899,7 +21900,7 @@ function isJsonObject10(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
+async function routerHealth(port, fetchImpl = routerFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -37539,10 +37540,13 @@ function parseLaunchArgs(args) {
   return { claudeArgs, mode: mode ?? { kind: "default" } };
 }
 var FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"];
+function forwardedSignals(platform) {
+  return platform === "win32" ? [] : FORWARDED_SIGNALS;
+}
 var realRunSession = async (argv, options) => {
   let child = null;
   const forward = (signal) => () => child?.kill(signal);
-  const handlers = FORWARDED_SIGNALS.map((signal) => [signal, forward(signal)]);
+  const handlers = forwardedSignals(process.platform).map((signal) => [signal, forward(signal)]);
   for (const [signal, handler] of handlers)
     process.on(signal, handler);
   try {
@@ -37552,7 +37556,7 @@ var realRunSession = async (argv, options) => {
       stdio: ["inherit", "inherit", "inherit"],
       windowsVerbatimArguments: options.verbatim
     });
-    return await child.exited ?? 1;
+    return await child.exited;
   } finally {
     for (const [signal, handler] of handlers)
       process.off(signal, handler);
@@ -52528,7 +52532,7 @@ function launchContext(paths) {
     cwd: process.cwd(),
     env: process.env,
     error: (line) => console.error(line),
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     home: paths.home,
     platform: process.platform,
     print: (line) => console.log(line),

@@ -131,6 +131,17 @@ export type RunSession = (
 const FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
 
 /**
+ * The signals the launcher hands on on `platform`: the three above, and none on Windows. There a
+ * Ctrl+C or a closed console is a console event every process on that console gets by itself
+ * (`docs/windows-setup.md`), and `kill` ignores the signal and ends the process outright (Node's
+ * `subprocess.kill()`, which Bun follows), so a forwarded one would turn the session's own
+ * handling into a hard stop. The Windows run (P11) is still owed.
+ */
+export function forwardedSignals(platform: NodeJS.Platform): readonly NodeJS.Signals[] {
+  return platform === "win32" ? [] : FORWARDED_SIGNALS;
+}
+
+/**
  * The real run: the session gets this terminal's own stdin, stdout and stderr, so it is the
  * session a person types into, and its exit code is the one this command returns. Bun has no
  * `execve`, so the launcher stays in front of the session rather than being replaced by it.
@@ -145,7 +156,9 @@ export const realRunSession: RunSession = async (argv, options) => {
   // (A handler runs on the event loop, after `Bun.spawn` returned, so `child` is set by then.)
   let child: ReturnType<typeof Bun.spawn> | null = null;
   const forward = (signal: NodeJS.Signals) => () => child?.kill(signal);
-  const handlers = FORWARDED_SIGNALS.map((signal) => [signal, forward(signal)] as const);
+  const handlers = forwardedSignals(process.platform).map(
+    (signal) => [signal, forward(signal)] as const,
+  );
   for (const [signal, handler] of handlers) process.on(signal, handler);
   try {
     child = Bun.spawn(argv, {
@@ -154,8 +167,9 @@ export const realRunSession: RunSession = async (argv, options) => {
       stdio: ["inherit", "inherit", "inherit"],
       windowsVerbatimArguments: options.verbatim,
     });
-    // A session killed by a signal has no exit code (Bun answers null there): 1 says "not clean".
-    return (await child.exited) ?? 1;
+    // A session ended by a signal answers 128 plus the signal's number (143 for SIGTERM), the
+    // shell's own code for it, so the code passed on says how the session ended.
+    return await child.exited;
   } finally {
     for (const [signal, handler] of handlers) process.off(signal, handler);
   }
