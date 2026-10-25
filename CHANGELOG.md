@@ -3,7 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## Unreleased
+## 1.4.1
 
 - **`gateway setup` no longer reads 0.5.x's `portal.json`.** 0.6.0 moved the opus, fable and
   judge chains and their switches from that file into `gateway.json`, and kept the read for one
