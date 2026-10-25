@@ -136,9 +136,15 @@ safety checks), their ids in § Names. One rule set for all of them:
   Its tests: `gateway.test.ts` › "the breaker" › "D65: …".
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
-  Default on for scout, worker, the judge and a machine's own slots; off for opus and fable
-  (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x opus or fable chain gets that default, off: "on" moves
-  on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
+  **Off by default for every slot, the judge's included (owner D66)**: `fallbackOn` returns the
+  person's own setting, else false — one home, no per-slot list. A 0.4.x opus or fable chain
+  stays off: "on" moves on at far more than the plan limit it was set up for. **Every slot is
+  Claude by default and the gateway is off** (D66): a new config keeps no chain, and `gateway
+  setup` asks no slot and never turns the gateway on. A machine set up before it moves once, in
+  `cc-smart-dev-kit setup` only (`src/gateway/claude-defaults.ts`; a backup first, one line per
+  change, a state-folder marker, never a session start or the background update). The kit
+  suggests no model anywhere unasked; help that says *how* to set a chain or a fallback stays.
+  `gateway setup` drops 0.4.x's hidden
   `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
   exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
 - **The breaker switch** (`breaker` in the config, `breakerOn`, `gateway breaker <slot> on|off`)
@@ -200,8 +206,9 @@ Claude judges auto mode's safety checks first.
 - **No judge chain (the default):** Claude judges. While Claude is limited or down (the
   statuses a chain moves on for), the worker chain's backend targets that passed the judge test
   judge in its place, in that chain's order (`claudeFirstJudge`, `workerJudgeTargets`). The
-  judge's fallback switch is on by default and needs no judge chain: `gateway fallback judge
-  off` keeps Claude alone. `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
+  judge's fallback switch is off by default (D66) and needs no judge chain: the stand-in is the
+  person's opt-in (`gateway fallback judge on`), and off keeps Claude alone.
+  `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
   Claude's answer, never a reason to use a stand-in. An untested worker target, and a
   `claude-…` target in the worker chain, never judge.
 - **A chain the person sets wins:** its first usable target judges (the next only with the

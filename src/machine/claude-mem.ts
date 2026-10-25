@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
-import { loadConfigFile, messageOf } from "../gateway/config";
+import { type GatewayConfig, loadConfigFile, messageOf } from "../gateway/config";
 import { backendFetch } from "../gateway/hosts";
 import { maskedLine } from "../gateway/plain-text";
 import { backendAddress, maskKey } from "../gateway/settings";
@@ -190,29 +190,45 @@ export function compatBaseUrl(backendBaseUrl: string): string {
 }
 
 /**
- * The scout slot's first target in gateway.json, when it is an affordable `<backend>:<model>`
- * (claude-mem's work is Haiku's, and the scout is Haiku's slot), or why there is none: the
- * gateway is not set up, the scout has no chain, or its chain starts with a Claude model.
+ * Where claude-mem's work goes, read from the gateway's scout slot (claude-mem's work is
+ * Haiku's, and the scout is Haiku's slot):
+ * - `target`: the scout's first target is an affordable `<backend>:<model>`;
+ * - `claude`: the gateway is readable and the scout is Claude: it has no chain (every slot is
+ *   Claude by default, D66), or its chain starts with a Claude model;
+ * - `reason`: nothing can be said about the scout: the gateway is not set up, its file cannot
+ *   be used, or the scout's first target names no usable backend.
+ */
+export type ScoutRoute = { target: AffordableTarget } | { claude: true } | { reason: string };
+
+/**
+ * The scout's route in gateway.json, or in `after`: the config the one-time move to Claude
+ * defaults will leave (`planClaudeDefaults`), which a run of setup plans claude-mem from before
+ * the move is written, so a dry run and the real run plan the same keys.
  */
 export function gatewayAffordableTarget(
   gatewayConfigFile: string,
-): { target: AffordableTarget } | { reason: string } {
-  if (!existsSync(gatewayConfigFile)) return { reason: "the gateway is not set up" };
-  let config: ReturnType<typeof loadConfigFile>;
-  try {
-    config = loadConfigFile(gatewayConfigFile);
-  } catch (error) {
-    return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+  after?: GatewayConfig,
+): ScoutRoute {
+  let config: GatewayConfig;
+  if (after !== undefined) {
+    config = after;
+  } else {
+    if (!existsSync(gatewayConfigFile)) return { reason: "the gateway is not set up" };
+    try {
+      config = loadConfigFile(gatewayConfigFile);
+    } catch (error) {
+      return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+    }
   }
   const slot = familySlotKey("haiku");
-  const first = slot === null ? undefined : config.slots[slot]?.[0];
-  if (slot === null || first === undefined) {
-    return { reason: `${slot ?? "the scout slot"} has no chain` };
-  }
+  if (slot === null) return { reason: "the scout slot is unknown" };
+  const first = config.slots[slot]?.[0];
+  if (first === undefined) return { claude: true };
   const parsed = parseTarget(first);
-  if ("error" in parsed || parsed.target.kind !== "backend") {
+  if ("error" in parsed) {
     return { reason: `${slot} starts with ${first}, not an affordable model` };
   }
+  if (parsed.target.kind !== "backend") return { claude: true };
   const backend = config.backends[parsed.target.backend];
   if (backend === undefined) return { reason: `${first} names no backend in gateway.json` };
   return {
@@ -451,34 +467,74 @@ function planStartBlocks(
   return planned;
 }
 
+/** A key left alone because its value is the person's, as a note says it. */
+function leftAloneNote(read: ClaudeMemSettings, key: string, value: unknown): string {
+  const shown = key === API_KEY ? "another key" : shownClaudeMemValue(read.at(key), value);
+  return `  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`;
+}
+
+/**
+ * The scout is Claude (no chain, or a Claude model first): claude-mem goes back to Claude on
+ * the person's own login, which is its own default (provider `claude`, model Haiku), so setup
+ * takes out the provider keys it set for a backend before. They go together or not at all, as
+ * they were set: one key that is the person's keeps all five, and a note names it. A key that
+ * holds only claude-mem's own default is nobody's and stays as it is. The model key is never
+ * setup's (`CLAUDE_MEM_MODEL`): no Haiku id is written or named anywhere in the kit.
+ */
+function planBackToClaude(read: ClaudeMemSettings, notes: string[]): KeyPath[] {
+  const setups: KeyPath[] = [];
+  for (const key of PROVIDER_KEYS) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found) continue;
+    const whose = ownership(read.records, path, current, unchosen);
+    if (whose === "ours") {
+      setups.push(path);
+    } else if (!(whose === "none" && unchosen(path, current.value))) {
+      notes.push(leftAloneNote(read, key, current.value));
+      return [];
+    }
+  }
+  if (setups.length > 0) {
+    notes.push(
+      `  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`,
+    );
+  }
+  return setups;
+}
+
 /**
  * The provider keys, or null with the reason in `notes`. Nothing here writes without an
  * affordable scout target, a claude-mem new enough for the provider, a file in the flat form,
- * no key pool of the person's, and no other value of theirs among the five keys.
+ * no key pool of the person's, and no other value of theirs among the five keys. With the
+ * scout on Claude it plans the keys out instead (`planBackToClaude`).
  */
 function planProvider(
   paths: CliPaths,
   install: { version: string | null },
   read: ClaudeMemSettings,
   notes: string[],
-): ClaudeMemPlan["provider"] {
+  after: GatewayConfig | undefined,
+): { provider: ClaudeMemPlan["provider"]; remove: KeyPath[] } {
+  const none = { provider: null, remove: [] };
   // The person chose claude-mem's route, model or key in the portal: the provider keys are
   // theirs, together, until they choose again (or `restore` takes their choice out).
   const chosen = PROVIDER_KEYS.find((key) => isPersonsChoice(read, key));
   if (chosen !== undefined) {
     notes.push(`  claude-mem settings left alone: you chose ${chosen} in the portal (your choice)`);
-    return null;
+    return none;
   }
-  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
+  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile, after);
+  if ("claude" in affordable) return { provider: null, remove: planBackToClaude(read, notes) };
   if ("reason" in affordable) {
-    // cc-smart-dev-kit pointed claude-mem at a backend before, and there is no affordable model now.
+    // cc-smart-dev-kit pointed claude-mem at a backend before, and the scout says nothing now.
     const provider = getKey(read.data, read.at(PROVIDER));
     if (provider.found && ownership(read.records, read.at(PROVIDER), provider) === "ours") {
       notes.push(
-        `! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`,
+        `! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. To send its summaries to Claude again: ${COMMAND} claude-mem route claude`,
       );
     }
-    return null;
+    return none;
   }
 
   const version = comparableVersion(install.version);
@@ -495,7 +551,7 @@ function planProvider(
         }`,
       );
     }
-    return null;
+    return none;
   }
 
   const pool = getKey(read.data, read.at(API_KEY_POOL));
@@ -503,7 +559,7 @@ function planProvider(
     notes.push(
       `  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${read.short} (your choice)`,
     );
-    return null;
+    return none;
   }
 
   const target = affordable.target;
@@ -523,15 +579,15 @@ function planProvider(
     if (!current.found || current.value === value) continue;
     const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours" || (whose === "none" && unchosen(path, current.value))) continue;
-    const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
-    notes.push(
-      `  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`,
-    );
-    return null;
+    notes.push(leftAloneNote(read, key, current.value));
+    return none;
   }
   return {
-    target,
-    set: Object.entries(wanted).map(([key, value]) => [read.at(key), value] as const),
+    provider: {
+      target,
+      set: Object.entries(wanted).map(([key, value]) => [read.at(key), value] as const),
+    },
+    remove: [],
   };
 }
 
@@ -551,9 +607,14 @@ export function isOldNestedForm(data: JsonObject): boolean {
  *   in claude-mem's old nested form);
  * - `notInstalled`: claude-mem is not installed yet. Setup may install it (a companion
  *   step) and then plan again.
+ *
+ * `gatewayAfter` is the gateway config as the one-time move to Claude defaults will leave it
+ * (`planClaudeDefaults`): setup plans claude-mem from it before the move is written, so the dry
+ * run and the real run agree. Left out, the plan reads gateway.json as it is.
  */
 export function claudeMemPlan(
   paths: CliPaths,
+  gatewayAfter?: GatewayConfig,
 ): { plan: ClaudeMemPlan } | { note: string | null } | { notInstalled: true } {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
   if (install === null || !existsSync(install.installPath)) return { notInstalled: true };
@@ -570,11 +631,20 @@ export function claudeMemPlan(
 
   const notes: string[] = [];
   const startBlocks = planStartBlocks(read, notes);
-  const provider = planProvider(paths, install, read, notes);
+  const { provider, remove: backToClaude } = planProvider(
+    paths,
+    install,
+    read,
+    notes,
+    gatewayAfter,
+  );
   return {
     plan: {
       // A quota fallback the person chose in the portal is owned like 0.4.3's, and theirs.
-      remove: RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+      remove: [
+        ...RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+        ...backToClaude,
+      ],
       startBlocks,
       provider,
       notes,

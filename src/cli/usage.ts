@@ -9,8 +9,8 @@
  * `agent-<id>.meta.json` that names how it was launched (`model`: `opus`, `sonnet`, `haiku`,
  * or none, which means it took the session's model). In a `.jsonl`, each line of
  * `type: "assistant"` is one content block of a reply: `message.id` names the reply,
- * `message.model` the model that wrote it (an affordable backend's own name when a slot answered,
- * `glm-5.3-flash` say), `timestamp` when, `cwd` the folder. (docs/claude-code-contract.md)
+ * `message.model` the model that wrote it (a backend's own name, `<model>`, when a slot with a
+ * chain answered), `timestamp` when, `cwd` the folder. (docs/claude-code-contract.md)
  *
  * What it counts, in the window: per session, the main session's replies by model; the
  * subagents launched, how, their replies by model, and the share of those on an Opus model.

@@ -109,7 +109,7 @@ http://127.0.0.1:20100/p/my-project
   "profiles": {
     "my-project": {
       "slots": {
-        "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
+        "cc-smart-dev-kit-worker": ["omniroute:<model>"],
         "cc-smart-dev-kit-scout": "claude"
       },
       "fallback": { "cc-smart-dev-kit-worker": false },
@@ -364,21 +364,61 @@ affordable backend can run it, and one that answered it would return text a mode
 
 | Slot | Takes | Chain after `gateway setup` | Fallback switch, by default |
 |---|---|---|---|
-| `cc-smart-dev-kit-scout` | every Haiku request: background calls (titles, summaries), `haiku` agents | **none** (Claude: Haiku answers) | on |
-| `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (Claude: Sonnet answers) | on |
+| `cc-smart-dev-kit-scout` | every Haiku request: background calls (titles, summaries), `haiku` agents | **none** (Claude: Haiku answers) | off |
+| `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (Claude: Sonnet answers) | off |
 | `cc-smart-dev-kit-opus` | every Opus request: the main session on Opus, `opus` agents | **none** (Claude: Opus answers) | off |
 | `cc-smart-dev-kit-fable` | every Fable request | **none** (Claude: Fable answers) | off |
-| `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (Claude judges first; the worker's tested targets while Claude cannot) | on |
+| `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (Claude judges alone; the worker's tested targets only with the switch on) | off |
+
+**Everything is Claude by default (owner D66, 2026-10-25):** every slot, the judge's included,
+has no chain; no fallback switch is on (the table's last column is the whole default: `fallbackOn`
+returns the person's own setting, else false, for every slot, with no list); and the gateway is
+off. OmniRoute and the router are set up as before: only the defaults and the words changed.
+The kit suggests no model, in setup, the installer, `doctor`, `status` or the docs.
 
 No model id is written by the plugin as a default, a target or a fallback (owner,
-2026-10-17). `gateway setup` writes the backend and its key and no chain the person did not
-pick: on a terminal its questions show the live model list and offer each slot "off" (or the
-chain it has) as the default. The person picks each target from the live model list (setup's
-questions), `cc-smart-dev-kit gateway models` (each backend's own
-`/v1/models`) or the portal's Slots page, then `cc-smart-dev-kit gateway slot <slot>
-<targets>`. A config saved by 0.4.3 or earlier keeps every chain it holds: `claude-sonnet-5-5`
-at the end of a scout or worker chain from an older setup is now the person's own target,
-used like any other.
+2026-10-17). `gateway setup` writes the backend and its key and no chain: it asks OmniRoute's
+address and its key, no slot, and it never turns the gateway on. The person picks each target
+from the live model list (`cc-smart-dev-kit gateway models`, each backend's own `/v1/models`,
+or the portal's Slots page), then `cc-smart-dev-kit gateway slot <slot> <targets>`, turns a
+slot's fallback on with `gateway fallback <slot> on`, and points Claude Code at the router with
+`gateway on`. A config saved by 0.4.3 or earlier keeps every chain it holds until the one-time
+move below; `claude-sonnet-5-5` at the end of a scout or worker chain from an older setup is
+the person's own target, used like any other.
+
+### The one-time move of a machine set up before D66
+
+A machine whose `gateway.json` holds chains or fallback switches, or whose gateway is on, moves
+to the defaults once, in `cc-smart-dev-kit setup` (the installer runs it), by
+`src/gateway/claude-defaults.ts`:
+
+- **What moves:** every chain of the machine (it waits in `kept`, as `gateway slot <slot>
+  claude` leaves it; `gateway slot <slot> custom` brings it back) and of each profile (a
+  profile has no saved chain: its chain goes, and its own `"claude"` stays); every fallback
+  switch (the machine's, a saved chain's, each profile's) goes; the gateway goes off through
+  `turnOff`, the code `gateway off` runs (the address is changed to Anthropic's, not removed). The
+  backends, keys, port, aliases and the judge's test proofs stay. A project's own switch
+  (`gateway project on`) is the project's choice and stays.
+- **claude-mem follows the scout back to Claude** (`src/machine/claude-mem.ts`): with the scout on
+  Claude, the five provider keys setup set are taken out, all five or none; the model is
+  claude-mem's own default (Haiku), and no model id is written by the kit. A route chosen with
+  `claude-mem route` or in the portal is the person's and stays.
+- **A backup first, one line per change, and where the backup is:** `gateway.json` is saved in
+  the state folder's `backups/` (`backupFile`), then each change is a line (`worker:
+  omniroute:x,omniroute:y → Claude`, `fallback worker: on → off`, `the gateway: on → off`, the
+  settings keys `turnOff` changed), then the folder of the backup. `--dry-run` shows the same
+  lines and writes nothing (no backup, no marker).
+- **Once per machine:** the marker file `claude-by-default` in the state folder, written at the
+  first real setup on every machine, a machine with no `gateway.json` included. A chain or a
+  switch the person sets after it is never touched by a later setup. `restore` leaves the
+  marker, as it leaves `gateway.json`. A `gateway.json` that cannot be read gets one `!` line,
+  no marker, and setup goes on (exit 0): fixed by hand, the next setup moves it.
+- **Only in `setup`.** A session start and the background update never run it (a test walks their
+  imports). The router reads `gateway.json` at its next request, so a running session on the
+  gateway goes to Claude at once; the gateway-off address reaches a session at its next start
+  (the restart line setup prints). No router restart.
+- **D44 changes:** the worker's tested targets stand in for the judge only when the person turns
+  `gateway fallback judge on`; by default Claude judges alone.
 
 ## Slot modes: Claude or Custom
 
@@ -680,15 +720,16 @@ may give the judge slot a chain of their own, and that wins.
   that has not passed the test never judges; a `claude-…` target in the worker chain is not a
   stand-in for Claude. With no tested worker target, or with the judge's fallback off, Claude
   alone judges and its error goes back as it is.
-- **The judge's fallback switch is on by default**, and needs no judge chain:
-  `gateway fallback judge off` keeps Claude alone.
+- **The judge's fallback switch is off by default** (D66; before it, on), and needs no judge
+  chain: `gateway fallback judge on` lets the worker's tested targets judge while Claude
+  cannot; off keeps Claude alone.
 - **A chain of the person's own** (`gateway slot judge <targets>`) wins: the router never adds
   the worker's targets to it. Its targets may include a `claude-…` target, used as it is (no
   test: Claude is the judge the test compares against) with only `model` changed, as any
   slot's Claude target gets a safety check (§ What a Claude target sees). The older check
   form's `thinking: disabled` is refused by Claude Sonnet 5.5 (the contract row), so name in
   the chain the model the check names. Its first usable target judges, the next only while the
-  judge's fallback switch is on (it is, by default), and then each one that passed the test,
+  judge's fallback switch is on (it is not, by default: D66), and then each one that passed the test,
   in order. **With the switch off, only the chain's first target is considered:** an untested
   first target leaves Claude judging alone, even when a tested target follows it. An untested
   backend target is ignored with one WARN; with none usable, Claude judges alone, and the
@@ -798,9 +839,9 @@ ordinary model call, so neither the judge slot nor the safety-check count sees i
 ## Model slots: Opus and Fable
 
 The opus and fable slots work exactly like scout and worker (owner, 2026-10-17): any chain,
-any target first, the same fallback rules, the same translations. They differ in one place:
-their fallback switch is off by default. Any model a backend offers can answer for Opus,
-for example to try it as the main session's model:
+any target first, the same fallback rules, the same translations, and, since D66, the same
+defaults (no chain, fallback off). Any model a backend offers can answer for Opus, for
+example to try it as the main session's model:
 
 ```sh
 cc-smart-dev-kit gateway models                                   # the live model list
@@ -1171,7 +1212,7 @@ routes come with the portal's pages).
 A config may map old model names to new ones:
 
 ```json
-{ "aliases": { "old-scout": "cc-smart-dev-kit-scout", "old-model": "omniroute:glm-5.3-flash" } }
+{ "aliases": { "old-scout": "cc-smart-dev-kit-scout", "old-model": "omniroute:<model>" } }
 ```
 
 - The router resolves an alias **before** it routes. It recognises the safety check on
@@ -1521,9 +1562,9 @@ open), the router binds the config's port itself, as before.
    time while `cc-smart-dev-kit-router.socket` is active: that is our socket with its router down
    or restarting, and setup goes on;
 2. on a terminal with no key flag and no `--yes`, asks its questions
-   (`src/gateway/setup-questions.ts`): OmniRoute's address, its API key (the secret read; Enter
-   keeps the saved one), a chain per model slot from the live model list (the judge is not
-   asked), and whether to turn the gateway on. Ctrl+C at one exits 130 with nothing changed. A
+   (`src/gateway/setup-questions.ts`): OmniRoute's address and its API key (the secret read; Enter
+   keeps the saved one) — no slot, no model list, no "turn the gateway on" (D66: every slot
+   stays Claude and the gateway stays off). Ctrl+C at one exits 130 with nothing changed. A
    key or address the backend refuses stops setup at the key check, before any write. The key
    steps (`keyFromPassword`, `checkKeyToSave`, the save under the lock, `discardMadeKey`) are
    the same functions the portal's OmniRoute card calls through `setOmnirouteKey`, which runs
@@ -1764,12 +1805,19 @@ waits for each session's next restart harmlessly.
 
 - Anthropic does not support non-Claude models behind a gateway (not banned, no help).
 - **Remote Control needs Anthropic's own API.** `claude remote-control` answers "Remote
-  Control is only available when using Claude via api.anthropic.com" while
-  `ANTHROPIC_BASE_URL` points anywhere else, and the docs say to unset that variable;
+  Control is only available when using Claude via api.anthropic.com" while the session's
+  `ANTHROPIC_BASE_URL` is set to a host other than `api.anthropic.com`;
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` or `DISABLE_GROWTHBOOK` also turn Remote Control
-  off. `gateway on` writes that base URL into user settings, so every session has it: Remote
-  Control is off while the gateway is on. `restore`, or a session started without the base
-  URL, is the way back (`docs/claude-code-contract.md` § The gateway).
+  off. `gateway on` writes the router's address into user settings, so every session has it:
+  Remote Control is off while the gateway is on, and `gateway on` says so in one line.
+  **`gateway off` brings it back:** the address it writes is `https://api.anthropic.com`, and
+  Claude Code compares the host, so that counts as unset (`src/gateway/settings.test.ts` ›
+  "Remote Control" proves what `off` leaves; `docs/claude-code-contract.md` § The gateway
+  has the proof and what is not proved yet). A session that started with the gateway on
+  connects again after a restart, or after `/remote-control` (not proved live). Whether a
+  session connects by itself at its start is the person's own setting,
+  `remoteControlAtStartup`, which the kit never writes. A project's own router address
+  (`gateway project on`) keeps Remote Control off in that project.
 - **A shell `ANTHROPIC_BASE_URL` loses to the settings file after `off`.** Settings files
   outrank the shell for `env` (`docs/claude-code-contract.md` § The gateway), so the explicit
   address `off` writes reaches every session even where the shell exports the router's URL.

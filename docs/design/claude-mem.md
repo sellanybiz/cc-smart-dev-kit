@@ -45,8 +45,15 @@ claude-mem's summaries run on Claude Haiku, on the person's own login, by defaul
 is Haiku's, so it follows the gateway's slot for Haiku, the scout: when the person gave the
 scout a chain whose first target is a `<backend>:<model>`, `setup` points claude-mem's
 openai-compatible provider straight at that backend and model (`src/machine/claude-mem.ts`).
-A scout with no chain (a fresh `gateway setup` writes none) or one that starts with a Claude
-model leaves claude-mem on Claude; the worker's chain is never used for it.
+A scout with no chain (the default, D66: `gateway setup` writes none) or one that starts with
+a Claude model puts claude-mem on Claude, with claude-mem's own Haiku: setup takes out the
+five provider keys it set before, **all five or none** (a key that is the person's keeps all
+five, and a note names it), and writes no model id (`CLAUDE_MEM_MODEL` is claude-mem's own
+default, and setup never writes it). This is the claude-mem half of the one-time move to the
+Claude defaults (`docs/gateway.md` § Slots and defaults): setup plans claude-mem from the
+gateway **as the move leaves it** (`claudeMemPlan(paths, gatewayAfter)`), so the dry run and the
+real run plan the same keys. A route the person chose (`claude-mem route`, the portal) is
+theirs: the move does not reset it. The worker's chain is never used for claude-mem.
 
 **No model of the plugin's own** (owner): setup writes no quota fallback.
 claude-mem's `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` / `…_MODEL` keep claude-mem's defaults or
@@ -68,8 +75,11 @@ set or changed stays. A removal alone sends no check to the backend.
   alone: claude-mem itself rewrites such a file flat on its next start, and drops any
   flat key written beside `env` then (its `loadFromFile`), so a key written either way
   now would be lost or no longer owned.
-- **No affordable scout target any more** while the keys are still cc-smart-dev-kit's: setup
-  says that claude-mem still points at the old backend, and how to fix it.
+- **The scout says nothing any more** (the gateway is not set up, its file cannot be read, or
+  the scout's first target names no backend) while the keys are still cc-smart-dev-kit's: setup
+  says that claude-mem still points at the old backend, and the command that sends its
+  summaries to Claude again. A scout that is Claude (no chain, or a Claude model first) is not
+  this case: the keys are taken out (above).
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
   (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no

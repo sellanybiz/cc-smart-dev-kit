@@ -103,10 +103,10 @@ import { scheduledTaskService } from "./service-windows";
 import {
   BASE_URL_KEY,
   baseUrlPointsAtGateway,
+  foreignRouting,
   gatewayEnv,
   maskKey,
   RETIRED_GATEWAY_ENV_KEYS,
-  readGatewaySettings,
   retireOldModelKeys,
   settingsReport,
   shownValue,
@@ -2616,19 +2616,7 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   );
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  // A key of the person's own that already holds Anthropic's address sends every session
-  // exactly where `off` would: it routes nothing, and "the gateway is not all off" would be
-  // untrue (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
-  let ownAddressRoutes = true;
-  try {
-    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
-  } catch {
-    ownAddressRoutes = true;
-  }
-  // ENABLE_TOOL_SEARCH routes nothing, and many people set it themselves: theirs to keep.
-  const routing = foreign.filter(
-    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
-  );
+  const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {
       out.line(

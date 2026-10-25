@@ -865,16 +865,18 @@ if ($DryRun) {
     $Left.Add("the browser: $(Get-PluginCommand @("browser", "setup")), then $(Get-PluginCommand @("browser", "token"))")
   }
 
-  # The gateway (optional): its router answers the affordable model slots, under a per-user
-  # Scheduled Task here. Where that cannot run, the question is skipped with the reason.
+  # The gateway (optional): the local router and OmniRoute's key, under a per-user Scheduled
+  # Task here. Every slot stays Claude and the gateway stays off until the person says otherwise
+  # (D66): no word here suggests a model or a switch. Where it cannot run, the question is
+  # skipped with the reason.
   if (-not (Test-GatewayServicePossible)) {
     Write-Skip "7/8 the gateway was skipped: its router runs as a per-user Scheduled Task, which needs PowerShell on this machine"
     $Left.Add("the gateway: README, section The AI gateway (its router needs PowerShell here)")
   } else {
-    Read-Yes "7/8 Set up the AI gateway now (affordable models for the haiku and sonnet subagents)?"
+    Read-Yes "7/8 Set up the AI gateway now (the local router and OmniRoute's key)?"
     if ($script:Answer -ne "yes") {
       Write-Skip "7/8 the gateway was skipped: README, section The AI gateway has its steps"
-      $Left.Add("the gateway: $(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute")), then $(Get-PluginCommand @("gateway", "on"))")
+      $Left.Add("the gateway: $(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute"))")
     } else {
       # A router already installed here may be running: `gateway setup` restarts it, and a
       # restart cuts every answer in flight. The command asks that question itself only on a
@@ -947,14 +949,14 @@ if ($DryRun) {
         # The router's copy and its service are refreshed whenever no key was saved: a machine
         # that has a key keeps it (`--no-backend-key` changes no key).
         if ($gatewaySaved) {
-          Write-Step "7/8 the gateway is set up: turn it on with ``$(Get-PluginCommand @("gateway", "on"))`` when you want it"
+          Write-Step "7/8 the gateway is set up: the router and OmniRoute's key are ready"
         } else {
           Invoke-CliQuiet (@("gateway", "setup", "--no-backend-key") + $RestartFlag)
           if ($LASTEXITCODE -ne 0) {
             Stop-Failed "gateway setup failed" @((Get-PluginCommand @("gateway", "setup", "--no-backend-key")))
           }
           if ($GatewayCheckCode -eq 0) {
-            Write-Step "7/8 the gateway is up to date: turn it on with ``$(Get-PluginCommand @("gateway", "on"))`` when you want it"
+            Write-Step "7/8 the gateway is up to date: the router and OmniRoute's key are ready"
           } else {
             Write-Skip "7/8 the router's copy and service are refreshed, and the gateway's key is untouched"
           }

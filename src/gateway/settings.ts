@@ -401,6 +401,30 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
 }
 
 /**
+ * Which of the `foreign` keys `turnOff` returned still send a session away from Anthropic. A key
+ * of the person's own that already holds Anthropic's address sends every session exactly where
+ * `off` would: it routes nothing, and "the gateway is not all off" would be untrue
+ * (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
+ * `ENABLE_TOOL_SEARCH` routes nothing either, and many people set it themselves. One home:
+ * `gateway off` and the setup step that turns the gateway off both ask it.
+ */
+export function foreignRouting(
+  foreign: readonly string[],
+  settingsFile: string,
+): { routing: string[]; ownAddressRoutes: boolean } {
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter(
+    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+  );
+  return { routing, ownAddressRoutes };
+}
+
+/**
  * One of Claude Code's own model keys, and the value it holds. The kit never writes these keys
  * (`FORBIDDEN_ENV_KEYS` covers the subagent ones); it reads them only to warn: a project file
  * that names a slot or a backend target there sends that name past the gateway's slots
