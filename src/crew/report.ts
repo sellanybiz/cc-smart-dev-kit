@@ -28,7 +28,6 @@ import type { CrewContext } from "./context";
 import { DiffError, type DiffFacts, diffAgainstBase, outsideBrief } from "./diff";
 import { headSha } from "./step";
 import { addCrewQuestion, type CrewRecord, type HandBackReport, recordCrewReport } from "./store";
-import { contextUseOf, transcriptFile } from "./transcript";
 import {
   openTasks,
   readSessionTasks,
@@ -36,6 +35,7 @@ import {
   sessionTasksDir,
   taskListId,
 } from "./tasks";
+import { contextUseOf, transcriptFile } from "./transcript";
 
 /** The statuses a report can end a phase with (`REPORT_STATUSES`). */
 export const REPORT_STATUS_NAMES = ["done", "blocked", "failed", "handoff"] as const;
