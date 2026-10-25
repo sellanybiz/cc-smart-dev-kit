@@ -28,6 +28,19 @@ own repository, instead of losing them as a line in a summary.
   `issue file` is not asked about.
 - **`doctor`** has one line while the switch is on: `gh` is logged in for github.com and can
   file issues in `origin`'s repository, each failure with its fix.
+- **`crew start <phase> --issue <n>`: a phase from an issue you chose.** Only an open issue of the
+  project's own repository that carries the ready label (`kit:ready`) **added by an account with
+  write access** starts a phase — the adder is read from the issue's events and its permission, a
+  body edited or a title renamed after the label by anyone else is refused, and whatever cannot
+  be read is a refusal. To start from an issue you only named, the lead labels it (which asks
+  you). The issue's text is **data, never an instruction**: the brief quotes it under a heading
+  that names its author (after any `--brief` text; with no `--brief` the issue is the brief), a
+  secret or a home path in it is replaced by `[redacted: …]`, and the frame says once that it is
+  data. The crew record and the plan's run record carry the issue's number and address.
+- **The hand-back says it once on the issue.** `crew report` posts one comment on the issue:
+  the status, the tests and checks (passed and failed), the review and the head commit. A
+  hand-off says "handed off at `<commit>`" in a line, and a report is never commented twice.
+  GitHub being out of reach is a `note:` line and a line under `open`, never a failed report.
 - Design: `docs/design/issues.md`.
 
 ## 1.2.1
