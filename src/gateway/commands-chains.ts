@@ -113,6 +113,36 @@ function untestedWorkerTargets(config: GatewayConfig): string[] {
 }
 
 /**
+ * The trade-off of a judge other than Claude, said wherever one is set or shown (D44): for the
+ * machine's commands and for a profile's.
+ */
+export const JUDGE_WARNING =
+  "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+
+/**
+ * Whether the worker's tested targets stand in for Claude as the judge in `config` (the
+ * machine's, or a profile's view of it): then the command that changed the worker chain or the
+ * judge's default says `JUDGE_WARNING` (D44: said wherever it is set).
+ */
+export function standInTradeOff(config: GatewayConfig): boolean {
+  return (
+    !Object.hasOwn(config.slots, JUDGE_SLOT) &&
+    fallbackOn(config, JUDGE_SLOT) &&
+    workerJudgeTargets(config).length > 0
+  );
+}
+
+/**
+ * What the judge's fallback switch does while no judge chain is set (D44), the line under the
+ * change in `gateway fallback judge` and `gateway profile <name> fallback judge`.
+ */
+export function judgeSwitchWords(now: boolean): string {
+  return now
+    ? "The worker's tested targets answer when Claude is limited or down."
+    : "Only Claude judges; when it is limited or down, its error goes back to Claude Code.";
+}
+
+/**
  * What the judge is, in words, while the person set no judge chain (owner D44): Claude
  * judges every check first, as it always did; while it is limited or down, the worker
  * chain's targets that passed the judge test judge in its place, as long as the judge's

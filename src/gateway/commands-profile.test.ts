@@ -190,6 +190,27 @@ describe("gateway profile <name> slot", () => {
     );
   });
 
+  test("a judge other than Claude is warned about wherever it is set, in a profile too (RV3)", async () => {
+    const TRADE_OFF = "a judge other than Claude decides worse";
+    // A judge chain of the profile's own.
+    const chain = machine({ judgeProof: true });
+    expect(await chain.run(["profile", "team", "slot", "judge", "omniroute:m1"])).toBe(0);
+    expect(chain.output()).toContain(TRADE_OFF);
+    // No chain: the profile's tested worker targets stand in while Claude cannot judge.
+    const standIn = machine({ judgeProof: true });
+    await standIn.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
+    standIn.reset();
+    expect(await standIn.run(["profile", "team", "slot", "judge", "off"])).toBe(0);
+    expect(standIn.output()).toContain(TRADE_OFF);
+    // Claude alone judges: nothing to warn about.
+    const alone = machine({ judgeProof: true });
+    await alone.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
+    await alone.run(["profile", "team", "fallback", "judge", "off"]);
+    alone.reset();
+    expect(await alone.run(["profile", "team", "slot", "judge", "off"])).toBe(0);
+    expect(alone.output()).not.toContain(TRADE_OFF);
+  });
+
   test("clear takes the entry out: the machine's chain applies there again", async () => {
     const m = machine();
     await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
@@ -232,6 +253,42 @@ describe("gateway profile <name> fallback", () => {
     expect(config.profiles?.team?.fallback?.["cc-smart-dev-kit-worker"]).toBe(false);
     expect(config.fallback).toBeUndefined();
     expect(m.output()).toContain("team: cc-smart-dev-kit-worker: fallback on → off");
+  });
+
+  test("the judge's switch, with no judge chain in the profile, says who judges (RV3)", async () => {
+    // The judge has no chain of its own here: the switch says whether the profile's tested
+    // worker targets stand in while Claude is limited or down, not "the next target answers".
+    const m = machine({ judgeProof: true });
+    await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
+    m.reset();
+    expect(await m.run(["profile", "team", "fallback", "judge", "off"])).toBe(0);
+    expect(m.output()).toContain("team: cc-smart-dev-kit-judge: fallback on → off");
+    expect(m.output()).toContain("Claude judges every check, alone (fallback off)");
+    expect(m.output()).toContain(
+      "Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+    );
+    expect(m.output()).not.toContain("only the first target answers");
+    expect(m.output()).not.toContain("a judge other than Claude decides worse");
+    m.reset();
+    expect(await m.run(["profile", "team", "fallback", "judge", "on"])).toBe(0);
+    expect(m.output()).toContain(
+      "Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
+    );
+    expect(m.output()).toContain(
+      "The worker's tested targets answer when Claude is limited or down.",
+    );
+    expect(m.output()).not.toContain("the next target answers");
+    expect(m.output()).toContain("a judge other than Claude decides worse");
+  });
+
+  test("the judge's switch, with a judge chain in the profile, is the chain's switch", async () => {
+    const m = machine({ judgeProof: true });
+    await m.run(["profile", "team", "slot", "judge", "omniroute:m1"]);
+    m.reset();
+    expect(await m.run(["profile", "team", "fallback", "judge", "off"])).toBe(0);
+    expect(m.output()).toContain(
+      "In this profile, only the first target answers; when it fails, its error goes back to Claude Code.",
+    );
   });
 
   test("a value equal to the profile's own default is written as no entry", async () => {

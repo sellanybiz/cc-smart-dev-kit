@@ -25,10 +25,13 @@ import { listModels } from "./backends";
 import type { GatewayContext } from "./commands";
 import {
   chainProblem,
+  JUDGE_WARNING,
   judgeDefaultWords,
+  judgeSwitchWords,
   notSlotName,
   SLOT_WORDS,
   splitChain,
+  standInTradeOff,
 } from "./commands-chains";
 import { gatewayOut } from "./commands-out";
 import {
@@ -333,6 +336,15 @@ const SWITCH_WORDS = {
   },
 } as const;
 
+/**
+ * Whether a judge other than Claude decides in `view` (a profile's view of the config): a judge
+ * chain of its own, or the tested worker targets standing in while Claude cannot judge. The
+ * judge's trade-off is said wherever one is set (D44), a profile's included.
+ */
+function judgeOtherThanClaude(view: GatewayConfig): boolean {
+  return Object.hasOwn(view.slots, JUDGE_SLOT) || standInTradeOff(view);
+}
+
 /** The second line under a slot change: what the slot is in this profile now. */
 function slotNowWords(plan: ProfileSlotPlan, current: GatewayConfig): string {
   if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
@@ -444,7 +456,16 @@ export async function commandProfile(
       "changed",
       `${plan.name}: ${plan.key}: ${action} ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`,
     );
-    out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    const view = plan.key === JUDGE_SLOT ? profileView(plan.config, name) : null;
+    if (view !== null && !Object.hasOwn(view.slots, JUDGE_SLOT)) {
+      // No judge chain in this profile: the switch says whether its tested worker targets
+      // stand in while Claude is limited or down, as the machine's `fallback judge` says it.
+      out.say(judgeDefaultWords(view), 2);
+      out.say(judgeSwitchWords(plan.now), 2);
+    } else {
+      out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    }
+    if (view !== null && judgeOtherThanClaude(view)) out.line("warn", JUDGE_WARNING);
     out.verdict(
       "ok",
       "The router uses it from its next request: it reads the config again within about a second.",
@@ -484,6 +505,10 @@ export async function commandProfile(
   );
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
+  if (plan.key === JUDGE_SLOT) {
+    const view = profileView(plan.config, plan.name);
+    if (view !== null && judgeOtherThanClaude(view)) out.line("warn", JUDGE_WARNING);
+  }
   out.verdict(
     "ok",
     "The router uses it from its next request: it reads the config again within about a second.",

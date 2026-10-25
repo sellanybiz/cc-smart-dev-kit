@@ -32,10 +32,13 @@ import { breakerStatusLines } from "./breaker";
 import {
   chainProblem,
   chainToCheck,
+  JUDGE_WARNING,
   judgeDefaultWords,
+  judgeSwitchWords,
   notSlotName,
   SLOT_WORDS,
   slotName,
+  standInTradeOff,
 } from "./commands-chains";
 import { changeLines, gatewayOut, printChanges } from "./commands-out";
 import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./commands-profile";
@@ -1262,13 +1265,10 @@ function keptWords(key: string, kept: KeptChain): string {
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
-/** The trade-off of a judge other than Claude, said wherever one is set or shown. */
-export const JUDGE_WARNING =
-  "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
-
-// What the judge is while no judge chain is set moved to `commands-chains.ts` (the profile
-// commands say it too); every caller of this module still imports it from here.
-export { judgeDefaultWords };
+// What the judge is while no judge chain is set, and the trade-off of a judge other than
+// Claude, moved to `commands-chains.ts` (the profile commands say them too); every caller of
+// this module still imports them from here.
+export { JUDGE_WARNING, judgeDefaultWords };
 
 /** What a slot's fallback switch means for its chain, in words. */
 function fallbackWords(config: GatewayConfig, key: string): string {
@@ -1430,19 +1430,6 @@ async function testWorkerTargets(
     }
   }
   return { lines, passed };
-}
-
-/**
- * Whether the worker's tested targets stand in for Claude as the judge, after the worker chain
- * or the judge's default changed: then the caller says `JUDGE_WARNING` (D44: said wherever it
- * is set).
- */
-function standInTradeOff(config: GatewayConfig): boolean {
-  return (
-    !Object.hasOwn(config.slots, JUDGE_SLOT) &&
-    fallbackOn(config, JUDGE_SLOT) &&
-    workerJudgeTargets(config).length > 0
-  );
 }
 
 /**
@@ -1694,9 +1681,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now
-        ? "  The worker's tested targets answer when Claude is limited or down."
-        : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+      `  ${judgeSwitchWords(plan.now)}`,
     ]);
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   } else {

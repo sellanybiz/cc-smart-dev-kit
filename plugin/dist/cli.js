@@ -9773,6 +9773,13 @@ function untestedWorkerTargets(config) {
     return "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text);
   });
 }
+var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+function standInTradeOff(config) {
+  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
+}
+function judgeSwitchWords(now) {
+  return now ? "The worker's tested targets answer when Claude is limited or down." : "Only Claude judges; when it is limited or down, its error goes back to Claude Code.";
+}
 function judgeDefaultWords(config) {
   if (!fallbackOn(config, JUDGE_SLOT))
     return "Claude judges every check, alone (fallback off)";
@@ -27531,6 +27538,9 @@ var SWITCH_WORDS = {
     off: "In this profile, only the first target answers; when it fails, its error goes back to Claude Code."
   }
 };
+function judgeOtherThanClaude(view) {
+  return Object.hasOwn(view.slots, JUDGE_SLOT) || standInTradeOff(view);
+}
 function slotNowWords(plan, current) {
   if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
     const view = profileView(plan.config, plan.name);
@@ -27606,7 +27616,15 @@ async function commandProfile(ctx, args, usage) {
       return planned;
     }, { waitMs: 1e4 });
     out.line("changed", `${plan.name}: ${plan.key}: ${action} ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`);
-    out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    const view = plan.key === JUDGE_SLOT ? profileView(plan.config, name) : null;
+    if (view !== null && !Object.hasOwn(view.slots, JUDGE_SLOT)) {
+      out.say(judgeDefaultWords(view), 2);
+      out.say(judgeSwitchWords(plan.now), 2);
+    } else {
+      out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    }
+    if (view !== null && judgeOtherThanClaude(view))
+      out.line("warn", JUDGE_WARNING);
     out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
     return 0;
   }
@@ -27630,6 +27648,11 @@ async function commandProfile(ctx, args, usage) {
   }, { waitMs: 1e4 });
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
+  if (plan.key === JUDGE_SLOT) {
+    const view = profileView(plan.config, plan.name);
+    if (view !== null && judgeOtherThanClaude(view))
+      out.line("warn", JUDGE_WARNING);
+  }
   out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
   return 0;
 }
@@ -29846,7 +29869,6 @@ function keptWords(key, kept) {
   const fallback = kept.fallback ?? fallbackOn({}, key);
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
-var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
 function fallbackWords(config, key) {
   const targets = config.slots[key] ?? [];
   if (fallbackOn(config, key))
@@ -29958,9 +29980,6 @@ async function testWorkerTargets(ctx, config) {
     }
   }
   return { lines, passed };
-}
-function standInTradeOff(config) {
-  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
 }
 function dropFallbackRecord(statePath, slot) {
   let state;
@@ -30135,7 +30154,7 @@ async function commandFallback(ctx, args) {
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now ? "  The worker's tested targets answer when Claude is limited or down." : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code."
+      `  ${judgeSwitchWords(plan.now)}`
     ]);
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
