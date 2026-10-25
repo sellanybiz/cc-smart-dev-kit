@@ -16,14 +16,22 @@ export interface StoppedCrewNeed {
   line: string;
 }
 
+/**
+ * The one rule for a continuation that still holds its predecessor (RX1): a failed, removed or
+ * discarded successor releases it. A successor removed before it started has no branch to merge,
+ * so waiting for its merge would never end. The stopped-session reminder and the watch's removal of
+ * a merged original both ask this.
+ */
+export function holdsItsPredecessor(continuation: CrewRecord): boolean {
+  return !["failed", "removed", "discarded"].includes(continuation.state);
+}
+
 /** One active successor owns this phase; a failed or removed successor releases it. */
 export function activeContinuationOf(
   record: CrewRecord,
   records: readonly CrewRecord[],
 ): CrewRecord | undefined {
-  return records.find(
-    (one) => one.continues === record.id && !["failed", "removed", "discarded"].includes(one.state),
-  );
+  return records.find((one) => one.continues === record.id && holdsItsPredecessor(one));
 }
 
 /** The same old, unmerged stopped-session item for the watch and the portal. Events may be in either order. */

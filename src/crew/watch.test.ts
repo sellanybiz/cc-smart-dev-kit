@@ -1406,6 +1406,19 @@ describe("crew watch", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-q", "-m", "the phase");
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // A phase it waits for keeps the continuation queued: a queue that could start it would start
+    // it here, and the fake `claude` has no session to give it (it would fail, which releases the
+    // original, RX1).
+    await addCrew(world, "working", {
+      branch: "crew/Z9-hold",
+      id: "Z9-hold-1a2b3c",
+      name: "C my-app Z9 hold",
+      phase: "Z9",
+      sessionId: null,
+      shortId: null,
+      slug: "hold",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-Z9-hold"),
+    });
     const continuation = await addCrew(world, "queued", {
       base: null,
       branch: "crew/B6b-portal-live-2",
@@ -1414,6 +1427,7 @@ describe("crew watch", () => {
       name: "C my-app B6b portal-live 2",
       sessionId: null,
       shortId: null,
+      waitsFor: ["Z9"],
       worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
     });
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
@@ -1421,7 +1435,9 @@ describe("crew watch", () => {
     expect(world.out).toContain(
       "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to merge",
     );
-    const [kept] = listCrew(world.paths.stateDir, world.repo).records;
+    const kept = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === original.id,
+    );
     expect(kept?.state).toBe("merged");
     expect(existsSync(worktree)).toBe(true);
     // The waiting line is said once.
@@ -1452,6 +1468,38 @@ describe("crew watch", () => {
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
   });
+
+  test.each(["removed", "discarded", "failed"])(
+    "RX1: a continuation that is %s before it started releases its merged original",
+    async (ended) => {
+      const world = await leadWorld();
+      const original = await addCrew(world, "done");
+      const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+      git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+      writeFileSync(join(worktree, "done.txt"), "x\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-q", "-m", "the phase");
+      git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+      // Queued, so it has no branch and no worktree; then removed (or failed) before it started.
+      await addCrew(world, ended, {
+        base: null,
+        branch: "crew/B6b-portal-live-2",
+        continues: original.id,
+        id: "B6b-portal-live-2-1a2b3c",
+        name: "C my-app B6b portal-live 2",
+        sessionId: null,
+        shortId: null,
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
+      });
+      const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+      expect(world.out.join("\n")).not.toContain("waiting for its continuation");
+      expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
+      expect(existsSync(worktree)).toBe(false);
+    },
+  );
 
   test("a handed-off ancestor stays while its continuation has unmerged work", async () => {
     const world = await leadWorld();

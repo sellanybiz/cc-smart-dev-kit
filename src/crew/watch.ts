@@ -68,7 +68,13 @@ import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
-import { mergeProof, observeLeadPresence, STOPPED_REMINDER_MS, stoppedCrewNeed } from "./lifecycle";
+import {
+  holdsItsPredecessor,
+  mergeProof,
+  observeLeadPresence,
+  STOPPED_REMINDER_MS,
+  stoppedCrewNeed,
+} from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
@@ -907,6 +913,7 @@ export async function watchPass(
         (one) =>
           one.id !== record.id &&
           descendants.has(one.id) &&
+          holdsItsPredecessor(one) &&
           !(one.state === "merged" || (one.state === "removed" && one.mergedBeforeRemoval)) &&
           !branchMerged(one, ctx),
       );
