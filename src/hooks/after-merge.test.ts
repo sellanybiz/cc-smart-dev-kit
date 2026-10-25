@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { readCrewEvents, writeLead } from "../crew/store";
+import { RUNNER_PROGRAM_NAMES } from "../shell/command";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -174,6 +175,49 @@ describe("did the command merge a pull request?", () => {
     });
     expect(target("gh pr merge -Rorg/app 7")).toEqual({ ref: "7", repo: "org/app" });
     expect(target("ls")).toBeNull();
+  });
+
+  test("a merge a runner runs names no pull request: the note is skipped, not guessed (the review of the runner follow-up)", () => {
+    const target = (command: string) => mergeTargetOf(pullRequestMerges(command));
+    // The shell reader reads the command a runner runs; the merge reader must still refuse it
+    // as the runner's, not judge it as if the words on the line were what merges.
+    for (const command of [
+      "su -c 'gh pr merge 5' other",
+      'su - me -c "gh pr merge 5"',
+      "parallel gh pr merge ::: 5 6",
+      "parallel 'gh pr merge {}' ::: 5 6",
+      "find . -name x -exec gh pr merge 17 \\;",
+      "watch -n 5 gh pr merge 16",
+    ]) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
+    // su and parallel feed the command from outside the line: no pull request at all.
+    expect(target("su -c 'gh pr merge 5' other")).toBeNull();
+    expect(target("parallel gh pr merge ::: 5 6")).toBeNull();
+    expect(target("parallel 'gh pr merge {}' ::: 5 6")).toBeNull();
+  });
+
+  test("every runner the shell reader knows has a merge refusal here (the two lists agree)", () => {
+    // `isRunnerProgram` (src/shell/command.ts) and the RUNNERS table here are two lists; a
+    // runner in only the first would have its merges judged as the line's own: looser.
+    const merging: Record<string, string> = {
+      find: "find . -exec gh pr merge 5 \\;",
+      parallel: "parallel gh pr merge ::: 5",
+      su: "su -c 'gh pr merge 5' me",
+      watch: "watch gh pr merge 5",
+    };
+    expect(Object.keys(merging).sort()).toEqual([...RUNNER_PROGRAM_NAMES].sort());
+    for (const command of Object.values(merging)) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
   });
 
   test("same repository: https, ssh, an ssh alias; case does not matter", () => {

@@ -9519,6 +9519,8 @@ function invocationOf(words) {
   };
 }
 function isComputedWord(word) {
+  if (word === "{}")
+    return true;
   if (!word.startsWith("$") && !word.startsWith("`"))
     return false;
   return /[$`(){}[\]\s]/.test(programName(word));
@@ -9677,6 +9679,323 @@ function writtenText(segment) {
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
+var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+var FIND_VALUED = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype"
+]);
+function endsFindCommand(word, before) {
+  return word === ";" || word === "+" && before === "{}";
+}
+function findCommands(args) {
+  const commands = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word))
+      continue;
+    const words = [];
+    for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0)
+      commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+function longOption(word, names) {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name))
+    return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? starts[0] ?? null : null;
+}
+var WATCH_LONG = [
+  "--beep",
+  "--chgexit",
+  "--color",
+  "--cumulative",
+  "--differences",
+  "--equexit",
+  "--errexit",
+  "--exec",
+  "--help",
+  "--interval",
+  "--no-color",
+  "--no-title",
+  "--no-wrap",
+  "--precise",
+  "--version"
+];
+var WATCH_VALUED = new Set(["--equexit", "--interval"]);
+function watchCommand(args) {
+  let exec = false;
+  let index = 0;
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-")
+      break;
+    if (word.startsWith("--")) {
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec")
+        exec = true;
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("="))
+        index++;
+      continue;
+    }
+    for (let at = 1;at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d")
+        break;
+      if (letter === "x")
+        exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1)
+          index++;
+        break;
+      }
+    }
+  }
+  const words = args.slice(index);
+  if (words.length === 0)
+    return;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+function suCommand(args) {
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--")
+      continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried)
+        index++;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c"))
+        return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext)
+        index++;
+    }
+  }
+  return;
+}
+var SU_LONG = [
+  "--command",
+  "--fast",
+  "--group",
+  "--help",
+  "--login",
+  "--preserve-environment",
+  "--pty",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--version",
+  "--whitelist-environment"
+];
+var SU_VALUED = new Set([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment"
+]);
+var PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
+  "--colsep",
+  "--delay",
+  "--delimiter",
+  "--env",
+  "--eof",
+  "--halt",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--load",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
+  "--results",
+  "--retries",
+  "--rpl",
+  "--sshlogin",
+  "--sshloginfile",
+  "--tagstring",
+  "--timeout",
+  "--workdir",
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd"
+]);
+var PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs"
+]);
+var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+function parallelStarts(args) {
+  const starts = new Set;
+  const seen = new Set;
+  const queue = [0];
+  for (let at = queue.pop();at !== undefined; at = queue.pop()) {
+    if (seen.has(at))
+      continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
+      const carried = word.includes("=");
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null)
+        queue.push(at + 1, at + 2);
+      else
+        queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+function parallelLines(args) {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator = sepWord === undefined ? null : sepWord.includes("=") ? sepWord.slice(sepWord.indexOf("=") + 1) : args[sepAt + 1] ?? null;
+  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command = [];
+    for (;index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    const given = [];
+    let reading = false;
+    for (;index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word))
+        reading = !word.startsWith("::::");
+      else if (reading)
+        given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0)
+        lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0)
+      continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval")
+      lines.push(...given);
+  }
+  return lines;
+}
+function parallelCommand(args) {
+  const lines = [...new Set(parallelLines(args))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
+}
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
@@ -9695,6 +10014,14 @@ function nestedCommand(program, args, pipedFrom = null) {
     const dashes = args.indexOf("--");
     return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
+  if (program === "find")
+    return findCommands(args);
+  if (program === "watch")
+    return watchCommand(args);
+  if (program === "su")
+    return suCommand(args);
+  if (program === "parallel")
+    return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");

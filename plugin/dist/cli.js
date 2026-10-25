@@ -38853,6 +38853,8 @@ function invocationOf(words) {
   };
 }
 function isComputedWord(word) {
+  if (word === "{}")
+    return true;
   if (!word.startsWith("$") && !word.startsWith("`"))
     return false;
   return /[$`(){}[\]\s]/.test(programName2(word));
@@ -39044,6 +39046,327 @@ function writtenText(segment) {
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
+var RUNNER_PROGRAM_NAMES = ["find", "parallel", "su", "watch"];
+function isRunnerProgram(program) {
+  return RUNNER_PROGRAM_NAMES.includes(program);
+}
+var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+var FIND_VALUED = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype"
+]);
+function endsFindCommand(word, before) {
+  return word === ";" || word === "+" && before === "{}";
+}
+function findCommands(args) {
+  const commands = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word))
+      continue;
+    const words = [];
+    for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0)
+      commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+function longOption(word, names) {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name))
+    return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? starts[0] ?? null : null;
+}
+var WATCH_LONG = [
+  "--beep",
+  "--chgexit",
+  "--color",
+  "--cumulative",
+  "--differences",
+  "--equexit",
+  "--errexit",
+  "--exec",
+  "--help",
+  "--interval",
+  "--no-color",
+  "--no-title",
+  "--no-wrap",
+  "--precise",
+  "--version"
+];
+var WATCH_VALUED = new Set(["--equexit", "--interval"]);
+function watchCommand(args) {
+  let exec = false;
+  let index = 0;
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-")
+      break;
+    if (word.startsWith("--")) {
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec")
+        exec = true;
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("="))
+        index++;
+      continue;
+    }
+    for (let at = 1;at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d")
+        break;
+      if (letter === "x")
+        exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1)
+          index++;
+        break;
+      }
+    }
+  }
+  const words = args.slice(index);
+  if (words.length === 0)
+    return;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+function suCommand(args) {
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--")
+      continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried)
+        index++;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c"))
+        return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext)
+        index++;
+    }
+  }
+  return;
+}
+var SU_LONG = [
+  "--command",
+  "--fast",
+  "--group",
+  "--help",
+  "--login",
+  "--preserve-environment",
+  "--pty",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--version",
+  "--whitelist-environment"
+];
+var SU_VALUED = new Set([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment"
+]);
+var PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
+  "--colsep",
+  "--delay",
+  "--delimiter",
+  "--env",
+  "--eof",
+  "--halt",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--load",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
+  "--results",
+  "--retries",
+  "--rpl",
+  "--sshlogin",
+  "--sshloginfile",
+  "--tagstring",
+  "--timeout",
+  "--workdir",
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd"
+]);
+var PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs"
+]);
+var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+function parallelStarts(args) {
+  const starts = new Set;
+  const seen = new Set;
+  const queue = [0];
+  for (let at = queue.pop();at !== undefined; at = queue.pop()) {
+    if (seen.has(at))
+      continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
+      const carried = word.includes("=");
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null)
+        queue.push(at + 1, at + 2);
+      else
+        queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+function parallelLines(args) {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator = sepWord === undefined ? null : sepWord.includes("=") ? sepWord.slice(sepWord.indexOf("=") + 1) : args[sepAt + 1] ?? null;
+  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command = [];
+    for (;index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    const given = [];
+    let reading = false;
+    for (;index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word))
+        reading = !word.startsWith("::::");
+      else if (reading)
+        given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0)
+        lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0)
+      continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName2(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval")
+      lines.push(...given);
+  }
+  return lines;
+}
+function parallelCommand(args) {
+  const lines = [...new Set(parallelLines(args))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
+}
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
@@ -39062,6 +39385,14 @@ function nestedCommand(program, args, pipedFrom = null) {
     const dashes = args.indexOf("--");
     return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
+  if (program === "find")
+    return findCommands(args);
+  if (program === "watch")
+    return watchCommand(args);
+  if (program === "su")
+    return suCommand(args);
+  if (program === "parallel")
+    return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");
@@ -39448,6 +39779,8 @@ function routableKinds(command, kinds, dialect, depth, run) {
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
+    if (isRunnerProgram(program))
+      return null;
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined) {
       if (depth >= MAX_NESTING)
@@ -50700,7 +51033,7 @@ var PUSH_VALUE_OPTIONS = [
   ["--receive-pack", 5],
   ["--repo", 6]
 ];
-function longOption(arg, full, min) {
+function longOption2(arg, full, min) {
   const name = arg.split("=")[0] ?? arg;
   return name.length >= min && name.length <= full.length && full.startsWith(name);
 }
@@ -50801,22 +51134,22 @@ function pushQuestions(args, place, protectedBranches, autoPushAsk) {
       break;
     }
     if (arg.startsWith("--")) {
-      if (longOption(arg, "--force", 6) || longOption(arg, "--force-if-includes", 9) || longOption(arg, "--force-with-lease", 9)) {
+      if (longOption2(arg, "--force", 6) || longOption2(arg, "--force-if-includes", 9) || longOption2(arg, "--force-with-lease", 9)) {
         force = true;
       }
-      if (longOption(arg, "--all", 4) || longOption(arg, "--mirror", 6))
+      if (longOption2(arg, "--all", 4) || longOption2(arg, "--mirror", 6))
         everyBranch = true;
-      if (longOption(arg, "--dry-run", 4))
+      if (longOption2(arg, "--dry-run", 4))
         dryRun = true;
-      if (longOption(arg, "--tags", 4))
+      if (longOption2(arg, "--tags", 4))
         tagsOnly = true;
-      if (longOption(arg, "--delete", 5))
+      if (longOption2(arg, "--delete", 5))
         deleting = true;
-      if (longOption(arg, "--repo", 6)) {
+      if (longOption2(arg, "--repo", 6)) {
         repoGiven = true;
         repo = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : args[i + 1] ?? null;
       }
-      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption(arg, full, min)))
+      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption2(arg, full, min)))
         i++;
     } else if (isShort(arg)) {
       const { flags, wantsNext } = shortFlags(arg, "o");
@@ -50927,7 +51260,7 @@ function stashAsk(args, sharedStash) {
     return STASH_DROP_ASK;
   if (!sharedStash)
     return null;
-  const tagged = args.some((arg) => longOption(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
+  const tagged = args.some((arg) => longOption2(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
   const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
   const saveWithoutMessage = sub === "save" && !named;
   if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
@@ -50936,20 +51269,20 @@ function stashAsk(args, sharedStash) {
 }
 function discardsChanges(sub, rest) {
   if (sub === "switch") {
-    return rest.some((arg) => longOption(arg, "--force", 6) || longOption(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
+    return rest.some((arg) => longOption2(arg, "--force", 6) || longOption2(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
   }
   if (sub === "checkout") {
     const dashes = rest.indexOf("--");
     const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
-    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
+    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
     return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
   }
-  const staged = rest.some((arg) => longOption(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
-  const worktree = rest.some((arg) => longOption(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
+  const staged = rest.some((arg) => longOption2(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
+  const worktree = rest.some((arg) => longOption2(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
   return !staged || worktree;
 }
 function forceDeletesBranch(rest) {
-  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
+  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption2(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
   return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
 }
 var GIT_VALUE_OPTIONS = new Set([
@@ -51067,7 +51400,7 @@ function callQuestions(call, folder, run) {
     return answer(stashAsk(rest, options.sharedStash || options.pushRules.crew), run);
   }
   if (sub === "worktree" && rest[0] === "remove") {
-    const force = rest.slice(1).some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
+    const force = rest.slice(1).some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
     if (force)
       return answer(WORKTREE_REMOVE_ASK, run);
   }
@@ -51076,15 +51409,15 @@ function callQuestions(call, folder, run) {
   }
   if (sub === "branch" && forceDeletesBranch(rest))
     return answer(BRANCH_DELETE_ASK, run);
-  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
+  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--hard", 4))) {
     return answer(RESET_HARD_ASK, run);
   }
-  if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
+  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--merge", 4))) {
     return answer(RESET_MERGE_ASK, run);
   }
   if (sub === "clean") {
-    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
-    const dryRun = rest.some((arg) => longOption(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
+    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
+    const dryRun = rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
     if (force && !dryRun)
       return answer(CLEAN_FORCE_ASK, run);
   }
@@ -51264,24 +51597,14 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
     }
     const nested = nestedCommand(program, invocation.args, step.pipedFrom);
     if (nested !== undefined && depth < MAX_NESTING) {
-      calls.push(...lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved));
-    }
-    const script = suScript(program, args);
-    if (script !== undefined && depth < MAX_NESTING) {
-      const merges = lineMerges(script, "bash", aliases, depth + 1, moved);
-      calls.push(...refuseRunner(merges, runner ?? SU_RUNNER));
+      const merges = lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved);
+      calls.push(...runner !== null && isRunnerProgram(program) ? refuseRunner(merges, runner) : merges);
     }
   }
   return calls;
 }
 function lineMerges(line, dialect, aliases, depth, moved) {
   return readingsOf(line, dialect).flatMap((reading) => readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved));
-}
-function suScript(program, args) {
-  if (program !== "su")
-    return;
-  const at = args.findIndex((arg) => arg === "-c" || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
-  return at === -1 ? undefined : args[at + 1];
 }
 var RUNNERS = {
   doas: {
@@ -51319,11 +51642,6 @@ var RUNNERS = {
     moved: "an earlier `xargs` in the same command may feed {the} its arguments from outside the line",
     via: "from `xargs`, whose arguments come from outside the line"
   }
-};
-var SU_RUNNER = {
-  feeds: true,
-  name: "su",
-  via: "from `su`, whose command and environment come from outside the line"
 };
 function runnerOf2(program, before) {
   for (const word of [program, ...before]) {
@@ -52668,30 +52986,9 @@ function issueWrites(command, dialect) {
       found.push(write);
   };
   for (const run of invocationsOf(command, dialect)) {
-    if (run.computed)
-      continue;
-    if (run.program === "gh")
+    if (!run.computed && run.program === "gh")
       note(ghIssueWrite(run.args));
-    else if (RUNNER_PROGRAMS.has(run.program)) {
-      for (const args of runnerGhArgs(run.words))
-        note(ghIssueWrite(args));
-    }
   }
-  return found;
-}
-var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch", "xargs"]);
-function runnerGhArgs(words) {
-  const found = [];
-  words.forEach((word, index) => {
-    if (programName2(word) === "gh") {
-      found.push(words.slice(index + 1));
-    } else if (/\s/.test(word)) {
-      const inner = wordsOf(word, "bash");
-      const at = inner.findIndex((one) => programName2(one) === "gh");
-      if (at !== -1)
-        found.push(inner.slice(at + 1));
-    }
-  });
   return found;
 }
 function computedIssueRisk(command, dialect) {
@@ -52825,7 +53122,7 @@ var CLAUDE_VALUED = [
 ];
 var LOOP_KEYWORDS = new Set(["do", "for", "foreach", "until", "while"]);
 var WAIT_PROGRAMS = new Set(["sleep", "start-sleep"]);
-var WATCH_VALUED = ["-n", "--interval"];
+var WATCH_VALUED2 = ["-n", "--interval"];
 var GH_VALUED = ["-R", "--repo", "--hostname"];
 function hasFlag2(args, ...names) {
   return args.some((arg) => names.includes(arg) || arg.startsWith("--") && names.some((name) => arg.startsWith(`${name}=`)));
@@ -52959,7 +53256,7 @@ function isFullCheck(step) {
 function watchTarget(args) {
   let index = 0;
   while (index < args.length && (args[index] ?? "").startsWith("-")) {
-    index += WATCH_VALUED.includes(args[index] ?? "") ? 2 : 1;
+    index += WATCH_VALUED2.includes(args[index] ?? "") ? 2 : 1;
   }
   const target = args.slice(index);
   if (target.length === 0)

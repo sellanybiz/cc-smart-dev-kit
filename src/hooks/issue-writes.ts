@@ -11,18 +11,12 @@
  * list`, `view`, `status`, a GET) and `--help` are no write; a subcommand this reader does not
  * know counts as one (a guard fails closed). Flags are read the way gh reads them: before the
  * subcommand an option takes the next word, and a `-h` after an option is that option's value.
- * The runners `find -exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they
- * name. **Not read**, as for the merge guard: a `gh` alias and a script file. The program of a
+ * The runners (`find -exec`, `watch`, `su -c`, `parallel`, `xargs`) are the reader's own
+ * (`nestedCommand`, `WRAPPERS`): `invocationsOf` already hands back the `gh` they run.
+ * **Not read**, as for the merge guard: a `gh` alias and a script file. The program of a
  * line worked out when it runs (`$GH issue create`) is a risk of its own (`computedIssueRisk`).
  */
-import {
-  type Dialect,
-  invocationsOf,
-  isShort,
-  programName,
-  shortFlags,
-  wordsOf,
-} from "../shell/command";
+import { type Dialect, invocationsOf, isShort, shortFlags } from "../shell/command";
 import {
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
@@ -164,30 +158,8 @@ export function issueWrites(command: string, dialect?: Dialect): string[] {
     if (write !== null && !found.includes(write)) found.push(write);
   };
   for (const run of invocationsOf(command, dialect)) {
-    if (run.computed) continue;
-    if (run.program === "gh") note(ghIssueWrite(run.args));
-    else if (RUNNER_PROGRAMS.has(run.program)) {
-      for (const args of runnerGhArgs(run.words)) note(ghIssueWrite(args));
-    }
+    if (!run.computed && run.program === "gh") note(ghIssueWrite(run.args));
   }
-  return found;
-}
-
-/** Programs that run the `gh` named in their own words: `find -exec`, `watch`, `su -c`, … */
-const RUNNER_PROGRAMS: ReadonlySet<string> = new Set(["find", "parallel", "su", "watch", "xargs"]);
-
-/** The words after each `gh` a runner names: a `gh` word, and a quoted `gh …` script. */
-function runnerGhArgs(words: readonly string[]): string[][] {
-  const found: string[][] = [];
-  words.forEach((word, index) => {
-    if (programName(word) === "gh") {
-      found.push(words.slice(index + 1));
-    } else if (/\s/.test(word)) {
-      const inner = wordsOf(word, "bash");
-      const at = inner.findIndex((one) => programName(one) === "gh");
-      if (at !== -1) found.push(inner.slice(at + 1));
-    }
-  });
   return found;
 }
 

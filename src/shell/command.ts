@@ -1140,6 +1140,8 @@ export function invocationOf(words: readonly string[]): Invocation | undefined {
  * names the command `cc-smart-dev-kit`, whatever folder it is in.
  */
 export function isComputedWord(word: string): boolean {
+  // `{}` is the file `find -exec` and `xargs -I{}` put in its place: whatever it names runs.
+  if (word === "{}") return true;
   if (!word.startsWith("$") && !word.startsWith("`")) return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
@@ -1377,6 +1379,402 @@ function writtenText(segment: string): string | null {
 }
 
 /**
+ * The programs whose own arguments name a command they run, and that do work of their own
+ * beside it (`find -delete`, `su`'s user switch, `watch`'s endless repeat, `parallel`'s remote
+ * hosts): `nestedCommand` reads the command each runs, and a caller that must not treat the
+ * step as just that command (the job route) asks here. `xargs` is a wrapper, not one of these.
+ */
+export const RUNNER_PROGRAM_NAMES: readonly string[] = ["find", "parallel", "su", "watch"];
+
+/** True when `program` is a runner (`RUNNER_PROGRAM_NAMES`). */
+export function isRunnerProgram(program: string): boolean {
+  return RUNNER_PROGRAM_NAMES.includes(program);
+}
+
+/** `find`'s actions that run a command, up to a `;` or a `{} +`. */
+const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/**
+ * `find`'s tests and actions that take the next word as their value: `-name -exec` tests for a
+ * file called `-exec`, which starts no command. (`-newerXY` takes one too.)
+ */
+const FIND_VALUED: ReadonlySet<string> = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype",
+]);
+
+/**
+ * True when `word` ends a `find -exec` command, given the word before it: a `;` (escaped or
+ * quoted, the shell hands find a bare `;`), or a `+` only right after `{}` — anywhere else a `+`
+ * is an argument (`-exec flock + git push \;`). A `\;` that reaches us whole was quoted: an
+ * argument too.
+ */
+function endsFindCommand(word: string, before: string): boolean {
+  return word === ";" || (word === "+" && before === "{}");
+}
+
+/**
+ * The commands `find` runs: the words of each `-exec`, `-execdir`, `-ok` and `-okdir` up to its
+ * `;` or `{} +`, quoted so they read back the same, joined by `;` (several actions are several
+ * commands). Undefined when `find` runs none.
+ */
+function findCommands(args: readonly string[]): string | undefined {
+  const commands: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    // A test that takes a value: its value is not an action, whatever it looks like.
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word)) continue;
+    const words: string[] = [];
+    for (
+      index++;
+      index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? "");
+      index++
+    ) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0) commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+
+/**
+ * The long option `word` names among `names`: the exact name, or the one name it is the start
+ * of (getopt accepts a unique prefix, `--int` for `--interval`); null when it names none or
+ * several. Any `=value` is left out of the comparison.
+ */
+function longOption(word: string, names: readonly string[]): string | null {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name)) return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? (starts[0] ?? null) : null;
+}
+
+/** The long options of `watch` (procps-ng 4.0.4), and the ones that take a value. */
+const WATCH_LONG = [
+  "--beep",
+  "--chgexit",
+  "--color",
+  "--cumulative",
+  "--differences",
+  "--equexit",
+  "--errexit",
+  "--exec",
+  "--help",
+  "--interval",
+  "--no-color",
+  "--no-title",
+  "--no-wrap",
+  "--precise",
+  "--version",
+] as const;
+const WATCH_VALUED = new Set<string>(["--equexit", "--interval"]);
+
+/**
+ * The command `watch` runs. Its options end at the first word that is no option (`-n 5`,
+ * `--interval=2`, `-d`), or at `--`; what follows is the command. Without `-x`/`--exec`, watch
+ * hands the words to `sh -c` joined by spaces — so they are read the same way; with it, each
+ * word is an argument of the program, quoted.
+ */
+function watchCommand(args: readonly string[]): string | undefined {
+  let exec = false;
+  let index = 0;
+  for (; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-") break;
+    if (word.startsWith("--")) {
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec") exec = true;
+      // `--interval 5` takes the next word; `--interval=5` carries it.
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("=")) index++;
+      continue;
+    }
+    // `-n <seconds>` and `-q <cycles>` take a value; `-d` takes one only attached (`-dq` is `-d`
+    // with the value `q`: the next word is the command); the rest are switches.
+    for (let at = 1; at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d") break;
+      if (letter === "x") exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1) index++;
+        break;
+      }
+    }
+  }
+  const words = args.slice(index);
+  if (words.length === 0) return undefined;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+
+/**
+ * The command line `su` runs: the value of `-c` / `--command` (also in a group, `-lc`), wherever
+ * the user's name stands (`su - me -c '…'`, `su -c '…' me`). Undefined for `su` alone, which
+ * opens a shell and runs no command line of its own.
+ */
+function suCommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    // After `--` su stops reading options, but the words still reach the shell it starts, and
+    // a `-c <command>` among them runs (`su -- me -c '…'`): keep looking.
+    if (word === "--") continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried) index++;
+      continue;
+    }
+    // The options of su that take a value: `-s <shell>`, `-g`, `-G`, `-w` and the command `-c`.
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c")) return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext) index++;
+    }
+  }
+  return undefined;
+}
+
+/** The long options of `su` (util-linux), and the ones that take a value. */
+const SU_LONG = [
+  "--command",
+  "--fast",
+  "--group",
+  "--help",
+  "--login",
+  "--preserve-environment",
+  "--pty",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--version",
+  "--whitelist-environment",
+] as const;
+const SU_VALUED = new Set<string>([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment",
+]);
+
+/** GNU parallel's long options that take the next word (`--jobs 4`; `--jobs=4` carries it). */
+const PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
+  "--colsep",
+  "--delay",
+  "--delimiter",
+  "--env",
+  "--eof",
+  "--halt",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--load",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
+  "--results",
+  "--retries",
+  "--rpl",
+  "--sshlogin",
+  "--sshloginfile",
+  "--tagstring",
+  "--timeout",
+  "--workdir",
+  // The rest of the man page's valued long options (GNU parallel 20240222), long and short forms.
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd",
+]);
+
+/** GNU parallel's long switches, which take no value. */
+const PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs",
+]);
+
+/** What starts the arguments of a parallel run: `:::` and friends (`::::` takes files). */
+const PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+
+const PARALLEL_LONG: readonly string[] = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+
+/**
+ * Where the command of a `parallel` line can start. Its options come first; one this reader does
+ * not know may or may not take the next word, so BOTH positions are possible — each index is
+ * visited once, so no number of unknown options can hide the command, and the cost is linear.
+ * A long option may be cut short to a unique prefix (Perl's Getopt::Long).
+ */
+function parallelStarts(args: readonly string[]): number[] {
+  const starts = new Set<number>();
+  const seen = new Set<number>();
+  const queue = [0];
+  for (let at = queue.pop(); at !== undefined; at = queue.pop()) {
+    if (seen.has(at)) continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
+      const carried = word.includes("=");
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null) queue.push(at + 1, at + 2);
+      else queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      // A short group: `-j4` carries its value, `-j 4` takes the next word, `-k` and `-u` none.
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+
+/**
+ * The command lines GNU parallel runs, as they can be read, for each place the command may
+ * start (`parallelStarts`): its words up to the first `:::`. The `:::` arguments run too —
+ * parallel adds each to the command, quoted, or puts it where the command holds `{}` — so those
+ * readings are returned as well; and when the command is a shell, each argument is also a script
+ * of its own. With no command, the arguments are the commands ("If no command is given, the line
+ * of input is executed"). `--arg-sep <s>` replaces `:::`.
+ */
+function parallelLines(args: readonly string[]): string[] {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator =
+    sepWord === undefined
+      ? null
+      : sepWord.includes("=")
+        ? sepWord.slice(sepWord.indexOf("=") + 1)
+        : (args[sepAt + 1] ?? null);
+  const isSource = (word: string) =>
+    separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines: string[] = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command: string[] = [];
+    for (; index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    // The arguments after a `:::` (those after `::::` are file names).
+    const given: string[] = [];
+    let reading = false;
+    for (; index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word)) reading = !word.startsWith("::::");
+      else if (reading) given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0) lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0) continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval") lines.push(...given);
+  }
+  return lines;
+}
+
+/** The command GNU parallel runs (`parallelLines`), the readings joined by `;`; undefined for none. */
+function parallelCommand(args: readonly string[]): string | undefined {
+  const lines = [...new Set(parallelLines(args))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
+}
+
+/**
  * The command line a wrapper runs, when the line gives it one: `bash -c "…"` (a `c`
  * anywhere in a group of short options: `-ce`, `-ec`), a shell that reads its script from
  * standard input (`sh <<< "…"`, or the text piped from the command before it), `cmd /c …`,
@@ -1408,6 +1806,13 @@ export function nestedCommand(
           .map(shellQuote)
           .join(" ");
   }
+  // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
+  // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
+  // does to a merge still holds; the command they run is read here, once, for every guard.
+  if (program === "find") return findCommands(args);
+  if (program === "watch") return watchCommand(args);
+  if (program === "su") return suCommand(args);
+  if (program === "parallel") return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");
