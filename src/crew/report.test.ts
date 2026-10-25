@@ -121,6 +121,13 @@ async function crewWorld1(options: { files?: string[]; state?: "working" | "bloc
   return { ...world, base, worktree };
 }
 
+/** A model part file in a temp folder, and the `crew report` arguments for a green done report. */
+function doneArgs(part: string = modelPart()): string[] {
+  const file = join(tempDir("report"), "part.json");
+  writeFileSync(file, part);
+  return ["report", "--status", "done", "--file", file];
+}
+
 /** The model's part of a report, as the file the crew session writes. */
 function modelPart(extra: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -290,7 +297,7 @@ describe("crew report", () => {
     const file = join(tempDir("report"), "report.md");
     writeFileSync(file, "# B6b\n\nThe live stream works.\n");
     const code = await runCrew(
-      ["report", "--status", "done", "--file", file],
+      ["report", "--status", "failed", "--file", file],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     expect(world.err).toEqual([]);
@@ -304,7 +311,7 @@ describe("crew report", () => {
   test("D22: a report with no file has no model part, and the facts are still filled", async () => {
     const world = await crewWorld1();
     const code = await runCrew(
-      ["report", "--status", "done"],
+      ["report", "--status", "failed"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     expect(world.err).toEqual([]);
@@ -353,7 +360,7 @@ describe("crew report", () => {
       ["report", "--question", "which port?", "--option", "3210", "--option", "3211"],
       ctx,
     );
-    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(0);
+    expect(await runCrew(doneArgs(), ctx)).toBe(0);
     const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
     expect(report?.question).toBeNull();
   });
@@ -370,7 +377,7 @@ describe("crew report", () => {
       T0,
     );
     const code = await runCrew(
-      ["report", "--status", "done"],
+      doneArgs(),
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     expect(code).toBe(1);
@@ -383,10 +390,7 @@ describe("crew report", () => {
     writeFileSync(join(world.worktree, "a file.md"), "x\n");
     git(world.worktree, "add", ".");
     git(world.worktree, "commit", "-q", "-m", "a file with a space");
-    await runCrew(
-      ["report", "--status", "done"],
-      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
-    );
+    await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }));
     const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
     expect(report?.changed.files).toBe(3);
     expect(report?.outsideBrief).toEqual(["README.md", "a file.md", "extra.ts"]);
@@ -394,10 +398,7 @@ describe("crew report", () => {
 
   test("a `./` in a brief's --files names the path git does", async () => {
     const world = await crewWorld1({ files: ["./README.md"] });
-    await runCrew(
-      ["report", "--status", "done"],
-      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
-    );
+    await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }));
     const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
     expect(report?.outsideBrief).toEqual(["extra.ts"]);
   });
@@ -408,7 +409,7 @@ describe("crew report", () => {
     taskFile(world, 3, "pending");
     taskFile(world, 5, "in_progress");
     const code = await runCrew(
-      ["report", "--status", "done"],
+      doneArgs(),
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     expect(code).toBe(1);
@@ -427,14 +428,14 @@ describe("crew report", () => {
     const world = await crewWorld1();
     taskFile(world, 2, "in_progress");
     const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
-    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(1);
+    expect(await runCrew(doneArgs(), ctx)).toBe(1);
     expect(world.err).toEqual([
       'crew report: the task list still has 1 open task: #2 "Part 2" (in_progress)',
       "Fix: Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
     ]);
     world.err.length = 0;
     taskFile(world, 2, "completed");
-    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(0);
+    expect(await runCrew(doneArgs(), ctx)).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
       `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
@@ -464,7 +465,7 @@ describe("crew report", () => {
   test("D23: no task list at all: the report goes through, with one note saying so", async () => {
     const world = await crewWorld1();
     const code = await runCrew(
-      ["report", "--status", "done"],
+      doneArgs(),
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
     expect(code).toBe(0);
@@ -483,10 +484,7 @@ describe("crew report", () => {
     writeFileSync(join(folder, ".lock"), "");
     writeFileSync(join(folder, ".highwatermark"), "2");
     expect(
-      await runCrew(
-        ["report", "--status", "done"],
-        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
-      ),
+      await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID })),
     ).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
@@ -500,10 +498,7 @@ describe("crew report", () => {
     mkdirSync(join(world.paths.claudeConfigDir, "tasks"), { recursive: true });
     writeFileSync(join(world.paths.claudeConfigDir, "tasks", SESSION_ID), "{}");
     expect(
-      await runCrew(
-        ["report", "--status", "done"],
-        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
-      ),
+      await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID })),
     ).toBe(0);
     expect(world.out).toEqual([
       `note: the task list in ${join(world.paths.claudeConfigDir, "tasks", SESSION_ID)} cannot be read; nothing was checked before the report`,
@@ -521,13 +516,13 @@ describe("crew report", () => {
       { cwd: world.worktree },
       { CC_SMART_DEV_KIT_CREW: ID, CLAUDE_CODE_TASK_LIST_ID: "shared-list" },
     );
-    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(1);
+    expect(await runCrew(doneArgs(), ctx)).toBe(1);
     expect(world.err[0]).toBe(
       'crew report: the task list still has 1 open task: #7 "Part 7" (in_progress)',
     );
     world.err.length = 0;
     taskFile(world, 7, "completed", "shared-list");
-    expect(await runCrew(["report", "--status", "done"], ctx)).toBe(0);
+    expect(await runCrew(doneArgs(), ctx)).toBe(0);
     expect(world.err).toEqual([]);
   });
 
@@ -547,5 +542,169 @@ describe("crew report", () => {
     world.err.length = 0;
     expect(await runCrew(["report", "--status", "done", "--question", "q?"], ctx)).toBe(2);
     expect(world.err[0]).toContain("give one, not both");
+  });
+
+  describe("RG1: a done report is held for red or missing work", () => {
+    const fix =
+      "Fix: fix it and run the whole suite and the checks again, then report `done` with the JSON part (`crew report --status done --file -`: tests, checks, review); report `failed` or `blocked` instead when the phase cannot be finished";
+
+    async function refused(part: Record<string, unknown>, ...lines: string[]) {
+      const world = await crewWorld1();
+      const code = await runCrew(
+        doneArgs(modelPart(part)),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(code).toBe(1);
+      expect(world.err).toEqual([...lines, fix]);
+      // Nothing was written: the phase is still working.
+      expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))).toBeNull();
+      expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("working");
+    }
+
+    test("a failed whole suite is refused, with the command named", async () => {
+      await refused(
+        {
+          tests: { full: { command: "bun test", failed: 3, ok: false, passed: 40 }, targeted: [] },
+        },
+        "crew report: a done report cannot carry red work: the whole suite failed (`bun test`: 3 failed)",
+      );
+    });
+
+    test("a suite with failures is red even when its ok says true", async () => {
+      await refused(
+        { tests: { full: { command: "bun test", failed: 1, ok: true, passed: 40 }, targeted: [] } },
+        "crew report: a done report cannot carry red work: the whole suite failed (`bun test`: 1 failed)",
+      );
+    });
+
+    test("a failed targeted run is refused", async () => {
+      await refused(
+        {
+          tests: {
+            full: { command: "bun test", failed: 0, ok: true, passed: 42 },
+            targeted: [{ command: "bun test src/crew", failed: 2, ok: false, passed: 5 }],
+          },
+        },
+        "crew report: a done report cannot carry red work: a test run failed (`bun test src/crew`: 2 failed)",
+      );
+    });
+
+    test("a failed check is refused, and every red item is named", async () => {
+      await refused(
+        {
+          checks: [
+            { name: "typecheck", note: null, ok: true },
+            { name: "lint", note: "2 errors", ok: false },
+          ],
+          tests: { full: { command: "bun test", failed: 1, ok: false, passed: 4 }, targeted: [] },
+        },
+        "crew report: a done report cannot carry red work: the whole suite failed (`bun test`: 1 failed); the check `lint` failed (2 errors)",
+      );
+    });
+
+    test("a missing review is refused", async () => {
+      await refused(
+        { review: null },
+        "crew report: a done report needs a review: none is recorded (a reviewer's `review`, or an `ownReview` where the brief asked for no second opinion)",
+      );
+    });
+
+    test("a suite that never ran is refused", async () => {
+      await refused(
+        { tests: { full: null, targeted: [] } },
+        "crew report: a done report needs the whole suite: none is recorded (`tests.full`)",
+      );
+    });
+
+    test("a report with no JSON part at all is refused (the RF2 case)", async () => {
+      const world = await crewWorld1();
+      const file = join(tempDir("report"), "report.md");
+      writeFileSync(file, "6,509 pass, 0 fail, both validates green.\n");
+      const code = await runCrew(
+        ["report", "--status", "done", "--file", file],
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(code).toBe(1);
+      expect(world.err[0]).toContain("a done report needs the whole suite");
+      expect(world.err.join("\n")).toContain("a done report needs a review");
+    });
+
+    test("an empty list of findings with a reviewer is a clean review", async () => {
+      const world = await crewWorld1();
+      const part = modelPart({
+        review: {
+          agent: "cc-smart-dev-kit:reviewer",
+          effort: "high",
+          findings: [],
+          model: "sonnet",
+        },
+      });
+      const code = await runCrew(
+        doneArgs(part),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(world.err).toEqual([]);
+      expect(code).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.review?.findings).toEqual([]);
+    });
+
+    test("an own review, with its reason, stands where the brief asked for no second opinion", async () => {
+      const world = await crewWorld1();
+      const part = modelPart({
+        ownReview: {
+          findings: [{ finding: "a stale doc line", fix: "updated" }],
+          reason: "the brief asked for no second opinion",
+        },
+        review: null,
+      });
+      const code = await runCrew(
+        doneArgs(part),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(world.err).toEqual([]);
+      expect(code).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.review).toBeNull();
+      expect(report?.ownReview).toEqual({
+        findings: [{ finding: "a stale doc line", fix: "updated" }],
+        reason: "the brief asked for no second opinion",
+      });
+    });
+
+    test("an own review without a reason does not read as the report shape", async () => {
+      const world = await crewWorld1();
+      const code = await runCrew(
+        doneArgs(modelPart({ ownReview: { findings: [] }, review: null })),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(code).toBe(1);
+      expect(world.err[0]).toContain("ownReview.reason");
+    });
+
+    test.each(["failed", "handoff"] as const)(
+      "a %s report with a red suite and no review is never held",
+      async (status) => {
+        const world = await crewWorld1();
+        const file = join(tempDir("report"), "part.json");
+        writeFileSync(
+          file,
+          modelPart({
+            checks: [{ name: "lint", note: null, ok: false }],
+            review: null,
+            tests: { full: { command: "bun test", failed: 9, ok: false, passed: 1 }, targeted: [] },
+          }),
+        );
+        const code = await runCrew(
+          ["report", "--status", status, "--file", file],
+          world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+        );
+        expect(world.err).toEqual([]);
+        expect(code).toBe(0);
+        expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))?.status).toBe(
+          status,
+        );
+      },
+    );
   });
 });

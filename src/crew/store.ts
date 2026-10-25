@@ -612,6 +612,17 @@ const reportFields = z.object({
       findings: z.array(z.looseObject({ finding: text, fix: text })),
     })
     .nullable(),
+  /**
+   * The crew session's own review, where its brief asked for no second opinion: why none was
+   * needed, and each finding with its fix. Null when there is none (older reports have no field).
+   */
+  ownReview: z
+    .looseObject({
+      reason: text,
+      findings: z.array(z.looseObject({ finding: text, fix: text })),
+    })
+    .nullable()
+    .optional(),
   /** The docs it changed. */
   docs: z.array(text),
   /** What only the lead may do: text for the lead's own files, a decision. */

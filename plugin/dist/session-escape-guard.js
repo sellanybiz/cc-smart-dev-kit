@@ -9023,6 +9023,10 @@ var reportFields = object({
     sha,
     findings: array(looseObject({ finding: text, fix: text }))
   }).nullable(),
+  ownReview: looseObject({
+    reason: text,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable().optional(),
   docs: array(text),
   needsLead: array(text),
   open: array(text),

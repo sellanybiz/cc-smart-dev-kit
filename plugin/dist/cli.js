@@ -14809,6 +14809,10 @@ var reportFields = object({
     sha,
     findings: array(looseObject({ finding: text, fix: text }))
   }).nullable(),
+  ownReview: looseObject({
+    reason: text,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable().optional(),
   docs: array(text),
   needsLead: array(text),
   open: array(text),
@@ -28919,6 +28923,10 @@ var modelReviewFields = looseObject({
   effort: string2().min(1),
   findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) }))
 });
+var ownReviewFields = looseObject({
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) })),
+  reason: string2().min(1)
+});
 var modelReportSchema = looseObject({
   tests: looseObject({
     targeted: array(testRunFields).default([]),
@@ -28926,6 +28934,7 @@ var modelReportSchema = looseObject({
   }).default({ targeted: [], full: null }),
   checks: array(checkFields).default([]),
   review: modelReviewFields.nullable().default(null),
+  ownReview: ownReviewFields.nullable().default(null),
   docs: array(string2().min(1)).default([]),
   needsLead: array(string2().min(1)).default([]),
   open: array(string2().min(1)).default([]),
@@ -29013,6 +29022,39 @@ function doneReportGate(record, ctx) {
 function taskLine(task) {
   return task.subject === "" ? `#${task.id} (${task.status})` : `#${task.id} "${task.subject}" (${task.status})`;
 }
+function runLine(run) {
+  return `\`${run.command}\`: ${run.failed > 0 ? `${run.failed} failed` : "not ok"}`;
+}
+function doneReportRefusal(model) {
+  const red = [];
+  const full = model.tests.full;
+  if (full !== null && (!full.ok || full.failed > 0)) {
+    red.push(`the whole suite failed (${runLine(full)})`);
+  }
+  for (const run of model.tests.targeted) {
+    if (!run.ok || run.failed > 0)
+      red.push(`a test run failed (${runLine(run)})`);
+  }
+  for (const check of model.checks) {
+    if (!check.ok) {
+      red.push(`the check \`${check.name}\` failed${check.note === null ? "" : ` (${check.note})`}`);
+    }
+  }
+  const lines = [];
+  if (red.length > 0) {
+    lines.push(`crew report: a done report cannot carry red work: ${red.join("; ")}`);
+  }
+  if (full === null) {
+    lines.push("crew report: a done report needs the whole suite: none is recorded (`tests.full`)");
+  }
+  if (model.review === null && model.ownReview === null) {
+    lines.push("crew report: a done report needs a review: none is recorded (a reviewer's `review`, or an `ownReview` where the brief asked for no second opinion)");
+  }
+  if (lines.length === 0)
+    return null;
+  lines.push(`Fix: fix it and run the whole suite and the checks again, then report \`done\` with the JSON part (\`crew report --status done --file -\`: tests, checks, review); report \`failed\` or \`blocked\` instead when the phase cannot be finished`);
+  return new ReportRefusal(lines, 1);
+}
 function openQuestion(record) {
   for (let index = record.questions.length - 1;index >= 0; index -= 1) {
     const asked = record.questions[index];
@@ -29035,6 +29077,7 @@ function buildReport(model, facts, status, record, summary = null) {
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
+    ownReview: model.ownReview,
     phase: record.phase,
     pr: facts.pr,
     question: status === "blocked" ? model.question ?? openQuestion(record) : null,
@@ -29106,6 +29149,11 @@ async function runCrewReport(args, ctx) {
   const model = modelPartOf(read.raw);
   if ("error" in model) {
     return say(ctx, refusal2(model.error, "the report is JSON: the tests, the checks, the review, the docs, what the lead must do, and what is open"));
+  }
+  if (args.status === "done") {
+    const held = doneReportRefusal(model.part);
+    if (held !== null)
+      return say(ctx, held);
   }
   let report;
   try {
