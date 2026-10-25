@@ -160,11 +160,20 @@ file`). Reads, `--help` and the kit's own `issue file` pass (it is not a `gh` co
 
 **Text the reader cannot read whole fails closed** (IX1), as the merge reader does for a path it
 cannot read: a write method (explicit, or inferred from `-f`, `-F` or `--input`) to an endpoint
-that holds `$` or a backtick counts as a write ("the endpoint cannot be read"), and so do a
-GraphQL request with `--input`, a `query=@file`, or a `$` or backtick in the query. A read (a GET
-with no fields) stays silent. A GraphQL query that uses variables (`query($o: String!)`) holds a
-`$`, so it asks; the shell cannot be told apart from GraphQL's own sign. `-X=POST` is `POST`, as
-gh reads it (`shortFlags` drops one leading `=`). Never looser: this only adds a question. A pull request answer
+the shell fills in counts as a write ("the endpoint cannot be read"), and so do a GraphQL request
+with `--input`, a `query=@file`, or a query the shell fills in. A read (a GET with no fields)
+stays silent. **"The shell fills it in" is the shell reader's answer, per word** (IX3,
+`wordsWithFill`, `RunInvocation.filled`): a `$` expansion (`$x`, `${x}`, `$(…)`, `$((…))`) or a
+backtick outside single quotes. So a literal query in single quotes is read whole, whatever `$` it
+holds: `query($n: Int!) { … issue(number: $n) … }` is a plain read (silent for a person, allowed
+in a crew session), a `mutation` in it is judged by its name as before, and `'repos/o/r/issues/$x'`
+is the path it says. `"$Q"`, `"…$(cat q)…"`, a backtick, a bare `$Q`, and `"repos/o/r/$K/5/comments"`
+still fail closed. A line the shell fills in first (`bash -c "…$K…"`, `echo "…$K…" | sh`, `eval`,
+the script of a here-doc with no quoted delimiter) is filled all through: the quotes inside it were
+written before the shell chose the text. The pull request part of the guard reads a query the same
+way (`graphqlCalls`). `-X=POST` is `POST`, as
+gh reads it (`shortFlags` drops one leading `=`). Never looser than IX1 for a word the shell fills
+in; looser only for single-quoted text, which the shell never changes. A pull request answer
 on the same line wins for a person; for a crew session the issue denial is read **first**, so a
 `gh <unknown word>` beside the write cannot hide it. gh's flags are read the way gh reads them
 (before the subcommand an option takes the next word; a `-h` after an option is its value), and

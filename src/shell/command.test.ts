@@ -796,6 +796,7 @@ describe("wordsWithFill — which words the shell fills in (IX3)", () => {
 
   test("bash: an expansion outside single quotes is filled, in every spelling", () => {
     // `$(cat q)` and a backtick pair split on their space: each piece is a word of its own.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
     expect(filledOf("a $x ${x} $(cat q) $((1+2)) `cat q` $1 $? x$y")).toEqual([
       false, // a
       true, // $x
@@ -809,6 +810,7 @@ describe("wordsWithFill — which words the shell fills in (IX3)", () => {
       true, // $?
       true, // x$y
     ]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
     expect(filledOf('a "$x" "q=$(cat q)" "`cat q`" "pre${x}post"')).toEqual([
       false,
       true,
@@ -841,6 +843,7 @@ describe("wordsWithFill — which words the shell fills in (IX3)", () => {
   });
 
   test("PowerShell: bare and double-quoted $ is filled, single quotes and `$ are not", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
     expect(filledOf('a $x $(Get-Q) ${x} "$n" "q=$($x)"', "powershell")).toEqual([
       false,
       true,

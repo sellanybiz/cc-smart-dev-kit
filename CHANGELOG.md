@@ -91,8 +91,10 @@ own repository, instead of losing them as a line in a summary.
   issues.
 - **The review's fixes to what the kit writes to GitHub.** The raw-write guard now fails closed on
   text it cannot read whole: a `gh api` write to an endpoint, or a GraphQL query, that the shell
-  fills in (`$EP`, `$(…)`), a request from `--input` or `query=@file`, and a `gh` alias that runs
-  a shell command. `gh api -X=POST` is read as `POST`, as gh reads it. Any GraphQL mutation that is
+  fills in (`$EP`, `$(…)`, a backtick — the shell reader says which words, outside single quotes,
+  so GraphQL's own `$n` in `'query($n: Int!) { … }'` is a plain read), a request from `--input` or
+  `query=@file`, and a `gh` alias that runs a shell command (looked up as typed, as gh does, in
+  the merge reader too). `gh api -X=POST` is read as `POST`, as gh reads it. Any GraphQL mutation that is
   not a pull request one counts as a write, and so do `gh label create`, `edit`, `delete` and
   `clone` and a write to a repository's labels. A `gh` alias is read for what it expands to, and a
   crew session is denied a `gh` word it cannot read. The screen finds secret names with letters
