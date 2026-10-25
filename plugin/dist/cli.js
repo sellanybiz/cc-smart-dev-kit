@@ -54175,12 +54175,11 @@ var REMOTE_CONTROL_KEY = ["remoteControlAtStartup"];
 var REMOTE_CONTROL_VALUE = true;
 function planRemoteControl(paths) {
   const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
-  if (!current.found) {
-    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-    return ownership(records, REMOTE_CONTROL_KEY, current) !== "changed";
-  }
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-  return Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) && ownership(records, REMOTE_CONTROL_KEY, current) === "ours";
+  const whose = ownership(records, REMOTE_CONTROL_KEY, current);
+  if (!current.found)
+    return whose !== "changed";
+  return Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) && whose === "ours";
 }
 
 // src/cli/setup.ts

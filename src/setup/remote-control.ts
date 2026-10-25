@@ -32,14 +32,10 @@ export interface RemoteControlPaths {
  */
 export function planRemoteControl(paths: RemoteControlPaths): boolean {
   const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
-  if (!current.found) {
-    // A key setup wrote and the person deleted since is theirs: it is not put back.
-    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-    return ownership(records, REMOTE_CONTROL_KEY, current) !== "changed";
-  }
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-  return (
-    Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) &&
-    ownership(records, REMOTE_CONTROL_KEY, current) === "ours"
-  );
+  const whose = ownership(records, REMOTE_CONTROL_KEY, current);
+  // Absent: a first run sets it, but a key setup wrote and the person deleted since is theirs
+  // (`whose` is "changed") and is not put back.
+  if (!current.found) return whose !== "changed";
+  return Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) && whose === "ours";
 }
