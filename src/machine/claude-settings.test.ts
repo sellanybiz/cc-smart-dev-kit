@@ -11,6 +11,8 @@ import {
   AUTOCOMPACT_MAX_TOKENS,
   AUTOCOMPACT_MIN_TOKENS,
   compactEnvOf,
+  compactWindowsOf,
+  mainCheckoutOfFolder,
   parseCompactPercent,
   parseCompactWindow,
 } from "./claude-settings";
@@ -141,5 +143,137 @@ describe("what applies to a session", () => {
     expect(w.read()).toEqual({ percent: null, window: null });
     write(w.mainLocal, `\uFEFF${JSON.stringify({ env: { [WINDOW]: "300k" } })}`);
     expect(w.read().window).toBe(300_000);
+  });
+});
+
+describe("the main checkout of a folder, found without git (SL1)", () => {
+  test("a checkout's own root, from a folder inside it", () => {
+    const root = tempDir("main-root");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "src", "deep"), { recursive: true });
+    expect(mainCheckoutOfFolder(join(root, "src", "deep"))).toBe(root);
+  });
+
+  test("a linked worktree: the folder that holds the .git folder its .git file names", () => {
+    const main = tempDir("main-of-wt");
+    const worktree = tempDir("the-wt");
+    mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
+    write(join(worktree, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
+    mkdirSync(join(worktree, "sub"), { recursive: true });
+    expect(mainCheckoutOfFolder(join(worktree, "sub"))).toBe(main);
+  });
+
+  test("a .git file that names something else, or no checkout at all: that folder itself", () => {
+    const submodule = tempDir("submodule");
+    write(join(submodule, ".git"), "gitdir: ../.git/modules/x\n");
+    expect(mainCheckoutOfFolder(submodule)).toBe(submodule);
+    const loose = tempDir("loose");
+    expect(mainCheckoutOfFolder(loose)).toBe(loose);
+  });
+});
+
+describe("the autoCompactWindow keys of a normal session (SL1)", () => {
+  const OPUS = "claude-opus-5-5";
+  function world() {
+    const main = tempDir("keys-main");
+    const worktree = tempDir("keys-worktree");
+    const config = tempDir("keys-config");
+    return {
+      config: join(config, "settings.json"),
+      mainLocal: join(main, ".claude", "settings.local.json"),
+      read: (model: string, env: Record<string, string> = {}) =>
+        compactWindowsOf(
+          { configDir: config, env, mainCheckout: main, projectFolder: worktree },
+          model,
+        ),
+      worktreeLocal: join(worktree, ".claude", "settings.local.json"),
+      worktreeShared: join(worktree, ".claude", "settings.json"),
+    };
+  }
+
+  test("a per-model window (the one /autocompact saves)", () => {
+    const w = world();
+    write(w.config, { modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } } });
+    expect(w.read(OPUS).settings).toBe(400_000);
+    // Another model has none.
+    expect(w.read("claude-sonnet-5-5").settings).toBeNull();
+  });
+
+  test("an id with the [1m] suffix, or in capitals, finds the same entry", () => {
+    const w = world();
+    write(w.config, { modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } } });
+    expect(w.read(`${OPUS}[1m]`).settings).toBe(400_000);
+    expect(w.read(" Claude-Opus-5-5[1M] ").settings).toBe(400_000);
+  });
+
+  test("the top-level key is the fallback; a model's own entry wins over it", () => {
+    const w = world();
+    write(w.config, {
+      autoCompactWindow: 300_000,
+      modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } },
+    });
+    expect(w.read(OPUS).settings).toBe(400_000);
+    expect(w.read("claude-sonnet-5-5").settings).toBe(300_000);
+  });
+
+  test('"auto" in a model entry means the model\'s own window, even under a top-level number', () => {
+    const w = world();
+    write(w.config, {
+      autoCompactWindow: 300_000,
+      modelSettings: { [OPUS]: { autoCompactWindow: "auto" } },
+    });
+    expect(w.read(OPUS).settings).toBeNull();
+    expect(w.read("claude-sonnet-5-5").settings).toBe(300_000);
+  });
+
+  test("a project's files override the person's, local over shared, as Claude Code merges them", () => {
+    const w = world();
+    write(w.config, { modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } } });
+    expect(w.read(OPUS).settings).toBe(400_000);
+    write(w.worktreeShared, { modelSettings: { [OPUS]: { autoCompactWindow: 500_000 } } });
+    expect(w.read(OPUS).settings).toBe(500_000);
+    write(w.worktreeLocal, { modelSettings: { [OPUS]: { autoCompactWindow: 600_000 } } });
+    expect(w.read(OPUS).settings).toBe(600_000);
+    write(w.mainLocal, { modelSettings: { [OPUS]: { autoCompactWindow: 700_000 } } });
+    expect(w.read(OPUS).settings).toBe(700_000);
+  });
+
+  test("a higher file that sets the top-level key drops the lower files' per-model entries", () => {
+    const w = world();
+    write(w.config, { modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } } });
+    write(w.worktreeLocal, { autoCompactWindow: 250_000 });
+    expect(w.read(OPUS).settings).toBe(250_000);
+  });
+
+  test("a value out of range, not a whole number, or a text other than auto is no value", () => {
+    const w = world();
+    for (const bad of [99_999, 1_000_001, 400_000.5, "400k", true, null]) {
+      write(w.config, {
+        autoCompactWindow: bad,
+        modelSettings: { [OPUS]: { autoCompactWindow: bad } },
+      });
+      expect(`${String(bad)}: ${w.read(OPUS).settings}`).toBe(`${String(bad)}: null`);
+    }
+    write(w.config, { autoCompactWindow: AUTOCOMPACT_MIN_TOKENS });
+    expect(w.read(OPUS).settings).toBe(AUTOCOMPACT_MIN_TOKENS);
+    write(w.config, { autoCompactWindow: AUTOCOMPACT_MAX_TOKENS });
+    expect(w.read(OPUS).settings).toBe(AUTOCOMPACT_MAX_TOKENS);
+  });
+
+  test("a file that is not valid JSON, or has the wrong shape, sets nothing", () => {
+    const w = world();
+    write(w.config, "{ not json");
+    write(w.worktreeShared, { modelSettings: "nope" });
+    write(w.worktreeLocal, { modelSettings: { [OPUS]: 5 } });
+    expect(w.read(OPUS)).toEqual({ env: { percent: null, window: null }, settings: null });
+  });
+
+  test("the environment variables come from the same read", () => {
+    const w = world();
+    write(w.config, { modelSettings: { [OPUS]: { autoCompactWindow: 400_000 } } });
+    expect(w.read(OPUS, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300k" })).toEqual({
+      env: { percent: null, window: 300_000 },
+      settings: 400_000,
+    });
   });
 });
