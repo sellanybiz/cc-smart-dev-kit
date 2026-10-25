@@ -3674,7 +3674,14 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
       const old = `old-lead-${index}`;
       await writeLead(
         stateDir,
-        { cwd: repo, name: `LEAD my-app old-${index}`, plan: "old", repo, sessionId: old, tag: "my-app" },
+        {
+          cwd: repo,
+          name: `LEAD my-app old-${index}`,
+          plan: "old",
+          repo,
+          sessionId: old,
+          tag: "my-app",
+        },
         T0,
       );
       // Half have never held a lease, half held one whose watch died.
@@ -3707,7 +3714,14 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };
     await writeLead(
       stateDir,
-      { cwd: repo, name: "LEAD my-app late", plan: "late", repo, sessionId: "late-lead", tag: "my-app" },
+      {
+        cwd: repo,
+        name: "LEAD my-app late",
+        plan: "late",
+        repo,
+        sessionId: "late-lead",
+        tag: "my-app",
+      },
       T0,
     );
     const a = watchOf(LEAD_SESSION);

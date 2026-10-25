@@ -270,9 +270,7 @@ describe("IX2-4: no call outlives the pass's budget", () => {
     // The retry: the issue is read first, the marker is found, nothing is posted again.
     const second = await settleMarks(path, made.world, RETRY_MS, passBudget(Date.now));
     expect(made.gh.issues[0]?.comments).toHaveLength(1);
-    expect(second).toEqual([
-      expect.stringContaining("marked fixed on release-1.3.0"),
-    ]);
+    expect(second).toEqual([expect.stringContaining("marked fixed on release-1.3.0")]);
     expect(readPending(path)).toEqual([]);
   });
 
@@ -319,7 +317,10 @@ describe("phaseIssues", () => {
       unnamed: [2],
     });
     // No brief to read: the record's issue alone.
-    expect(checkPhaseIssues(record, { issues: [1, 3] }, null)).toEqual({ marks: [3], unnamed: [1] });
+    expect(checkPhaseIssues(record, { issues: [1, 3] }, null)).toEqual({
+      marks: [3],
+      unnamed: [1],
+    });
     // A brief naming an issue the report does not: nothing is added.
     expect(checkPhaseIssues({}, { issues: [] }, "Fix #4.")).toEqual({ marks: [], unnamed: [] });
   });

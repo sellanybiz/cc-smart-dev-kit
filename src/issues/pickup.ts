@@ -297,10 +297,7 @@ export function visibleText(text: string): string {
     )
     .replace(/<!--/g, "[hidden HTML comment: ")
     .replace(/-->/g, "]")
-    .replace(
-      /&(?:#[xX]([0-9a-fA-F]{1,8})|#([0-9]{1,10})|([A-Za-z][A-Za-z0-9]*));/g,
-      namedEntity,
-    )
+    .replace(/&(?:#[xX]([0-9a-fA-F]{1,8})|#([0-9]{1,10})|([A-Za-z][A-Za-z0-9]*));/g, namedEntity)
     .replace(HIDDEN_CHARACTER, (match, emoji: string | undefined) =>
       emoji === undefined ? named(match) : match,
     )

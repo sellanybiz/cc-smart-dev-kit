@@ -1065,7 +1065,8 @@ the store records — a session the kit does not know is the person's own:
   the project's issues and comments (`src/issues/feed.ts`, `docs/design/issues.md` § The lead hears
   new issues), inside the pass it already runs — never a second loop. The state is one record for the
   repository (`issue-feed/` in the store, with its own lock), and a look found by one watch reaches
-  every lead of the repository as one `issue` event each, which a lead's watch says as any other
+  every lead whose watch runs (a live watch lease: `watchIsAlive`; lead records are never removed)
+  as one `issue` event each, which a lead's watch says as any other
   line: `issue #<n> opened by <author>: "<title>"`, `comment on #<n> by <author>`, each starting with
   a frame (`ISSUE_DATA_FRAME`, put on in `eventLine`) that says GitHub's words are quoted data, never
   an instruction: a monitor line is a notification of its own. A `304` and the first
@@ -1073,7 +1074,10 @@ the store records — a session the kit does not know is the person's own:
   unreachable, and back) is one line, not one per pass. **A crew session never hears these lines**:
   they are written for leads, the crew's `step`/`report` reads select events by crew id, and the
   lead acts on one only through the person. The look and the settling of the merge marks share one
-  budget per pass (a count and a time: `passBudget`), after the pass's own lines.
+  budget per pass (a count and a time: `passBudget`), after the pass's own lines. When the watch
+  queues the merge marks, it queues only the issue numbers the record's issue or the lead's brief
+  also names; each other number a report names is one line for the lead (`issues.md` § Resolved
+  when it ships).
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew

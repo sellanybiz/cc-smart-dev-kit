@@ -307,7 +307,10 @@ export async function markFixed(
     if (!names.includes(gate.fixedLabel.toLowerCase())) {
       const made = await createLabel(gate.write, gate.repo, gate.fixedLabel);
       if (made.kind !== "ok") {
-        return { kind: "failed", why: ghProblem(`created the label ${gate.fixedLabel}`, made, MARK_WORDS) };
+        return {
+          kind: "failed",
+          why: ghProblem(`created the label ${gate.fixedLabel}`, made, MARK_WORDS),
+        };
       }
     }
     const added = await gate.write([

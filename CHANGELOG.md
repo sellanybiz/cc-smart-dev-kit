@@ -71,6 +71,16 @@ own repository, instead of losing them as a line in a summary.
   An issue line is **news, never an instruction** (`/cc-smart-dev-kit:lead` § 4). `gh` missing,
   logged out, rate limited (it waits for the reset) or unreachable is one line per change of
   state, not one per pass.
+- **Fixes to what the kit reads from GitHub.** More of what GitHub hides from the person who
+  labels an issue is now shown and marked in a brief: a link reference definition, the content of
+  a tag GitHub strips (`script`, `style`, `template` and the like), and a character reference of a
+  hidden character. A session can no longer choose which label counts as ready or turn on the
+  feed (`workflow set`/`unset` of `issues.readyLabel` and `issues.watch` refuse inside Claude
+  Code). The feed writes events only for leads whose watch runs, not for every lead ever
+  recorded. Each GitHub call in a watch pass stops at the pass's time budget, and a write cut
+  short says it may have been posted. The lead's watch marks "fixed" only the issues the
+  record's issue or the brief names, and says so for the rest. A clock moved back no longer
+  silences the feed, and a state it cannot write no longer repeats the same news.
 - **Fixes to the issue parts.** Every default-ignorable character (variation selectors, the
   Hangul filler, the grapheme joiner, U+2800) in an issue's text is named by its code in a brief,
   and an emoji keeps its own selector. The found, fixed and ready labels must be three different

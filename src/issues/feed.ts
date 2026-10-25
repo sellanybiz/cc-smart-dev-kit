@@ -104,7 +104,10 @@ export function newFeedMemory(): FeedMemory {
  * The state the look goes on from: the file's, unless the memory holds a newer one the file never
  * got. A file that has caught up (another watch's look wrote past it) wins, and the memory is let go.
  */
-function stateFrom(file: IssueFeedState | null, memory: FeedMemory | undefined): IssueFeedState | null {
+function stateFrom(
+  file: IssueFeedState | null,
+  memory: FeedMemory | undefined,
+): IssueFeedState | null {
   const held = memory?.held ?? null;
   if (memory === undefined || held === null) return file;
   if (file !== null && file.source === held.source && file.nextAt >= held.nextAt) {
