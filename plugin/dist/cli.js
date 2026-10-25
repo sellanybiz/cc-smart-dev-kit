@@ -18120,7 +18120,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.root);
+    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
   } catch {
     return null;
   }
@@ -18268,7 +18268,7 @@ async function capsOf(ctx, checkout) {
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now(), checkout?.root ?? ctx.cwd);
+    const usage = usageFacts(ctx.paths, ctx.now(), checkout === null ? ctx.cwd : checkout.mainCheckout ?? checkout.root);
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,

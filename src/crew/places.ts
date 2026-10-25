@@ -328,7 +328,13 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.root);
+    // The project's gateway is read at the main checkout, the folder `crew start` reads it at
+    // (`caller.repo`): a lead in a linked worktree gets the answer a start would.
+    usage = usageFacts(
+      input.paths,
+      input.nowMs,
+      input.checkout.mainCheckout ?? input.checkout.root,
+    );
   } catch {
     return null;
   }

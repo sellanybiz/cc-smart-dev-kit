@@ -27094,7 +27094,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.root);
+    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
   } catch {
     return null;
   }
