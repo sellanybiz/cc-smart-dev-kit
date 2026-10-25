@@ -312,3 +312,13 @@ export function editJsonText(text: string, after: JsonObject): string {
   }
   return result;
 }
+
+/**
+ * The text a writer puts in a JSON file for `data`: the file's own text edited where it
+ * differs (`editJsonText`), or — for a file that does not exist yet, or holds only space — a
+ * new file printed the way the formatters print it, with `indent`.
+ */
+export function jsonTextFor(existing: string | null, data: JsonObject, indent: string): string {
+  if (existing === null || existing.trim() === "") return printJson(data, indent);
+  return editJsonText(existing, data);
+}

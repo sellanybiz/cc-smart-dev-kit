@@ -25,6 +25,21 @@ object, so a field can never mean two things in the two files. A broken personal
 with a wrong kind can never be written (`write.ts` validates the whole file before the
 write), and a file it may not change is left alone rather than half-written.
 
+**A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
+write the whole object again with `JSON.stringify`: that laid every line out anew, and a
+project that format-checks its `.claude/` JSON (Biome, Prettier) then failed on `["main"]`
+turned into three lines. They go through one helper, `editJsonText` / `jsonTextFor`
+(`src/setup/json-edit.ts`), which compares the file's object with the wanted one and edits the
+text of what differs: a changed value is replaced, a new key is added after the last one with
+the file's own indent, a removed key goes with its line and the comma it leaves. Every other
+byte stays. What it prints new follows the formatters: a short array of scalars on one line
+(when it fits the width — 80 columns, or the longest line the file already has, up to 120),
+otherwise one item per line; objects with their keys on their own lines. A file that does not
+exist yet is printed the same way (`printJson`), so a new file passes the check too. A file
+that is not valid JSON is refused before this, as before; the backup, the atomic write and the
+lock are unchanged. No library does this: the repo has one runtime dependency, and the helper
+is about 200 lines.
+
 **The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`,
 `switches.jobRoute` and `switches.updateHold` are not stored in either workflow file: each
 names a setting that already exists (Claude Code's `statusLine`, the project's

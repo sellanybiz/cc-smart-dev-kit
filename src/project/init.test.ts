@@ -81,10 +81,7 @@ describe("planProjectInit", () => {
         '      "release/": "main"',
         "    }",
         "  },",
-        '  "protectedBranches": [',
-        '    "main",',
-        '    "dev"',
-        "  ],",
+        '  "protectedBranches": ["main", "dev"],',
         '  "sessionNames": true',
         "}",
         "",
@@ -382,7 +379,8 @@ describe("D20: the retired worktree engine is taken out", () => {
     expect(plan.localSettings.changed).toBe(true);
     expect(plan.localSettings.lines).toEqual([`- hooks.WorktreeRemove: ${ENGINE_REMOVE}`]);
     // The `hooks` object held nothing else, so it goes with its last line.
-    expect(plan.localSettings.text).toBe('{\n  "env": {\n    "FOO": "1"\n  }\n}\n');
+    // The file was one line, and stays one line: the layout is the file's own.
+    expect(plan.localSettings.text).toBe('{"env":{"FOO":"1"}}\n');
     expect(plan.notes).toContain(
       "the plugin's worktree engine was retired in 1.0.0: its hook lines go, because Claude Code's own worktrees need none",
     );
@@ -567,13 +565,36 @@ describe("requiresFloor", () => {
     expect(() => parseCcSmartDevKitConfig(plan.text, plan.file, "1.1.0")).not.toThrow();
   });
 
+  test("JW1: an existing file keeps its own layout where the answers change nothing", () => {
+    const root = tempDir("project-init");
+    const existing = [
+      "{",
+      `  "requires": "${NO_PREFIX_MINOR}",`,
+      '  "worktrees": { "base": "dev", "guardMainFolder": true, "bases": { "hotfix/": "main", "release/": "main" } },',
+      '  "protectedBranches": ["main", "dev"],',
+      '  "sessionNames": true,',
+      '  "autoMode": ["one rule"]',
+      "}",
+      "",
+    ].join("\n");
+    const plan = planProjectInit(input({ root, existing, answers: ANSWERS }));
+    // `autoMode` is not an answer of `project init`, so it stays exactly as it was.
+    expect(plan.text).toBe(existing);
+    const moved = planProjectInit(
+      input({ root, existing, answers: { ...ANSWERS, protectedBranches: ["main"] } }),
+    );
+    expect(moved.text).toBe(existing.replace('["main", "dev"]', '["main"]'));
+  });
+
   test("the fast check: `null` takes the field out; no answer at all leaves the file's own", () => {
     const root = tempDir("project-init");
     const existing = `${JSON.stringify({ checks: { fast: "bun run check" }, worktrees: { base: "dev" } })}\n`;
     // The portal's form does not show the field: `undefined` must not remove what a person wrote.
     const kept = planProjectInit(input({ root, existing, answers: ANSWERS }));
-    expect(kept.text).toContain('"fast": "bun run check"');
-    expect(kept.text).toContain('"requires": ">=1.1"');
+    expect(JSON.parse(kept.text)).toMatchObject({
+      checks: { fast: "bun run check" },
+      requires: ">=1.1",
+    });
     const removed = planProjectInit(
       input({ root, existing, answers: { ...ANSWERS, checks: null } }),
     );

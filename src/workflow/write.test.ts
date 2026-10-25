@@ -66,8 +66,8 @@ describe("workflow set / unset --project", () => {
     const written = readFileSync(file, "utf8");
     expect(written).toBe(
       BIOME_PROJECT.replace(
-        '"reviewBeforePush": true,',
-        '"reviewBeforePush": true,\n    "autoCommit": true,',
+        '      "enabled": true\n    }\n',
+        '      "enabled": true\n    },\n    "autoCommit": true\n',
       ),
     );
     expect(biomeFormat(written)).toBe(written);
@@ -117,7 +117,7 @@ describe("workflow set / unset --project", () => {
     const b = projectWith(tabs);
     writeProjectSetting(b.repo, "autoCommit", true, b.env);
     expect(readFileSync(b.file, "utf8")).toBe(
-      `${tabs.slice(0, -3)}\n\t},\n\t"workflow": {\n\t\t"autoCommit": true\n\t}\n}\n`,
+      `{\n\t"protectedBranches": ["main"],\n\t"worktrees": {\n\t\t"base": "main"\n\t},\n\t"workflow": {\n\t\t"autoCommit": true\n\t}\n}\n`,
     );
   });
 

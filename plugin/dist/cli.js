@@ -39183,6 +39183,235 @@ function allWiredHandlers(file) {
   return Object.keys(hooks).flatMap((event) => wiredHandlers(file, event, null));
 }
 
+// src/setup/json-edit.ts
+var DEFAULT_LINE_WIDTH = 80;
+var MAX_LINE_WIDTH = 120;
+var TAB_COLUMNS = 2;
+function isObject4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function columns(text) {
+  let width = 0;
+  for (const char of text)
+    width += char === "\t" ? TAB_COLUMNS : 1;
+  return width;
+}
+function lineWidthOf(text) {
+  const longest = Math.max(0, ...text.split(`
+`).map((line) => columns(line.replace(/\r$/, ""))));
+  return Math.min(MAX_LINE_WIDTH, Math.max(DEFAULT_LINE_WIDTH, longest));
+}
+function printValue(value, layout, indent, column, trailing) {
+  if (Array.isArray(value)) {
+    if (value.length === 0)
+      return "[]";
+    const scalars = value.every((item) => !Array.isArray(item) && !isObject4(item));
+    if (scalars) {
+      const flat = `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+      if (column + flat.length + trailing <= layout.width)
+        return flat;
+    }
+    const inner = indent + layout.unit;
+    const items = value.map((item, index) => {
+      const last = index === value.length - 1;
+      return `${inner}${printValue(item, layout, inner, columns(inner), last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `[${layout.eol}${items.join(layout.eol)}${layout.eol}${indent}]`;
+  }
+  if (isObject4(value)) {
+    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+    if (entries.length === 0)
+      return "{}";
+    const inner = indent + layout.unit;
+    const members = entries.map(([key, item], index) => {
+      const last = index === entries.length - 1;
+      return `${inner}${printMember(key, item, layout, inner, last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `{${layout.eol}${members.join(layout.eol)}${layout.eol}${indent}}`;
+  }
+  return JSON.stringify(value);
+}
+function printMember(key, value, layout, indent, trailing) {
+  const head = `${JSON.stringify(key)}: `;
+  return `${head}${printValue(value, layout, indent, columns(indent) + head.length, trailing)}`;
+}
+function printJson(value, unit = "  ", width = DEFAULT_LINE_WIDTH) {
+  return `${printValue(value, { unit, width, eol: `
+` }, "", 0, 0)}
+`;
+}
+
+class Scanner {
+  text;
+  at = 0;
+  constructor(text) {
+    this.text = text;
+  }
+  node() {
+    this.skipSpace();
+    const start = this.at;
+    const char = this.text[start];
+    if (char === "{")
+      return this.object();
+    if (char === "[")
+      return this.array();
+    if (char === '"')
+      this.string();
+    else
+      while (this.at < this.text.length && !/[\s,\]}]/.test(this.text[this.at] ?? ""))
+        this.at += 1;
+    return { start, end: this.at };
+  }
+  object() {
+    const start = this.at;
+    const members = [];
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "}")
+        break;
+      if (this.text[this.at] === ",") {
+        this.at += 1;
+        continue;
+      }
+      const keyStart = this.at;
+      this.string();
+      const key = JSON.parse(this.text.slice(keyStart, this.at));
+      this.skipSpace();
+      this.at += 1;
+      members.push({ key, keyStart, value: this.node() });
+    }
+    this.at += 1;
+    return { start, end: this.at, members };
+  }
+  array() {
+    const start = this.at;
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "]")
+        break;
+      if (this.text[this.at] === ",")
+        this.at += 1;
+      else
+        this.node();
+    }
+    this.at += 1;
+    return { start, end: this.at };
+  }
+  string() {
+    this.at += 1;
+    while (this.text[this.at] !== '"')
+      this.at += this.text[this.at] === "\\" ? 2 : 1;
+    this.at += 1;
+  }
+  skipSpace() {
+    while (/\s/.test(this.text[this.at] ?? "x"))
+      this.at += 1;
+  }
+}
+function lineIndent(text, position) {
+  const lineStart = text.lastIndexOf(`
+`, position - 1) + 1;
+  return /^[ \t]*/.exec(text.slice(lineStart))?.[0] ?? "";
+}
+function columnOf(text, position) {
+  return columns(text.slice(text.lastIndexOf(`
+`, position - 1) + 1, position));
+}
+function editObject(text, node, before, after, layout, edits) {
+  const members = node.members ?? [];
+  const last = (key) => members.findLast((m) => m.key === key);
+  const wanted = (key) => Object.hasOwn(after, key) && after[key] !== undefined;
+  const closeAt = node.end - 1;
+  const survivors = members.filter((member) => wanted(member.key));
+  for (const key of Object.keys(before)) {
+    if (!wanted(key))
+      continue;
+    const member = last(key);
+    if (member === undefined)
+      continue;
+    const was = before[key];
+    const is = after[key];
+    if (Bun.deepEquals(was, is, true))
+      continue;
+    if (isObject4(was) && isObject4(is) && member.value.members !== undefined) {
+      editObject(text, member.value, was, is, layout, edits);
+      continue;
+    }
+    const indent = lineIndent(text, member.keyStart);
+    const followed = text.slice(member.value.end).match(/^\s*,/) !== null;
+    edits.push({
+      start: member.value.start,
+      end: member.value.end,
+      text: printValue(is, layout, indent, columnOf(text, member.value.start), followed ? 1 : 0)
+    });
+  }
+  const added = Object.keys(after).filter((key) => after[key] !== undefined && !Object.hasOwn(before, key));
+  const indent = lineIndent(text, node.start);
+  const expanded = text.slice(node.start, node.end).includes(`
+`);
+  const memberIndent = survivors.length > 0 && expanded ? lineIndent(text, survivors[0].keyStart) : indent + layout.unit;
+  const printed = added.map((key, index) => printMember(key, after[key], layout, memberIndent, index === added.length - 1 ? 0 : 1));
+  if (survivors.length === 0) {
+    if (members.length === 0 && added.length === 0)
+      return;
+    const inside = printed.length === 0 ? "" : `${layout.eol}${printed.map((line) => memberIndent + line).join(`,${layout.eol}`)}${layout.eol}${indent}`;
+    edits.push({ start: node.start + 1, end: closeAt, text: inside });
+    return;
+  }
+  const lastSurvivor = survivors[survivors.length - 1];
+  let tailRemoved = false;
+  for (let index = 0;index < members.length; index += 1) {
+    const member = members[index];
+    if (wanted(member.key))
+      continue;
+    if (member.keyStart < lastSurvivor.keyStart) {
+      const next = members[index + 1];
+      edits.push({ start: member.keyStart, end: next.keyStart, text: "" });
+    } else
+      tailRemoved = true;
+  }
+  const tail = members[members.length - 1];
+  if (tailRemoved) {
+    edits.push({ start: lastSurvivor.value.end, end: tail.value.end, text: "" });
+  }
+  if (added.length > 0) {
+    const at = tail.value.end;
+    const inserted = expanded ? printed.map((line) => `,${layout.eol}${memberIndent}${line}`).join("") : printed.map((line) => `, ${line}`).join("");
+    edits.push({ start: at, end: at, text: inserted });
+  }
+}
+function editJsonText(text, after) {
+  const source = withoutBom(text);
+  const before = JSON.parse(source);
+  if (!isObject4(before))
+    throw new Error("editJsonText: the text is not a JSON object");
+  if (Bun.deepEquals(before, after, true) && source === text)
+    return text;
+  const layout = {
+    unit: detectIndent(source),
+    width: lineWidthOf(source),
+    eol: source.includes(`\r
+`) ? `\r
+` : `
+`
+  };
+  const root = new Scanner(source).node();
+  const edits = [];
+  editObject(source, root, before, after, layout, edits);
+  let result = source;
+  for (const edit of edits.sort((a, b) => b.start - a.start || b.end - a.end)) {
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  }
+  return result;
+}
+function jsonTextFor(existing, data, indent) {
+  if (existing === null || existing.trim() === "")
+    return printJson(data, indent);
+  return editJsonText(existing, data);
+}
+
 // src/project/init.ts
 var FILE_ORDER = [
   "requires",
@@ -39366,8 +39595,7 @@ function settingsPlan(file, existing, head) {
   const changed = cleaned.removed.length > 0 || merged.added.length > 0;
   return {
     file,
-    text: !changed && existing !== null ? existing : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}
-`,
+    text: !changed && existing !== null ? existing : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
     changed,
     adds: merged.added,
     removes: cleaned.removed,
@@ -39431,8 +39659,7 @@ function planProjectInit(input) {
   if (!valid.success) {
     throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
   }
-  const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
-`;
+  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
   const settings = settingsPlan(join63(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
   const localSettings = settingsPlan(join63(root, ".claude", "settings.local.json"), existingLocalSettings, false);
   const notes = [];
@@ -39562,8 +39789,7 @@ function writePersonalSetting(paths, key, value) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
   mkdirSync23(dirname19(file), { mode: 448, recursive: true });
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}
-`, 384);
+  atomicWrite(file, jsonTextFor(text, data, indent), 384);
   return shownWrite(shown, wanted, value, text === null);
 }
 function writeProjectSetting(cwd, key, value, env = process.env) {
@@ -39599,8 +39825,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
-  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}
-`, 420);
+  atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 420);
   return shownWrite(file, key, value, text === null);
 }
 function switchValue(key, value) {

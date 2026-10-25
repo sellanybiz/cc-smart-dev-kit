@@ -16629,6 +16629,235 @@ import { dirname as dirname11 } from "path";
 import { existsSync as existsSync21 } from "fs";
 import { join as join27 } from "path";
 
+// src/setup/json-edit.ts
+var DEFAULT_LINE_WIDTH = 80;
+var MAX_LINE_WIDTH = 120;
+var TAB_COLUMNS = 2;
+function isObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function columns(text) {
+  let width = 0;
+  for (const char of text)
+    width += char === "\t" ? TAB_COLUMNS : 1;
+  return width;
+}
+function lineWidthOf(text) {
+  const longest = Math.max(0, ...text.split(`
+`).map((line) => columns(line.replace(/\r$/, ""))));
+  return Math.min(MAX_LINE_WIDTH, Math.max(DEFAULT_LINE_WIDTH, longest));
+}
+function printValue(value, layout, indent, column, trailing) {
+  if (Array.isArray(value)) {
+    if (value.length === 0)
+      return "[]";
+    const scalars = value.every((item) => !Array.isArray(item) && !isObject3(item));
+    if (scalars) {
+      const flat = `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+      if (column + flat.length + trailing <= layout.width)
+        return flat;
+    }
+    const inner = indent + layout.unit;
+    const items = value.map((item, index) => {
+      const last = index === value.length - 1;
+      return `${inner}${printValue(item, layout, inner, columns(inner), last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `[${layout.eol}${items.join(layout.eol)}${layout.eol}${indent}]`;
+  }
+  if (isObject3(value)) {
+    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+    if (entries.length === 0)
+      return "{}";
+    const inner = indent + layout.unit;
+    const members = entries.map(([key, item], index) => {
+      const last = index === entries.length - 1;
+      return `${inner}${printMember(key, item, layout, inner, last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `{${layout.eol}${members.join(layout.eol)}${layout.eol}${indent}}`;
+  }
+  return JSON.stringify(value);
+}
+function printMember(key, value, layout, indent, trailing) {
+  const head = `${JSON.stringify(key)}: `;
+  return `${head}${printValue(value, layout, indent, columns(indent) + head.length, trailing)}`;
+}
+function printJson(value, unit = "  ", width = DEFAULT_LINE_WIDTH) {
+  return `${printValue(value, { unit, width, eol: `
+` }, "", 0, 0)}
+`;
+}
+
+class Scanner {
+  text;
+  at = 0;
+  constructor(text) {
+    this.text = text;
+  }
+  node() {
+    this.skipSpace();
+    const start = this.at;
+    const char = this.text[start];
+    if (char === "{")
+      return this.object();
+    if (char === "[")
+      return this.array();
+    if (char === '"')
+      this.string();
+    else
+      while (this.at < this.text.length && !/[\s,\]}]/.test(this.text[this.at] ?? ""))
+        this.at += 1;
+    return { start, end: this.at };
+  }
+  object() {
+    const start = this.at;
+    const members = [];
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "}")
+        break;
+      if (this.text[this.at] === ",") {
+        this.at += 1;
+        continue;
+      }
+      const keyStart = this.at;
+      this.string();
+      const key = JSON.parse(this.text.slice(keyStart, this.at));
+      this.skipSpace();
+      this.at += 1;
+      members.push({ key, keyStart, value: this.node() });
+    }
+    this.at += 1;
+    return { start, end: this.at, members };
+  }
+  array() {
+    const start = this.at;
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "]")
+        break;
+      if (this.text[this.at] === ",")
+        this.at += 1;
+      else
+        this.node();
+    }
+    this.at += 1;
+    return { start, end: this.at };
+  }
+  string() {
+    this.at += 1;
+    while (this.text[this.at] !== '"')
+      this.at += this.text[this.at] === "\\" ? 2 : 1;
+    this.at += 1;
+  }
+  skipSpace() {
+    while (/\s/.test(this.text[this.at] ?? "x"))
+      this.at += 1;
+  }
+}
+function lineIndent(text, position) {
+  const lineStart = text.lastIndexOf(`
+`, position - 1) + 1;
+  return /^[ \t]*/.exec(text.slice(lineStart))?.[0] ?? "";
+}
+function columnOf(text, position) {
+  return columns(text.slice(text.lastIndexOf(`
+`, position - 1) + 1, position));
+}
+function editObject(text, node, before, after, layout, edits) {
+  const members = node.members ?? [];
+  const last = (key) => members.findLast((m) => m.key === key);
+  const wanted = (key) => Object.hasOwn(after, key) && after[key] !== undefined;
+  const closeAt = node.end - 1;
+  const survivors = members.filter((member) => wanted(member.key));
+  for (const key of Object.keys(before)) {
+    if (!wanted(key))
+      continue;
+    const member = last(key);
+    if (member === undefined)
+      continue;
+    const was = before[key];
+    const is = after[key];
+    if (Bun.deepEquals(was, is, true))
+      continue;
+    if (isObject3(was) && isObject3(is) && member.value.members !== undefined) {
+      editObject(text, member.value, was, is, layout, edits);
+      continue;
+    }
+    const indent = lineIndent(text, member.keyStart);
+    const followed = text.slice(member.value.end).match(/^\s*,/) !== null;
+    edits.push({
+      start: member.value.start,
+      end: member.value.end,
+      text: printValue(is, layout, indent, columnOf(text, member.value.start), followed ? 1 : 0)
+    });
+  }
+  const added = Object.keys(after).filter((key) => after[key] !== undefined && !Object.hasOwn(before, key));
+  const indent = lineIndent(text, node.start);
+  const expanded = text.slice(node.start, node.end).includes(`
+`);
+  const memberIndent = survivors.length > 0 && expanded ? lineIndent(text, survivors[0].keyStart) : indent + layout.unit;
+  const printed = added.map((key, index) => printMember(key, after[key], layout, memberIndent, index === added.length - 1 ? 0 : 1));
+  if (survivors.length === 0) {
+    if (members.length === 0 && added.length === 0)
+      return;
+    const inside = printed.length === 0 ? "" : `${layout.eol}${printed.map((line) => memberIndent + line).join(`,${layout.eol}`)}${layout.eol}${indent}`;
+    edits.push({ start: node.start + 1, end: closeAt, text: inside });
+    return;
+  }
+  const lastSurvivor = survivors[survivors.length - 1];
+  let tailRemoved = false;
+  for (let index = 0;index < members.length; index += 1) {
+    const member = members[index];
+    if (wanted(member.key))
+      continue;
+    if (member.keyStart < lastSurvivor.keyStart) {
+      const next = members[index + 1];
+      edits.push({ start: member.keyStart, end: next.keyStart, text: "" });
+    } else
+      tailRemoved = true;
+  }
+  const tail = members[members.length - 1];
+  if (tailRemoved) {
+    edits.push({ start: lastSurvivor.value.end, end: tail.value.end, text: "" });
+  }
+  if (added.length > 0) {
+    const at = tail.value.end;
+    const inserted = expanded ? printed.map((line) => `,${layout.eol}${memberIndent}${line}`).join("") : printed.map((line) => `, ${line}`).join("");
+    edits.push({ start: at, end: at, text: inserted });
+  }
+}
+function editJsonText(text, after) {
+  const source = withoutBom(text);
+  const before = JSON.parse(source);
+  if (!isObject3(before))
+    throw new Error("editJsonText: the text is not a JSON object");
+  if (Bun.deepEquals(before, after, true) && source === text)
+    return text;
+  const layout = {
+    unit: detectIndent(source),
+    width: lineWidthOf(source),
+    eol: source.includes(`\r
+`) ? `\r
+` : `
+`
+  };
+  const root = new Scanner(source).node();
+  const edits = [];
+  editObject(source, root, before, after, layout, edits);
+  let result = source;
+  for (const edit of edits.sort((a, b) => b.start - a.start || b.end - a.end)) {
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  }
+  return result;
+}
+function jsonTextFor(existing, data, indent) {
+  if (existing === null || existing.trim() === "")
+    return printJson(data, indent);
+  return editJsonText(existing, data);
+}
+
 // src/workflow/clashes.ts
 function workflowClashes(input) {
   const clashes = [];
@@ -16850,8 +17079,7 @@ function settingsPlan(file, existing, head) {
   const changed = cleaned.removed.length > 0 || merged.added.length > 0;
   return {
     file,
-    text: !changed && existing !== null ? existing : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}
-`,
+    text: !changed && existing !== null ? existing : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
     changed,
     adds: merged.added,
     removes: cleaned.removed,
@@ -16915,8 +17143,7 @@ function planProjectInit(input) {
   if (!valid.success) {
     throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
   }
-  const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
-`;
+  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
   const settings = settingsPlan(join27(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
   const localSettings = settingsPlan(join27(root, ".claude", "settings.local.json"), existingLocalSettings, false);
   const notes = [];
@@ -17046,8 +17273,7 @@ function writePersonalSetting(paths, key, value) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
   mkdirSync11(dirname11(file), { mode: 448, recursive: true });
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}
-`, 384);
+  atomicWrite(file, jsonTextFor(text, data, indent), 384);
   return shownWrite(shown, wanted, value, text === null);
 }
 function writeProjectSetting(cwd, key, value, env = process.env) {
@@ -17083,8 +17309,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
-  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}
-`, 420);
+  atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 420);
   return shownWrite(file, key, value, text === null);
 }
 function switchValue(key, value) {
@@ -25517,7 +25742,7 @@ function sliceBytes(read, uid, slice) {
 }
 
 // src/jobs/queue.ts
-function isObject3(value) {
+function isObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseHolder(text) {
@@ -25527,7 +25752,7 @@ function parseHolder(text) {
   } catch {
     return null;
   }
-  if (!isObject3(value) || value.v !== 1)
+  if (!isObject4(value) || value.v !== 1)
     return null;
   const { checkout, exclusive, gb, kind, person, pid, since, what } = value;
   if (exclusive !== undefined && typeof exclusive !== "string" || typeof checkout !== "string" || typeof kind !== "string" || typeof person !== "string" || typeof what !== "string" || typeof gb !== "number" || !Number.isFinite(gb) || typeof pid !== "number" || !Number.isInteger(pid) || typeof since !== "number" || !Number.isFinite(since)) {
@@ -28660,14 +28885,14 @@ async function runReport(ctx, hours) {
   const report = reportOf(run.output);
   return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
 }
-function isObject4(value) {
+function isObject5(value) {
   return typeof value === "object" && value !== null;
 }
 function isOpenWait(value) {
-  return isObject4(value) && typeof value.session === "string" && typeof value.project === "string" && typeof value.at === "number" && typeof value.asker === "string" && typeof value.tool === "string";
+  return isObject5(value) && typeof value.session === "string" && typeof value.project === "string" && typeof value.at === "number" && typeof value.asker === "string" && typeof value.tool === "string";
 }
 function isFlowHour(value) {
-  return isObject4(value) && typeof value.t === "number" && typeof value.launches === "number" && typeof value.promptMs === "number";
+  return isObject5(value) && typeof value.t === "number" && typeof value.launches === "number" && typeof value.promptMs === "number";
 }
 function reportOf(output) {
   let value;
@@ -37483,13 +37708,13 @@ async function runWorktrees(ctx, cwd) {
   const answer = worktreesOf(run.output);
   return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
 }
-function isObject5(value) {
+function isObject6(value) {
   return typeof value === "object" && value !== null;
 }
 var KINDS = new Set(["finished", "gone", "kept", "main"]);
 var FROM = new Set(["config", "default", "origin"]);
 function worktreeOf(value) {
-  if (!isObject5(value))
+  if (!isObject6(value))
     return null;
   const { branch, head, idleMinutes, kind, path, why } = value;
   if (typeof head !== "string" || typeof path !== "string" || !KINDS.has(kind))
@@ -37509,7 +37734,7 @@ function worktreesOf(output) {
   } catch {
     return null;
   }
-  if (!isObject5(value))
+  if (!isObject6(value))
     return null;
   const { autoClean, base, from, note, worktrees } = value;
   if (typeof base !== "string" || !FROM.has(from))
@@ -37522,7 +37747,7 @@ function worktreesOf(output) {
   if (items.some((one) => one === null))
     return null;
   if (autoClean !== null) {
-    if (!isObject5(autoClean))
+    if (!isObject6(autoClean))
       return null;
     if (typeof autoClean.base !== "string" || typeof autoClean.lastRunAt !== "string" || !Array.isArray(autoClean.removed)) {
       return null;

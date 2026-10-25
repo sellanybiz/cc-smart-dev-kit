@@ -30,6 +30,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
+import { jsonTextFor } from "../setup/json-edit";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
@@ -374,7 +375,7 @@ function settingsPlan(file: string, existing: string | null, head: boolean): Set
     text:
       !changed && existing !== null
         ? existing
-        : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}\n`,
+        : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
     changed,
     adds: merged.added,
     removes: cleaned.removed,
@@ -438,7 +439,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
         `Change the answer, then run again.`,
     );
   }
-  const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}\n`;
+  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
 
   // Claude Code cuts a new worktree from origin's default branch. A project whose base branch
   // is another one sets `baseRef: "head"`, so a worktree starts from the branch the session
