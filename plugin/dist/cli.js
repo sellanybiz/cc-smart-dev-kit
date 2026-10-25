@@ -49155,6 +49155,7 @@ import { mkdirSync as mkdirSync29, readFileSync as readFileSync81 } from "fs";
 import { join as join82 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
+var AWAY_HOOK_LOCK_WAIT_MS = 1000;
 var MAX_ITEMS = 500;
 var MAX_SAID = 100;
 var itemSchema = object({
@@ -49208,7 +49209,7 @@ function readAway(stateDir) {
 `)[0]}). Fix it or remove it.`);
   }
 }
-async function change(stateDir, apply) {
+async function change(stateDir, apply, waitMs = AWAY_LOCK_WAIT_MS) {
   const folder = awayDir(stateDir);
   mkdirSync29(folder, { mode: 448, recursive: true });
   return await withLock(folder, () => {
@@ -49217,7 +49218,7 @@ async function change(stateDir, apply) {
     atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}
 `, 384);
     return { result, state };
-  }, { waitMs: AWAY_LOCK_WAIT_MS });
+  }, { waitMs });
 }
 async function setUnavailable(stateDir, nowMs, until) {
   const { state } = await change(stateDir, (current) => {
@@ -49238,9 +49239,9 @@ async function setAvailable(stateDir) {
 }
 function sameItem(items, draft) {
   const what = (item) => item.command ?? item.text;
-  return items.find((item) => item.kind === draft.kind && what(item) === what(draft));
+  return items.find((item) => item.kind === draft.kind && what(item) === what(draft) && item.cwd === draft.cwd && item.crew === draft.crew);
 }
-async function parkItem(stateDir, draft, nowMs) {
+async function parkItem(stateDir, draft, nowMs, waitMs = AWAY_LOCK_WAIT_MS) {
   const { result } = await change(stateDir, (state) => {
     const same = sameItem(state.items, draft);
     if (same !== undefined)
@@ -49252,7 +49253,7 @@ async function parkItem(stateDir, draft, nowMs) {
     state.nextId += 1;
     state.items.push(item);
     return { added: true, item };
-  });
+  }, waitMs);
   return result;
 }
 async function clearItems(stateDir, ids) {
@@ -49292,6 +49293,63 @@ async function forgetSaid(stateDir, session) {
   return result;
 }
 
+// src/hooks/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
+function isKitWord(word) {
+  return programName2(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName2(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
@@ -49306,6 +49364,13 @@ function hasNotPersonWrapper(prompt2) {
 // src/hooks/user-away.ts
 var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var SHELL_TOOLS = ["Bash", "PowerShell"];
+var STATE_COMMANDS = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"]
+];
 function inAwayDomain(input) {
   const tool = stringField(input.tool_name);
   return tool !== null && AWAY_ASK_TOOLS.includes(tool);
@@ -49377,11 +49442,31 @@ async function parkCall(input, env, paths, nowMs, words) {
       session: stringField(input.session_id) ?? "",
       text: text.slice(0, TEXT_MAX),
       tool: stringField(input.tool_name)
-    }, nowMs);
+    }, nowMs, AWAY_HOOK_LOCK_WAIT_MS);
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+}
+function isStateCommand(input) {
+  const command = callCommand(input);
+  if (command === null)
+    return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0)
+    return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    const operands = withoutRedirections(invocation.args);
+    if (operands.length !== invocation.args.length)
+      return false;
+    const kit = kitArguments(invocation.program, operands);
+    return kit !== null && STATE_COMMANDS.some((known) => known.length === kit.length && known.every((word, at) => word === kit[at]));
+  });
 }
 function permissionDeny(message) {
   return {
@@ -49396,6 +49481,8 @@ function permissionDeny(message) {
 async function permissionAnswer(input, env, paths, nowMs, options) {
   const state = readAway(paths.stateDir);
   if (!state.unavailable)
+    return SILENT;
+  if (isStateCommand(input))
     return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
@@ -51555,65 +51642,6 @@ function packageScripts(folder) {
 
 // src/hooks/bash-judge.ts
 import { isAbsolute as isAbsolute6, resolve as resolve17 } from "path";
-
-// src/hooks/kit-invocation.ts
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
-var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
-function namesKit(text) {
-  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
-}
-function isKitWord(word) {
-  return programName2(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName2(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
-
-// src/hooks/bash-judge.ts
 var CLAUDE_VALUED = [
   "--add-dir",
   "--agent",

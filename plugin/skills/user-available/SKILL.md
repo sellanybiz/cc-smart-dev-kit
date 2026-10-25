@@ -16,6 +16,10 @@ Go through it now: short, in this order. Their time is the cost.
 1. `cc-smart-dev-kit user status --json` first: it holds `since`, which the next step clears.
 2. `cc-smart-dev-kit user available`. `AskUserQuestion` works again; the list stays.
 
+These two calls, and `user list`, raise Claude Code's own permission prompt in the default
+mode, and the person answers it. If a call is denied anyway, the person types
+`! cc-smart-dev-kit user available` in this session: the `!` runs it in their own shell.
+
 ## 2. What was done
 
 - The commits and merges since `since`, in the project: `git log --since=<since> --oneline`, and

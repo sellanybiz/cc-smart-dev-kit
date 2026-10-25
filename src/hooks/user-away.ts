@@ -37,6 +37,14 @@ import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { formatClock } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
 import {
+  dialectOfTool,
+  invocationOf,
+  shellSteps,
+  withoutRedirections,
+  wordsOf,
+} from "../shell/command";
+import {
+  AWAY_HOOK_LOCK_WAIT_MS,
   type AwayState,
   AwayStateError,
   forgetSaid,
@@ -56,6 +64,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
+import { kitArguments } from "./kit-invocation";
 import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
 
@@ -64,6 +73,20 @@ export const AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
 
 /** The shell tools: their `command` is what a parked action runs. */
 const SHELL_TOOLS: readonly string[] = ["Bash", "PowerShell"];
+
+/**
+ * The kit's own commands that read or end the away state, as the arguments after the kit's name.
+ * The person who is back runs them through the `user-available` skill, and Claude Code raises its
+ * own prompt for each one: that prompt is the person's to answer, never parked. Nothing else
+ * is on the list, flags included.
+ */
+const STATE_COMMANDS: readonly (readonly string[])[] = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"],
+];
 
 /** The longest piece of a guard's own words a parked item keeps. */
 const REASON_MAX = 600;
@@ -195,11 +218,43 @@ async function parkCall(
         tool: stringField(input.tool_name),
       },
       nowMs,
+      AWAY_HOOK_LOCK_WAIT_MS,
     );
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * True when a shell call is nothing but the kit's own `user available`, `user status` or
+ * `user list`: every command of the line, read with the one shell reader (`shellSteps`,
+ * `invocationOf`) and the one kit-command reader (`kitArguments`). A second command, a
+ * substitution, a redirection, a prefix (`FOO=1`, `sudo`), a computed program, an argument off
+ * the list, or a line that does not parse is any other call. A line the hook cannot be sure of
+ * is parked, as before: this only ever leaves a prompt alone for the person to answer.
+ */
+function isStateCommand(input: HookInput): boolean {
+  const command = callCommand(input);
+  if (command === null) return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0) return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    const operands = withoutRedirections(invocation.args);
+    if (operands.length !== invocation.args.length) return false;
+    const kit = kitArguments(invocation.program, operands);
+    return (
+      kit !== null &&
+      STATE_COMMANDS.some(
+        (known) => known.length === kit.length && known.every((word, at) => word === kit[at]),
+      )
+    );
+  });
 }
 
 /** The deny (or the parked action) a `PermissionRequest` gets while the person is away. */
@@ -223,6 +278,9 @@ async function permissionAnswer(
 ): Promise<HookResult> {
   const state = readAway(paths.stateDir);
   if (!state.unavailable) return SILENT;
+  // The kit's own switch-back and reads: the person who is back answers Claude Code's prompt,
+  // as before this feature. Parking them would deny the one command that ends the state.
+  if (isStateCommand(input)) return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
   // The two tools that ask are denied by their PreToolUse answer first; Claude Code's prompt for

@@ -63,7 +63,8 @@ whose `ownHooks` lists its own copy of the guard. Without `CC_SMART_DEV_KIT_CREW
 silent: an ordinary session pays nothing, and the guard's other answers are exactly as they
 were.
 
-`job-route` and `session-escape-guard` are `alwaysOn` (§ A machine-wide hook), so a project
+`job-route`, `session-escape-guard` and `user-away` are `alwaysOn` (§ A machine-wide hook; the
+switch of `user-away` is the person's), so a project
 cannot switch them off either; their crew answer lives in their own `run` and in
 `onConfigProblem`/`outsideGit`, so no call is judged twice. Each guard's detector is shared
 with its own `run` — one function, never a copy — so a spelling that gets past one gets past
