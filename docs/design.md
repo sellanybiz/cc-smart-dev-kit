@@ -15,7 +15,7 @@ parts, then the part you are changing.
 | [The three parts](design/parts.md) | The launcher, why long-running parts run from copies, the Bun it needs, and the two flags on every bun run inside a person's folder. |
 | [How the command prints](design/command.md) | One way to print: headings, marked lines, `Fix:` lines, a verdict, and the same words rich or plain. |
 | [The installer](design/installer.md) | The one command that does the whole install, and what its first real run taught it. |
-| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the 19 skills, the 5 agents, and the output style. |
+| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the 21 skills, the 5 agents, and the output style. |
 | [Per-project opt-in](design/project-json.md) | `.claude/cc-smart-dev-kit.json`: every field, and how a project adds its own part to a general skill. |
 | [Updates](design/updates.md) | The hourly background check, the major-version hold, and `cc-smart-dev-kit update`'s steps. |
 | [Companion plugins](design/companions.md) | claude-mem and frontend-design: why the plugin does not load without them. |
@@ -52,7 +52,7 @@ parts, then the part you are changing.
 |---|---|
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
 | [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, and what the later issue parts add. |
-| [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, the board and the end of a crew session, the crew session's steps and its report, the lead's watch, the crew talks, and the crew's own hooks. |
+| [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, a plan's own folder with its briefs and the record of each crew run, the board and the end of a crew session, the crew session's steps and its report, the lead's watch, the crew talks, and the crew's own hooks. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
 | [Sessions and worktrees](design/sessions.md) | Reading Claude Code's saved sessions, reopening the ones a crash or a closed window stopped, confirmed targeted finished-session removal, orphan crew cleanup, stale-lock and cache safety, and the flow report. |
 | [Moving a machine from the old names](design/migrate.md) | What 0.2.x left, what `migrate` moves, and the order it moves it in. |

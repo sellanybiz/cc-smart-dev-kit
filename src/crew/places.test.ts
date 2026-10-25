@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFacts } from "../jobs/memory";
+import type { LoadFacts } from "../machine/load";
 import { locateCheckout } from "../project/resolve";
 import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { cleanGitEnv, tempDir } from "../testing/temp";
@@ -134,6 +135,8 @@ describe("D25: start now, or queued with the reason", () => {
     freeGb: 10,
     leadRunning: 0,
     leadRunningOpus: 0,
+    load: null as null | { cores: number; oneMinute: number },
+    loadPerCore: 3,
     max: 24,
     maxOpus: null,
     needGb: 2,
@@ -212,6 +215,31 @@ describe("D25: start now, or queued with the reason", () => {
     });
   });
 
+  test("the load: a start waits while the 1-minute average is past loadPerCore for each core", () => {
+    const busy = { ...free, load: { cores: 16, oneMinute: 85 } };
+    expect(placeFor(busy)).toEqual({
+      start: false,
+      why: "the load is 85 on 16 cores, past 48 (3 for each core); it starts when the load falls",
+    });
+    // At the limit exactly it starts: past it holds.
+    expect(placeFor({ ...busy, load: { cores: 16, oneMinute: 48 } })).toEqual({ start: true });
+    expect(placeFor({ ...busy, load: { cores: 16, oneMinute: 12.3 } })).toEqual({ start: true });
+    // A fractional load reads with one decimal; the limit follows the setting.
+    expect(placeFor({ ...busy, load: { cores: 4, oneMinute: 7.26 }, loadPerCore: 1.5 })).toEqual({
+      start: false,
+      why: "the load is 7.3 on 4 cores, past 6 (1.5 for each core); it starts when the load falls",
+    });
+    // No load average (native Windows): the hold does not apply.
+    expect(placeFor({ ...busy, load: null })).toEqual({ start: true });
+    // The memory is named before the load, the load before the usage window.
+    expect(placeFor({ ...busy, freeGb: 0 })).toMatchObject({
+      why: "0 GB free, a crew session needs 2 GB; it starts when memory frees",
+    });
+    expect(placeFor({ ...busy, opus: true, usagePercent: 90 })).toMatchObject({
+      why: expect.stringContaining("the load is 85"),
+    });
+  });
+
   test("D54: past 85% of the 5-hour window, a new opus crew session waits", () => {
     const past = { ...free, opus: true, usagePercent: 87 };
     expect(placeFor(past)).toEqual({
@@ -283,6 +311,11 @@ describe("the machine-wide lock", () => {
     expect(order).toEqual(["first in", "first out", "second in"]);
   });
 });
+
+/** A calm Linux machine: a load of 1 on 8 cores, far under any limit. */
+function calm(): LoadFacts {
+  return { cores: () => 8, loadavg: () => [1, 1, 1], platform: "linux" };
+}
 
 /**
  * Linux with `MemAvailable` of `availableKb`, no cgroup ceiling, and — when `sliceGb` is given
@@ -403,10 +436,12 @@ describe("D59: would a crew start from this lead queue now", () => {
     made: Awaited<ReturnType<typeof leadWorld>>,
     opus = false,
     memory: MemoryFacts = linux(8 * 1024 ** 2),
+    load: LoadFacts = calm(),
   ) {
     return await placeForLeadStart({
       checkout: made.checkout,
       leadSessionId: LEAD_SESSION,
+      load,
       memory,
       nowMs: NOW,
       opus,
@@ -468,6 +503,21 @@ describe("D59: would a crew start from this lead queue now", () => {
       start: false,
       why: "3 GB free, a crew session needs 8 GB; it starts when memory frees",
     });
+  });
+
+  test("the load of the machine holds a start, and a machine with no load average does not", async () => {
+    const made = await leadWorld({ loadPerCore: 2 });
+    const load = (oneMinute: number, platform: NodeJS.Platform = "linux"): LoadFacts => ({
+      cores: () => 8,
+      loadavg: () => [oneMinute, 0, 0],
+      platform,
+    });
+    expect(await startNow(made, false, undefined, load(40))).toEqual({
+      start: false,
+      why: "the load is 40 on 8 cores, past 16 (2 for each core); it starts when the load falls",
+    });
+    expect(await startNow(made, false, undefined, load(15))).toEqual({ start: true });
+    expect(await startNow(made, false, undefined, load(40, "win32"))).toEqual({ start: true });
   });
 
   test("caps it cannot read: null, and the caller lets the launch through", async () => {

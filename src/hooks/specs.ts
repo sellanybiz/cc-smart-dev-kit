@@ -23,6 +23,7 @@
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the first edit held until the task list exists, the report block, the pause at a limit (`crew-role.ts`) |
  * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once, its task-list reminder at each prompt, and the crew rule at a session start (`lead-notes.ts`) |
+ * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change (`user-away.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
@@ -98,6 +99,7 @@ import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
+import { inAwayDomain, userAwayAnswer } from "./user-away";
 import { verifyGate } from "./verify-gate";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
@@ -475,6 +477,38 @@ export const leadNotesHook: HookSpec = {
 };
 
 /**
+ * While the person cannot answer (`cc-smart-dev-kit user unavailable`): the two tools that ask
+ * them are denied with the step that parks the question, Claude Code's own permission prompt is
+ * denied and the call parked, and one note per change is said at the prompt (`user-away.ts`). A
+ * guard's own ask is turned into a deny by the frame itself (`askedWhileAway`, `run.ts`), for
+ * every hook.
+ *
+ * **Machine-wide**, like `agent-guard`: the person is one for the whole machine, so the answer
+ * reads the state file and never the project's, and a broken or too new project file, and a
+ * folder outside git, are judged the same way. **`alwaysOn`**: `ownHooks` cannot switch it off —
+ * the switch is the person's, and a project must not be able to turn it off for a session. A
+ * crash asks about the calls in its domain (the two question tools), like any guard; on the other
+ * two events it says one line on stderr and the session goes on.
+ */
+export const userAwayHook: HookSpec = {
+  name: "user-away",
+  events: ["PreToolUse", "PermissionRequest", "UserPromptSubmit"],
+  alwaysOn: true,
+  onConfigProblem: (_message, input, event, _checkout, context) =>
+    userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
+  outsideGit: (input, event, _why, context) =>
+    userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
+  // The two tools that ask the person are a guard's domain: a crash asks about them, as any guard
+  // does. On the other two events there is no call to ask about; the crash is one line on stderr,
+  // and Claude Code's own prompt, or the prompt's text, goes on as it would without this hook.
+  onCrash: (why, input, event, context) =>
+    event === "PermissionRequest" || event === "UserPromptSubmit"
+      ? { stderr: `cc-smart-dev-kit user-away: ${why}` }
+      : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
+  run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs),
+};
+
+/**
  * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
  * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
  * `update-check`), and its answer never depends on the project's file — it judges the model
@@ -627,6 +661,7 @@ export const HOOKS: readonly HookSpec[] = [
   sessionNameHook,
   crewRoleHook,
   leadNotesHook,
+  userAwayHook,
 ];
 
 /**
@@ -666,7 +701,8 @@ export const USER_HOOKS: readonly string[] = [
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
  * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
  * goes around the limits set for the session), `crew-role` (a crew session's own card, ask and
- * report), `lead-notes` (a lead's missed crew news and task-list reminder) and `agent-usage` (each subagent's cost on
+ * report), `lead-notes` (a lead's missed crew news and task-list reminder), `user-away` (whether the
+ * person can answer) and `agent-usage` (each subagent's cost on
  * record: the person's spend, not a project's policy). `doctor`'s project checks never warn
  * about a project hook that runs beside one of these: it is the person's own business, not a
  * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
@@ -679,4 +715,5 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   "crew-role",
   "lead-notes",
   "agent-usage",
+  "user-away",
 ];

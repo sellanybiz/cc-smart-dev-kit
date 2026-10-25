@@ -100,6 +100,7 @@ describe("the command table", () => {
       "rm",
       "resume",
       "attach",
+      "history",
       "kinds",
     ]) {
       expect(usage).toMatch(new RegExp(`^  ${name}\\b`, "m"));
@@ -118,6 +119,7 @@ describe("the command table", () => {
       "resume",
       "model",
       "attach",
+      "history",
       "kinds",
     ]);
     // The commands that are not in the table still print the whole usage.
@@ -163,7 +165,7 @@ describe("the top-level help", () => {
       `  ${COMMAND} doctor              the health check`,
       "",
       "More commands: issue, workflow, update, restore, migrate, launch, sessions,",
-      "  worktrees, usage, report, portal, mcp, omniroute, job, crew, hook,",
+      "  worktrees, usage, report, portal, mcp, omniroute, job, crew, user, hook,",
       "  statusline, version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
     ].join("\n");

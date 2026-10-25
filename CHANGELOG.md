@@ -35,6 +35,11 @@ own repository, instead of losing them as a line in a summary.
 The lead and its crew, made dependable: a resume that keeps track of its session, a watch that
 says each piece of news once, and a removed crew session's conversation kept out of your way.
 
+- **Setup turns Remote Control's auto-connect on.** `cc-smart-dev-kit setup` writes
+  `remoteControlAtStartup: true` into `~/.claude/settings.json` only while the key is absent: a
+  `true` or `false` you set stays, and `restore` removes the key only while it still holds the
+  value setup wrote. It connects with a claude.ai login; `gateway on` still turns Remote Control
+  off (`gateway off` brings it back).
 - **A crew resume keeps track of the session it brings back.** Claude Code starts every crew
   resume as a copy with a new id; the record used to keep the old one, so the watch called a
   working session `stopped` a few seconds later. The record now takes the new session in the

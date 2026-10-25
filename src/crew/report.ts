@@ -41,6 +41,7 @@ import {
   sessionTasksDir,
   taskListId,
 } from "./tasks";
+import { contextUseOf, transcriptFile } from "./transcript";
 
 /** The statuses a report can end a phase with (`REPORT_STATUSES`). */
 export const REPORT_STATUS_NAMES = ["done", "blocked", "failed", "handoff"] as const;
@@ -526,7 +527,19 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
     return say(ctx, error);
   }
   try {
-    const written = await recordCrewReport(ctx.paths.stateDir, repo, record.id, report, ctx.now());
+    // The context its last reply used, for the run record (PL1): the transcript's tail, read once.
+    const context =
+      record.sessionId === null
+        ? null
+        : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+    const written = await recordCrewReport(
+      ctx.paths.stateDir,
+      repo,
+      record.id,
+      report,
+      ctx.now(),
+      context?.tokens ?? null,
+    );
     ctx.print(`report ${report.status} · ${written.file}`);
     return 0;
   } catch (error) {

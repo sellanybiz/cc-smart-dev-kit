@@ -1090,7 +1090,11 @@ fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose bre
 `currentBreakers`, so only while the router keeps the record fresh; a profile's reads
 `worker slot in profile <name>: … → gateway profile <name> slot worker <targets>`, the command
 that works whether the profile names the slot or uses the machine's chain), and the plan usage
-`5h 23% · 7d 41%`, which warns from 85 %. **A fallback or breaker line shows only in a session on
+`5h 23% · 7d 41%`, which warns from 85 %. Right after the model it shows the session's context
+use and reasoning effort (`ctx 312k · 78% of 400k · xhigh`, SL1): when the session's slot answers
+from a backend target with a pinned effort (D64), the effort shown is that pin, found the way the
+router finds the slot (`pinnedEffortOf`, `src/cli/statusline-context.ts`); otherwise it is the
+input's own `effort.level`. **A fallback or breaker line shows only in a session on
 its chain**: the status line command's environment carries the session's own
 `ANTHROPIC_BASE_URL` (`docs/claude-code-contract.md`), so a session on the machine's address sees
 the machine's records, one on `…/p/<name>` sees that profile's, and one off the gateway (Anthropic's
@@ -1893,9 +1897,10 @@ waits for each session's next restart harmlessly.
   Claude Code compares the host, so that counts as unset (`src/gateway/settings.test.ts` ›
   "Remote Control" proves what `off` leaves; `docs/claude-code-contract.md` § The gateway
   has the proof and what is not proved yet). A session that started with the gateway on
-  connects again after a restart, or after `/remote-control` (not proved live). Whether a
-  session connects by itself at its start is the person's own setting,
-  `remoteControlAtStartup`, which the kit never writes. A project's own router address
+  connects again after a restart, or after `/remote-control` (not proved live). Setup turns
+  Remote Control's auto-connect on by default (`remoteControlAtStartup: true`, written only
+  while the key is absent), so with the gateway off a session connects by itself; with the
+  gateway on the key stays, and Remote Control stays off. A project's own router address
   (`gateway project on`) keeps Remote Control off in that project.
 - **A shell `ANTHROPIC_BASE_URL` loses to the settings file after `off`.** Settings files
   outrank the shell for `env` (`docs/claude-code-contract.md` § The gateway), so the explicit

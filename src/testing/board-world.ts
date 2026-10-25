@@ -86,6 +86,8 @@ export interface AddCrew {
   model?: CrewRecord["model"];
   name?: string;
   phase?: string;
+  /** The plan file its run record is written beside (PL1); default none: no run record. */
+  planFile?: string;
   /** The repository the record is for, with no branch or worktree on disk. Default: the world's. */
   repo?: string;
   /** Its session's short id; null: it has no session. Default: the fake `claude`'s. */
@@ -160,6 +162,7 @@ export async function boardWorld(): Promise<BoardWorld> {
         permissionMode: "auto",
         phase,
         plan: "master-plan",
+        ...(change.planFile === undefined ? {} : { planFile: change.planFile }),
         pr: null,
         questions: [],
         repo,

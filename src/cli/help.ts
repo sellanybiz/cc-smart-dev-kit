@@ -34,6 +34,7 @@ import {
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { USER_USAGE } from "../user-away/words";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { LAUNCH_USAGE } from "./launch";
@@ -354,6 +355,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
   { name: "crew", listed: "more", help: CREW_USAGE },
+  { name: "user", listed: "more", help: USER_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
   { name: "version", listed: "more", help: VERSION_HELP },

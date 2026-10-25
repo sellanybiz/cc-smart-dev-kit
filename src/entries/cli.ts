@@ -74,6 +74,7 @@ import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { runUser } from "../user-away/command";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
@@ -923,6 +924,16 @@ async function main(argv: string[]): Promise<number> {
       );
     case "crew":
       return await runCrew(rest, realCrewContext(paths));
+    case "user":
+      return await runUser(rest, {
+        cwd: process.cwd(),
+        env: process.env,
+        nowMs: Date.now(),
+        out: createOut(currentTerminal(process.env)),
+        paths,
+        print: (line) => console.log(line),
+        say: (line) => console.error(line),
+      });
     case "job":
       return runJobCommand(rest, {
         paths,

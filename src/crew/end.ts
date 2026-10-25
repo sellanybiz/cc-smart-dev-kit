@@ -49,6 +49,7 @@ import { agentRow, callClaude, findClaude, parseAgentPresence } from "./claude";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
+import { actorOfCaller } from "./runs-actor";
 import { callingSession, crewIdOf } from "./session";
 import {
   type CrewChange,
@@ -170,6 +171,8 @@ export async function markState(
       { ...change, state },
       ctx.now(),
       text,
+      null,
+      actorOfCaller(ctx, record.repo),
     );
     return true;
   } catch (error) {
