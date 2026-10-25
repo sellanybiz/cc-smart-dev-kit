@@ -72,11 +72,26 @@ describe("doctor: GitHub Issues", () => {
     expect(line?.ok === false && line.fix).toContain("Settings");
   });
 
-  test("only read access: a failure, since labels and edits need more", async () => {
+  test("only read access: a failure, since a label cannot be applied", async () => {
     const [line] = await check({ gh: { permission: "READ" } }).run();
     expect(line?.ok).toBe(false);
     expect(line?.text).toContain("READ");
-    expect(line?.ok === false && line.fix).toContain("triage");
+    expect(line?.ok === false && line.fix).toContain("write access");
+  });
+
+  test("triage access: a warning, since it applies labels but cannot create them", async () => {
+    const [line] = await check({ gh: { permission: "TRIAGE" } }).run();
+    expect(line).toMatchObject({ ok: true, warn: true });
+    expect(line?.text).toContain("can apply labels but not create them");
+    expect(line?.ok && line.fix).toContain("kit:found");
+  });
+
+  test("maintain and admin are fine", async () => {
+    for (const permission of ["MAINTAIN", "ADMIN"] as const) {
+      const [line] = await check({ gh: { permission } }).run();
+      expect(line).toMatchObject({ ok: true });
+      expect(line?.ok && line.warn).toBeUndefined();
+    }
   });
 
   test("a public repository with allowPublic off: a warning with the command", async () => {

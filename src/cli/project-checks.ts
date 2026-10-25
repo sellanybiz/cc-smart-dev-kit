@@ -41,6 +41,7 @@ import {
   wiredHandlers,
 } from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS } from "../hooks/specs";
+import { issuesChecks } from "../issues/doctor";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
@@ -54,7 +55,6 @@ import {
   loadProjectConfig,
   locateCheckoutAsync,
 } from "../project/resolve";
-import { issuesChecks } from "../issues/doctor";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import type { Check } from "./check";

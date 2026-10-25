@@ -5,13 +5,13 @@
  */
 import { describe, expect, test } from "bun:test";
 import { type FakeGh, repoOf } from "../testing/fake-gh";
-import { git } from "../testing/temp";
 import {
+  TEST_HOME as HOME,
   type IssuesSetup,
   issuesWorld,
   OWN_REPO,
-  TEST_HOME as HOME,
 } from "../testing/issues-world";
+import { git } from "../testing/temp";
 import { fileIssue, type IssueOutcome, issueLine } from "./file";
 import { fingerprintHash, markerLine } from "./marker";
 

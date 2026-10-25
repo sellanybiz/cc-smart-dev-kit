@@ -38,7 +38,7 @@ import {
   type GhResult,
 } from "../workflow/merge-check";
 import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
-import { resolveGate, type ResolvedWorkflow } from "../workflow/resolve";
+import { type ResolvedWorkflow, resolveGate } from "../workflow/resolve";
 import { isLabelName, LABEL_RULE } from "../workflow/schema";
 import { bodyWithMarker, fingerprintHash, hasMarker, holdsMarker } from "./marker";
 import { screenText } from "./screen";

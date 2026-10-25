@@ -125,7 +125,6 @@ import {
 } from "./after-merge";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
-import { computedIssueRisk, issueWrites, requestsIssueWrite } from "./issue-writes";
 import {
   type HookInput,
   type HookResult,
@@ -134,6 +133,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
+import { computedIssueRisk, issueWrites, requestsIssueWrite } from "./issue-writes";
 import type { Env, HookContext } from "./run";
 
 /** How long the alias lookup may take inside the budget: the same cap it has on its own. */

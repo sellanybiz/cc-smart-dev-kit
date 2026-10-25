@@ -62,7 +62,7 @@ function parse(argv: string[]): Parsed {
       return { ok: false, why: `${name} needs a value` };
     }
     if (at === -1) index += 1;
-    (given[name] ??= []).push(value);
+    given[name] = [...(given[name] ?? []), value];
   }
   for (const name of ["--title", "--body-file", "--fingerprint"] as const) {
     if ((given[name]?.length ?? 0) !== 1) return { ok: false, why: `${name} is needed, once` };

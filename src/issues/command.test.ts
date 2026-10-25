@@ -11,7 +11,7 @@ import { fakeGh } from "../testing/fake-gh";
 import { commitConfig, makeRepo, writePersonalWorkflow } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { GH_WRITE_TIMEOUT_MS, runGh } from "../workflow/merge-check";
-import { type IssueContext, ISSUE_USAGE, runIssue } from "./command";
+import { ISSUE_USAGE, type IssueContext, runIssue } from "./command";
 
 function setup(enabled = true) {
   const repo = makeRepo("my-app");

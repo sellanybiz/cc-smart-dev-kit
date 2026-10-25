@@ -24,8 +24,13 @@ export interface IssuesDoctorWorld {
 /** The host the kit files on: `ownRepository` accepts github.com only. */
 const HOST = "github.com";
 
-/** The roles that may not create a label or edit an issue. */
+/**
+ * The repository roles (`viewerPermission`) that fall short: Read cannot apply a label, and
+ * Triage applies labels but cannot create one (GitHub's repository roles table, researched in
+ * `.claude/research/`). Write, Maintain and Admin do both.
+ */
 const READ_ONLY = "READ";
+const TRIAGE = "TRIAGE";
 
 /** The fix that takes the switch off again. */
 const SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
@@ -110,9 +115,19 @@ export async function issuesChecks(world: IssuesDoctorWorld): Promise<Check[]> {
   if (facts.permission === READ_ONLY) {
     return [
       {
-        fix: `ask for triage or write access to ${named}, ${SWITCH_OFF}`,
+        fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
         ok: false,
-        text: `issues: gh has ${READ_ONLY} access only to ${named}, so the kit cannot create its labels or update its issues`,
+        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`,
+      },
+    ];
+  }
+  if (facts.permission === TRIAGE) {
+    return [
+      {
+        fix: `create the label ${policy.resolved.issues.foundLabel.value} in ${named} yourself, or ask for write access`,
+        ok: true,
+        text: `issues: gh has ${TRIAGE} access to ${named}, which can apply labels but not create them, so the kit files there only while its labels exist`,
+        warn: true,
       },
     ];
   }
