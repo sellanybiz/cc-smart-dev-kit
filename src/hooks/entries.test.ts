@@ -24,7 +24,8 @@ import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
-import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
+import { GUARD_BUNDLES, HOOKS, USER_HOOKS, userAwayHook } from "./specs";
+import { AWAY_ASK_TOOLS } from "./user-away";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -200,6 +201,7 @@ esac
     // review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
+      "PermissionRequest",
       "PostModelSwitch",
       "PostToolUse",
       "PostToolUseFailure",
@@ -251,6 +253,27 @@ esac
     expect(matchers).toEqual([CREW_ASK_TOOLS.join("|"), CREW_EDIT_TOOLS.join("|")]);
     // Written by hand too, so a changed list is seen here and not only in the constant.
     expect(matchers).toEqual(["AskUserQuestion|ExitPlanMode", "Edit|Write|NotebookEdit"]);
+  });
+
+  test("the user-away hook: the two tools that ask the person on PreToolUse, a permission prompt, and each prompt", () => {
+    const entries = wired.filter(({ handler }) => bundleOf(handler) === "user-away");
+    // Written by hand, so a changed list is seen here and not only in the constant.
+    expect(entries.map(({ event, matcher }) => [event, matcher])).toEqual([
+      ["PreToolUse", "AskUserQuestion|ExitPlanMode"],
+      ["UserPromptSubmit", null],
+      ["PermissionRequest", null],
+    ]);
+    expect(entries.map(({ event }) => event).sort()).toEqual([...userAwayHook.events].sort());
+    expect(AWAY_ASK_TOOLS.join("|")).toBe("AskUserQuestion|ExitPlanMode");
+    // Only its PreToolUse entry fails closed; the other two never stop a prompt or a permission.
+    expect(entries.map(({ handler }) => handler.onFailure)).toEqual([
+      "block",
+      undefined,
+      undefined,
+    ]);
+    // `PermissionRequest` is a hook event Claude Code runs before its own permission prompt: the
+    // one place a plugin can answer it (`docs/claude-code-contract.md`).
+    expect(hooksJson.hooks.PermissionRequest).toHaveLength(1);
   });
 
   test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
@@ -357,6 +380,7 @@ describe("the entries, run as Claude Code runs them", () => {
     "merge-guard": "whether this merge may happen by itself",
     "message-guard": "whether this message may go to that session",
     "session-escape-guard": "whether this call goes around the limits set for the session",
+    "user-away": "whether the person is available",
   };
 
   test("the list of guards above is the list of guards", () => {

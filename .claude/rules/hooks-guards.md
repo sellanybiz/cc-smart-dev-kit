@@ -11,6 +11,8 @@ paths:
   - "src/hooks/session-escape-guard*"
   - "src/hooks/crew-role*"
   - "src/hooks/lead-notes*"
+  - "src/hooks/user-away*"
+  - "src/hooks/prompt-source.ts"
   - "src/hooks/specs.ts"
   - "src/hooks/run.ts"
   - "src/hooks/guards.test.ts"
@@ -25,6 +27,7 @@ paths:
   - "src/entries/merge-guard.ts"
   - "src/entries/message-guard.ts"
   - "src/entries/session-escape-guard.ts"
+  - "src/entries/user-away.ts"
   - "src/entries/verify-gate.ts"
 ---
 
@@ -95,7 +98,8 @@ asked about when the gate says the push or the pull request is the person's, a p
 `fable-session` (the model the
 session itself runs on),
 `crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
-`lead-notes` (a lead's missed crew news) and `notify` (the alerts).
+`lead-notes` (a lead's missed crew news), `user-away` (whether the person can answer; § While the
+person is away) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
@@ -126,8 +130,10 @@ the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out,
 project's file is one of the things it guards (a session could list the guard there first).
 **`job-route` is `alwaysOn` too**, for the same reason one step out: it limits what the session
 itself may launch and run, and a session could otherwise switch the judge off by listing it in
-the project's file. A guard whose answer limits what the session itself may do is `alwaysOn`;
-any other machine-wide guard may be silenced by a project that runs its own copy. A name a
+the project's file. **`user-away` is `alwaysOn` too**: the switch is the person's, and a project file must not turn it
+off for a session. It was never switchable, so it has no `UNSWITCHABLE_HOOK_NAMES` entry and is
+not in `PLUGIN_HOOK_NAMES`. A guard whose answer limits what the session itself may do is
+`alwaysOn`; any other machine-wide guard may be silenced by a project that runs its own copy. A name a
 project file may already list for an `alwaysOn` hook that used to be switchable
 (`UNSWITCHABLE_HOOK_NAMES`, today `job-route`) still parses, it silences nothing, and `doctor`
 says it can go. `matrix.test.ts` checks both halves.
@@ -142,6 +148,38 @@ lead — to add `run_in_background: true` to a CI watch, a queued job or the ful
 honoured on 2.1.308, and in L1a.1 on 2.1.306). The rewritten
 command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
 live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
+
+## While the person is away
+
+`cc-smart-dev-kit user unavailable` sets one state per kit state folder (`src/user-away/state.ts`:
+the machine's, unless Claude Code runs on another `CLAUDE_CONFIG_DIR`).
+While it is on, nobody reads a question, so no hook may leave one open. The design is
+`docs/design/hooks.md` § While the person is away; this is what every hook owes it:
+
+| The answer | While the person is away |
+|---|---|
+| `AskUserQuestion` or `ExitPlanMode` (PreToolUse) | `user-away` **denies**, with the step that parks the question |
+| Claude Code's own permission prompt (`PermissionRequest`) | `user-away` **denies** and parks the call as an `action` |
+| Any hook's PreToolUse **ask** | the frame's step 6 (`askedWhileAway`) turns it into a **deny**: the hook's own words, "parked as #N", and the call parked as an `action` with its exact command |
+| A deny, an allow, silence | unchanged |
+
+- **Never looser: a deny where an ask was, never an allow.** A new guard needs no code for this:
+  it asks as before and step 6 does the rest. Never add an `allow` path that skips the frame.
+- **A state it cannot read keeps the ask**, with one line on stderr (`AwayStateError`): the
+  feature must never make a call looser, and a broken file is not "available". A park that
+  fails still denies and says to park by hand: the call never waits for someone who is away.
+- **A parked command is kept exactly**, because a later yes has to run it. Only a guard's own
+  reason text goes through `maskedLine`.
+- **`user-away` itself is never converted**: its one ask is its crash, made because it could not
+  read anything.
+- **A crew session never asks the person.** `crew-role` refuses the question tools first;
+  a crew session's other asks are denied and parked with its name. The person's own prompt is
+  never taken from a crew session or an automated turn (`prompt-source.ts`, one home), and
+  a prompt from the person does not switch the state back.
+- **What it cannot reach:** a project's own copy of a guard (`ownHooks`), which answers in Claude
+  Code directly (the `PermissionRequest` answer catches the prompt that follows), and the shim's
+  `--missing=ask` with no bun. It stops mistakes, not a session that runs `user available` itself:
+  that is the person's command, and no hook can tell their run from a session's.
 
 ## The project's own copy: `ownHooks`
 
@@ -208,7 +246,7 @@ A bug in an informational hook must never stop a user's work. A bug in a **guard
 let a call through. Each hook's answer to its own failure, in one table (the same in
 `docs/design/hooks.md` § One frame for every hook):
 
-| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard`, `crew-role` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
+| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard`, `crew-role`, `user-away` (its domain: `AskUserQuestion`, `ExitPlanMode`; on its other two events a crash is one stderr line) | Any other plugin hook | `cc-smart-dev-kit hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
@@ -254,7 +292,8 @@ a command must never report success when it did not run.
 - **Every ask is recorded.** The frame appends one JSON line to `guard-asks.jsonl` in the state
   folder (`src/hooks/ask-log.ts`: the time, the hook, the session, the tool, a short reason put
   through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
-  stderr line and never changes the answer.
+  stderr line and never changes the answer. An ask that became a deny while the person is away
+  is on their list instead (§ While the person is away).
 - A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
 - **Only the merge guard answers `allow`, and only for D31's exact form:** a command line that
   is nothing but `gh pr merge <n>` with flags gh 2.102.0 has, when the whole policy passed

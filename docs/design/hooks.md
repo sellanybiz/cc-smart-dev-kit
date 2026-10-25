@@ -72,15 +72,22 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    stops work. A **guard's** error answers through its `onCrash` (`guardCrash` in
    `specs.ts`): it asks about the call in its own domain, so a crash never lets a call
    through.
-6. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
+6. **While the person cannot answer** (`cc-smart-dev-kit user unavailable`), an answer that
+   asks them becomes a deny (`askedWhileAway`, § While the person is away). It keeps the
+   hook's own words, adds "parked as #N", and puts the call on the person's list as an
+   `action` with its exact command. One step for every hook, so a new guard needs nothing
+   here. It only ever makes an answer stricter: a deny, an allow and silence pass through
+   unchanged, and a state it cannot read keeps the ask.
+7. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
    state folder (`src/hooks/ask-log.ts`): the time, the hook, the session, the tool and a
    short reason, put through `maskedLine` so no secret reaches it. The file stays small by
    the rule of `update.log` (past `LOG_MAX_BYTES` the newer half is kept). A write that fails
-   is one line on stderr and never changes the answer.
+   is one line on stderr and never changes the answer. An ask that step 6 turned into a deny
+   is no ask: it is on the person's list instead.
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role) | Any other plugin hook | `hook notify` |
+| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role, user-away) | Any other plugin hook | `hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
@@ -229,12 +236,14 @@ that, so the plugin ships no worktree hook at all.
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone — never a crew session's worktree or a locked one, which `worktrees --clean` keeps (D62) — says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt — unless the session is a recorded lead: its role name is `lead-notes'`, and one title has one owner — or a crew session: `crew start --name` gave it the name its lead, `crew answer` and the message guard address it by, so it gets no note and no title, and `cc-smart-dev-kit session-name` refuses inside it (§ The lead and the launch › The lead's name). |
 | `crew-role` | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); **the first `Edit`, `Write` or `NotebookEdit` denied with the task-list step while the session's task folder holds no task file** (D23) — the folder Claude Code keeps the list in, read once and then answered from the crew session's own cache (`src/crew/tasks.ts`), with every answer it cannot make letting the edit through; the person's own prompt recorded as one `person` event with one line of context, and every other delivery recognised and recorded as nothing (D55); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
+| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt. The frame's step 6 turns every other hook's ask into a deny the same way (§ While the person is away). |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions — a note another lead told it, a file clash, a merge into the base — since its last turn, from a per-lead cursor in the store, said once and never twice. **At a SessionStart — a start, a resume, a compaction (the hook's matcher is `startup|resume|compact`) — it adds one line first** (D61): the lead's crew sessions build the work, because the lead's context is re-read on every turn; never at a prompt and never on an edit. At a prompt it also **names the session** `LEAD <tag> <plan>` (`sessionTitle` beside the line in one answer, no setting), never over a name the person gave and never twice (§ The lead and the launch › The lead's name). **At a prompt it also adds one reminder line while the lead's own task folder holds no task file** (D23): put the person's asks and its open work on the list — never a block, and gone once a task exists. § Lead and the crew › The crew session's and the lead's hooks. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
+Without `cc-smart-dev-kit.json` every one of them is silent — except the nine machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
 `session-escape-guard` (§ The session-escape guard),
 `fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew),
+`user-away` (§ While the person is away),
 `agent-usage` (§ Each subagent's usage on record), and
 `playwright-output`, which reads no project file at all — and the **crew part** of `git-guard`,
 `merge-guard`, `agent-guard` and `message-guard`, which answers only in a crew session (D24,
@@ -609,6 +618,102 @@ program the guard does not know (`python -c "open(…,'w')"`, `rsync`, `truncate
 The portal check reads the text of the whole command, so a script in a here-doc that connects
 counts — and so does a commit message that only mentions the address: one extra question, not a
 miss.
+
+### While the person is away
+
+`cc-smart-dev-kit user unavailable` marks the person as unable to answer — asleep, in a meeting,
+on a phone; the owner's pair of words, 2026-10-25 — and `user available` ends it. A session that
+stops to ask, or waits on a permission prompt, only stops: nobody reads the question for hours,
+and a lead that waits leaves every ready phase unstarted. So while the person is away the hooks
+hold the line, and the sessions **park** what needs the person on a list instead
+(`/cc-smart-dev-kit:user-unavailable`); `/cc-smart-dev-kit:user-available` goes through it when
+they are back.
+
+**The state, one home** (`src/user-away/state.ts`). One file, `<stateDir>/user-away/state.json`
+(the kit's state folder: the machine's `~/.claude/cc-smart-dev-kit/` unless Claude Code runs on
+another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailable`), mode 0600, written whole through the kit's atomic write, under the folder's **own** lock (not
+setup's: a hook that parks must never wait for a setup run) so two sessions that park at once
+both keep their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the
+`items`, `nextId` (an id is never reused) and `said` (the note each session heard). `until` is
+a note only: it shows in the notes and never switches back. An item has a kind — `question`
+(with its options and the recommended one), `action` (with its exact command) or `decision`
+(what was chosen, why, how to undo it) — the session and the crew session that parked it, and
+the time. The same kind with the same command (or, with none, the same words) parks once. The
+list holds 500 items and `said` 100 sessions. **A file that cannot be read is an
+`AwayStateError`, never "available"**: a reader that cannot tell must not guess in the loose
+direction. A parked command is kept **exactly**, as the session's own transcript already holds
+it — masking would break "a later yes can run it" — and one over 16,000 characters is cut, and
+the item says so. Only a guard's own reason text goes through `maskedLine`. The command
+(`src/user-away/command.ts`) is `unavailable [--until]`, `available`, `status`, `park`, `list`
+and `clear`; `available` keeps the list.
+
+**Four answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
+where there was a question, never an allow.
+
+- **PreToolUse on `AskUserQuestion` and `ExitPlanMode`:** denied, with the step that parks the
+  question. Nothing is parked by the hook: the session parks it in its own words, or takes the
+  choice and parks a `decision`. A plan waiting for approval is the same wait as a question.
+- **`PermissionRequest`, Claude Code's own prompt** (a hook event of 2.1.310; its decision is
+  `{"behavior":"deny","message":…}`, `docs/claude-code-contract.md` § Hooks): denied with the
+  step, and the call parked as an `action` with its exact command. This is the answer for every
+  prompt Claude Code raises itself. It should also catch the prompt that follows a project's own
+  copy of a guard (`ownHooks`), which the frame never runs — **not proved**: the contract row
+  proves Claude Code's own prompt on `claude -p`, nothing about an own copy. A call that is no
+  shell command keeps its target and a short, masked piece of its other arguments in the item's
+  words (`WebFetch <url> {"prompt":…}`, `Edit <file> {"old_string":…}`), so two prompts of one tool
+  at different targets are two items, and a session denied the same call again is told the
+  same number. A shell call is its `command`, kept whole.
+- **A kit guard that would ask** — the frame's step 6, for every hook, so a new guard needs
+  nothing: the ask becomes a deny that keeps the guard's own words and adds "parked as #N", and
+  the call is parked as an `action`. A deny, an allow and silence pass through unchanged. A park
+  that fails (a full list, a lock held too long) still denies, and the deny says to park by hand:
+  the person is away, so the call must not wait. `user-away`'s own crash-ask is not converted.
+- **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
+  …: follow `/cc-smart-dev-kit:user-unavailable`", with the expected return and how many items
+  wait — **said once per change** (`since|until|count`, per session, in `said`), never at every
+  prompt. **The person's own prompt does not switch the state back** (it may be one line from a
+  phone): a bare prompt in a session that is no crew session's gets its own note, every time,
+  that it is still on and how many items wait, and `/cc-smart-dev-kit:user-available` goes
+  through them. An automated turn (`prompt-source.ts`: a monitor's line, another session's
+  message) and a crew session's prompt are never the person's. A session that heard
+  "unavailable" is told once when the person is available again.
+
+**Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
+state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
+outside git, are judged the same way. `ownHooks` cannot switch it off — the switch is the
+person's, and a project must not turn it off for a session — so it is not in `PLUGIN_HOOK_NAMES`
+and `.claude/cc-smart-dev-kit.json` needs no new field. A crash asks about the two question
+tools like any guard; on the other events it says one line on stderr and the session goes on.
+
+**A state it cannot read changes nothing.** The hook says one line on stderr and the answer is
+what it would have been without this feature: the question or the ask goes to the person as it
+always did.
+
+**Crew sessions** never ask the person (§ Lead and the crew): `crew-role` and `user-away` both
+deny the two question tools in a crew session, and both give the same step (`crew report
+--question`, `CREW_QUESTION_STEP`), so the two reasons agree: the lead takes the question and
+parks what is the person's. A crew session's prompt gets the once-per-change note only. A
+permission prompt in a crew session while the person is away is denied and parked with the crew
+session's name, so its lead knows what waits; a lead parks its crew session's question with
+`park --crew <name>`, so `user-available` sends the answer back to that crew session.
+
+**The notifier stays quiet for a denied question.** `notify` raises "Claude asks you" on
+`AskUserQuestion` and `ExitPlanMode`; while the person is away those calls are denied and nothing
+waits for them, so it raises no alert (a state it cannot read keeps the alert).
+
+**What it cannot reach.** A project's own copy of a guard (`ownHooks`) answers in Claude Code
+directly: only the prompt Claude Code then raises is caught, by the `PermissionRequest` answer.
+The shim's `--missing=ask` (no bun at all) cannot read any state, so there the ask goes to the
+person. A session that started before the update carries an older plugin version with none of this
+(no step 6, no `PermissionRequest` entry), and `user unavailable` still succeeds for it: restart it.
+In Claude Code's default permission mode a session's own `user park` call is a command that asks, so
+it is denied and parked like any other; the person allows `Bash(cc-smart-dev-kit user park:*)`
+once (the hook cannot allow it: it answers only with a deny). `PermissionRequest` is proved live on `claude -p` only — an interactive and a `--bg`
+session are owed — and `AskUserQuestion` does not exist in `claude -p`, so its PreToolUse deny is
+proved by the hook's tests alone. **It stops mistakes, not a session set on getting past it:**
+`user available` is the person's command, run through `/cc-smart-dev-kit:user-available`, and
+a session that runs it itself lifts the line. No hook can tell the two apart, so the skill says
+never, the way the review gate does (§ The review record in `workflow.md`).
 
 ### The Fable-session note
 

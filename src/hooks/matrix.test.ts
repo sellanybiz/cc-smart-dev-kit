@@ -56,6 +56,7 @@ import {
   sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
+  userAwayHook,
   verifyGateHook,
   worktreeLeftoversHook,
 } from "./specs";
@@ -625,6 +626,40 @@ const CASES: Case[] = [
       expect(text).toBe("C app W2 hooks: tests-green · a1b2c3d");
     },
   },
+  {
+    spec: userAwayHook,
+    own: { event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
+    // Machine-wide and `alwaysOn`: the person is one for the machine, so the answer reads the
+    // state file and never the project's, and no `ownHooks` list switches it off.
+    machineWide: true,
+    alwaysOn: true,
+    setup: (config) => {
+      const env = hookEnv();
+      // The state file, written by hand: the person has been away since 01:00.
+      const folder = join(cliPaths(env).stateDir, "user-away");
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(
+        join(folder, "state.json"),
+        `${JSON.stringify({ unavailable: true, since: AT, until: null, items: [], nextId: 1, said: {} })}\n`,
+      );
+      return {
+        input: {
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          cwd: project(config),
+          tool_name: "AskUserQuestion",
+          tool_input: { questions: [] },
+        },
+        env,
+      };
+    },
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toStartWith("The person is unavailable since ");
+    },
+  },
 ];
 
 test("the table covers every hook", () => {
@@ -641,6 +676,7 @@ test("ownHooks accepts exactly the plugin's hooks that a project can switch off"
   expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
     "session-escape-guard",
     "job-route",
+    "user-away",
   ]);
   const alwaysOn = HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name);
   expect([...UNSWITCHABLE_HOOK_NAMES].every((name) => alwaysOn.includes(name))).toBe(true);

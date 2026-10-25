@@ -86,6 +86,7 @@ import type { CliPaths } from "../cli/paths";
 import { cleanSessionName } from "../crew/names";
 import { oneLine } from "../gateway/plain-text";
 import { notifyCommand } from "../update/apply";
+import { readAway } from "../user-away/state";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
 import type { AlertEvent } from "../workflow/schema";
 import { type SoundName, soundArgv } from "./alert-sound";
@@ -398,6 +399,11 @@ export interface AlertContext {
   nowMs: number;
   /** True when `verify-gate` will block this stop: the turn goes on, so this is no end. */
   stopWouldBlock: boolean;
+  /**
+   * True when the person has said they cannot answer (`cc-smart-dev-kit user unavailable`): the
+   * hooks deny a question then, so an alert for it would wake them for nothing.
+   */
+  personAway: boolean;
   /** The session's transcript, when the input names one. */
   transcript: null | string;
   /**
@@ -405,6 +411,18 @@ export interface AlertContext {
    * (`stopFailureWillAlert`): where it is, this hook stays quiet for a `rate_limit` stop.
    */
   limitAlertIsStopFailures: boolean;
+}
+
+/**
+ * Whether the person said they cannot answer. A state file that cannot be read is "no": the alert
+ * is the safe side here, because the hooks keep the question too when they cannot read it.
+ */
+function personIsAway(paths: CliPaths): boolean {
+  try {
+    return readAway(paths.stateDir).unavailable;
+  } catch {
+    return false;
+  }
 }
 
 /** Writes the mark for a question or a plan, and says what to show. */
@@ -495,6 +513,9 @@ export function alertFor(
     }
     case "PreToolUse": {
       if (!(ASK_TOOLS as readonly string[]).includes(String(input.tool_name ?? ""))) return null;
+      // The question is denied by `user-away` while the person is away: nothing is waiting for
+      // them, and no mark is written (no permission prompt follows to hide).
+      if (ctx.personAway) return null;
       return askAlert(input, ctx);
     }
     case "Notification": {
@@ -871,6 +892,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
+    personAway: event === "PreToolUse" && personIsAway(deps.paths),
     stopWouldBlock,
     transcript,
   });
