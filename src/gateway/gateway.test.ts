@@ -45,6 +45,7 @@ import {
   loadConfigFile,
   parseConfig,
   saveConfig,
+  streamIdleMs,
   watchConfig,
 } from "./config";
 import { maskSecrets } from "./plain-text";
@@ -2824,6 +2825,153 @@ describe("streaming", () => {
     const two = sseScanner();
     expect(two.push('data: {"type":"error","error":{}}\n')).toBeNull();
     expect(two.push("\n")).toBe("error");
+  });
+
+  describe("SC1: a stream that goes silent after its first byte", () => {
+    const START = 'event: message_start\ndata: {"type":"message_start"}\n\n';
+    const DELTA = 'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n';
+    const IDLE_MS = 80;
+
+    function idleConfig(): GatewayConfig {
+      return { ...config(), timeouts: { firstByteMs: 1000, streamIdleMs: IDLE_MS } };
+    }
+
+    /** A stream that sends each chunk after its own pause, then ends. */
+    function pacedStream(steps: { afterMs: number; text: string }[], contentType: string) {
+      const state = { cancelled: false };
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          state.cancelled = true;
+        },
+        async pull(controller) {
+          const step = steps[sent];
+          if (step === undefined) {
+            controller.close();
+            return;
+          }
+          await Bun.sleep(step.afterMs);
+          controller.enqueue(new TextEncoder().encode(step.text));
+          sent += 1;
+        },
+      });
+      return { response: new Response(body, { headers: { "content-type": contentType } }), state };
+    }
+
+    it("is cut at the limit: the body fails (Claude Code asks again), the target rests, the log names both", async () => {
+      // Two events, then nothing: the third gate never opens.
+      const stalled = gatedStream([START, DELTA, DELTA]);
+      stalled.open(1);
+      const { handle, logs } = router([() => stalled.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      expect(res.status).toBe(200);
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      expect(await readSoon(reader)).toBe(START);
+      expect(await readSoon(reader)).toBe(DELTA);
+      const started = Date.now();
+      // The body fails (the connection is torn down): Claude Code sends the request again.
+      const outcome = await Promise.race([
+        reader.read().then(
+          () => "a chunk or the end",
+          (error: unknown) => String(error),
+        ),
+        Bun.sleep(1000).then(() => "still waiting after 1 s"),
+      ]);
+      expect(outcome).toContain("sent no byte for 80 ms");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE_MS - 10);
+      expect(Date.now() - started).toBeLessThan(IDLE_MS + 500);
+      expect(stalled.state.cancelled).toBe(true);
+      expect(logs).toContain(
+        "WARN omniroute:glm-5.3-flash sent no byte for 80 ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests",
+      );
+      const health: unknown = await (
+        await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
+      ).json();
+      expect(health).toMatchObject({ cooling: { "omniroute:glm-5.3-flash": expect.any(Number) } });
+    });
+
+    it("a slow but steady stream is never cut", async () => {
+      const steady = pacedStream(
+        [START, DELTA, DELTA, DELTA, DELTA, DELTA].map((text) => ({ afterMs: 50, text })),
+        "text/event-stream",
+      );
+      const { handle, logs } = router([() => steady.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      // 300 ms in all, nearly four limits: every gap is shorter than one.
+      expect(await res.text()).toBe(START + DELTA.repeat(5));
+      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+    });
+
+    it("a gap filled with pings and comments is not a silence", async () => {
+      const pinging = pacedStream(
+        [
+          { afterMs: 0, text: START },
+          ...Array.from({ length: 6 }, () => ({ afterMs: 50, text: ": keepalive\n\n" })),
+          { afterMs: 50, text: "event: ping\ndata: {}\n\n" },
+          { afterMs: 50, text: DELTA },
+        ],
+        "text/event-stream",
+      );
+      const { handle, logs } = router([() => pinging.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      expect(await res.text()).toBe(
+        `${START}${": keepalive\n\n".repeat(6)}event: ping\ndata: {}\n\n${DELTA}`,
+      );
+      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+    });
+
+    it("a request that does not stream is untouched, however long its body takes", async () => {
+      const answer = '{"type":"message","content":[]}';
+      const slow = pacedStream(
+        [
+          { afterMs: 0, text: answer.slice(0, 10) },
+          { afterMs: IDLE_MS * 3, text: answer.slice(10) },
+        ],
+        "application/json",
+      );
+      const { handle, logs } = router([() => slow.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({
+          body: JSON.stringify({ ...message("cc-smart-dev-kit-scout"), stream: false }),
+        }),
+      );
+      expect(await res.text()).toBe(answer);
+      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+    });
+
+    it("a Claude target's stalled stream is not cut (the owner: Anthropic's answers pass untouched)", async () => {
+      const stalled = gatedStream([START, DELTA]);
+      const { handle, logs } = router([() => stalled.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-mixed")) }),
+      );
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      expect(await readSoon(reader)).toBe(START);
+      const outcome = await Promise.race([
+        reader.read().then(
+          () => "a chunk or the end",
+          (error: unknown) => String(error),
+        ),
+        Bun.sleep(IDLE_MS * 3).then(() => "still waiting"),
+      ]);
+      expect(outcome).toBe("still waiting");
+      expect(stalled.state.cancelled).toBe(false);
+      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+      await reader.cancel();
+    });
+
+    it("the limit is a config field: its default is 120 s", () => {
+      expect(streamIdleMs(config())).toBe(120_000);
+      expect(streamIdleMs(idleConfig())).toBe(IDLE_MS);
+    });
   });
 });
 

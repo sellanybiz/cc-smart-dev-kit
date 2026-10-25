@@ -43,6 +43,16 @@ import {
 export const DEFAULT_PORT = 20100;
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_FIRST_BYTE_MS = 60_000;
+/**
+ * The default of `timeouts.streamIdleMs`: how long a streaming answer may send no byte after
+ * its first before the router ends it. The request history (88,926 rows, 2026-10) shows no
+ * completed answer taking longer than 102 s unless it wrote over a hundred thousand tokens,
+ * and a gap can never be longer than the answer's whole time; a stalled stream (12 of 4,957
+ * answers in 3 hours on one target) never moves again. So 120 s is above every real gap seen
+ * and still ends a stall in two minutes, not Claude Code's 21 (it has no limit of its own
+ * once a stream has started: `docs/claude-code-contract.md` § The gateway).
+ */
+export const DEFAULT_STREAM_IDLE_MS = 120_000;
 
 /**
  * The longest the breaker holds a request while every target of its slot is limited or down,
@@ -229,6 +239,12 @@ export const gatewayConfigSchema = z
           )
           .optional(),
         firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS),
+        /**
+         * How long a streaming answer may send no byte (an event, a ping or a comment line
+         * all count) after its first before the router ends it, in whole milliseconds. Absent:
+         * `DEFAULT_STREAM_IDLE_MS`, read through `streamIdleMs`.
+         */
+        streamIdleMs: z.int().positive().optional(),
       })
       .default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
     version: z.literal(1),
@@ -502,6 +518,14 @@ export function breakerOn(config: Pick<GatewayConfig, "breaker">, slot: string):
  */
 export function breakerHoldMs(config: Pick<GatewayConfig, "timeouts">): number {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
+}
+
+/**
+ * How long a streaming answer may send no byte after its first, in milliseconds: the
+ * config's `timeouts.streamIdleMs`, else `DEFAULT_STREAM_IDLE_MS`.
+ */
+export function streamIdleMs(config: Pick<GatewayConfig, "timeouts">): number {
+  return config.timeouts.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS;
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   loadConfigFile,
   parseConfig,
   saveConfig,
+  streamIdleMs,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -309,6 +310,29 @@ describe("timeouts.breakerHoldMs", () => {
       firstByteMs: 60_000,
       idleMs: 9000,
     });
+  });
+});
+
+describe("timeouts.streamIdleMs (SC1)", () => {
+  it("is 120 s when the config does not say, and adds no key to a config that has none", () => {
+    expect(streamIdleMs(parsed(raw()))).toBe(120_000);
+    expect(parsed(raw({ timeouts: { firstByteMs: 30_000 } })).timeouts).toStrictEqual({
+      firstByteMs: 30_000,
+    });
+  });
+
+  it("takes any positive whole number of milliseconds", () => {
+    for (const value of [1, 45_000, 600_000]) {
+      expect(streamIdleMs(parsed(raw({ timeouts: { streamIdleMs: value } })))).toBe(value);
+    }
+  });
+
+  it("refuses 0, a fraction and a word", () => {
+    expect(parseConfig(raw({ timeouts: { streamIdleMs: 0 } }))).toEqual({
+      error: "✖ Too small: expected number to be >0\n  → at timeouts.streamIdleMs",
+    });
+    expect("error" in parseConfig(raw({ timeouts: { streamIdleMs: 1.5 } }))).toBe(true);
+    expect("error" in parseConfig(raw({ timeouts: { streamIdleMs: "120" } }))).toBe(true);
   });
 });
 

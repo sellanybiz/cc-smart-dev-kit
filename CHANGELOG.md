@@ -48,6 +48,14 @@ says each piece of news once, and a removed crew session's conversation kept out
   sources: one researcher per angle, then a refuter per claim that opens the source and quotes it.
 - **Four tests that failed only on a busy machine** found their cause (a slow child, a held port,
   a git setup, a wall-clock bound) and pass under load.
+- **The router ends a backend stream that goes silent after its first byte.** Before, only the
+  wait for the first byte had a limit: a stalled stream (12 of 4,957 answers from one OmniRoute
+  target in 3 hours) held a session for 21 minutes, until Claude Code's own timeout. A stream
+  that sends no byte (an event, a ping or a keep-alive comment) for `timeouts.streamIdleMs`
+  (default 120 s) is ended; Claude Code sends the request again at once (proved on 2.1.310), the
+  log line names the target and the idle time, and the target rests like any failure. A Claude
+  target's stream is never cut. `router.js` changes, so run `cc-smart-dev-kit gateway setup` on
+  every machine that uses the gateway.
 
 ## 1.2.0
 

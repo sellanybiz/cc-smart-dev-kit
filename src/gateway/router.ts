@@ -135,6 +135,7 @@ import {
   profileNames,
   profileNamesSlot,
   profileView,
+  streamIdleMs,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -1772,6 +1773,75 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * Whose stalled stream the router ends (`endIfSilent`). A backend's only: an Anthropic
+   * stream passes untouched, as every Anthropic answer does (the owner, 2026-10-25). The one
+   * place to widen it.
+   */
+  function endsStalledStream(target: Target): boolean {
+    return target.kind === "backend";
+  }
+
+  /**
+   * A streaming answer that goes silent after its first byte is ended once `idleMs` pass
+   * with no byte (an event, a ping or a comment line all count): the body fails, the way a
+   * cut connection does, which Claude Code answers by sending the request again at once
+   * (`docs/claude-code-contract.md`, P14); it has no limit of its own once a stream has
+   * started. The target rests like any failure (`noteCooldown`, the existing rest rules);
+   * the log line names the target and the idle time. The clock starts at the first byte:
+   * the wait for it is `firstByteMs`'s (`holdFirstEvent`). It runs only while the router
+   * waits on the upstream: a client slow to read stops the pulls, and so the clock. A
+   * client that hangs up cancels the upstream and rests nothing.
+   */
+  function endIfSilent(response: Response, label: string, idleMs: number): Response {
+    const body = response.body;
+    if (body === null) return response;
+    const reader = body.getReader();
+    let started = false;
+    const guarded = new ReadableStream<Uint8Array>({
+      cancel: (reason) => reader.cancel(reason),
+      async pull(controller) {
+        const timer = started ? deadline(idleMs) : null;
+        const read = reader.read();
+        try {
+          const step = await (timer === null ? read : Promise.race([read, timer.done]));
+          if (step === "timeout") {
+            // Not awaited: a stalled upstream may never settle its cancel. The pending read
+            // ends with the cancel, or fails on its own: neither is news.
+            read.catch(() => undefined);
+            reader.cancel().catch((error: unknown) => {
+              deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
+            });
+            deps.log(
+              `WARN ${label} sent no byte for ${idleMs} ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests`,
+            );
+            noteCooldown(label, {
+              failure: `no byte for ${idleMs} ms after the first`,
+              status: null,
+            });
+            controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
+            return;
+          }
+          if (step.done) {
+            controller.close();
+            return;
+          }
+          started = true;
+          controller.enqueue(step.value);
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          timer?.clear();
+        }
+      },
+    });
+    return new Response(guarded, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+
   /** The upstream response, as Claude Code gets it: status, headers, streamed body. */
   function relay(upstream: Response, target: null | Target): Response {
     const headers = responseHeaders(
@@ -2345,7 +2415,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         }
         const answer: Outcome = {
           fallbacks,
-          response: relay(result.response, target),
+          response: relay(
+            url.pathname === MESSAGES_PATH &&
+              endsStalledStream(target) &&
+              result.response.ok &&
+              (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
+              ? endIfSilent(result.response, label, streamIdleMs(config))
+              : result.response,
+            target,
+          ),
           skipped,
           target: label,
         };

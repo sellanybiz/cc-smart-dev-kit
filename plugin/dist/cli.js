@@ -8881,6 +8881,7 @@ function cooldownSeconds(status, retryAfter) {
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
+var DEFAULT_STREAM_IDLE_MS = 120000;
 var BREAKER_HOLD_CEILING_MS = 240000;
 var BREAKER_HOLD_NON_STREAMING_MS = 60000;
 var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
@@ -8924,7 +8925,8 @@ var gatewayConfigSchema = looseObject({
   slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
-    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
+    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS),
+    streamIdleMs: int().positive().optional()
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -9108,6 +9110,9 @@ function breakerOn(config, slot) {
 }
 function breakerHoldMs(config) {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
+}
+function streamIdleMs(config) {
+  return config.timeouts.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS;
 }
 function historyRetentionDays(config) {
   return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
@@ -21257,6 +21262,56 @@ function createRouter(deps) {
       })
     };
   }
+  function endsStalledStream(target) {
+    return target.kind === "backend";
+  }
+  function endIfSilent(response, label, idleMs) {
+    const body = response.body;
+    if (body === null)
+      return response;
+    const reader = body.getReader();
+    let started = false;
+    const guarded = new ReadableStream({
+      cancel: (reason) => reader.cancel(reason),
+      async pull(controller) {
+        const timer = started ? deadline(idleMs) : null;
+        const read = reader.read();
+        try {
+          const step = await (timer === null ? read : Promise.race([read, timer.done]));
+          if (step === "timeout") {
+            read.catch(() => {
+              return;
+            });
+            reader.cancel().catch((error) => {
+              deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
+            });
+            deps.log(`WARN ${label} sent no byte for ${idleMs} ms after its first byte (timeouts.streamIdleMs); its stream was ended and the target rests`);
+            noteCooldown(label, {
+              failure: `no byte for ${idleMs} ms after the first`,
+              status: null
+            });
+            controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
+            return;
+          }
+          if (step.done) {
+            controller.close();
+            return;
+          }
+          started = true;
+          controller.enqueue(step.value);
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          timer?.clear();
+        }
+      }
+    });
+    return new Response(guarded, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText
+    });
+  }
   function relay(upstream, target) {
     const headers = responseHeaders(upstream.headers, target?.kind === "backend" ? deps.now() : null);
     return new Response(NULL_BODY_STATUS.has(upstream.status) ? null : upstream.body, {
@@ -21558,7 +21613,7 @@ function createRouter(deps) {
         }
         const answer = {
           fallbacks,
-          response: relay(result.response, target),
+          response: relay(url.pathname === MESSAGES_PATH && endsStalledStream(target) && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream") ? endIfSilent(result.response, label, streamIdleMs(config)) : result.response, target),
           skipped,
           target: label
         };

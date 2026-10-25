@@ -8831,7 +8831,8 @@ var gatewayConfigSchema = looseObject({
   slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
-    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
+    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS),
+    streamIdleMs: int().positive().optional()
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
