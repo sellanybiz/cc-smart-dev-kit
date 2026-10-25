@@ -415,6 +415,15 @@ const crewFields = z.object({
   sessionId: text.nullable(),
   /** The first 8 characters of the session id, as `claude agents` shows it; null until then. */
   shortId: text.nullable(),
+  /**
+   * The sessions this crew session had before the current one, oldest first. A resume is a copy
+   * with a new id (WF1), so the record's `sessionId` moves on and the original stays in Claude
+   * Code's `/resume` and agent view: `crew rm` removes, and the archive moves, every one of them
+   * (`crewSessions`). Kept by the store (`changeCrew`), from the session the record had, so no
+   * command can replace a session without keeping the one it replaces. Absent until the first
+   * replacement, and on a record an older kit wrote.
+   */
+  earlierSessions: z.array(z.looseObject({ sessionId: text, shortId: text })).optional(),
   /** The lead that started it: its session id and its name. */
   leadSessionId: text,
   leadName: text,
@@ -573,6 +582,27 @@ const crewFields = z.object({
 /** A crew record, as written and read (a newer kit's fields kept). */
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
+
+/** One Claude session of a crew session: its id and the short id `claude agents` shows. */
+export interface CrewSession {
+  sessionId: string;
+  shortId: string;
+}
+
+/**
+ * Every Claude session the crew session has had: the current one first, then the earlier ones,
+ * newest first (`earlierSessions`). Empty while it has no session.
+ */
+export function crewSessions(record: CrewRecord): CrewSession[] {
+  const current =
+    record.sessionId === null
+      ? []
+      : [{ sessionId: record.sessionId, shortId: record.shortId ?? record.sessionId.slice(0, 8) }];
+  const earlier = [...(record.earlierSessions ?? [])].reverse();
+  return [...current, ...earlier.filter((one) => one.sessionId !== record.sessionId)].map(
+    (one) => ({ sessionId: one.sessionId, shortId: one.shortId }),
+  );
+}
 
 /** What a caller gives for a new crew session: the store adds the version and the times. */
 export type NewCrew = Omit<CrewRecord, "createdAt" | "updatedAt" | "version">;
@@ -1300,6 +1330,16 @@ async function changeCrew(
     // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
     // here, from the state the record was in, so the watch cannot forget it on a later pass.
     if (merged.state === "merged" && before.state === "stopped") merged.mergedWhileStopped = true;
+    // A replaced session stays on the record (`earlierSessions`), whichever command replaced it.
+    if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
+      const kept = before.earlierSessions ?? [];
+      if (!kept.some((one) => one.sessionId === before.sessionId)) {
+        merged.earlierSessions = [
+          ...kept,
+          { sessionId: before.sessionId, shortId: before.shortId ?? before.sessionId.slice(0, 8) },
+        ];
+      }
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);

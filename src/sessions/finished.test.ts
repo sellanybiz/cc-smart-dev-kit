@@ -1,5 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { cliPaths, tildify } from "../cli/paths";
@@ -505,6 +513,34 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     expect(existsSync(transcript)).toBe(true);
     expect(existsSync(empty.project)).toBe(true);
     expect(existsSync(expired)).toBe(true);
+  });
+
+  test("RX1: a record resumed before its removal lists and moves the earlier session's conversation too", async () => {
+    const w = world();
+    w.rows.length = 0;
+    const earlier = "e4e4e4e4-1111-2222-3333-444444444444";
+    const { project } = await removedCrew(w, {
+      earlierSessions: [{ sessionId: earlier, shortId: "e4e4e4e4" }],
+    });
+    conversation(project);
+    conversation(project, earlier);
+
+    expect(await w.run()).toBe(0);
+    expect(w.out).toContain("· C my-app T tests — ~/repo/.claude/worktrees/crew-T-tests — 4 files");
+
+    expect(await w.run({ remove: true, yes: true })).toBe(0);
+    expect(existsSync(project)).toBe(false);
+    const into = join(
+      crewArchiveDir(w.paths.stateDir, w.repo, "crew-T-tests"),
+      "projects",
+      project.split("/").at(-1) ?? "",
+    );
+    expect(readdirSync(into).sort()).toEqual([
+      earlier,
+      `${earlier}.jsonl.gz`,
+      CREW_SESSION,
+      `${CREW_SESSION}.jsonl.gz`,
+    ]);
   });
 
   test("--remove asks once, then moves each conversation, removes each empty folder and deletes each expired archive", async () => {

@@ -92,7 +92,7 @@ import {
   stopSession,
 } from "./end";
 import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, type CrewRecord, listCrew } from "./store";
+import { appendCrewEvent, type CrewRecord, crewSessions, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -575,19 +575,22 @@ export async function runCrewRm(
   if (discard && record.discardPending !== undefined && !branchLeft())
     record = await completeCrewDiscard(record, ctx);
 
-  // 8. Last, `claude rm`: it refuses a worktree that is still there.
-  if (record.shortId !== null) {
-    const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
+  // 8. Last, `claude rm`: it refuses a worktree that is still there. Every session the crew
+  // session has had goes (`crewSessions`): a resume is a copy with a new id (WF1), and the
+  // original stays in `/resume` and agent view until it is removed too.
+  const sessions = crewSessions(record);
+  for (const one of sessions) {
+    const rm = claudeFailure(ctx, repo, ["rm", one.shortId]);
     // A job Claude Code no longer has cannot be removed again: `claude rm` fails on it ("No job
     // matching") however often it runs. When agent view does not list the session at all, it is
     // gone already — the state this step wants — so the record goes too.
-    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    const goneAlready = rm !== null && sessionUnknown(ctx, record, one.shortId);
     if (rm !== null && !goneAlready) {
       // What is left is said as it is: a branch git keeps is not called gone.
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
       ctx.error(
-        `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`,
+        `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`,
       );
       try {
         await appendCrewEvent(
@@ -609,13 +612,11 @@ export async function runCrewRm(
       return 1;
     }
     ctx.print(
-      goneAlready
-        ? `session ${record.shortId} was gone already`
-        : `removed session ${record.shortId}`,
+      goneAlready ? `session ${one.shortId} was gone already` : `removed session ${one.shortId}`,
     );
-    // 9. Its conversation leaves `/resume` (AR1): only now that Claude Code has let the session go.
-    await archiveAfterRemoval(record, ctx);
   }
+  // 9. Its conversations leave `/resume` (AR1): only now that Claude Code has let the sessions go.
+  if (sessions.length > 0) await archiveAfterRemoval(record, ctx);
   if (discard) record = await completeCrewDiscard(record, ctx);
   const state = discard ? "discarded" : "removed";
   const stored = await markState(
@@ -641,7 +642,11 @@ export async function archiveAfterRemoval(
 ): Promise<void> {
   const home = ctx.paths.home;
   const daysOf = archiveDaysOf(ctx.paths, ctx.env);
-  const session = `session ${record.shortId ?? record.sessionId ?? record.name}`;
+  const shortIds = crewSessions(record).map((one) => one.shortId);
+  const session =
+    shortIds.length === 0
+      ? `session ${record.sessionId ?? record.name}`
+      : `session${shortIds.length > 1 ? "s" : ""} ${shortIds.join(", ")}`;
   let outcome: ArchiveOutcome;
   try {
     // The machine's facts were read before this removal began (the background clean reads them
@@ -671,6 +676,9 @@ export async function archiveAfterRemoval(
     ctx.print(
       `archived the conversation of ${session} (${String(outcome.files)} file${outcome.files === 1 ? "" : "s"}) in ${tildify(outcome.dir, home)}: it leaves /resume, and ${until}`,
     );
+    for (const why of outcome.stayed ?? []) {
+      ctx.error(`note: another conversation of ${record.name} stays where it is: ${why}`);
+    }
   } else if (outcome.kind === "kept") {
     ctx.error(`note: the conversation of ${session} stays where it is: ${outcome.why}`);
   } else if (outcome.kind === "failed") {

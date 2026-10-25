@@ -75,7 +75,13 @@ import { resolveWorkflow } from "../workflow/resolve";
 import { repoKey } from "../workflow/reviews";
 import { ARCHIVE_PROJECTS, crewArchiveRoot } from "./archive-read";
 import type { Env } from "./context";
-import { type CrewRecord, listAllCrew, listAllLeads, writeStoreFile } from "./store";
+import {
+  type CrewRecord,
+  crewSessions,
+  listAllCrew,
+  listAllLeads,
+  writeStoreFile,
+} from "./store";
 import { transcriptFile } from "./transcript";
 
 /** The schema version of `archive.json`. */
@@ -197,8 +203,8 @@ export function conversationOf(
 
 /**
  * The sessions the archive never takes: every lead's (each lead record's, and each crew record's
- * lead), and the session of each crew record that is not removed — but `exceptCrew`'s, the one
- * being removed. Throws when a record of the store cannot be read: then nobody can say whose a
+ * lead), and every session (`crewSessions`: the current and the earlier ones) of each crew record
+ * that is not removed — but `exceptCrew`'s, the one being removed. Throws when a record of the store cannot be read: then nobody can say whose a
  * session is, and nothing is taken.
  */
 export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string): Set<string> {
@@ -212,7 +218,7 @@ export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string):
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
     const archived = ARCHIVED_STATES.includes(record.state) || record.id === exceptCrew;
-    if (!archived && record.sessionId !== null) kept.add(record.sessionId);
+    if (!archived) for (const one of crewSessions(record)) kept.add(one.sessionId);
   }
   return kept;
 }
@@ -223,7 +229,14 @@ export type ArchiveOutcome =
   | { kind: "nothing"; folderGone: boolean }
   /** It stays where it is, and why. */
   | { kind: "kept"; why: string }
-  | { kind: "archived"; dir: string; files: number; folderGone: boolean }
+  | {
+      kind: "archived";
+      dir: string;
+      files: number;
+      folderGone: boolean;
+      /** Why a session of the same crew session stayed (a record of several sessions); absent when none did. */
+      stayed?: string[];
+    }
   /** It stopped: `moved` files went before it did; the rest stays where it was. */
   | { kind: "failed"; why: string; moved: number };
 
@@ -377,14 +390,45 @@ export function differingArchivedCopy(
 }
 
 /**
- * Moves the conversation of `record`'s session into its archive. Call it only once `claude rm`
- * has removed the session, or for a record that is removed already. Never throws: what went
- * wrong is the outcome's `why`.
+ * Moves the conversations of every session of `record` (`crewSessions`: a resume is a copy with a
+ * new id, WF1, so a record can have several) into its archive. Call it only once `claude rm` has
+ * removed the sessions, or for a record that is removed already. Never throws: what went wrong is
+ * the outcome's `why`. One outcome for the whole record: a failure wins, then what moved; a
+ * session that stayed beside one that moved is told in `stayed`.
  */
 export async function archiveConversation(input: ArchiveInput): Promise<ArchiveOutcome> {
+  const ids = crewSessions(input.record)
+    .map((one) => one.sessionId)
+    .filter(isSessionId);
+  let archived: Extract<ArchiveOutcome, { kind: "archived" }> | undefined;
+  let kept: string | undefined;
+  let nothing: Extract<ArchiveOutcome, { kind: "nothing" }> = { folderGone: false, kind: "nothing" };
+  let moved = 0;
+  for (const sessionId of ids) {
+    const one = await archiveSession(input, sessionId);
+    if (one.kind === "failed") return { ...one, moved: moved + one.moved };
+    if (one.kind === "archived") {
+      moved += one.files;
+      archived = { ...one, files: moved };
+    } else if (one.kind === "kept") {
+      kept ??= one.why;
+    } else {
+      nothing = one;
+    }
+  }
+  if (archived !== undefined) {
+    return {
+      ...archived,
+      folderGone: archived.folderGone || nothing.folderGone,
+      ...(kept === undefined ? {} : { stayed: [kept] }),
+    };
+  }
+  return kept === undefined ? nothing : { kind: "kept", why: kept };
+}
+
+/** One session's conversation into the archive. */
+async function archiveSession(input: ArchiveInput, sessionId: string): Promise<ArchiveOutcome> {
   const { paths, record } = input;
-  const sessionId = record.sessionId;
-  if (sessionId === null || !isSessionId(sessionId)) return { folderGone: false, kind: "nothing" };
   if (input.neverTaken.has(sessionId)) {
     return {
       kind: "kept",

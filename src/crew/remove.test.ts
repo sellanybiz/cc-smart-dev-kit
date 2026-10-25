@@ -17,7 +17,7 @@ import { ARCHIVE_MANIFEST, crewArchiveDir, DAY_MS } from "./archive";
 import { crewArchiveRoot } from "./archive-read";
 import { runCrew } from "./command";
 import { archiveAfterRemoval } from "./remove";
-import { readCrew, writeLead } from "./store";
+import { readCrew, updateCrew, writeLead } from "./store";
 import { transcriptFile } from "./transcript";
 
 const SESSION = "a1b2c3d4-0000-1111-2222-333333333333";
@@ -106,6 +106,62 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       "agent-1.meta.json.gz",
     ]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
+  });
+
+  test("RX1: a resumed record leaves no earlier session behind: each is claude rm'd and archived", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const project = conversation(world, record.worktree);
+    // A resume (WF1) is a copy with a new id: the record takes it, and the original stays in /resume.
+    const copy = "f9e8d7c6-0000-1111-2222-333333333333";
+    writeFileSync(join(project, `${copy}.jsonl`), '{"type":"assistant"}\n');
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { sessionId: copy, shortId: "f9e8d7c6" },
+      NOW,
+    );
+
+    expect(
+      await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
+    ).toBe(0);
+
+    expect(world.err).toEqual([]);
+    const removed = world.claudeCalls().filter((call) => call[0] === "rm");
+    expect(removed.map((call) => call[1]).sort()).toEqual(["a1b2c3d4", "f9e8d7c6"]);
+    // Nothing of the crew session is left in Claude Code's projects folder.
+    expect(existsSync(project)).toBe(false);
+    const dir = crewArchiveDir(world.paths.stateDir, world.repo, record.id);
+    const into = join(dir, "projects", project.split("/").at(-1) ?? "");
+    expect(readdirSync(into).sort()).toEqual([SESSION, `${SESSION}.jsonl.gz`, `${copy}.jsonl.gz`]);
+  });
+
+  test("RX1: an earlier session Claude Code no longer lists is gone already", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const project = conversation(world, record.worktree);
+    const copy = "f9e8d7c6-0000-1111-2222-333333333333";
+    writeFileSync(join(project, `${copy}.jsonl`), '{"type":"assistant"}\n');
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { sessionId: copy, shortId: "f9e8d7c6" },
+      NOW,
+    );
+
+    // Every `claude rm` fails, and agent view lists neither session: both are gone already.
+    expect(
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({}, { FAKE_RM: "fail", FAKE_WORKTREE: record.worktree }),
+      ),
+    ).toBe(0);
+
+    expect(world.out).toContain("session a1b2c3d4 was gone already");
+    expect(world.out).toContain("session f9e8d7c6 was gone already");
+    expect(existsSync(project)).toBe(false);
   });
 
   test("a failed claude rm moves nothing: Claude Code still knows the session", async () => {

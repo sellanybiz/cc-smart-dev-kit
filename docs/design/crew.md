@@ -733,6 +733,16 @@ Claude Code expects it). The watch's removal after a merge, the background clean
 orphaned crew session and `crew rm` all call `runCrewRm`, so the move has one home and the watch
 needs no change.
 
+- **Every session the crew session had (RX1).** A resume is a copy with a new id (WF1), and the
+  record's `sessionId` and `shortId` move to it. The write that changes the `sessionId` (`changeCrew`,
+  the one store write) keeps the session it replaces on the record, oldest first
+  (`earlierSessions`; `crewSessions` lists them with the current one first). So `crew rm` runs
+  `claude rm` on each short id (a session agent view no longer lists is gone already), the archive
+  moves each session's conversation into the same folder, and `sessionsNeverTaken`, the finished
+  list and the sweep (`readCrewLeftovers`) all count every one of them: none stays in `/resume` or
+  in `claude agents --all`. A record from before the field has only its current session. When one
+  session's conversation stays (a running Claude holds it) beside one that moved, the outcome says
+  so (`stayed`).
 - **Where it goes.** `<state>/crew-archive/<repo key>/<crew id>/` (the repo key is the crew store's
   own, `repoKey`): `archive.json` (who it was, the project folder, when), `report.json` (a copy of the
   hand-back report) and `projects/<project folder>/…` in **Claude Code's own layout, each file

@@ -136,10 +136,17 @@ export function claudeFailure(ctx: CrewContext, repo: string, args: string[]): n
   return `${command} failed (exit ${String(call.run.exitCode)})${said === "" ? "" : `: ${said}`}`;
 }
 
-/** True when agent view, read once, does not list the crew session's Claude session at all. */
-export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
+/**
+ * True when agent view, read once, does not list a Claude session of the crew session at all:
+ * the current one, or the earlier one `shortId` names (a resume is a copy with a new id, WF1).
+ */
+export function sessionUnknown(
+  ctx: CrewContext,
+  record: CrewRecord,
+  shortId: null | string = record.shortId,
+): boolean {
   const binary = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
-  if (binary === null || record.shortId === null) return false;
+  if (binary === null || shortId === null) return false;
   const listed = callClaude(
     claudeDeps(ctx),
     binary,
@@ -149,7 +156,7 @@ export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
   );
   if (!listed.ok || listed.run.exitCode !== 0) return false;
   const rows = parseAgentPresence(listed.run.stdout);
-  return rows !== null && agentRow(rows, record.shortId) === null;
+  return rows !== null && agentRow(rows, shortId) === null;
 }
 
 /**

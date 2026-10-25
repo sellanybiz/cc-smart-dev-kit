@@ -292,6 +292,32 @@ describe("the crew record", () => {
     expect(readCrew(state, REPO, "crew-K-contracts")?.waitsFor).toEqual(["B6a", "B7"]);
   });
 
+  test("RX1: a change of the session keeps the earlier ones, oldest first, once each", async () => {
+    const state = tempDir("state");
+    const first = "aaaaaaaa-0000-1111-2222-333333333333";
+    const second = "bbbbbbbb-0000-1111-2222-333333333333";
+    const third = "cccccccc-0000-1111-2222-333333333333";
+    await createCrew(
+      state,
+      { ...queued(), sessionId: first, shortId: "aaaaaaaa", state: "working" },
+      T0,
+    );
+    const id = "crew-K-contracts";
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    // A write that does not change the session adds nothing.
+    await updateCrew(state, REPO, id, { lastLine: "hi" }, T1);
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: third, shortId: "cccccccc" }, T1);
+    const record = readCrew(state, REPO, id);
+    expect(record?.sessionId).toBe(third);
+    expect(record?.earlierSessions).toEqual([
+      { sessionId: first, shortId: "aaaaaaaa" },
+      { sessionId: second, shortId: "bbbbbbbb" },
+    ]);
+  });
+
   test("H101: a conditional change is written while the state is the one judged, with its event", async () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), state: "starting" }, T0);
