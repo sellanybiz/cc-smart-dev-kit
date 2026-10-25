@@ -15762,17 +15762,21 @@ async function setCrewMemory(stateDir, repo, id, memoryMb) {
 }
 async function noteCrewRun(stateDir, repo, id, atMs, note) {
   const file = crewFile(stateDir, repo, id);
-  await underStoreLock(stateDir, repo, () => {
-    const record2 = readRecord(crewRecordSchema, file);
-    if (record2 === null) {
-      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
-    }
-    try {
-      recordRunNote(record2, iso(atMs), note);
-    } catch (error) {
-      reportRunFailure(`crew: the run record of ${record2.name} was not written: ${reasonOf(error)}`);
-    }
-  });
+  try {
+    await underStoreLock(stateDir, repo, () => {
+      const record2 = readRecord(crewRecordSchema, file);
+      if (record2 === null) {
+        throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+      }
+      try {
+        recordRunNote(record2, iso(atMs), note);
+      } catch (error) {
+        reportRunFailure(`crew: the run record of ${record2.name} was not written: ${reasonOf(error)}`);
+      }
+    });
+  } catch (error) {
+    reportRunFailure(`crew: the run record note for ${id} was not written: ${reasonOf(error)}`);
+  }
 }
 function stateForReport(status) {
   switch (status) {

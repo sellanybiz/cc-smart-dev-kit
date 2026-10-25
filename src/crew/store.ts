@@ -1549,6 +1549,10 @@ export async function setCrewMemory(
  * changed while it ran (MC1 calls this with `detail: { from, to }`), or a note a later phase adds.
  * Under the store's lock like every other write; it changes nothing else and writes no event.
  * A crew session with no run record (no plan file) takes nothing.
+ *
+ * **A note that cannot be written never breaks the change it follows**, like every run record
+ * write (`recordRunOf`): a busy lock, an unknown crew session or an unreadable run file is said in
+ * one line (`reportRunFailure`), and the caller goes on.
  */
 export async function noteCrewRun(
   stateDir: string,
@@ -1558,19 +1562,23 @@ export async function noteCrewRun(
   note: { by?: RunActor | null; detail?: Record<string, unknown>; text: string },
 ): Promise<void> {
   const file = crewFile(stateDir, repo, id);
-  await underStoreLock(stateDir, repo, () => {
-    const record = readRecord(crewRecordSchema, file);
-    if (record === null) {
-      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
-    }
-    try {
-      recordRunNote(record, iso(atMs), note);
-    } catch (error) {
-      reportRunFailure(
-        `crew: the run record of ${record.name} was not written: ${reasonOf(error)}`,
-      );
-    }
-  });
+  try {
+    await underStoreLock(stateDir, repo, () => {
+      const record = readRecord(crewRecordSchema, file);
+      if (record === null) {
+        throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+      }
+      try {
+        recordRunNote(record, iso(atMs), note);
+      } catch (error) {
+        reportRunFailure(
+          `crew: the run record of ${record.name} was not written: ${reasonOf(error)}`,
+        );
+      }
+    });
+  } catch (error) {
+    reportRunFailure(`crew: the run record note for ${id} was not written: ${reasonOf(error)}`);
+  }
 }
 
 /**

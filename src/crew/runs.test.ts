@@ -567,6 +567,22 @@ describe("the record of a run", () => {
   });
 });
 
+describe("a note the store cannot write", () => {
+  test("IN1: a note for a crew session the store does not know is said, never thrown: the change it follows stays", async () => {
+    const { planFile, repo, state } = planWorld();
+    await createCrew(state, newCrew(repo, planFile), T0);
+    const said: string[] = [];
+    const before = setRunFailureWriter((line) => said.push(line));
+    try {
+      await noteCrewRun(state, repo, "PL1-nobody-ffffff", T0 + MIN, { text: "model changed" });
+    } finally {
+      setRunFailureWriter(before);
+    }
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('no crew session "PL1-nobody-ffffff" is recorded');
+  });
+});
+
 describe("crew history", () => {
   /** A world with a lead that holds a plan file, and two recorded runs. */
   async function historyWorld() {
