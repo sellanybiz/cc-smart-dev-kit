@@ -441,6 +441,9 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | PL1 a plan's own folder: its briefs and a record of each crew run (the owner's ask) | schema | Kit-wide `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`; `crew start` takes the brief from there when `--brief` is left out; a record per crew run in `<plan folder>/runs/` (its session ids, the lead's session id and name on each event, model and effort, queued, started, paused, reported, merged, removed, the wall and working time), never deleted: it stays after `crew rm` and moves with the plan to `archive/`; `crew history`. Brief `briefs/PL1-plan-folder-runs.md`. |
 | UA1 `user-unavailable` and `user-available` (the owner's ask, going to sleep) | permissions | One state for the machine and one list for the person (questions, actions, decisions parked while away); the `user-unavailable` skill (never stop to ask; take the reversible, recommended choice and park it as a decision; park the person's questions and every action that needs a yes, with its command); hooks that deny `AskUserQuestion` and turn a guard's ask into a deny that parks the command, never looser; the `user-available` skill goes through the list. Reviewer on `opus` `xhigh`. Brief `briefs/UA1-user-unavailable.md`. |
 | IF1 the installer re-declares a lost marketplace (sonnet `high`, 2026-10-25) | build | Seen live on native Windows: `known_marketplaces.json` held the marketplace, the settings' `extraKnownMarketplaces` did not, so step 4 skipped and `setup` stopped ("does not list the marketplace"). Step 4 counts a marketplace as added only when both records hold it and re-runs the add otherwise (proved on 2.1.310: a repeat add re-declares it); `setup`'s message names the repair. Brief `briefs/IF1-installer-marketplace-declared.md`. |
+| RX1 the release review's crew findings (sonnet `high`) | build | The split review (2026-10-25, four tracks, opus `xhigh`, 14 findings): a resumed session's earlier ids never removed or archived; a pending model change on a stale state; the watch rolling back a running discard; the wait for a continuation that will never merge. Judge: the watch's own idle stop, the events log read whole, `crew-self` after a resume copy. Brief `briefs/RX1-review-crew.md`. |
+| RX2 the release review's hooks and user-away findings (sonnet `high`) | permissions | `/user-available` cannot flip the state in default mode (its own `user` calls are parked); a parked action merges two folders' calls; `hooks.json`'s description; three `alwaysOn` hooks in the docs; the usage-limit doc. Brief `briefs/RX2-review-hooks-away.md`. |
+| RX3 the release review's setup, project and portal findings (sonnet `high`) | build | Setup puts back a deleted `remoteControlAtStartup` on its third run; `workflow set` keeps a `requires` 1.2.0 wrote too low, and `doctor` says nothing; the portal starts heavy child processes on every live refresh; `slot.effort` and `crew.archiveDays` missing from the design pages. Judge: Windows `ESRCH`. Brief `briefs/RX3-review-setup-portal.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
@@ -769,6 +772,17 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   `release-1.2.1` merges into `release-1.3.0` next:** `config.test.ts`'s lists need `workflow.issues`
   and its keys at 1.4.0, and the test's "not above VERSION" check needs `release-1.3.0`'s
   `plugin.json` at 1.4.0 — bump it in that merge.
+- 2026-10-25 (evening): **The 1.3.0 split review** ran twice. The first run got its arguments as
+  text, which the installed 1.1.2 script ignores: it reviewed `release-1.3.0` on one track at
+  `sonnet` `max` (its seven findings on GI2/GI3 went into GI4's brief; the CHANGELOG's issues floor
+  fixed). The second, with the argument object (`base`, `head`, `folder`, `tracks`, `risky`,
+  `budget`), reviewed `origin/main...release-1.2.1` on four tracks, opus `xhigh`: 14 findings
+  verified, 1 refuted. RX1, RX2 and RX3 take them (each on its kind's model, reviewed on opus
+  `xhigh`); the lead fixed the CHANGELOG's user-away line (`e56ee80`). **IF1 started** (seen live on
+  native Windows: the installer's step 4 trusted `known_marketplaces.json` while `setup` reads the
+  settings' declaration; the owner's machine unblocked with a repeat `marketplace add`, proved on
+  2.1.310). **GI3 removed and GI4 started by hand** on `release-1.3.0` (`0da2ece`): the installed
+  1.1.2 watch never marks a `stopped` record merged, so a `--waits-for` on it never releases.
 
 ### For the owner in the morning
 
