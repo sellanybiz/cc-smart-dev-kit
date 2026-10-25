@@ -9,11 +9,12 @@
  * real service or a real `~/.claude`.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { checkLine } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { git, tempDir } from "../testing/temp";
+import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import { DEFAULT_ANTHROPIC_BASE_URL, saveConfig } from "./config";
 import { gatewayChecks } from "./doctor";
 import type { HealthFetch } from "./health";
@@ -132,5 +133,32 @@ describe("doctor: a project on a profile, and the router that runs", () => {
     expect(failures[0]).toStartWith(
       `✗ the socket holds 127.0.0.1:${PORT}, but the router does not answer`,
     );
+  });
+});
+
+describe("doctor: a gateway.json from before the Claude defaults (D66)", () => {
+  const BEFORE =
+    "· gateway.json was made before the Claude defaults (D66): cc-smart-dev-kit setup moves, once, every slot to Claude, every fallback to off and the gateway to off, with a backup of the config first (setup --dry-run shows it)";
+
+  test("the move has not run: setup is named, as information and no failure", async () => {
+    const m = machine();
+    const lines = await linesFor(m, [], "current");
+    expect(lines).toContain(BEFORE);
+    expect(lines.filter((line) => line.startsWith("✗"))).toEqual([]);
+  });
+
+  test("the move ran (its marker is there): nothing is said", async () => {
+    const m = machine();
+    mkdirSync(m.paths.stateDir, { recursive: true });
+    writeFileSync(claudeDefaultsMarkerFile(m.paths.stateDir), "1.2.0\n");
+    const lines = await linesFor(m, [], "current");
+    expect(lines.filter((line) => line.includes("Claude defaults"))).toEqual([]);
+  });
+
+  test("no gateway.json: nothing to move, nothing said", async () => {
+    const m = machine();
+    rmSync(m.paths.gatewayConfigFile);
+    const lines = await linesFor(m, [], "current");
+    expect(lines.filter((line) => line.includes("Claude defaults"))).toEqual([]);
   });
 });

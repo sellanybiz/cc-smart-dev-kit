@@ -26,7 +26,9 @@ The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   once per machine: a marker in the kit's state folder says so, so a chain or a switch you set
   afterwards is never touched by a later setup. A session start or the background update never runs
   it, and a project's own `gateway project on` is left as it is. A running session on the router
-  goes to Claude at once; the gateway-off address reaches a session at its next start.
+  goes to Claude at once, and the gateway-off address (Anthropic's own, changed in place) reaches
+  it within about a second. Run `cc-smart-dev-kit doctor` to see whether your `gateway.json` still
+  waits for the move.
 - **claude-mem goes back to Claude Haiku** on your own login with that move: the scout is on Claude
   again, so setup takes out the five provider keys it set for claude-mem. A route you chose with
   `claude-mem route` or in the portal stays. The note about a backend claude-mem still uses now

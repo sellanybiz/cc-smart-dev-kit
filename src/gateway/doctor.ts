@@ -9,6 +9,7 @@ import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
+import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import {
   chainWithEffort,
   JUDGE_WARNING,
@@ -108,6 +109,20 @@ export async function gatewayChecks(options: {
       ok: false,
       text: "a gateway setup did not finish",
       fix: SETUP,
+    });
+  }
+
+  // A config made before the Claude defaults (D66) that `setup` has not moved yet: information,
+  // never a failure. The background update never runs setup, so this is where a person who
+  // updated reads that the next `setup` moves the slots, the fallbacks and the gateway switch.
+  if (
+    existsSync(paths.gatewayConfigFile) &&
+    !existsSync(claudeDefaultsMarkerFile(paths.stateDir))
+  ) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `gateway.json was made before the Claude defaults (D66): ${COMMAND} setup moves, once, every slot to Claude, every fallback to off and the gateway to off, with a backup of the config first (setup --dry-run shows it)`,
     });
   }
 

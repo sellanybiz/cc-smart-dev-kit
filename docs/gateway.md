@@ -415,8 +415,16 @@ to the defaults once, in `cc-smart-dev-kit setup` (the installer runs it), by
   no marker, and setup goes on (exit 0): fixed by hand, the next setup moves it.
 - **Only in `setup`.** A session start and the background update never run it (a test walks their
   imports). The router reads `gateway.json` at its next request, so a running session on the
-  gateway goes to Claude at once; the gateway-off address reaches a session at its next start
-  (the restart line setup prints). No router restart.
+  gateway goes to Claude at once; the gateway-off address is Anthropic's own, changed in place
+  and not removed (the code `gateway off` runs), so a running session follows it within about a
+  second. The restart line setup prints is for the other changes. No router restart.
+- **A known limit: the marker is written by `setup` alone.** A chain, a switch or `gateway on`
+  that a person sets under 1.2.0 *before* their first 1.2.0 `setup` (the background update never
+  runs it) is moved by that setup like the older ones: it goes to `kept`, with a backup and its
+  line, and `gateway slot <slot> custom` brings it back. `doctor` says in one `·` line, from
+  the update on, that a `gateway.json` still waits for the move, so that setup is the next
+  thing to run. Writing the marker from the other gateway commands as well would close the gap;
+  it is not done, because those commands are other changes' files.
 - **D44 changes:** the worker's tested targets stand in for the judge only when the person turns
   `gateway fallback judge on`; by default Claude judges alone.
 
@@ -705,14 +713,15 @@ In auto mode, Claude Code asks a model before each action that is not plainly sa
 should this run? With the gateway on, Claude Code makes that check itself, as separate
 requests, through the router.
 
-**The rule (D44): Claude judges first.** While Claude is limited or down, the worker chain's
-targets that passed the judge test judge in its place, in that chain's order. The person
-may give the judge slot a chain of their own, and that wins.
+**The rule (D44): Claude judges first.** With the judge's fallback switch on (`gateway fallback
+judge on`; off by default, D66), while Claude is limited or down, the worker chain's targets
+that passed the judge test judge in its place, in that chain's order. With it off, Claude judges
+alone. The person may give the judge slot a chain of their own, and that wins.
 
-- **No judge chain (the default).** A check goes to Claude, exactly as it always did. When
-  Claude answers with a capacity failure (the statuses a chain moves on for: 408, 429, 5xx,
-  529, a network error), the worker chain's backend targets that passed the test judge
-  next, each one in order (`claudeFirstJudge` in `router.ts`, built on the same `chain` every
+- **No judge chain (the default).** A check goes to Claude, exactly as it always did. With the
+  judge's fallback switch on, when Claude answers with a capacity failure (the statuses a chain
+  moves on for: 408, 429, 5xx, 529, a network error), the worker chain's backend targets that
+  passed the test judge next, each one in order (`claudeFirstJudge` in `router.ts`, built on the same `chain` every
   slot uses: its failure kinds, its rests, its deadline on every backend target). A Claude
   that just failed rests, so the checks after it go straight to the stand-in until the rest
   ends. Every other answer of Claude (a 400, a 401, a 200) is the answer. A worker target
@@ -742,7 +751,7 @@ cc-smart-dev-kit gateway fallback judge off     # Claude judges alone, with no s
 cc-smart-dev-kit gateway slot judge claude      # back to the default (its chain is saved)
 ```
 
-1. **No chain (the default):** a check goes to Claude (then the stand-ins above when it cannot): a `claude-…` check
+1. **No chain (the default):** a check goes to Claude (then, with the judge's fallback switch on, the stand-ins above when it cannot): a `claude-…` check
    byte for byte, a slot-named one to that slot's Claude target with only `model` changed
    (never translated: § What a Claude target sees), and one whose name leads to no Claude
    target (a slot with none, or an alias to `<backend>:<model>`) to Anthropic exactly as
@@ -1909,7 +1918,7 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | `doctor`: the router copy is not this version's | the plugin was updated | `cc-smart-dev-kit gateway setup` (it asks before the restart) |
 | `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
 | `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` again |
-| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | with your own judge chain: `gateway slot judge claude` (its chain is saved, not used). With the default: `gateway fallback judge off` keeps Claude alone, even while it is limited |
+| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | with your own judge chain: `gateway slot judge claude` (its chain is saved, not used). With the default, Claude judges alone already; after `gateway fallback judge on`, `gateway fallback judge off` keeps Claude alone again, even while it is limited |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
 | Opus answers from another model | `gateway status`: the opus chain; the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line when Opus is first | `gateway slot opus claude` (Opus answers itself; its chain is saved), or wait for the reset when Opus is first (asked again every 10 minutes at most) |
 | Opus answers 400 "Invalid `signature` in `thinking` block" after another model answered for it | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the other model answered, or a new session |

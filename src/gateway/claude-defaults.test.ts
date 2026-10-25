@@ -103,6 +103,21 @@ describe("D66: the move to Claude defaults, planned", () => {
     expect(plan.lines).toContain("profile team fallback worker: on → off");
   });
 
+  it("a profile's switch that rides the machine's chain is said too: the slot's move drops it first", () => {
+    // The profile names no chain of its own for the worker; its `on` switch applies to the
+    // machine's chain. Moving the machine's chain to Claude takes the switch with it, and the
+    // line says the switch was on (found by the DF1 review with a probe).
+    const plan = planned(
+      parsed(
+        raw({
+          profiles: { team: { fallback: { [WORKER]: true } } },
+        }),
+      ),
+    );
+    expect(plan.lines).toContain("profile team fallback worker: on → off");
+    expect(plan.config.profiles).toEqual({ team: {} });
+  });
+
   it("a profile left with nothing to say stays a profile: its project's URL still resolves", () => {
     const plan = planned(
       parsed(raw({ profiles: { team: { slots: { [WORKER]: ["omniroute:p1"] } } } })),

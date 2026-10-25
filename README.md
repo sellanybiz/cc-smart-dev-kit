@@ -684,7 +684,9 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
   Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
   information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
-  "gateway.json kept; the gateway is not installed";
+  "gateway.json kept; the gateway is not installed". A `gateway.json` that
+  [`setup`'s one-time move to the Claude defaults](#first-setup) has not met yet gets one more `·`
+  line that names `cc-smart-dev-kit setup` and what it does (the update never runs it);
 - the project of the folder you run it in (nothing outside a git project; a `·` line
   when git is not on PATH):
   - ✗ when `.claude/cc-smart-dev-kit.json` cannot be used: it names the file and the field.

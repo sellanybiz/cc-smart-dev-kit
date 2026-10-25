@@ -1465,7 +1465,7 @@ function standInTradeOff(config: GatewayConfig): boolean {
  * next request (the router drops it too, when it reads the changed config). A file that is
  * not there, or not readable, stays.
  */
-function dropFallbackRecord(statePath: string, slot: string): void {
+export function dropFallbackRecord(statePath: string, slot: string): void {
   let state: ReturnType<typeof parseLimitState>;
   try {
     state = parseLimitState(readFileSync(statePath, "utf8"));

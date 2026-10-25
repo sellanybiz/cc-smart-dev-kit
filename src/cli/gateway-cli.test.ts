@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { runGateway } from "../gateway/commands";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
@@ -3265,6 +3266,9 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
     m.writeConfig(server.port);
     expect((await m.runHere(["gateway", "setup"])).exitCode).toBe(0);
     const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
+    // A machine on the Claude defaults (D66): the move has run, so `doctor` has nothing to say
+    // about a config from before them (`src/gateway/doctor.test.ts` tests that line).
+    writeFileSync(claudeDefaultsMarkerFile(paths.stateDir), "1.2.0\n");
     const checks = () =>
       gatewayChecks({
         bundle: BUILT_ROUTER,

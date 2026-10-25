@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
-import { planSlotChange } from "./commands";
+import { dropFallbackRecord, planSlotChange } from "./commands";
 import { slotName } from "./commands-chains";
 import { changeLines } from "./commands-out";
 import {
@@ -47,8 +47,9 @@ import {
   parseConfig,
   saveConfig,
 } from "./config";
+import { isLoopbackHost } from "./hosts";
 import { maskedLine } from "./plain-text";
-import { foreignRouting, turnOff } from "./settings";
+import { BASE_URL_KEY, foreignRouting, readGatewaySettings, turnOff } from "./settings";
 import { FAMILY_SLOTS, JUDGE_SLOT } from "./targets";
 
 export interface ClaudeDefaultsPlan {
@@ -56,6 +57,8 @@ export interface ClaudeDefaultsPlan {
   config: GatewayConfig;
   /** One line per change, old → new: the chains first, then the fallback switches that were on. */
   lines: string[];
+  /** The machine's slots that had a chain: the move drops each one's record in the router's state. */
+  moved: string[];
 }
 
 /** The five slots in the order `gateway status` shows them, then any other slot by name. */
@@ -92,13 +95,16 @@ function keptWithoutFallback(
 export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | { error: string } {
   const chainLines: string[] = [];
   const profileFallbackLines: string[] = [];
+  const movedSlots: string[] = [];
 
-  // The machine's chains, one slot at a time, exactly as `gateway slot <slot> claude` does.
+  // The machine's chains, one slot at a time, exactly as `gateway slot <slot> claude` does
+  // (its router-state cleanup, `dropFallbackRecord`, is the step's: it writes a file).
   let next: GatewayConfig = config;
   for (const key of inSlotOrder(Object.keys(config.slots))) {
     const plan = planSlotChange(next, key, "claude", {});
     if ("error" in plan) return { error: plan.error };
     chainLines.push(`${slotName(key)}: ${plan.old.join(",")} → Claude`);
+    movedSlots.push(key);
     next = plan.config;
   }
 
@@ -113,7 +119,10 @@ export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | 
           chainLines.push(`profile ${name} ${slotName(key)}: ${entry.join(",")} → Claude`);
         }
       }
-      for (const key of switchedOn(profile.fallback)) {
+      // Said from the profile as it was: a switch for a slot that rides the machine's chain went
+      // with that chain's move (`withoutOrphanProfileSwitches`), and `profile` no longer has it.
+      const before = config.profiles?.[name];
+      for (const key of switchedOn(before?.fallback)) {
         profileFallbackLines.push(`profile ${name} fallback ${slotName(key)}: on → off`);
       }
       for (const key of switchedOn(
@@ -161,6 +170,7 @@ export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | 
   return {
     config: checked.config,
     lines: [...chainLines, ...machineFallbackLines, ...savedFallbackLines, ...profileFallbackLines],
+    moved: movedSlots,
   };
 }
 
@@ -213,6 +223,37 @@ export function gatewayAfterStep(step: ClaudeDefaultsStep): GatewayConfig | unde
   return step.kind === "move" ? step.plan.config : undefined;
 }
 
+/** Whether an address is this machine's router: a loopback host on the router's port. */
+function isThisRouter(address: string, port: number): boolean {
+  try {
+    const url = new URL(address);
+    return url.protocol === "http:" && isLoopbackHost(url.hostname) && Number(url.port) === port;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The keys `turnOff` could not take that still send a session to the gateway, for the move to
+ * name. The address is named only when it is this router's own (a key someone wrote by hand): a
+ * company proxy of the person's is theirs, was never the gateway, and setup did not ask to turn
+ * anything off (`gateway off` itself names any address, because the person asked for off).
+ */
+function stillRouting(foreign: readonly string[], paths: CliPaths, port: number): string[] {
+  const { routing } = foreignRouting(foreign, paths.settingsFile);
+  if (!routing.includes(BASE_URL_KEY)) return routing;
+  let held: string | null = null;
+  try {
+    held = readGatewaySettings(paths.settingsFile).baseUrl;
+  } catch {
+    // A file that cannot be read counts as routing, as `foreignRouting` counts it.
+    return routing;
+  }
+  return held !== null && isThisRouter(held, port)
+    ? routing
+    : routing.filter((key) => key !== BASE_URL_KEY);
+}
+
 /**
  * Does the step, and returns its lines in setup's marks (`~` a change, `!` a warning, two
  * spaces for information). With `dryRun` nothing is written: the lines are what a real run
@@ -239,6 +280,9 @@ export function applyClaudeDefaultsStep(
   if (changes && !dryRun) {
     backup = backupFile(paths.stateDir, paths.gatewayConfigFile);
     saveConfig(paths.gatewayConfigFile, plan.config);
+    // As `gateway slot <slot> claude` does: the status line stops showing a fallback that no
+    // chain answers any more, even before the router's next request.
+    for (const key of plan.moved) dropFallbackRecord(paths.gatewayStateFile, key);
   }
   const off = turnOff({ dryRun, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   if (!dryRun) markClaudeDefaultsDone(paths.stateDir);
@@ -247,9 +291,14 @@ export function applyClaudeDefaultsStep(
   if (off.switched) lines.push("~ the gateway: on → off");
   lines.push(...plan.lines.map((line) => `~ ${line}`));
   lines.push(...changeLines(off.result, paths.home));
-  for (const key of foreignRouting(off.foreign, paths.settingsFile).routing) {
+  for (const key of stillRouting(off.foreign, paths, plan.config.port)) {
     lines.push(
       `! env.${key} stays: ${COMMAND} did not set it. Remove it by hand to turn the gateway off`,
+    );
+  }
+  if (changes || off.switched) {
+    lines.push(
+      `  a project's own switch (gateway project on) is left as it is: ${COMMAND} gateway projects lists them`,
     );
   }
   if (changes) {

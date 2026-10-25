@@ -181,8 +181,8 @@ safety checks), their ids in § Names. One rule set for all of them:
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
-  no chain the person did not pick; the person picks from the live list (setup's questions,
-  `gateway models`, the portal). A rule that
+  no chain the person did not pick; the person picks from the live list (`gateway models`, the
+  portal's Slots page). A rule that
   must name a model is keyed by family and the first version it holds for
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id
@@ -219,8 +219,9 @@ Claude judges auto mode's safety checks first.
   Claude step after it: the chain's failure is the answer.
 - **Never used untested:** `gateway slot judge`, `gateway slot worker …` and `gateway setup` run
   the judge test (`judge-test.ts`) on each backend target; `slot judge` refuses one that does
-  not block it, `slot worker` and `setup` set the worker either way and name each target that
-  passed and each that failed. No skip flag, ever. A target that passed gets its proof in the
+  not block it, `slot worker` sets the worker either way and names each target that passed and
+  each that failed, and `setup` (which sets no chain) tests the worker's existing targets and
+  names them the same way. No skip flag, ever. A target that passed gets its proof in the
   config's `judgeTested` (`judgeTestProof`: the test version, the target, its backend's URL);
   **the router uses only a target with a matching proof**, ignores any other with one WARN
   (Claude then judges), and doctor fails on a judge chain's. An untested worker target is no

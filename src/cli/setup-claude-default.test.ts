@@ -234,16 +234,63 @@ describe("D66: setup moves a machine set up before it to Claude defaults, once",
     expect(printed).toContain("  ~ the gateway: on → off");
   });
 
-  test("a gateway key someone else set still routes: named with !, never overwritten", async () => {
+  test("an address of the person's own that is not the router's: left alone, and not named", async () => {
+    // A company proxy, say. The gateway was never on from the kit's side, and the person did
+    // not ask to turn anything off: no "remove it by hand" for a value that is theirs.
     const { w } = oldMachine();
     const settings = readJson(w.paths.settingsFile);
     settings.env.ANTHROPIC_BASE_URL = "http://10.0.0.5:9000";
     writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
     expect(await w.setup()).toBe(0);
     expect(baseUrl(w)).toBe("http://10.0.0.5:9000");
+    expect(printed.filter((line) => line.includes("env.ANTHROPIC_BASE_URL stays"))).toEqual([]);
+  });
+
+  test("the router's own address, written by hand, still routes: named with !, never overwritten", async () => {
+    const w = world();
+    writeGateway(w, oldConfig());
+    const settings = readJson(w.paths.settingsFile);
+    settings.env = { ...settings.env, ANTHROPIC_BASE_URL: ROUTER };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(baseUrl(w)).toBe(ROUTER);
     expect(
       printed.filter((line) => line.startsWith("  ! env.ANTHROPIC_BASE_URL stays")),
     ).toHaveLength(1);
+  });
+
+  test("a project's own switch is left as it is, and the line says so", async () => {
+    const { w } = oldMachine();
+    await w.setup();
+    expect(printed).toContain(
+      "  · a project's own switch (gateway project on) is left as it is: cc-smart-dev-kit gateway projects lists them",
+    );
+  });
+
+  test("nothing moved, nothing said about projects", async () => {
+    const w = world();
+    writeGateway(w, { backends: {}, port: PORT, slots: {}, version: 1 });
+    await w.setup();
+    expect(printed.filter((line) => line.includes("a project's own switch"))).toEqual([]);
+  });
+
+  test("a moved slot loses its fallback record in the router's state file, as `gateway slot <slot> claude` does", async () => {
+    const { w } = oldMachine();
+    const record = {
+      lastAt: 2,
+      model: "claude-sonnet-5-5",
+      resetsAt: null,
+      since: 1,
+      target: "omniroute:w2",
+    };
+    mkdirSync(dirname(w.paths.gatewayStateFile), { recursive: true });
+    writeFileSync(
+      w.paths.gatewayStateFile,
+      JSON.stringify({ fallbacks: { [WORKER]: record, [FABLE]: record }, limits: {}, version: 1 }),
+    );
+    await w.setup();
+    // The worker moved (it had a chain); the fable slot had only a saved chain, so it did not.
+    expect(Object.keys(readJson(w.paths.gatewayStateFile).fallbacks)).toEqual([FABLE]);
   });
 });
 

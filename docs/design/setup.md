@@ -89,9 +89,11 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 - **The background self-update** installs a newer plugin version with Claude Code's own
   `claude plugin` commands. It writes no user file and restarts nothing.
 - **The move to the Claude defaults (D66) is `setup`'s alone.** Once per machine, in its own
-  section of the report ("Gateway"): a backup of `gateway.json`, every slot's chain and every
-  fallback switch removed, the gateway turned off through `gateway off`'s code (`turnOff`),
-  claude-mem back on Claude, one line per change. Its marker (`claude-by-default` in the state
+  section of the report ("Gateway"): a backup of `gateway.json`, every slot's chain moved to
+  Claude (a machine's chain waits in `kept`, a profile's is removed) and every fallback switch
+  removed, the gateway turned off through `gateway off`'s code (`turnOff`), claude-mem back on
+  Claude, one line per change. `doctor` says in one `·` line when a `gateway.json` still waits
+  for it. Its marker (`claude-by-default` in the state
   folder) is written at the first real setup on every machine; `--dry-run` writes nothing, and
   `restore` leaves the marker, as it leaves `gateway.json`. A session start and the background
   update never reach it (a test walks their imports). `docs/gateway.md` § Slots and defaults.
