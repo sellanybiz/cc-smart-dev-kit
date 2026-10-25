@@ -29750,9 +29750,11 @@ function envOf(settings) {
   return out;
 }
 function settingsFilesOf2(sources) {
+  const mainLocal = join50(sources.mainCheckout, ".claude", "settings.local.json");
+  const projectLocal = join50(sources.projectFolder, ".claude", "settings.local.json");
   return [
-    join50(sources.mainCheckout, ".claude", "settings.local.json"),
-    join50(sources.projectFolder, ".claude", "settings.local.json"),
+    ...mainLocal === projectLocal ? [] : [mainLocal],
+    projectLocal,
     join50(sources.projectFolder, ".claude", "settings.json"),
     join50(sources.configDir, "settings.json")
   ].map(settingsObject);
@@ -55411,7 +55413,7 @@ function effortOf(input) {
 }
 function contextSegment(use, compactWindow, effort, warnPercent) {
   if (use === null)
-    return effort === null ? null : `effort ${effort}`;
+    return null;
   const window = use.size === null ? compactWindow : compactWindow === null ? use.size : Math.min(use.size, compactWindow);
   const parts = [`ctx ${formatTokens(use.tokens)}`];
   let warn = false;

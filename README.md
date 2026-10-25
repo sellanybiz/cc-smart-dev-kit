@@ -1022,9 +1022,14 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
     It starts with `⚠` from the same share as the plan usage (`alerts.usagePercent`). It reads
     Claude Code's settings and writes nothing. A session started with `--autocompact <n>` has
     its window on the command line, which the status line cannot see: it shows the setting's.
+    Claude Code compacts a little before the window (it keeps about 33 000 tokens free), and
+    `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` lowers that point further; the segment measures against the
+    window itself and does not apply either. No segment shows while Claude Code reports no use.
   - **The effort** is the one the session runs at now (`/effort` shows at the next refresh).
     When the session runs on the gateway and the slot's backend target keeps a pinned effort
-    (`gateway effort`), the pinned one is shown: it is what answers. When Claude Code reports no
+    (`gateway effort`), the pinned one is shown: it is what answers (the slot's first target, or
+    the one a fallback record says answers; a target a held request has not yet moved to is not
+    seen). When Claude Code reports no
     effort (a model without the parameter), the line shows none.
 - **Each subagent's row in the agent panel.** The plugin's own `settings.json` sets Claude
   Code's `subagentStatusLine`, so every subagent's row reads `<label> · <slot> → <model> →

@@ -117,9 +117,12 @@ function envOf(settings: Record<string, unknown>): Record<string, string> {
 
 /** The settings files that apply to a folder, highest first, each read once. */
 function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] {
+  const mainLocal = join(sources.mainCheckout, ".claude", "settings.local.json");
+  const projectLocal = join(sources.projectFolder, ".claude", "settings.local.json");
   return [
-    join(sources.mainCheckout, ".claude", "settings.local.json"),
-    join(sources.projectFolder, ".claude", "settings.local.json"),
+    // The main checkout's own folder is the session's in the common case: read that file once.
+    ...(mainLocal === projectLocal ? [] : [mainLocal]),
+    projectLocal,
     join(sources.projectFolder, ".claude", "settings.json"),
     join(sources.configDir, "settings.json"),
   ].map(settingsObject);

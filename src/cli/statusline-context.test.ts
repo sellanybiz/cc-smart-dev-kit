@@ -106,8 +106,8 @@ describe("contextSegment", () => {
     expect(contextSegment({ size: null, tokens: 5000 }, null, null, 85)).toBe("ctx 5k");
   });
 
-  it("no context data but an effort: the effort alone, with its word", () => {
-    expect(contextSegment(null, 400_000, "high", 85)).toBe("effort high");
+  it("no context data: no segment, an effort or not", () => {
+    expect(contextSegment(null, 400_000, "high", 85)).toBeNull();
     expect(contextSegment(null, null, null, 85)).toBeNull();
   });
 });

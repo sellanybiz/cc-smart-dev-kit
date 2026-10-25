@@ -89,8 +89,8 @@ export function effortOf(input: unknown): null | string {
 /**
  * The segment: the use against the window, the effort beside it. `compactWindow` is the
  * auto-compact window the variable or the keys give (null for none); the smaller of it and the
- * model's window measures the use. Without context data the effort stands alone (`effort high`);
- * with nothing to say, null.
+ * model's window measures the use. Without context data there is no segment, the effort
+ * included.
  */
 export function contextSegment(
   use: ContextUse | null,
@@ -98,7 +98,7 @@ export function contextSegment(
   effort: null | string,
   warnPercent: number,
 ): null | string {
-  if (use === null) return effort === null ? null : `effort ${effort}`;
+  if (use === null) return null;
   const window =
     use.size === null
       ? compactWindow
