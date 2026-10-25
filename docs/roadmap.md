@@ -444,3 +444,28 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   already goes quiet where the kit answers, that advice is wrong: it silences the kit's hook
   and wakes the project's old copy. A project should be able to mark such a hook as an
   extension, so `doctor` neither warns nor gives that advice.
+- **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
+  finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
+  for a removal by hand. Reading mount points there is a design decision.
+- **One quiet-facts helper for the crew tests.** Three copies give a test fixed machine facts
+  today (`QUIET_MACHINE` in `src/crew/end.test.ts`, `quietFacts`, `quietScan`); one helper in
+  `src/testing/`, and a default `scanFacts` in `crew-world.ts`'s `ctx`, would keep every crew
+  test off the host's own facts.
+- **The launch judge and a wait loop that matches itself.** It let through
+  `until ! pgrep -f "bun run check"; do sleep 3; done`, whose `pgrep -f` pattern matches the
+  loop's own command line, so it never ends.
+- **The router's stream limits (SC1).** Nothing bounds the wait before a response's headers,
+  keep-alive pings are never cut, and the 120 s allowed for Anthropic is not measured.
+- **The merge guard's shell reader.** It does not test an endpoint or a method the shell fills
+  in for a pull request, and it does not follow `cat <<EOF | sh` or `eval "$cmd"`.
+- **GitHub Issues (1.4.0) limits.** `visibleText` leaves attribute values, link titles and alt
+  text unmarked (a person sees them on hover); the feed judges a lead alive by its pid on this
+  machine; the portal's settings writer has no protected-key check of its own (it relies on the
+  portal's door); `issue file` needs `gh api user` to succeed (an App token may get 403); the
+  `GH_COMMANDS` list must follow gh's own commands, or a crew session is denied a new one; the
+  `## What <phase> left behind` heading is written in `src/crew/start.ts` and matched by a
+  pattern of its own in `src/issues/phase-issues.ts`: two homes for one shape.
+- **`resolveSwitch` and the base's name.** It takes the base branch's name from the working
+  copy, as the merge guard does.
+- **`claudeLimitHolds` (`src/crew/wait.ts`) compares exact Claude model ids.** Check whether a
+  variant of one model's id should count as the same model.
