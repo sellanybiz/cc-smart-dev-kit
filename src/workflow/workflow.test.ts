@@ -326,6 +326,40 @@ describe("resolveWorkflow: the order", () => {
     expect(resolved.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
 
+  test("D67: GitHub Issues are off by default, with the three labels", () => {
+    const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
+    expect(resolved.issues).toEqual({
+      allowPublic: { source: "default", value: false },
+      enabled: { source: "default", value: false },
+      fixedLabel: { source: "default", value: "fixed-unreleased" },
+      foundLabel: { source: "default", value: "kit:found" },
+      readyLabel: { source: "default", value: "kit:ready" },
+    });
+  });
+
+  test("D67: the project's issues fields win field by field over the person's", () => {
+    const env = hookEnv();
+    const file = pathsFor(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ issues: { enabled: true, foundLabel: "mine" } }));
+    const project = ccSmartDevKitConfigSchema.parse({
+      workflow: { issues: { foundLabel: "theirs" } },
+    });
+    const { issues } = resolveWorkflow(pathsFor(env), project);
+    expect(issues.enabled).toEqual({ source: "personal", value: true });
+    expect(issues.foundLabel).toEqual({ source: "project", value: "theirs" });
+  });
+
+  test("D67: the schema refuses a label GitHub would split, and an unknown issues field", () => {
+    const parse = (issues: unknown) =>
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { issues } }).success;
+    expect(parse({ enabled: true, readyLabel: "kit:ready" })).toBe(true);
+    expect(parse({ foundLabel: "a,b" })).toBe(false);
+    expect(parse({ foundLabel: "" })).toBe(false);
+    expect(parse({ foundLabel: "x".repeat(51) })).toBe(false);
+    expect(parse({ everything: true })).toBe(false);
+  });
+
   test("the person's file sets a value, and says so", () => {
     const env = hookEnv();
     writePersonal(env, { autoCommit: true, alerts: { sound: true, usagePercent: 70 } });

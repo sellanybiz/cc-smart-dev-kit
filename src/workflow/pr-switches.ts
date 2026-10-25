@@ -13,10 +13,19 @@ import { COMMAND } from "../build-info/names";
 import { CONFIG_PATH } from "../project/resolve";
 import { type ResolvedWorkflow, sourceLabel } from "./resolve";
 
-/** How a person turns a switch on, in the words of every question below. */
-function turnOn(key: "autoPush" | "openPr", value: string, base: string | null): string {
+/**
+ * How a person turns a switch on, in the words of every question below and of `issue file`'s
+ * refusals (one home). A dotted key (`issues.enabled`) is written nested in the project's file.
+ */
+export function turnOn(
+  key: "autoPush" | "issues.allowPublic" | "issues.enabled" | "openPr",
+  value: string,
+  base: string | null,
+): string {
   const where = base ?? "the integration base (worktrees.base)";
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": {"${key}": ${value === "true" ? "true" : `"${value}"`}}), committed to ${where} and pushed`;
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
 }
 
 /**
@@ -56,4 +65,22 @@ export function openPrRefusal(
       : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
   }
   return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
+}
+
+/**
+ * Why `issue file` refuses, or null when `issues.enabled` is on. An issue is text that leaves
+ * the machine for GitHub, so the kit files none until the person says so (D67).
+ */
+export function issuesOff(resolved: ResolvedWorkflow, base: string | null): string | null {
+  if (resolved.issues.enabled.value) return null;
+  return `issues.enabled is off (${sourceLabel(resolved.issues.enabled, base)}), so the kit files no GitHub issue: ${turnOn("issues.enabled", "true", base)}`;
+}
+
+/**
+ * Why `issue file` refuses a PUBLIC repository, or null when `issues.allowPublic` is on: an
+ * issue there is read by everyone, so it is its own yes.
+ */
+export function publicIssuesOff(resolved: ResolvedWorkflow, base: string | null): string | null {
+  if (resolved.issues.allowPublic.value) return null;
+  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn("issues.allowPublic", "true", base)}`;
 }

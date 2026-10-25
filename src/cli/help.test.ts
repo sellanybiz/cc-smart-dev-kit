@@ -162,7 +162,7 @@ describe("the top-level help", () => {
       `  ${COMMAND} setup --dry-run     show what setup would change`,
       `  ${COMMAND} doctor              the health check`,
       "",
-      "More commands: workflow, update, restore, migrate, launch, sessions,",
+      "More commands: issue, workflow, update, restore, migrate, launch, sessions,",
       "  worktrees, usage, report, portal, mcp, omniroute, job, crew, hook,",
       "  statusline, version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
