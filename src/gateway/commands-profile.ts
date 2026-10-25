@@ -1,6 +1,7 @@
 /**
  * `gateway profile <name> slot <slot> <chain>|off|clear`, `gateway profile <name> fallback <slot>
- * on|off` and `gateway profile <name> remove`: one profile's chains and switches in
+ * on|off`, `gateway profile <name> breaker <slot> on|off` and `gateway profile <name> remove`:
+ * one profile's chains and switches in
  * `gateway.json` (D29, GP1's schema and `profileView`), so a project can use other models per
  * slot through its URL `…/p/<name>`.
  *
@@ -22,11 +23,22 @@ import { withLock } from "../setup/lock";
 import { formatKeyPath } from "../setup/managed-json";
 import { listModels } from "./backends";
 import type { GatewayContext } from "./commands";
-import { chainProblem, notSlotName, SLOT_WORDS, splitChain } from "./commands-chains";
+import {
+  chainProblem,
+  JUDGE_WARNING,
+  judgeDefaultWords,
+  judgeSwitchWords,
+  notSlotName,
+  SLOT_WORDS,
+  splitChain,
+  standInTradeOff,
+} from "./commands-chains";
 import { gatewayOut } from "./commands-out";
 import {
+  breakerOn,
   fallbackOn,
   type GatewayConfig,
+  JUDGE_NEVER_HOLDS,
   judgeTargetUsable,
   loadConfigFile,
   PROFILE_NAME_RULE,
@@ -36,7 +48,7 @@ import {
   profileView,
   saveConfig,
 } from "./config";
-import { isProfileName, JUDGE_SLOT, parseTarget, slotKeyFromArg } from "./targets";
+import { isProfileName, JUDGE_SLOT, parseTarget, slotKeyFromArg, WORKER_SLOT } from "./targets";
 
 /** A slot's change inside one profile: the config after it, and its own entry before and after. */
 export interface ProfileSlotPlan {
@@ -49,8 +61,8 @@ export interface ProfileSlotPlan {
   was: null | "claude" | string[];
 }
 
-/** A profile's fallback switch after a change. */
-export interface ProfileFallbackPlan {
+/** A profile's fallback or breaker switch after a change. */
+export interface ProfileSwitchPlan {
   config: GatewayConfig;
   key: string;
   name: string;
@@ -214,19 +226,26 @@ export function planProfileSlotChange(
   };
 }
 
+/** What differs between a profile's two per-slot switches. */
+const PROFILE_SWITCHES = {
+  breaker: { isOn: breakerOn, noChain: "there is no request for the breaker to hold" },
+  fallback: { isOn: fallbackOn, noChain: "there is nothing to fall back to" },
+} as const;
+
 /**
- * The config with one slot's fallback switch set inside one profile: on, the profile's next
- * target answers when the one before it fails or rests; off, only the first. A slot the
- * profile has no chain for cannot fall back (the judge is the one exception: its switch says
- * whether the worker's tested targets stand in while Claude is limited or down). A value equal
+ * The config with one slot's `fallback` or `breaker` switch set inside one profile. A slot the
+ * profile has no chain for has nothing to fall back to and no request to hold (the judge's
+ * fallback is the one exception: its switch says whether the worker's tested targets stand in
+ * while Claude is limited or down; the judge has no breaker, `JUDGE_NEVER_HOLDS`). A value equal
  * to what the profile's view already says without an entry is written as no entry.
  */
-export function planProfileFallbackChange(
+function planProfileSwitch(
+  field: "breaker" | "fallback",
   current: GatewayConfig,
   name: string,
   slotArg: string,
   value: string,
-): ProfileFallbackPlan | { error: string } {
+): ProfileSwitchPlan | { error: string } {
   if (!isProfileName(name)) return { error: PROFILE_NAME_RULE };
   const profile = Object.hasOwn(current.profiles ?? {}, name)
     ? current.profiles?.[name]
@@ -234,28 +253,56 @@ export function planProfileFallbackChange(
   if (profile === undefined) return { error: missingProfile(current, name) };
   const key = slotKeyFromArg(slotArg);
   if (key === null) return { error: notSlotName(slotArg) };
+  if (field === "breaker" && key === JUDGE_SLOT) return { error: `${key}: ${JUDGE_NEVER_HOLDS}` };
   if (value !== "on" && value !== "off") return { error: `say on or off, not "${value}"` };
+  const { isOn, noChain } = PROFILE_SWITCHES[field];
   if (key !== JUDGE_SLOT && profileSlotChain(current, profile, key) === null) {
     return {
-      error: `profile ${name} has no chain for ${key}, so there is nothing to fall back to. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`,
+      error: `profile ${name} has no chain for ${key}, so ${noChain}. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`,
     };
   }
   const view = profileView(current, name);
   if (view === null) return { error: missingProfile(current, name) };
   const now = value === "on";
-  const was = fallbackOn(view, key);
-  const without = withoutSwitch(profile, "fallback", key);
-  const plain = profileView(withProfile(current, name, without), name);
+  const was = isOn(view, key);
+  const plain = profileView(withProfile(current, name, withoutSwitch(profile, field, key)), name);
   if (plain === null) return { error: missingProfile(current, name) };
-  const fallback = { ...(profile.fallback ?? {}) };
-  if (fallbackOn(plain, key) === now) delete fallback[key];
-  else fallback[key] = now;
+  const held = { ...(profile[field] ?? {}) };
+  if (isOn(plain, key) === now) delete held[key];
+  else held[key] = now;
   const next: ProfileConfig = { ...profile };
-  if (Object.keys(fallback).length > 0) next.fallback = fallback;
-  else delete next.fallback;
+  if (Object.keys(held).length > 0) next[field] = held;
+  else delete next[field];
   const checked = parseConfig(withProfile(current, name, next));
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, name, now, was };
+}
+
+/**
+ * The config with one slot's fallback switch set inside one profile: on, the profile's next
+ * target answers when the one before it fails or rests; off, only the first.
+ */
+export function planProfileFallbackChange(
+  current: GatewayConfig,
+  name: string,
+  slotArg: string,
+  value: string,
+): ProfileSwitchPlan | { error: string } {
+  return planProfileSwitch("fallback", current, name, slotArg, value);
+}
+
+/**
+ * The config with one slot's breaker switch set inside one profile: on, the router may hold a
+ * request while every target the profile uses for the slot is limited or down; off, the last
+ * answer goes back at once.
+ */
+export function planProfileBreakerChange(
+  current: GatewayConfig,
+  name: string,
+  slotArg: string,
+  value: string,
+): ProfileSwitchPlan | { error: string } {
+  return planProfileSwitch("breaker", current, name, slotArg, value);
 }
 
 /** The config without one profile: every project pointing at it then answers as plain Claude. */
@@ -277,8 +324,36 @@ export function planProfileRemove(
   };
 }
 
+/** The second line under a switch change: what the switch does in this profile now. */
+const SWITCH_WORDS = {
+  breaker: {
+    on: "In this profile, when every target is limited or down the request waits a little and then Claude Code is asked to retry.",
+    off: "In this profile, when every target is limited or down the last answer goes back at once; the router holds no request.",
+  },
+  fallback: {
+    on: "In this profile, the next target answers when the one before it fails or rests.",
+    off: "In this profile, only the first target answers; when it fails, its error goes back to Claude Code.",
+  },
+} as const;
+
+/**
+ * Whether a judge other than Claude decides in `view` (a profile's view of the config): a judge
+ * chain of its own, or the tested worker targets standing in while Claude cannot judge. The
+ * judge's trade-off is said wherever one is set (D44), a profile's included.
+ */
+function judgeOtherThanClaude(view: GatewayConfig): boolean {
+  return Object.hasOwn(view.slots, JUDGE_SLOT) || standInTradeOff(view);
+}
+
 /** The second line under a slot change: what the slot is in this profile now. */
 function slotNowWords(plan: ProfileSlotPlan, current: GatewayConfig): string {
+  if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
+    // Claude judges first there, but the router still lets the profile's tested worker targets
+    // judge while Claude cannot (`claudeFirstJudge`, on the profile's view), unless the
+    // profile's judge fallback is off: the words are the machine's, said for the profile.
+    const view = profileView(plan.config, plan.name);
+    return `Claude: ${view === null ? "Claude judges every check, alone" : judgeDefaultWords(view)}`;
+  }
   if (plan.next === "claude") return "Claude (plain Claude in this profile)";
   if (plan.next === null) {
     const machine = current.slots[plan.key];
@@ -300,25 +375,25 @@ function slotChangeLine(path: string, plan: ProfileSlotPlan, home: string): stri
 }
 
 /**
- * Parses `gateway profile <name> <command>`: `remove`, or `slot <slot> <targets>` and
- * `fallback <slot> on|off`. Null on a wrong number of words.
+ * Parses `gateway profile <name> <command>`: `remove`, or `slot <slot> <targets>`,
+ * `fallback <slot> on|off` and `breaker <slot> on|off`. Null on a wrong number of words.
  */
 function profileArgs(
   args: string[],
 ):
   | null
-  | { action: "fallback" | "slot"; name: string; slot: string; text: string }
+  | { action: "breaker" | "fallback" | "slot"; name: string; slot: string; text: string }
   | { action: "remove"; name: string } {
   const [name, action, ...rest] = args;
   if (name === undefined || action === undefined) return null;
   if (action === "remove") return rest.length === 0 ? { action, name } : null;
-  if (action !== "slot" && action !== "fallback") return null;
+  if (action !== "slot" && action !== "fallback" && action !== "breaker") return null;
   const [slot, text] = rest;
   if (slot === undefined || text === undefined || rest.length !== 2) return null;
   return { action, name, slot, text };
 }
 
-/** `gateway profile <name> slot|fallback|remove`. */
+/** `gateway profile <name> slot|fallback|breaker|remove`. */
 export async function commandProfile(
   ctx: GatewayContext,
   args: string[],
@@ -364,16 +439,13 @@ export async function commandProfile(
     return 0;
   }
 
-  if (parsed.action === "fallback") {
+  if (parsed.action === "fallback" || parsed.action === "breaker") {
+    const { action } = parsed;
     const plan = await withLock(
       ctx.paths.stateDir,
       () => {
-        const planned = planProfileFallbackChange(
-          loadConfigFile(configPath),
-          name,
-          parsed.slot,
-          parsed.text,
-        );
+        const change = action === "fallback" ? planProfileFallbackChange : planProfileBreakerChange;
+        const planned = change(loadConfigFile(configPath), name, parsed.slot, parsed.text);
         if ("error" in planned) throw new Error(planned.error);
         saveConfig(configPath, planned.config);
         return planned;
@@ -382,14 +454,18 @@ export async function commandProfile(
     );
     out.line(
       "changed",
-      `${plan.name}: ${plan.key}: fallback ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`,
+      `${plan.name}: ${plan.key}: ${action} ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`,
     );
-    out.say(
-      plan.now
-        ? "In this profile, the next target answers when the one before it fails or rests."
-        : "In this profile, only the first target answers; when it fails, its error goes back to Claude Code.",
-      2,
-    );
+    const view = plan.key === JUDGE_SLOT ? profileView(plan.config, name) : null;
+    if (view !== null && !Object.hasOwn(view.slots, JUDGE_SLOT)) {
+      // No judge chain in this profile: the switch says whether its tested worker targets
+      // stand in while Claude is limited or down, as the machine's `fallback judge` says it.
+      out.say(judgeDefaultWords(view), 2);
+      out.say(judgeSwitchWords(plan.now), 2);
+    } else {
+      out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    }
+    if (view !== null && judgeOtherThanClaude(view)) out.line("warn", JUDGE_WARNING);
     out.verdict(
       "ok",
       "The router uses it from its next request: it reads the config again within about a second.",
@@ -429,6 +505,19 @@ export async function commandProfile(
   );
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
+  // The judge is set by its own chain, or by the worker's: the worker's tested targets judge
+  // while Claude cannot (D44), in a profile as on the machine.
+  const judgeView =
+    plan.key === JUDGE_SLOT || plan.key === WORKER_SLOT
+      ? profileView(plan.config, plan.name)
+      : null;
+  if (judgeView !== null && plan.key === JUDGE_SLOT) {
+    if (judgeOtherThanClaude(judgeView)) out.line("warn", JUDGE_WARNING);
+  } else if (judgeView !== null && !Object.hasOwn(judgeView.slots, JUDGE_SLOT)) {
+    // A worker change matters to who judges only while the profile has no judge chain.
+    out.say(`Auto mode's checks in this profile: ${judgeDefaultWords(judgeView)}`, 2);
+    if (standInTradeOff(judgeView)) out.line("warn", JUDGE_WARNING);
+  }
   out.verdict(
     "ok",
     "The router uses it from its next request: it reads the config again within about a second.",
@@ -447,5 +536,7 @@ export const PROFILE_HELP = `  profile <name> <command>
                            slot <slot> off        Plain Claude for that slot in this profile.
                            slot <slot> clear      Forget it here: the machine's chain applies.
                            fallback <slot> on|off May the next target answer in this profile?
+                           breaker <slot> on|off  May the router hold a request while every
+                                                  target is limited or down? (not the judge)
                            remove                 Delete the profile. A project whose URL
                                                   still names it answers as plain Claude.`;

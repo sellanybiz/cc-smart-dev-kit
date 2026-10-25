@@ -702,7 +702,7 @@ describe("install.sh: a machine, step by step", () => {
       "7/8 Set up the browser (Playwright on your own Chrome)? [y/N] ",
       "7/8 Paste the token from the extension's status page (it is not shown). Enter to skip: ",
       "✓ 7/8 the browser's token is saved",
-      "7/8 Set up the AI gateway now (affordable models for the haiku and sonnet subagents)? [y/N] ",
+      "7/8 Set up the AI gateway now (the local router and OmniRoute's key)? [y/N] ",
       "· 7/8 the gateway was skipped: README § The AI gateway has its steps",
       "7/8 Add your Tavily key now (the tavily-websearch MCP server)? [y/N] ",
       "· 7/8 the Tavily key was skipped: README § MCP servers says where it goes",
@@ -710,7 +710,7 @@ describe("install.sh: a machine, step by step", () => {
       "Restart every Claude Code session: they load the plugin when they start.",
       "`cc-smart-dev-kit portal` opens the portal in your own terminal (it prints a link with a one-time token).",
       "What is left:",
-      `  - the gateway: ${w.launcher} gateway setup --backend-key-stdin omniroute, then ${w.launcher} gateway on`,
+      `  - the gateway: ${w.launcher} gateway setup --backend-key-stdin omniroute`,
       `  - the Tavily key: README § MCP servers says where it goes, then ${w.launcher} setup`,
     ]);
     // The three marketplaces, in the README's order, then the marketplace REFRESH (before any
@@ -754,7 +754,7 @@ describe("install.sh: a machine, step by step", () => {
       `  - the browser: ${w.launcher} browser setup, then ${w.launcher} browser token\n`,
     );
     expect(out).toContain(
-      `  - the gateway: ${w.launcher} gateway setup --backend-key-stdin omniroute, then ${w.launcher} gateway on\n`,
+      `  - the gateway: ${w.launcher} gateway setup --backend-key-stdin omniroute\n`,
     );
     expect(out).toContain(
       `  - the Tavily key: README § MCP servers says where it goes, then ${w.launcher} setup\n`,
@@ -1104,10 +1104,11 @@ describe("install.sh: what only the person has", () => {
     expect(code).toBe(0);
     expect(out).toContain("✓ 7/8 the browser's token is saved\n");
     expect(out).toContain(
-      "✓ 7/8 the gateway is set up: turn it on with `" +
-        w.launcher +
-        " gateway on` when you want it\n",
+      "✓ 7/8 the gateway is set up: the router and OmniRoute's key are ready\n",
     );
+    // D66: the installer suggests no model and no switch, whatever it says about the gateway.
+    expect(out).not.toContain("affordable");
+    expect(out).not.toContain("gateway on");
     expect(out).toContain("✓ 7/8 the Tavily key is saved\n");
 
     // Each command is the plugin's own, and each secret reaches it on stdin: the fake reports

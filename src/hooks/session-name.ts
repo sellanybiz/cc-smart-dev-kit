@@ -100,6 +100,31 @@ export function titleToSet(
 }
 
 /**
+ * `titleToSet`, for a hook whose turn holds more than the title (a crew session's `person`
+ * event, a lead's news): the record of the name is written into the temp folder, and that write
+ * can fail (a `TMPDIR` that is not a folder, a full disk). A throw there lost the rest of the
+ * turn. Here the failure is `problem` — the hook says it on stderr — and no title is set: setting
+ * a name the kit cannot remember setting would set it again on every turn and override a
+ * `/rename` the person gives later.
+ */
+export function titleToSetOrProblem(
+  env: Env,
+  sessionId: string,
+  wanted: string,
+  current: null | string,
+): { problem: null | string; title: null | string } {
+  try {
+    return { problem: null, title: titleToSet(env, sessionId, wanted, current) };
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      problem: `the session name could not be recorded (${why})`,
+      title: null,
+    };
+  }
+}
+
+/**
  * True when this session is a lead recorded in the project's repository. A store that cannot
  * be read is no lead: this hook's name is never worth a failed prompt, and `lead-notes` says
  * its own line about a store it cannot read.

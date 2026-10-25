@@ -25,10 +25,13 @@ import {
   hookEnv,
   makeRepo,
   runHook,
+  slowGitEnv,
   writeClaudeFile,
   writePersonalWorkflow,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { judgeBash, readBash } from "./bash-judge";
+import { GUARD_BUDGET_ENV } from "./budget";
 import type { HookResult } from "./io";
 import { jobRouteHook } from "./specs";
 
@@ -454,6 +457,47 @@ describe("a crew session proposing a workflow change", () => {
       expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
     }
   });
+
+  test("RV4 finding 7: a computed program that merely ends in the word `workflow` is no proposal", async () => {
+    // Nothing on these lines names the kit: the word is a test filter and `gh`'s own subcommand.
+    // They were read as `workflow` with no subcommand, which `xargs cc-smart-dev-kit workflow`
+    // needs to be a possible proposal, and a crew session's test run was denied.
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      '"$PY" -m pytest -k workflow',
+      "$(which gh) workflow",
+      // A word after `workflow` that the line works out is as likely another program's argument
+      // (`$EXTRA` a flag, `$SUB` gh's workflow id) as the kit's subcommand (RV4 finding F4).
+      '"$PY" -m pytest -k workflow $EXTRA',
+      "$(which gh) workflow $SUB",
+      '"$PY" -m pytest -k workflow "$(cat extra-args)"',
+    ]) {
+      expect({ command, propose: readBash(command).workflowPropose }).toEqual({
+        command,
+        propose: false,
+      });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("RV4 finding 7: a computed program the line names as the kit, with no subcommand, is still a possible proposal", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "K=cc-smart-dev-kit; $K workflow",
+      "echo propose | $(command -v cc-smart-dev-kit) workflow",
+      // The words `workflow propose` are the domain words: a computed program asks without them
+      // naming the kit anywhere.
+      "$KIT workflow propose autoCommit true",
+      // A subcommand worked out at run time is as unreadable as a missing one, when the line
+      // names the kit (RV4 finding F4: a line that does not name it proposes nothing there).
+      "K=cc-smart-dev-kit; $K workflow $SUB autoCommit true",
+      "$(command -v cc-smart-dev-kit) workflow $SUB autoCommit true",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "deny" });
+    }
+  });
 });
 
 describe("RF1-4: a session that is not a crew session proposing a workflow change", () => {
@@ -525,6 +569,104 @@ describe("RF1-4: a session that is not a crew session proposing a workflow chang
       (await judge(closed.repo, `${PROPOSE} --folder ${open.repo}`, closed.env)).decision,
     ).toBeUndefined();
   });
+
+  // job-route has 10 s in hooks.json, and a hook Claude Code kills answers nothing: the git calls
+  // the question makes (the project's folder, then the committed file) share one budget counted
+  // from the hook's start, and a call with no time left is not made (`budget.ts`). A fake git
+  // that waits stands in for a hung one; it is a POSIX script, so Windows skips these.
+  const POSIX_ONLY = process.platform === "win32";
+  const hangingGit = (env: Record<string, string>, on: string) =>
+    slowGitEnv(env, on, "exec sleep 30");
+  const TIMED_OUT = "git did not answer in time";
+
+  // A test's budget is a few seconds so the proof does not wait: the variable can only shorten
+  // the budget, as in the merge guard's test.
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on every call: asks inside the budget, saying git did not answer in time",
+    () => {
+      // The judge alone: the frame's own project lookup (`run.ts`) comes before it.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const verdict = judgeBash(readBash(PROPOSE), {
+        env: { ...hangingGit(env, ""), [GUARD_BUDGET_ENV]: "3000" },
+        input: call(repo, PROPOSE),
+        paths: cliPaths(env),
+      });
+      expect(verdict).toEqual({
+        decision: "ask",
+        reason: `${ACTS.replace("into `dev`", "into the project's integration base (worktrees.base)")}\ncc-smart-dev-kit cannot tell which project's workflow this line proposes into (${TIMED_OUT}), so it cannot read the gate. Approve it if you meant it.`,
+        why: "propose",
+      });
+      // One call may take the budget less the margin (1 s here), and none is made after it.
+      expect(Date.now() - started).toBeLessThan(2_500);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on the committed file only, at the real budget: the gate read asks, saying git did not answer",
+    async () => {
+      // No budget variable: one call gets its own 5 s (8 s less the 2 s margin leaves 6), the hung
+      // call is stopped there and says so, where the old reason was a ref that is not there.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, PROPOSE, hangingGit(env, "rev-parse --verify"));
+      expect(answer).toEqual({
+        decision: "ask",
+        reason: `${ACTS}\ncc-smart-dev-kit cannot tell whether the push and the pull request are allowed: the workflow committed on dev cannot be read (${TIMED_OUT}). Approve it if you meant it.`,
+      });
+      expect(Date.now() - started).toBeLessThan(8_000);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on the frame's own lookup: the budget counts from the hook's start, so the hook still answers in time",
+    async () => {
+      // The frame looks the project up first and spends its 5 s (`rev-parse --path-format`, which
+      // only the lookups run). The judge's lookup then has what is left of 8 s less the margin
+      // (about 1 s), not a fresh 5 s: the whole run stays well inside the hook's 10 s.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, PROPOSE, hangingGit(env, "rev-parse --path-format"));
+      expect(answer.decision).toBe("ask");
+      expect(answer.reason).toContain(`(${TIMED_OUT})`);
+      expect(Date.now() - started).toBeLessThan(8_000);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "two proposals on one line share the budget: the second asks when the first spent it",
+    async () => {
+      // Each `rev-parse --verify` takes 0.7 s and answers, so the first proposal reads its gate in
+      // 1.4 s and is allowed. With the budget's 4 s less its 2 s margin, the second finds under a
+      // second left for its first call: the call is cut, and the line asks. Own budgets would
+      // read both gates and stay silent.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, `${PROPOSE} && ${PROPOSE}`, {
+        ...slowGitEnv(env, "rev-parse --verify", "sleep 0.7"),
+        [GUARD_BUDGET_ENV]: "4000",
+      });
+      expect(answer.decision).toBe("ask");
+      expect(answer.reason).toContain(
+        `the workflow committed on dev cannot be read (${TIMED_OUT})`,
+      );
+      expect(Date.now() - started).toBeLessThan(3_500);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a slow git inside the budget changes nothing: the gate is read and the proposal allowed",
+    async () => {
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const answer = await judge(repo, PROPOSE, slowGitEnv(env, "rev-parse --verify", "sleep 0.2"));
+      expect(answer.decision).toBeUndefined();
+    },
+    20_000,
+  );
 
   test("a gate it cannot read, or a project it cannot name, asks with the reason", async () => {
     const lost = gated();

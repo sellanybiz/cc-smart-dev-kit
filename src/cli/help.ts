@@ -93,8 +93,10 @@ Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-updat
 kit's background update is the one updater, so a major version waits for you), installs the
 plugin's instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported
 by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem
-at the scout slot's affordable model (when its chain starts with one), and copies the
-project's auto-mode entries into your settings. The entries are trust rules: they are shown
+at the scout slot's first model (when its chain starts with a backend model), and copies the
+project's auto-mode entries into your settings. Once per machine, a gateway set up before the
+Claude defaults moves to them: every slot on Claude, every fallback off, the gateway off, a
+backup first and one line per change. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
 with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
 prints a section per part, one verdict line, and the next steps to run, in order.
@@ -264,9 +266,8 @@ Print the version.`;
 
 const ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
 
-Waits for a click on the desktop alert, then brings the alert's window back. The notify and
-stop-failure hooks start it, detached, through the launcher. It is not a command to run by
-hand.`;
+Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
+starts it, detached, through the launcher. It is not a command to run by hand.`;
 
 /**
  * Every command, in the order the top-level help shows them. A command the dispatcher knows and
@@ -291,9 +292,11 @@ fallback picks what takes over while the route's provider is limited: off, claud
 take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
         route, the key and the fallback may change. Nothing in that file changes: each value
         stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
-        key's value is never written down, so restore leaves your key exactly as it is while it
-        is still yours; once ${COMMAND} replaced it, restore leaves that key and names the
-        backup that holds yours. It asks first; --yes takes them over without the question.`;
+        key's value is never written down: restore leaves your key as it is while it is still
+        yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address
+        it was written for. Where your address comes back, your key comes back with it, from
+        the backup of your file; with no backup that holds it, the kit's key is removed. It
+        asks first; --yes takes them over without the question.`;
 
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {
@@ -316,7 +319,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   },
   {
     name: "gateway setup",
-    summary: "Optional: more affordable models, through a local gateway",
+    summary: "Optional: set up the local AI gateway",
     listed: "start",
     help: GATEWAY_USAGE,
   },

@@ -255,7 +255,9 @@ never held, so nothing stops you asking one a question while the queue is full.
 ## 8. Hand-offs
 
 A crew session near its context line or its time cap commits its work in progress and reports
-`handoff`. Start the next one from where it stopped:
+`handoff`. Its context line is `crew.handoffTokens` (400 000) or `crew.handoffPercent` (70 % of its
+window), whichever comes first, and before the point Claude Code would auto-compact it at.
+Start the next one from where it stopped:
 `cc-smart-dev-kit crew start <phase> --continue <name>` — a new crew session from the old head, with
 the brief and the hand-off report, its name ending in ` 2`. A phase that hands off again and
 again is too big: split what is left.

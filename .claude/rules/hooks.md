@@ -208,8 +208,11 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   with that reason instead of overrunning. **`after-merge` shares one budget the same way**
   (`src/hooks/budget.ts`, 25 s of its 30 s), so its children (the alias list, the worktree
   list, `gh pr view`, the origin) cannot add up past the hook; a note that would not fit is
-  skipped whole. A hook that starts a child with the time left gives it no call at zero or
-  less (`Bun.spawnSync` reads a timeout of 0 as no limit at all).
+  skipped whole. **`job-route`'s question about `workflow propose` does the same with the
+  short budget** (`SHORT_GUARD_BUDGET_MS`, 8 s of its 10 s, counted from the hook's start): the
+  project lookup and the committed-file read pass `timeFor` to `src/project/resolve.ts`, and a
+  call that timed out or was never made makes the question say that git did not answer in time. A hook that starts a child with the time left gives it no call at
+  zero or less (`Bun.spawnSync` reads a timeout of 0 as no limit at all).
 - A guard gets a short timeout; a hook that waits gets a long one.
 
 ## Tests

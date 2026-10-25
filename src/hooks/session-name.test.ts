@@ -1,11 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
 import { writeLead } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
-import { isSessionId, namesDir, namingNote, recordSessionName } from "./session-name";
+import { tempDir } from "../testing/temp";
+import {
+  isSessionId,
+  namesDir,
+  namingNote,
+  recordSessionName,
+  titleToSet,
+  titleToSetOrProblem,
+} from "./session-name";
 import { sessionNameHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -31,6 +39,31 @@ describe("names", () => {
       "a crew session keeps the name its lead gave it",
     );
     expect(existsSync(join(namesDir(env), `${SESSION}.name`))).toBe(false);
+  });
+});
+
+describe("titleToSetOrProblem: a name whose record cannot be written is not set, and says why", () => {
+  test("it answers as titleToSet does while the record can be written", () => {
+    const env = hookEnv();
+    expect(titleToSetOrProblem(env, SESSION, "LEAD app plan", "other")).toEqual({
+      problem: null,
+      title: "LEAD app plan",
+    });
+    // Recorded now: the same name is not set twice.
+    expect(titleToSetOrProblem(env, SESSION, "LEAD app plan", "other")).toEqual({
+      problem: null,
+      title: null,
+    });
+  });
+
+  test("a TMPDIR that is a file: no title, and the reason, where titleToSet throws", () => {
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const env = { ...hookEnv(), TMPDIR: notAFolder };
+    expect(() => titleToSet(env, SESSION, "LEAD app plan", "other")).toThrow();
+    const answer = titleToSetOrProblem(env, SESSION, "LEAD app plan", "other");
+    expect(answer.title).toBeNull();
+    expect(answer.problem).toStartWith("the session name could not be recorded (");
   });
 });
 

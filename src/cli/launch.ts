@@ -17,10 +17,18 @@
  * (`writeJsonFile`, which `crew start` uses for its own `--settings` file too), and removed
  * when the session ends.
  *
+ * **What the file leaves in place, it says** (the lead's choice, RV3): `env` merges one variable
+ * at a time, so a login key or helper in the person's settings still applies, and a retired
+ * `ANTHROPIC_DEFAULT_*_MODEL` that names a slot still goes to Anthropic in a plain session. The
+ * launch starts anyway and names each such key with its file and the fix (`settingsNotes`),
+ * read through the project's one settings reader (`projectGatewayState`), facts only.
+ *
  * **What it will not do:** start a session inside a session (`CLAUDECODE`), guess a profile the
- * config does not have, point at a gateway this machine never set up, or point at a profile
- * while the running router does not know profiles (`routerFeature`). There is deliberately
- * no `--default`: a launch with no mode passes no `--settings`, and the machine's chain decides.
+ * config does not have, point at a gateway this machine never set up, point at a router that
+ * does not answer (a config with no router behind it: after `restore`, which keeps
+ * `gateway.json`, or a stopped service), or point at a profile while the running router does
+ * not know profiles (`routerFeature`). There is deliberately no `--default`: a launch with no
+ * mode passes no `--settings`, and the machine's chain decides.
  *
  * **Windows:** the CLI writes the file before it starts `claude`, and `cmd.exe` carries the
  * path on one quoted line (`claudeArgv`), so a `.cmd` launcher needs no write of its own.
@@ -32,10 +40,15 @@ import { COMMAND } from "../build-info";
 import { claudeArgv, findClaude } from "../crew/claude";
 import { writeJsonFile } from "../crew/store";
 import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
-import { type HealthFetch, routerFeature, routerLacksProfiles } from "../gateway/health";
-import { profileUrlOf, readGatewayConfig } from "../gateway/project-state";
-import { routerBaseUrl } from "../gateway/settings";
-import { isProfileName } from "../gateway/targets";
+import {
+  type HealthFetch,
+  routerFeature,
+  routerHealth,
+  routerLacksProfiles,
+} from "../gateway/health";
+import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
+import { routerBaseUrl, shownValue } from "../gateway/settings";
+import { isProfileName, isSlotKey } from "../gateway/targets";
 import { tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
@@ -111,8 +124,39 @@ export function parseLaunchArgs(args: readonly string[]): LaunchArgs | { error: 
 /** Runs `claude` attached to this terminal and answers the exit code it ended with. */
 export type RunSession = (
   argv: string[],
-  options: { cwd: string; env: Env; verbatim: boolean },
+  options: { cwd: string; env: Env; platform: NodeJS.Platform; verbatim: boolean },
 ) => Promise<number>;
+
+/** One signal the launcher listens for, and whether it hands the signal on to the session. */
+export interface SignalPlan {
+  forward: boolean;
+  signal: NodeJS.Signals;
+}
+
+/**
+ * The signals the launcher listens for on `platform`, and what it does with each.
+ *
+ * Off Windows it hands on SIGHUP, SIGINT and SIGTERM (a terminal's close, Ctrl+C, `kill`).
+ *
+ * On Windows it hands on nothing, but it still listens for SIGHUP (a closed console), SIGINT
+ * (Ctrl+C) and SIGBREAK (Ctrl+Break). A console event goes to every process on that console, so
+ * the session gets it by itself (`docs/windows-setup.md`), and `kill` there ignores the signal and
+ * ends the process outright (Node's `subprocess.kill()`, which Bun follows): a forwarded one would
+ * turn the session's own handling into a hard stop. But with no listener at all, the default
+ * action ends the launcher on the same event, before the session: it would skip removing its
+ * settings file and return Windows' code in place of the session's. A listener that does nothing
+ * keeps the launcher waiting for the session. A `kill` of the launcher alone ends it alone, as
+ * no listener can stop it. The Windows run (P11) is still owed.
+ */
+export function launcherSignals(platform: NodeJS.Platform): readonly SignalPlan[] {
+  if (platform === "win32") {
+    return (["SIGHUP", "SIGINT", "SIGBREAK"] as const).map((signal) => ({
+      forward: false,
+      signal,
+    }));
+  }
+  return (["SIGHUP", "SIGINT", "SIGTERM"] as const).map((signal) => ({ forward: true, signal }));
+}
 
 /**
  * The real run: the session gets this terminal's own stdin, stdout and stderr, so it is the
@@ -120,14 +164,34 @@ export type RunSession = (
  * `execve`, so the launcher stays in front of the session rather than being replaced by it.
  */
 export const realRunSession: RunSession = async (argv, options) => {
-  const child = Bun.spawn(argv, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["inherit", "inherit", "inherit"],
-    windowsVerbatimArguments: options.verbatim,
-  });
-  // A session killed by a signal has no exit code (Bun answers null there): 1 says "not clean".
-  return (await child.exited) ?? 1;
+  // A signal sent to the launcher alone (`kill <pid>`, a supervisor) would end it and leave the
+  // session running with nobody to remove its settings file or pass its exit code on. So the
+  // launcher hands each one on and keeps waiting, as `job run` does (`src/jobs/launch.ts`). One
+  // the terminal sent reaches the session by itself too, so it gets it twice: for these three
+  // that ends it once, as it would have. The handlers are in place BEFORE the session starts: a
+  // signal that came between its start and the handlers would still find the default action.
+  // (A handler runs on the event loop, after `Bun.spawn` returned, so `child` is set by then.)
+  // On Windows the handlers hand nothing on: they only keep the default action from ending the
+  // launcher before its session (`launcherSignals`).
+  let child: ReturnType<typeof Bun.spawn> | null = null;
+  const handlers = launcherSignals(options.platform).map(
+    ({ forward, signal }) =>
+      [signal, forward ? () => child?.kill(signal) : () => undefined] as const,
+  );
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  try {
+    child = Bun.spawn(argv, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["inherit", "inherit", "inherit"],
+      windowsVerbatimArguments: options.verbatim,
+    });
+    // A session ended by a signal answers 128 plus the signal's number (143 for SIGTERM), the
+    // shell's own code for it, so the code passed on says how the session ended.
+    return await child.exited;
+  } finally {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  }
 };
 
 /** What `launch` needs from the machine, so a test builds its own and reaches no real one. */
@@ -137,13 +201,15 @@ export interface LaunchContext {
   cwd: string;
   env: Env;
   error: (line: string) => void;
-  /** Asks the router's health page whether it knows profiles (`routerFeature`); a test's is a fake. */
+  /** Asks the router's health page: does it answer, and does it know profiles (`routerFeature`); a test's is a fake. */
   fetch: HealthFetch;
   /** The home folder: where the native installer puts `claude`. */
   home: string;
   platform: NodeJS.Platform;
   print: (line: string) => void;
   runSession: RunSession;
+  /** The user's own settings file (`cliPaths().settingsFile`): the last of the chain a session reads. */
+  settingsFile: string;
   stateDir: string;
   which: (command: string) => null | string;
 }
@@ -190,10 +256,21 @@ interface LaunchTarget {
   url: null | string;
 }
 
+/** The refusal for a router that gives no health answer; `why` says what the session would suffer. */
+function routerSilent(port: number, error: string, why: string): { lines: string[] } {
+  return {
+    lines: [
+      `launch: the router does not answer on 127.0.0.1:${port} (${error}), ${why}.`,
+      `Fix: ${COMMAND} gateway setup`,
+    ],
+  };
+}
+
 /**
  * The URL one mode names, or the lines that refuse it: an unknown profile, a malformed name,
- * a gateway this machine never set up, and a running router that does not know profiles are
- * each said here, with their fix, before anything is written or run.
+ * a gateway this machine never set up, a router that does not answer, and a running router
+ * that does not know profiles are each said here, with their fix, before anything is written
+ * or run.
  */
 async function launchTarget(
   mode: LaunchMode,
@@ -230,6 +307,14 @@ async function launchTarget(
   }
   const routerUrl = routerBaseUrl(config.port);
   if (mode.kind === "gateway") {
+    // The config alone proves nothing: `restore` keeps it and removes the router, and a stopped
+    // service leaves it too. Every request of a session pointed at a silent port fails with a
+    // connection error that Claude Code retries for minutes. Any answer will do: a plain
+    // gateway URL needs no feature of the router.
+    const health = await routerHealth(config.port, ctx.fetch);
+    if ("error" in health) {
+      return routerSilent(config.port, health.error, "so every request of the session would fail");
+    }
     return { line: `launch: the gateway · ${routerUrl}`, url: routerUrl };
   }
   if (!isProfileName(mode.name)) return { lines: [`launch: ${PROFILE_NAME_RULE}`] };
@@ -247,12 +332,7 @@ async function launchTarget(
   // sends `…/p/<name>/v1/messages` to Anthropic as it is: every request of the session fails.
   const known = await routerFeature(config.port, "profiles", ctx.fetch);
   if ("error" in known) {
-    return {
-      lines: [
-        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
-        `Fix: ${COMMAND} gateway setup`,
-      ],
-    };
+    return routerSilent(config.port, known.error, "so it cannot say it knows profiles");
   }
   if (!known.has) {
     return {
@@ -264,6 +344,50 @@ async function launchTarget(
   }
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" · ${url}`, url };
+}
+
+/**
+ * One line per key the settings chain still gives a session this launch starts (facts only,
+ * never a model suggested). The launch file names only the address, and Claude Code merges `env`
+ * one variable at a time (`docs/claude-code-contract.md`, P3), so:
+ * - a login key or helper (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) in any
+ *   file bills the session through it, not through the plan's login — in every mode that passes
+ *   the file;
+ * - a model key that names a gateway slot (the retired `ANTHROPIC_DEFAULT_*_MODEL` of 0.4.3)
+ *   asks Anthropic for a model that does not exist — only in `--no-gateway`, the path that
+ *   reaches Anthropic; on the gateway a slot name is what the router reads. `state.files` is
+ *   in the order Claude Code applies them, and the first file that sets a key decides it, so a
+ *   key a file before it sets again is not named: the session never asks for that value.
+ * No mode: no file, the settings decide as for `claude`, nothing to say. A file that cannot be
+ * read holds no facts and says nothing here (`doctor` and `gateway project status` name it); a
+ * file whose address alone is malformed still holds its other keys, and they are named.
+ */
+function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
+  if (mode.kind === "default") return [];
+  const state = projectGatewayState(ctx.cwd, {
+    configPath: ctx.configPath,
+    settingsFile: ctx.settingsFile,
+  });
+  const lines: string[] = [];
+  const decided = new Set<string>();
+  for (const file of state.files) {
+    const where = tildify(file.path, ctx.home);
+    for (const key of file.loginOverrides) {
+      lines.push(
+        `launch: ${key} is set in ${where}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+      );
+    }
+    if (mode.kind !== "no-gateway") continue;
+    for (const fact of file.modelKeys) {
+      if (decided.has(fact.key)) continue;
+      decided.add(fact.key);
+      if (!isSlotKey(fact.value.trim())) continue;
+      lines.push(
+        `launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`,
+      );
+    }
+  }
+  return lines;
 }
 
 /** `launch`; the exit code: the session's own, or 1 refused / 2 a usage mistake. */
@@ -324,10 +448,12 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     }
   }
   ctx.print(target.line);
+  for (const line of settingsNotes(parsed.mode, ctx)) ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
       env: ctx.env,
+      platform: ctx.platform,
       verbatim: command.verbatim,
     });
   } catch (error) {

@@ -3,14 +3,39 @@
  * its JSON input, in this process (`handleHook`) or as Claude Code runs it (a subprocess of
  * `src/entries/<name>.ts` with the input on stdin).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
 import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
 import { subprocessGuard } from "./port-guard";
 import { cleanGitEnv, git, tempDir } from "./temp";
+
+/**
+ * `env` with a fake `git` first on PATH that waits on the calls whose arguments start with `on`
+ * (an empty string: every call) and runs the real git for the rest. `wait` is the shell line it
+ * runs first: `exec sleep 30` hangs for good (`exec` replaces the shell, so a timeout kills the
+ * sleep itself), `sleep 0.7` is slow and then answers.
+ *
+ * POSIX only: the fake is an extensionless `#!/bin/sh` file, which Windows does not run as
+ * `git`. A test that uses it is `skipIf(process.platform === "win32")`.
+ */
+export function slowGitEnv(
+  env: Record<string, string>,
+  on: string,
+  wait: string,
+): Record<string, string> {
+  const real = Bun.which("git");
+  if (real === null) throw new Error("this test needs git");
+  const bin = tempDir("slow-git");
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\ncase "$*" in\n  "${on}"*) ${wait} ;;\nesac\nexec '${real}' "$@"\n`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
+  return { ...env, PATH: `${bin}${delimiter}${env.PATH ?? ""}` };
+}
 
 /** A repo with one commit on `branch`, in a new temp folder: `<temp>/<name>`. */
 export function makeRepo(name = "app", branch = "main"): string {

@@ -1513,6 +1513,34 @@ describe("CC8: a crew session is never asked", () => {
     expect(asked?.decision).toBe("ask");
   });
 
+  test("RV4: the kit's bundle bound to a variable in the line, run by a computed program: still refused", async () => {
+    // Before the narrowing of `namesKit` this line asked, because the plugin folder in the
+    // path held the kit's name; the narrowing (rightly) ignores a folder, and the bundle word
+    // `$C` is no kit word, so nothing asked. The path is written in the line: the guard reads it.
+    const bundle = `$HOME/.claude/plugins/cache/${KIT}/${KIT}/1.2.0/dist/cli.js`;
+    for (const command of [
+      `C=${bundle}; $(which bun) $C workflow review-done`,
+      `C="${bundle}"; "$BUN" "$C" workflow review-done`,
+      `export C=${bundle} && $(command -v bun) $C workflow review-done`,
+    ]) {
+      const [refused, asked] = await both(shellInput(command, repo));
+      expect({ command, decision: refused?.decision }).toEqual({ command, decision: "deny" });
+      expect(refused?.reason).toContain("cannot tell whether it runs it");
+      expect({ command, decision: asked?.decision }).toEqual({ command, decision: "ask" });
+    }
+  });
+
+  test("RV4: a computed program beside a bundle that is another project's stays quiet", async () => {
+    // `dist/server.js` and a folder that merely holds the kit's name are no kit's bundle.
+    for (const command of [
+      "S=$HOME/app/dist/server.js; $(which node) $S",
+      `S=/work/${KIT}/dist/server.js; $(which node) $S --check`,
+    ]) {
+      const [refused, asked] = await both(shellInput(command, repo));
+      expect({ command, refused, asked }).toEqual({ command, refused: null, asked: null });
+    }
+  });
+
   test("a computed `crew report`: refused with the fix it can take, not the limits refusal", async () => {
     // A crew session hands back with `crew report`; a computed spelling is refused, but the
     // answer names the fix it can take (`write the command out in full`) and the lead step.

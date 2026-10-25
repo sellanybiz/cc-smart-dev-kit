@@ -65,6 +65,7 @@ const NUMBER_RULES = {
   "crew.usagePercent": PERCENT,
   "crew.quietMinutes": AT_LEAST_ONE,
   "crew.handoffPercent": PERCENT,
+  "crew.handoffTokens": AT_LEAST_ONE,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
@@ -210,8 +211,18 @@ export const workflowSchema = z.strictObject({
       usagePercent: numberField("crew.usagePercent"),
       /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
       quietMinutes: numberField("crew.quietMinutes"),
-      /** The share of its context, in percent, at which a crew session hands off to a next one. Default: 70. */
+      /**
+       * The share of its context window, in percent, at which a crew session hands off to a
+       * next one. It hands off at this share or at `handoffTokens`, whichever comes first.
+       * Default: 70.
+       */
       handoffPercent: numberField("crew.handoffPercent"),
+      /**
+       * The tokens of context at which a crew session hands off, whatever its window: a 1M
+       * window hands off here, a 200k window at `handoffPercent` first. It needs no window, so
+       * a model the kit cannot size still hands off at it. Default: 400000.
+       */
+      handoffTokens: numberField("crew.handoffTokens"),
       /** Hours after which the lead gets a note about a crew session still running. Default: 2. */
       softHours: numberField("crew.softHours"),
       /** Hours after which a crew session hands off. Default: 4. */
@@ -266,6 +277,7 @@ export const workflowDefaults = {
     usagePercent: 85,
     quietMinutes: 20,
     handoffPercent: 70,
+    handoffTokens: 400_000,
     softHours: 2,
     maxHours: 4,
     archiveDays: 7,
@@ -315,6 +327,7 @@ export type WorkflowKey =
   | "crew.usagePercent"
   | "crew.quietMinutes"
   | "crew.handoffPercent"
+  | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.archiveDays"
@@ -349,6 +362,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.usagePercent",
   "crew.quietMinutes",
   "crew.handoffPercent",
+  "crew.handoffTokens",
   "crew.softHours",
   "crew.maxHours",
   "crew.archiveDays",

@@ -90,6 +90,7 @@ export interface ResolvedWorkflow {
     usagePercent: ResolvedValue<number>;
     quietMinutes: ResolvedValue<number>;
     handoffPercent: ResolvedValue<number>;
+    handoffTokens: ResolvedValue<number>;
     softHours: ResolvedValue<number>;
     maxHours: ResolvedValue<number>;
     /** Days a removed crew session's conversation stays in the kit's archive. */
@@ -362,6 +363,7 @@ const RESOLVED: {
   "crew.usagePercent": (r) => r.crew.usagePercent,
   "crew.quietMinutes": (r) => r.crew.quietMinutes,
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
+  "crew.handoffTokens": (r) => r.crew.handoffTokens,
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
   "crew.archiveDays": (r) => r.crew.archiveDays,
@@ -450,6 +452,10 @@ export function resolveWorkflow(
       handoffPercent: of(
         "crew.handoffPercent",
         crew.handoffPercent ?? workflowDefaults.crew.handoffPercent,
+      ),
+      handoffTokens: of(
+        "crew.handoffTokens",
+        crew.handoffTokens ?? workflowDefaults.crew.handoffTokens,
       ),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),

@@ -30,10 +30,17 @@ searched the 2.1.310 binary and found none).
    \"auto\""). With no value, or `"auto"`, measure against `context_window_size`, and find what
    `"auto"` means before you pick. Claude Code's `context_window_size` is the model's full window
    (1M), which is not the point that matters to the owner.
-   - Read Claude Code's settings **read-only**, through HO1's reader (1.2.0: it reads
-     `autoCompactWindow` for the crew hand-off, and proved what `--autocompact auto` does; reuse
-     it, never a second one), or the kit's existing readers if one fits
-     (`src/cli/paths.ts`, `CLAUDE_CONFIG_DIR`); never write them outside `src/setup/`.
+   - Read Claude Code's settings **read-only**, beside HO1's reader (merged in 1.2.0):
+     `src/machine/claude-settings.ts` (`compactEnvOf`, `parseCompactWindow`,
+     `parseCompactPercent`), which reads the files in Claude Code's own order (main checkout
+     local, session local, session shared, user, shell). It reads **only the environment
+     variables** (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`): HO1
+     proved on 2.1.310 that `--autocompact auto` skips the `autoCompactWindow` keys, so a crew
+     session never uses them. A normal session does (no flag: the owner's 400000 is used), so add
+     the key reading in that same file, beside it; never a second reader, never a write outside
+     `src/setup/`. HO1 also found that Claude Code compacts at the window less 33,000 (20k for the
+     reply, 13k buffer): `COMPACT_OUTPUT_RESERVE_TOKENS` and `COMPACT_SUMMARY_BUFFER_TOKENS` there;
+     reuse them if the segment shows the compaction point.
    - Match the model by the input's `model.id` the way `context-window.ts` keys it; a `[1m]`
      suffix or an alias must not miss the entry (find how Claude Code itself keys it).
 3. **The warn colour** follows `alerts.usagePercent`, as the 5h and 7d segments do.
@@ -61,8 +68,8 @@ how.
 `src/cli/statusline.ts`, `src/cli/usage-window.ts` (only if the segment's colour shares its
 helper), `src/crew/context-window.ts` (only if a reader is shared: one home), a reader of Claude
 Code's `autoCompactWindow` (one home; name where it lives), their tests, `README.md`,
-`docs/claude-code-contract.md`, `plugin/dist/*.js`. **`plugin.json` stays as it is.** 1.2.0's HO1 already
-added the read-only reader of `autoCompactWindow` for the crew hand-off: reuse it.
+`docs/claude-code-contract.md`, `src/machine/claude-settings.ts` (the key reader, beside HO1's),
+`plugin/dist/*.js`. **`plugin.json` stays as it is.**
 
 ## Setup in your worktree
 

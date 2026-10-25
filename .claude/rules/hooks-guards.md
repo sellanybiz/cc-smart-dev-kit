@@ -48,7 +48,7 @@ safe), so every question a guard would put to the person where the step is mecha
 | `merge-guard` | opening a pull request (`CREW_PR_REFUSAL`), and every question before a merge — the policy off, `--admin`, another repository, a check not green, no covering review, a policy or a form it cannot read, its own budget — as the one merge refusal (`CREW_MERGE_REFUSAL`): it commits on its branch and the lead merges locally. A merge the policy would allow is refused too, never `allow` |
 | `message-guard` | a message to another crew session without the `crew tell` tag, and a raw message to its own lead (which goes through `crew report`) |
 | `agent-guard` | every launch it would ask the person about — Fable, an Opus-family model it cannot read, Opus at `max`, an unreadable Workflow — judged as a session nobody watches, with the step `crew report --question` (`CREW_QUESTION_STEP`) |
-| `job-route` | a `claude -p` launch the launch policy questions, and a heavy command whose routing cannot be read because the project's file is broken or too new |
+| `job-route` | a raw `claude --bg` start and every lead command (`crew start`, `answer`, `stop`, `rm`, `resume`, `watch`, `lead`, `lead tell`), each with the step `crew report --question` (`CREW_QUESTION_STEP`); `cc-smart-dev-kit workflow propose` however the line spells it, because it pushes a branch and opens a pull request in children no guard sees (D24; a subcommand the judge cannot read is refused too, `workflow propose --help` passes); a `claude -p` launch the launch policy questions; and a heavy command whose routing cannot be read because the project's file is broken or too new |
 | `session-escape-guard` | a write into the kit's own files (its project file, settings, state, installed plugin), a computed write or computed kit command, and any reach at the portal |
 
 The first four are the **crew part** of the guards that own their detectors — `crewGitAnswer`
@@ -64,7 +64,12 @@ were.
 cannot switch them off either; their crew answer lives in their own `run` and in
 `onConfigProblem`/`outsideGit`, so no call is judged twice. Each guard's detector is shared
 with its own `run` — one function, never a copy — so a spelling that gets past one gets past
-both.
+both. **The kit's own command is recognised once** (`kitArguments`, `namesKit`,
+`src/hooks/kit-invocation.ts`) for the two guards that ask about it, `job-route` (a crew
+session's lead commands and `workflow propose`) and `session-escape-guard` (a kit command run with
+`CLAUDECODE` unset): its name, a path to the launcher, its bundle behind another program, a
+program that runs its arguments. A spelling that gets past that one reader is fixed there, never
+in one guard.
 
 **The bun shim answers the same way.** With `--missing=ask` and `CC_SMART_DEV_KIT_CREW` set,
 the answers a guard gets when it cannot run (no bun, a Bun older than `MIN_BUN`, a missing
@@ -85,7 +90,9 @@ for the same reason.
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
 on), `job-route` (the shell judge, on Bash and PowerShell: a raw `--bg` launch, a `-p` run's
 model and effort, a crew session's lead commands — `crew start`, `answer`, `model`, `stop`, `rm`,
-`resume`, `watch`, `lead`, `lead tell` — a polling loop), `fable-session` (the model the
+`resume`, `watch`, `lead`, `lead tell` — and its `workflow propose`, which any other session is
+asked about when the gate says the push or the pull request is the person's, a polling loop),
+`fable-session` (the model the
 session itself runs on),
 `crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
 `lead-notes` (a lead's missed crew news) and `notify` (the alerts).

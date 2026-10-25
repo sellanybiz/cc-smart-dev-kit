@@ -45,8 +45,15 @@ claude-mem's summaries run on Claude Haiku, on the person's own login, by defaul
 is Haiku's, so it follows the gateway's slot for Haiku, the scout: when the person gave the
 scout a chain whose first target is a `<backend>:<model>`, `setup` points claude-mem's
 openai-compatible provider straight at that backend and model (`src/machine/claude-mem.ts`).
-A scout with no chain (a fresh `gateway setup` writes none) or one that starts with a Claude
-model leaves claude-mem on Claude; the worker's chain is never used for it.
+A scout with no chain (the default, D66: `gateway setup` writes none) or one that starts with
+a Claude model puts claude-mem on Claude, with claude-mem's own Haiku: setup takes out the
+five provider keys it set before, **all five or none** (a key that is the person's keeps all
+five, and a note names it), and writes no model id (`CLAUDE_MEM_MODEL` is claude-mem's own
+default, and setup never writes it). This is the claude-mem half of the one-time move to the
+Claude defaults (`docs/gateway.md` § Slots and defaults): setup plans claude-mem from the
+gateway **as the move leaves it** (`claudeMemPlan(paths, gatewayAfter)`), so the dry run and the
+real run plan the same keys. A route the person chose (`claude-mem route`, the portal) is
+theirs: the move does not reset it. The worker's chain is never used for claude-mem.
 
 **No model of the plugin's own** (owner): setup writes no quota fallback.
 claude-mem's `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` / `…_MODEL` keep claude-mem's defaults or
@@ -68,8 +75,11 @@ set or changed stays. A removal alone sends no check to the backend.
   alone: claude-mem itself rewrites such a file flat on its next start, and drops any
   flat key written beside `env` then (its `loadFromFile`), so a key written either way
   now would be lost or no longer owned.
-- **No affordable scout target any more** while the keys are still cc-smart-dev-kit's: setup
-  says that claude-mem still points at the old backend, and how to fix it.
+- **The scout says nothing any more** (the gateway is not set up, its file cannot be read, or
+  the scout's first target names no backend) while the keys are still cc-smart-dev-kit's: setup
+  says that claude-mem still points at the old backend, and the command that sends its
+  summaries to Claude again. A scout that is Claude (no chain, or a Claude model first) is not
+  this case: the keys are taken out (above).
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
   (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no
@@ -182,12 +192,33 @@ take-over, and it is theirs to ask for: a plain `setup` never runs it, and the c
   keeps the hash it took the key over with (`OwnedRecord.wasSha256`): while the key still hashes
   to that, the kit never replaced it. So `release` with no value (`[path, undefined]`) drops the
   claim and leaves the key exactly as it is — the person's own again — and `restore` leaves it.
-  A key the kit replaced since (the person picked another through the kit) cannot get its old
-  value back: `restore` leaves that key as the kit wrote it and names the backup whose copy still
-  holds the earlier one — the path only, never the key. A key removed since is simply the
-  person's. `applyManagedJson`'s `remove` treats a taken-over key the same way, so a restore that
-  falls back to its own pass (when `restoreTakenOver` throws) writes a plain value back and leaves
-  a secret's key where it is.
+  A key the kit replaced since (a route that moved to a gateway backend, or a key the person
+  typed through the kit) has no value in the record to write back, so the file decides
+  (`restoreTakenOver`, `planSecret`). **After a restore, the key in the file belongs to the
+  address in the file** (RV6; D63 did not decide this detail). `keyKeepsItsAddress` reads that
+  from the records and the file, never from `gateway.json`:
+  - The kit's key stays when the kit never changed the address (the key was written for it), and
+    when the person set the address to some third value (theirs, and so is the key beside it).
+    The line names the backup whose copy still holds the person's earlier key.
+  - The key must go when `restore` puts the person's address back, and also when the person set
+    the address back to their own by hand after the kit changed it: the kit's key was written for
+    the address the kit set. The person's own key then comes back from the newest readable backup
+    whose copy hashes to `wasSha256` (`release` with the value), and with no such backup the
+    kit's key is removed (`withdraw`), leaving the address with no key. A gateway backend's key,
+    or one typed for another address, never sits next to the person's address.
+  - The line says what the writer did, not only what was planned: a key another program changed
+    while restore ran is the person's, left as it is. The path of a backup is printed, never a
+    key. A key removed since is simply the person's.
+  - When `restoreTakenOver` itself fails, `runRestore` holds claude-mem's file back from its own
+    pass (`takeOverBack`): that pass would put the address back and leave the kit's key beside it,
+    and drop the records the next run needs. The file stays tracked, `restore` exits 1 and says
+    to run it again.
+  A plain value the file already holds is not written again (no change, no backup), and `restore`
+  names a value that does come back as **put back** — never as a key it "set" for the second
+  stage — so the file is forgotten like any other whose keys are out (`RestoreResult.putBack`,
+  `src/setup/restore.ts`). `applyManagedJson`'s `remove` still puts a plain taken-over value back
+  and leaves a secret where it is; `restore` no longer reaches it for claude-mem's file after a
+  failed put-back.
 - **What it takes is what refuses a choice now** (`handSetKeys`), exactly the keys the card and
   the command name before they ask: of the route's five keys, claude-mem's OpenRouter three and
   the quota fallback's two, those a choice writes on the current route. On a route that is not

@@ -368,6 +368,13 @@ const waitingForSchema = z.discriminatedUnion("kind", [
     kind: z.literal("unknown"),
     /** When the wait began (ISO 8601). */
     since: text,
+    /**
+     * The state key of the session's own slot (`my-project/cc-smart-dev-kit-worker` in a
+     * profile): the watch asks that breaker before it resumes. Absent on a session with no
+     * slot, and on a record an older kit wrote. Exact-optional: the portal's wire type
+     * says `slot?: string`, and a JSON file never holds `undefined`.
+     */
+    slot: text.exactOptional(),
   }),
 ]);
 

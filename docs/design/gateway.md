@@ -36,9 +36,17 @@ An optional local router between Claude Code and the model providers
   `.claude/rules/gateway.md`.
 - Every 4xx / 5xx from any target is logged with the start of its reason, keys masked,
   so a failure can be read in the journal.
-- Auto mode's safety check is judged by Claude first; while Claude is limited or down, the worker
-  chain's targets that passed the judge test judge in its place (the judge's fallback is on by
-  default; `gateway fallback judge off` keeps Claude alone). A judge chain the person sets wins,
+- **Claude by default (D66, owner 2026-10-25).** Every slot is Claude, the judge's included; no
+  fallback switch is on (`fallbackOn` is the person's own setting, else false, for every slot —
+  one home, no list); the gateway is off. `gateway setup` asks only OmniRoute's address and key
+  and never turns the gateway on; no model is suggested anywhere. A machine set up before it
+  moves there once, in `cc-smart-dev-kit setup` — a backup of `gateway.json`, one line per change,
+  a marker so it runs once, never from a session start or the background update — and claude-mem
+  follows the scout back to Claude. `docs/gateway.md` § Slots and defaults has the contract.
+- Auto mode's safety check is judged by Claude first, and by Claude alone by default (D66). With
+  the judge's fallback switched on (`gateway fallback judge on`), the worker chain's targets that
+  passed the judge test judge in Claude's place while it is limited or down (D44 — before D66 the
+  switch was on by default). A judge chain the person sets wins,
   and may hold a `claude-…` target; its first usable target judges every check (the next only
   with the judge's fallback on). A target must pass a test check before it is used; the router
   uses only a target whose test proof is in the config (D44).
@@ -61,8 +69,7 @@ An optional local router between Claude Code and the model providers
   to Claude, which refuses a signature it did not issue, and given back its own signature on a
   request to a backend (D6); the router writes the plan limits it saw, its open breakers and
   the Claude ids Claude Code sent (`seenClaude`) to a small state file that the status line,
-  the StopFailure alert and the portal read. The alert's worker runs through the launcher,
-  never from the plugin's version folder. The health answer also lists the last 200 routed
+  the StopFailure alert and the portal read. The health answer also lists the last 200 routed
   requests (`recent`: metadata only), which the portal's activity feed reads (B6b).
 - **The request history (D51): one row per routed `/v1/messages` request** — time, session
   id, model, slot, target, status, latency, tokens, an estimated cost — and never a prompt,
@@ -80,8 +87,9 @@ An optional local router between Claude Code and the model providers
   `retry-after` it relays at 60 (Claude Code fails the request at once above it) and relays a
   backend's refusal as a 424 (Claude Code sends an unknown 400 or 422 again without its deferred
   tools): `gateway.md` § The breaker. What the person hears comes from BR2: the status line
-  names an open breaker, and the StopFailure alert says so once per opening, with the person's
-  own other backend targets as the way out (`src/hooks/stop-failure.ts`, `breakerAlert`).
+  names an open breaker, and the StopFailure alert says so once per opening — the slot, since when and
+  each target with why it rests, facts only and no button (`src/hooks/stop-failure.ts`,
+  `breakerAlert`).
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through
@@ -96,13 +104,12 @@ An optional local router between Claude Code and the model providers
   overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
   subagent fell back to Claude.
 - **`gateway setup` on a terminal asks before it changes anything** (`setup-questions.ts`):
-  the router's port first, then OmniRoute's address, its API key (the secret read), a chain for
-  each model slot picked from the live model list (default: the chain it has, or "off"; so
-  nothing is picked for the person), and whether to turn the gateway on. It asks the API key,
-  not the dashboard password: the model list needs a key before any change. The judge is not
-  asked, because a judge target needs the judge test (`gateway slot judge`). The questions
-  take facts as arguments, so the module imports nothing from `commands.ts`. No terminal, the
-  portal, `--yes` or a key flag: nothing is asked.
+  the router's port first, then OmniRoute's address and its API key (the secret read). Since
+  D66 it asks no slot, offers no model list and never asks to turn the gateway on: every slot
+  stays Claude and the gateway stays off, and a person gives a slot a chain with `gateway slot`
+  when they want one. It asks the API key, not the dashboard password. The questions take facts
+  as arguments, so the module imports nothing from `commands.ts`. No terminal, the portal,
+  `--yes` or a key flag: nothing is asked.
 - **`gateway setup --omniroute-password[-stdin]` makes the router's key in OmniRoute itself**,
   with the person's dashboard password (asked with no echo, never stored, never printed):
   `POST /api/auth/login` (no `Origin` header — OmniRoute skips its CSRF check without one),

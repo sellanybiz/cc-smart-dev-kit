@@ -25,6 +25,7 @@ import {
   chooseKey,
   chooseRoute,
   readClaudeMemFacts,
+  TAKE_OVER_KEY_NOTE,
   type TargetCheck,
   takeOver,
 } from "../machine/claude-mem-choices";
@@ -351,7 +352,7 @@ async function takeOverCommand(deps: ClaudeMemDeps, rest: string[]): Promise<num
   deps.out.line(
     "info",
     "Nothing in that file changes: each value stays exactly as it is until you pick another, and " +
-      `${COMMAND} restore puts it back. A key's value is never written down, so restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
+      `${COMMAND} restore puts it back. ${TAKE_OVER_KEY_NOTE}`,
   );
   if (!yes) {
     const answer = deps.confirm?.(`Record them as ${COMMAND}'s?`) ?? null;

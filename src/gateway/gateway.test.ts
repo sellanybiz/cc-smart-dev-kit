@@ -90,6 +90,20 @@ const NO_POSIX_MODES = process.platform === "win32";
 const TOKEN = "sk-ant-oat01-TESTTOKEN";
 const CONFIG_PATH = "/home/someone/.config/cc-smart-dev-kit/gateway.json";
 
+/**
+ * The slots of `config()`, and the judge. The fallback switch is OFF by default for every slot
+ * (D66), and most of this file tests a chain that moves on to its next target, so its config
+ * switches each one on, the judge's too (its worker stand-ins). A test of the default builds
+ * its own config without this record.
+ */
+const FALLBACK_ON_SLOTS = [
+  "cc-smart-dev-kit-affordable",
+  "cc-smart-dev-kit-mixed",
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker",
+  "cc-smart-dev-kit-judge",
+];
+
 function config(firstByteMs = 1000): GatewayConfig {
   return {
     aliases: {},
@@ -98,6 +112,7 @@ function config(firstByteMs = 1000): GatewayConfig {
       ollama: { apiKey: "ollama-key-abcdef", baseUrl: "https://ollama.test" },
       omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" },
     },
+    fallback: Object.fromEntries(FALLBACK_ON_SLOTS.map((slot) => [slot, true])),
     port: PORT,
     slots: {
       "cc-smart-dev-kit-affordable": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
@@ -765,6 +780,18 @@ describe("fallback", () => {
     ]);
     expect(await (await handle(scout())).text()).toBe("ok");
     expect(calls).toHaveLength(2);
+  });
+
+  it("D66: with no fallback setting a chain's first target alone is asked; its failure is the answer", async () => {
+    const { fallback: _on, ...noSwitch } = config();
+    const { calls, handle } = router(
+      [() => new Response("busy", { status: 429 }), () => new Response("never asked")],
+      { config: noSwitch },
+    );
+    const res = await handle(scout());
+    expect(res.status).toBe(429);
+    expect(await res.text()).toBe("busy");
+    expect(calls.map((c) => c.url)).toEqual(["http://omni.test/v1/messages"]);
   });
 
   it("an affordable backend that is not last: 400 and 401 move on, with a warning", async () => {
@@ -2960,8 +2987,8 @@ describe("local-only guard", () => {
       breakers: {},
       cooling: {},
       fallbacks: 0,
-      // This router knows profiles (D29), and this config sets none.
-      features: ["profiles"],
+      // This router knows profiles (D29) and an alias at a slot in Claude mode; this config sets none.
+      features: ["profiles", "claude-slot-aliases"],
       ok: true,
       port: 20100,
       profiles: [],
@@ -4317,7 +4344,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     );
   });
 
-  it("each slot's fallback switch: its own setting, else on for scout, worker and judge, off for opus and fable", () => {
+  it("each slot's fallback switch (D66): its own setting, else off for every slot, the judge's too", () => {
     const slots = {
       "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
@@ -4329,21 +4356,21 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
     expect(states({})).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", true],
+      ["cc-smart-dev-kit-judge", false],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", true],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", false],
     ]);
     expect(
       states({
-        fallback: { "cc-smart-dev-kit-judge": false, "cc-smart-dev-kit-worker": false },
+        fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": true },
       }),
     ).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", false],
+      ["cc-smart-dev-kit-judge", true],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", false],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", true],
     ]);
   });
 
@@ -6800,7 +6827,7 @@ describe("profiles: the /p/<profile> path (D29)", () => {
       slots: Record<string, string[]>;
     };
     expect(body.ok).toBe(true);
-    expect(body.features).toEqual(["profiles"]);
+    expect(body.features).toEqual(["profiles", "claude-slot-aliases"]);
     expect(body.profiles).toEqual(["held", "proj", "two"]);
     // The slots are the machine's: the profile changes what its own requests see.
     expect(body.slots[WORKER]).toEqual(["claude-sonnet-5-5"]);
@@ -7020,7 +7047,7 @@ describe("profiles: the /p/<profile> path (D29)", () => {
     expect(held.headers.get("retry-after")).toBe("30");
     expect(held.headers.get("x-should-retry")).toBe("true");
     expect(((await held.json()) as { error: { message: string } }).error.message).toBe(
-      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: the chain of worker under profiles.down in gateway.json`,
+      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: cc-smart-dev-kit gateway profile down slot worker <targets>`,
     );
     expect(
       logs.some((line) => line.startsWith(`WARN down/${WORKER}: every target limited or down`)),
@@ -7048,5 +7075,32 @@ describe("profiles: the /p/<profile> path (D29)", () => {
     // And the record under the profile's key is still the only breaker.
     const after = JSON.parse(states.at(-1) ?? "") as { breakers?: Record<string, unknown> };
     expect(Object.keys(after.breakers ?? {})).toEqual([`down/${WORKER}`]);
+  });
+
+  it("a profile that names no chain for the slot is told both commands: the machine's chain is the one failing (RV3)", async () => {
+    const inheriting: GatewayConfig = {
+      ...config(),
+      profiles: { shared: { slots: { "cc-smart-dev-kit-scout": ["claude-haiku-5-5"] } } },
+      slots: {
+        ...config().slots,
+        [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      },
+      timeouts: { breakerHoldMs: 0, firstByteMs: 1000 },
+    };
+    const { handle } = router([down, down], { breaker: true, config: inheriting });
+    const held = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/shared/v1/messages?beta=true",
+      }),
+    );
+    expect(held.status).toBe(429);
+    const text = ((await held.json()) as { error: { message: string } }).error.message;
+    expect(text).toContain(`every target of ${WORKER} in profile shared is limited or down`);
+    expect(
+      text.endsWith(
+        "change it: cc-smart-dev-kit gateway profile shared slot worker <targets> (a chain of its own for this profile), or cc-smart-dev-kit gateway slot worker <targets> (the machine's chain, which this profile uses)",
+      ),
+    ).toBe(true);
   });
 });

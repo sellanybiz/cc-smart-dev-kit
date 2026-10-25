@@ -1543,10 +1543,15 @@ describe("slot opus / fable, and the fallback switch", () => {
     const back = planFallbackChange(on.config, "opus", "off");
     if (!("config" in back)) throw new Error(back.error);
     expect(back.config).not.toHaveProperty("fallback");
+    // D66: off is the default for every slot, so it is `on` that is saved.
+    const workerOn = planFallbackChange(config(), "worker", "on");
+    if (!("config" in workerOn)) throw new Error(workerOn.error);
+    expect(workerOn).toMatchObject({ now: true, was: false });
+    expect(workerOn.config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
     const workerOff = planFallbackChange(config(), "worker", "off");
     if (!("config" in workerOff)) throw new Error(workerOff.error);
-    expect(workerOff).toMatchObject({ now: false, was: true });
-    expect(workerOff.config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+    expect(workerOff).toMatchObject({ now: false, was: false });
+    expect(workerOff.config).not.toHaveProperty("fallback");
   });
 
   it("fallback: refused for a slot with no chain, a wrong word, or a name that is no slot", () => {
@@ -1669,31 +1674,32 @@ describe("slot modes: one home for every chain (B0)", () => {
   it("a new chain replaces a saved one and keeps the switch saved with it", () => {
     const cfg: GatewayConfig = {
       ...config(),
-      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+      kept: { [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] } },
     };
     const set = planned(planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash", models));
     expect(set.config.slots[WORKER]).toEqual(["omniroute:glm-5.3-flash"]);
     expect(set.config).not.toHaveProperty("kept");
-    expect(set.config.fallback).toEqual({ [WORKER]: false });
+    expect(set.config.fallback).toEqual({ [WORKER]: true });
   });
 
   it("the fallback switch of a slot that answers as Claude waits in kept, and says so", () => {
     const { [WORKER]: _chain, ...slots } = config().slots;
     const cfg: GatewayConfig = {
       ...config(),
-      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+      kept: { [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] } },
       slots,
     };
-    const on = planFallbackChange(cfg, "worker", "on");
+    const off = planFallbackChange(cfg, "worker", "off");
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off).toMatchObject({ key: WORKER, now: false, was: true });
+    // Back to the default (off): no entry in kept.
+    expect(off.config.kept).toEqual({ [WORKER]: { targets: ["claude-sonnet-5-5"] } });
+    expect(off.config).not.toHaveProperty("fallback");
+    const on = planFallbackChange(off.config, WORKER, "on");
     if (!("config" in on)) throw new Error(on.error);
     expect(on).toMatchObject({ key: WORKER, now: true, was: false });
-    expect(on.config.kept).toEqual({ [WORKER]: { targets: ["claude-sonnet-5-5"] } });
-    expect(on.config).not.toHaveProperty("fallback");
-    // Back to the default: no entry in kept.
-    const off = planFallbackChange(on.config, WORKER, "off");
-    if (!("config" in off)) throw new Error(off.error);
-    expect(off.config.kept).toEqual({
-      [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] },
+    expect(on.config.kept).toEqual({
+      [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] },
     });
   });
 
@@ -1856,17 +1862,17 @@ describe("the breaker switch", () => {
     const before: GatewayConfig = {
       ...config(),
       breaker: { [WORKER]: false },
-      fallback: { [WORKER]: false },
+      fallback: { [WORKER]: true },
     };
-    // The worker's fallback back to its default (on): its entry goes, the breaker's stays.
-    const fallbackBack = planFallbackChange(before, "worker", "on");
+    // The worker's fallback back to its default (off): its entry goes, the breaker's stays.
+    const fallbackBack = planFallbackChange(before, "worker", "off");
     if (!("config" in fallbackBack)) throw new Error(fallbackBack.error);
     expect(fallbackBack.config).not.toHaveProperty("fallback");
     expect(fallbackBack.config.breaker).toEqual({ [WORKER]: false });
     // And the breaker back to its default: its entry goes, the fallback's stays.
     const breakerBack = planned(planBreakerChange(before, "worker", "on"));
     expect(breakerBack.config).not.toHaveProperty("breaker");
-    expect(breakerBack.config.fallback).toEqual({ [WORKER]: false });
+    expect(breakerBack.config.fallback).toEqual({ [WORKER]: true });
   });
 
   it("refuses the judge, with a chain or without, and says why", () => {

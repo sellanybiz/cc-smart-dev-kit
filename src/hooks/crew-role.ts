@@ -95,6 +95,7 @@ import {
 } from "../crew/tasks";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
+import { sessionGatewayOf } from "./agent-guard";
 import { isInside, realPath } from "./git";
 import {
   addContext,
@@ -106,7 +107,7 @@ import {
   toolDecision,
 } from "./io";
 import type { Env } from "./run";
-import { isSessionId, titleToSet } from "./session-name";
+import { isSessionId, titleToSetOrProblem } from "./session-name";
 
 /** The two tools a crew session never calls: each one asks the person (D36). */
 export const CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
@@ -299,9 +300,20 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
   ].join("\n");
 }
 
-/** Why the store could not be used, as the hook says it: one line, and never a block. */
+/** Why the store could not be used, as the hook says it: one line. */
+function problemLine(why: string): string {
+  return `cc-smart-dev-kit crew-role: ${why}`;
+}
+
+/** Why the store could not be used, as the hook's answer: one line, and never a block. */
 function storeProblem(why: string): HookResult {
-  return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
+  return { stderr: problemLine(why) };
+}
+
+/** `result`, with one more line about what could not be done beside what it already says. */
+function withProblem(result: HookResult, why: string): HookResult {
+  const line = problemLine(why);
+  return { ...result, stderr: result.stderr === undefined ? line : `${result.stderr}\n${line}` };
 }
 
 /** What went wrong, in words. */
@@ -484,11 +496,19 @@ async function stopAnswer(
  * record's name. `titleToSet` is the one rule and the one record (`session-name`, as for a
  * lead's name in `lead-notes`), so a name the kit already set is never set twice, and a session
  * whose title is already right is told nothing.
+ *
+ * **A name that cannot be recorded is not set** (`titleToSetOrProblem`): the failure is
+ * `problem`, one line beside whatever else the turn says — it never loses the person's event or
+ * their prompt.
  */
-function titleAnswer(input: HookInput, record: CrewRecord, env: Env): null | string {
+function titleAnswer(
+  input: HookInput,
+  record: CrewRecord,
+  env: Env,
+): { problem: null | string; title: null | string } {
   const sessionId = stringField(input.session_id);
-  if (!isSessionId(sessionId)) return null;
-  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+  if (!isSessionId(sessionId)) return { problem: null, title: null };
+  return titleToSetOrProblem(env, sessionId, record.name, stringField(input.session_title));
 }
 
 /** The title alone in a `UserPromptSubmit` answer, or nothing to say at all. */
@@ -519,15 +539,18 @@ async function personPromptAnswer(
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const record = found.record;
-  const title = titleAnswer(input, record, env);
+  const { problem: nameProblem, title } = titleAnswer(input, record, env);
+  // The name's own failure is one line beside whatever else this turn says.
+  const said = (result: HookResult): HookResult =>
+    nameProblem === null ? result : withProblem(result, nameProblem);
   const prompt = stringField(input.prompt);
-  if (prompt === null) return titleOnly(title);
+  if (prompt === null) return said(titleOnly(title));
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
-  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return titleOnly(title);
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return said(titleOnly(title));
   const line = personLine(prompt);
   // Nothing to say: a prompt of blank lines is the person's, but the lead gets no line for it.
-  if (line === "") return titleOnly(title);
+  if (line === "") return said(titleOnly(title));
   try {
     await appendCrewEvent(
       paths.stateDir,
@@ -548,11 +571,13 @@ async function personPromptAnswer(
     // address would stay lost for good, which is the very bug this is here to fix.
     const problem = storeProblem(reasonOf(error));
     const only = titleOnly(title);
-    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
+    return said(only.stdout === undefined ? problem : { ...problem, stdout: only.stdout });
   }
-  return title === null
-    ? addContext("UserPromptSubmit", personWroteLine())
-    : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
+  return said(
+    title === null
+      ? addContext("UserPromptSubmit", personWroteLine())
+      : addContextAndTitle("UserPromptSubmit", personWroteLine(), title),
+  );
 }
 
 /**
@@ -630,7 +655,7 @@ export async function crewRoleAnswer(
   if (event === "UserPromptSubmit")
     return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
-  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
+  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
 
@@ -653,6 +678,7 @@ async function stopFailureAnswer(
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
   options: CrewRoleOptions,
 ): Promise<HookResult> {
   const error = stringField(input.error);
@@ -664,7 +690,9 @@ async function stopFailureAnswer(
   // stopped, or still waits in the queue has no turn to pause.
   if (!(RUNNING_STATES as readonly string[]).includes(record.state)) return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  // The profile the session's own URL names: the router keeps its breaker under `<profile>/<slot>`.
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(

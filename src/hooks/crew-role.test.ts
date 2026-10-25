@@ -26,6 +26,7 @@ import {
 } from "../crew/store";
 import { readTaskGate, taskGateFile, writeTaskGate } from "../crew/tasks";
 import { resumeText } from "../crew/wait";
+import { emptyConfig, saveConfig } from "../gateway/config";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -957,6 +958,39 @@ describe("D42: a model limit pauses the crew session", () => {
     ]);
   });
 
+  test("a session in a profile pauses on its profile's breaker, kept under <profile>/<slot> (RV3)", async () => {
+    const world = await workerWorld();
+    // The router's address and the profile are the config's; the session's own URL names them.
+    saveConfig(cliPaths(world.env).gatewayConfigFile, {
+      ...emptyConfig(),
+      port: 20997,
+      profiles: { "my-project": {} },
+      slots: { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] },
+    });
+    const own = breaker().breakers?.["cc-smart-dev-kit-worker"];
+    if (own === undefined) throw new Error("the fixture has a worker breaker");
+    writeState(world.env, {
+      ...breaker(),
+      breakers: { "my-project/cc-smart-dev-kit-worker": own },
+    });
+    await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      { ...world.env, ANTHROPIC_BASE_URL: "http://127.0.0.1:20997/p/my-project" },
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW, timeZone: "UTC" },
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
+      kind: "slot",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "my-project/cc-smart-dev-kit-worker",
+    });
+    expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
+      "worker slot in profile my-project limited since 21:05; goes on by itself when it answers",
+    );
+  });
+
   test("Claude's own limit next: its model and reset time", async () => {
     const world = await workerWorld();
     writeState(world.env, limit());
@@ -991,9 +1025,11 @@ describe("D42: a model limit pauses the crew session", () => {
       world.repo,
       { nowMs: NOW, timeZone: "UTC" },
     );
+    // The wait keeps the state key of the session's own slot, so the watch asks its breaker.
     expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
       kind: "unknown",
       since: "2026-10-21T22:00:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
     });
     expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
       "it stopped on server_error; the watch goes on with it once a model answers",
@@ -1200,6 +1236,60 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
         "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
       ),
     );
+  });
+
+  test("the name's record cannot be written (TMPDIR is a file): the person's event is recorded, the prompt goes on, one line says why", async () => {
+    // `titleToSet` writes the name it sets into `<TMPDIR>/cc-smart-dev-kit-session-names` before
+    // the event is appended. A throw there crashed the hook; `onCrash` is silent on
+    // UserPromptSubmit, so the lead never heard the person and the session never read that its
+    // brief was overruled.
+    const world = await crewWorld();
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(world.repo, "Stop after the guard.", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
+      { ...world.env, TMPDIR: notAFolder },
+    );
+    expect(result.stdout).toBe(
+      addContext(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+      ).stdout,
+    );
+    // The name is not set: the kit cannot remember it set it, and setting it every turn would
+    // override a `/rename` the person gives later.
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
+    );
+    const events = personEvents(world.stateDir, world.repo);
+    expect(events.map((event) => event.text)).toEqual(["Stop after the guard."]);
+  });
+
+  test("the name's record cannot be written, on a turn that is not the person's: silent, and no title", async () => {
+    const world = await crewWorld();
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(
+          world.repo,
+          '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+          SESSION_UUID,
+        ),
+        session_title: "Fix the login page",
+      },
+      { ...world.env, TMPDIR: notAFolder },
+    );
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
+    );
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 
   test("the lead's own delivery, with a title that is not the record's: the name alone", async () => {

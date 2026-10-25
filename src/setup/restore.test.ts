@@ -354,6 +354,53 @@ describe("where backups live", () => {
   });
 });
 
+describe("restore: a taken-over value put back (F8)", () => {
+  /** A file whose key the take-over claimed ("theirs") and the kit then set ("ours"). */
+  function takenThenSet() {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, `${JSON.stringify({ model: "opus", a: "theirs" }, null, 2)}\n`);
+    applyManagedJson({ file: settings, stateDir, claim: [[["a"], "theirs"]] });
+    applyManagedJson({ file: settings, stateDir, set: [[["a"], "ours"]] });
+    return { settings, stateDir };
+  }
+
+  test("is reported as put back, not as written instead, and the file is forgotten", () => {
+    const { settings, stateDir } = takenThenSet();
+
+    const [result] = restore(stateDir);
+    expect(JSON.parse(read(settings))).toEqual({ model: "opus", a: "theirs" });
+    expect(result?.action).toBe("cleaned");
+    // Not "taken out", and not a key restore wrote again for a later stage.
+    expect(result?.details).toEqual([]);
+    expect(result?.written).toBeUndefined();
+    expect(result?.putBack).toEqual(["a"]);
+    // Nothing of ours is left in it: a second restore has nothing to do.
+    expect(readChanged(stateDir)).toEqual({});
+    expect(restore(stateDir)).toEqual([]);
+  });
+
+  test("a value the file already holds changes nothing: no backup, no write, and it is forgotten", () => {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, `${JSON.stringify({ model: "opus", a: "theirs" }, null, 2)}\n`);
+    applyManagedJson({ file: settings, stateDir, claim: [[["a"], "theirs"]] });
+    // A claim writes no file, so `changed.json` holds nothing yet: a key the kit set elsewhere does.
+    applyManagedJson({ file: settings, stateDir, set: [[["b"], 1]] });
+    applyManagedJson({ file: settings, stateDir, remove: [["b"]] });
+    const backups = listBackups(stateDir, settings).length;
+    const before = read(settings);
+
+    const [result] = restore(stateDir);
+    expect(result?.action).toBe("unchanged");
+    expect(result?.putBack).toBeUndefined();
+    expect(result?.savedAs).toBeUndefined();
+    expect(listBackups(stateDir, settings)).toHaveLength(backups);
+    expect(JSON.parse(read(settings))).toEqual(JSON.parse(before));
+    expect(readChanged(stateDir)).toEqual({});
+  });
+});
+
 describe("restore: write instead", () => {
   test("a key written again is reported in `written`, and the file stays tracked for stage 2", () => {
     const { dir, stateDir } = setup();

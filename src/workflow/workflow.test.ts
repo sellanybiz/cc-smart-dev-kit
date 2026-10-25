@@ -71,6 +71,7 @@ describe("the workflow schema", () => {
         archiveDays: 3,
         enabled: true,
         handoffPercent: 70,
+        handoffTokens: 400000,
         idleStopMinutes: 10,
         keep: ["plugin:acme-tools@acme", "server:sequential-thinking"],
         max: 4,
@@ -110,6 +111,9 @@ describe("the workflow schema", () => {
       ["quietMinutes", -1],
       ["handoffPercent", 0],
       ["handoffPercent", 101],
+      ["handoffTokens", 0],
+      ["handoffTokens", -5],
+      ["handoffTokens", 1.5],
       ["softHours", 0],
       ["maxHours", -2],
       ["archiveDays", 0],
@@ -218,6 +222,15 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
       ok: false,
       why: "crew.handoffPercent is a whole number 1-100",
+    });
+    expect(parseWorkflowValue("crew.handoffTokens", "400000")).toEqual({ ok: true, value: 400000 });
+    expect(parseWorkflowValue("crew.handoffTokens", "0")).toEqual({
+      ok: false,
+      why: "crew.handoffTokens is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.handoffTokens", "400k")).toEqual({
+      ok: false,
+      why: "crew.handoffTokens is a whole number, 1 or more",
     });
     expect(parseWorkflowValue("crew.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
     expect(parseWorkflowValue("crew.memoryGb", "0")).toEqual({
@@ -350,6 +363,7 @@ describe("resolveWorkflow: the order", () => {
       archiveDays: { value: 7, source: "default" },
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
+      handoffTokens: { value: 400000, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
       keep: { value: [], source: "default" },
       max: { value: 24, source: "default" },

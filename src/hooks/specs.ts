@@ -447,7 +447,7 @@ export const crewRoleHook: HookSpec = {
  * changed among its crew sessions since its last turn — the store's events from a per-lead cursor,
  * rendered by the watch's own `eventLine`, said once. **Machine-wide**: it is silent unless the
  * input's `session_id` is a lead recorded in this repository, and it reads no project file. At a
- * SessionStart — a start, a resume, a clear, a compaction — it adds one line first: the lead's
+ * SessionStart — a start, a resume, a compaction — it adds one line first: the lead's
  * crew sessions build the work (D61). At a prompt it also adds one reminder line while the lead's
  * own task folder holds no task file (D23); never a block. A crash is one line on stderr and
  * exit 0: a note never stops a lead's turn.

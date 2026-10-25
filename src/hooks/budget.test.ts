@@ -8,6 +8,7 @@ import {
   budgetMs,
   GUARD_BUDGET_ENV,
   GUARD_BUDGET_MS,
+  SHORT_GUARD_BUDGET_MS,
   startBudget,
 } from "./budget";
 
@@ -27,6 +28,36 @@ describe("the hook budget", () => {
     for (const value of ["", "0", "-5", "soon", "NaN"]) {
       expect([value, budgetMs({ [GUARD_BUDGET_ENV]: value })]).toEqual([value, GUARD_BUDGET_MS]);
     }
+  });
+
+  test("a hook with 10 s has a budget of 8 s, and the variable shortens that one too", () => {
+    expect(SHORT_GUARD_BUDGET_MS).toBe(8_000);
+    expect(budgetMs({}, SHORT_GUARD_BUDGET_MS)).toBe(8_000);
+    expect(budgetMs({ [GUARD_BUDGET_ENV]: "3000" }, SHORT_GUARD_BUDGET_MS)).toBe(3_000);
+    // Above that hook's own budget: cut to it, though it is below the 30 s hook's.
+    expect(budgetMs({ [GUARD_BUDGET_ENV]: "20000" }, SHORT_GUARD_BUDGET_MS)).toBe(8_000);
+    let now = 0;
+    const { timeFor } = startBudget({}, () => now, SHORT_GUARD_BUDGET_MS);
+    expect(timeFor(5_000)).toBe(5_000);
+    now = 5_000;
+    // 8 s less 5 s spent less the 2 s margin.
+    expect(timeFor(5_000)).toBe(1_000);
+    now = 6_500;
+    expect(timeFor(5_000)).toBeLessThanOrEqual(0);
+  });
+
+  test("a hook that knows when it started counts the budget from there", () => {
+    // The frame's own project lookup runs first: 5 s spent before the hook's code starts leave a
+    // fresh 8 s budget only 3 s, and the margin takes 2 s of that.
+    let now = 105_000;
+    const { timeFor } = startBudget({}, () => now, SHORT_GUARD_BUDGET_MS, 100_000);
+    expect(timeFor(5_000)).toBe(1_000);
+    // Started late, the budget is gone before the hook's own code runs a call.
+    now = 108_500;
+    expect(timeFor(5_000)).toBeLessThanOrEqual(0);
+    // Without the start time it counts from the call, as before.
+    const fresh = startBudget({}, () => now, SHORT_GUARD_BUDGET_MS);
+    expect(fresh.timeFor(5_000)).toBe(5_000);
   });
 
   test("each call gets its own limit or what is left, and nothing is left at the end", () => {

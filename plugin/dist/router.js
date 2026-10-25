@@ -6314,7 +6314,6 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
@@ -6542,6 +6541,11 @@ function effortPin(config, slot, target) {
   const own = pins[slot];
   return own !== undefined && Object.hasOwn(own, target) ? own[target] : undefined;
 }
+function profileNamesSlot(config, profile, slot) {
+  const named = config.profiles !== undefined && Object.hasOwn(config.profiles, profile);
+  const slots = named ? config.profiles?.[profile]?.slots : undefined;
+  return slots !== undefined && Object.hasOwn(slots, slot);
+}
 function profileSlotChain(config, profile, slot) {
   const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
   if (own === "claude")
@@ -6573,7 +6577,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 function breakerOn(config, slot) {
   if (slot === JUDGE_SLOT)
@@ -7266,20 +7270,27 @@ function earliestRestSeconds(failures, nowMs) {
 function describeFailures(failures, nowMs) {
   return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
 }
-function breakerChangeHint(slot, profile = null) {
-  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
+function breakerChangeCommand(slot, profile) {
+  const short = slotShortName(slot);
+  return profile === null ? `gateway slot ${short} <targets>` : `gateway profile ${profile} slot ${short} <targets>`;
 }
-function breakerMessage(slot, sinceMs, failures, nowMs, profile = null) {
+function breakerChangeHint(slot, profile = null, inherited = false) {
+  const own = `${COMMAND} ${breakerChangeCommand(slot, profile)}`;
+  if (profile === null || !inherited)
+    return own;
+  return `${own} (a chain of its own for this profile), or ${COMMAND} ${breakerChangeCommand(slot, null)} (the machine's chain, which this profile uses)`;
+}
+function breakerMessage(slot, sinceMs, failures, nowMs, profile = null, inherited = false) {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
   const where = profile === null ? slot : `${slot} in profile ${profile}`;
-  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile)}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile, inherited)}`;
 }
 function breakerAnswer(answer) {
   const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
   return Response.json({
     error: {
-      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null),
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null, answer.inherited ?? false),
       type: "rate_limit_error"
     },
     type: "error"
@@ -8124,7 +8135,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
-var ROUTER_FEATURES = ["profiles"];
+var ROUTER_FEATURES = ["profiles", "claude-slot-aliases"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -9439,6 +9450,7 @@ function createRouter(deps) {
     let targets = targets0;
     let outcome = first;
     let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
+    const inherited = () => profile !== null && !profileNamesSlot(deps.getConfig(), profile, slot);
     let counted = null;
     const stopping = () => deps.shutdown?.aborted === true;
     const answer = (response) => ({
@@ -9455,7 +9467,7 @@ function createRouter(deps) {
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
         return;
       open.reminderAt = nowMs;
-      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`);
+      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile, inherited())}`);
     };
     try {
       for (;; ) {
@@ -9465,6 +9477,7 @@ function createRouter(deps) {
         const endsAt = startMs + holdLimitMs(config, body);
         const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
           failures,
+          inherited: inherited(),
           nowMs,
           profile,
           sinceMs: open.since,

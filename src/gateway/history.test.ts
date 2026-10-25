@@ -620,6 +620,8 @@ describe("the router's request history", () => {
     const history = collector();
     const config = testConfig({
       backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:1" } },
+      // The next target answers only with the slot's fallback switch on (off by default, D66).
+      fallback: { "cc-smart-dev-kit-worker": true },
       slots: { "cc-smart-dev-kit-worker": ["omniroute:m1", "claude-sonnet-5-5"] },
     });
     const { handle, settled } = routerWithHistory(

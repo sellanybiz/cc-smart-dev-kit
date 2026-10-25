@@ -42,7 +42,7 @@ import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
-import { realProbe } from "../gateway/health";
+import { realProbe, routerFetch } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
 import {
@@ -71,7 +71,6 @@ import { locateCheckout } from "../project/resolve";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
-import { LAUNCHER_NAME } from "../setup/launcher";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { alertsAt } from "../workflow/alerts";
@@ -206,11 +205,12 @@ function launchContext(paths: ReturnType<typeof cliPaths>) {
     cwd: process.cwd(),
     env: process.env,
     error: (line: string) => console.error(line),
-    fetch: (url: string, init: RequestInit) => fetch(url, init),
+    fetch: routerFetch,
     home: paths.home,
     platform: process.platform,
     print: (line: string) => console.log(line),
     runSession: realRunSession,
+    settingsFile: paths.settingsFile,
     stateDir: paths.stateDir,
     which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
@@ -375,6 +375,7 @@ async function main(argv: string[]): Promise<number> {
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
         alertsAt(paths, process.cwd(), process.env),
+        process.env,
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
@@ -386,10 +387,10 @@ async function main(argv: string[]): Promise<number> {
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
-      // Not in --help: the two alert hooks start it, detached, through the launcher, so the
-      // wait for a click — a minute on screen, half an hour for the usage-limit alert —
-      // runs from the installed version, not the hook's version folder
-      // (src/entries/stop-failure.ts, src/entries/notify.ts).
+      // Not in --help: the notifier starts it, detached, through the launcher, so the wait for a
+      // click — a minute on screen — runs from the installed version, not the hook's version
+      // folder (src/entries/notify.ts). The usage-limit hook shows its plain alert itself; the
+      // worker still reads that hook's own format, for an older hook in a running session.
       const argument = rest.length === 1 ? (rest[0] ?? "") : null;
       const notifyAlert = argument === null ? null : parseNotifyWorkerAlert(argument);
       if (notifyAlert !== null) {
@@ -414,8 +415,7 @@ async function main(argv: string[]): Promise<number> {
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join(paths.binDir, LAUNCHER_NAME);
-      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+      if (runAlert(alert, process.platform, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;

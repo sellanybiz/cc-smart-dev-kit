@@ -31,10 +31,15 @@ type Env = Record<string, string | undefined>;
 export const CLAUDE_TIMEOUT_MS = 30_000;
 
 /**
- * The `--autocompact` a crew session gets: `auto`, Claude Code's own window for the model. The kit
- * reads that window to measure the hand-off (`context-window.ts`: Claude Code's own report, one
- * table, a backend's listed window), but it never sets a token count of its own here. The
- * hand-off at `workflow.crew.handoffPercent` comes before Claude Code's own compaction either way.
+ * The `--autocompact` a crew session gets: `auto`, Claude Code's own window for the model. `auto`
+ * makes Claude Code skip every `autoCompactWindow` and `modelSettings.<model>.autoCompactWindow`
+ * setting of the person's, so none of them can pull a crew session's compaction below its
+ * hand-off; only `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` still
+ * apply (proved on 2.1.308 and 2.1.310, `docs/claude-code-contract.md`). The kit reads that window
+ * to measure the hand-off (`context-window.ts`: Claude Code's own report, one table, a backend's
+ * listed window), but it never sets a token count of its own here. The hand-off at
+ * `workflow.crew.handoffTokens` or `workflow.crew.handoffPercent`, whichever comes first, stays a
+ * margin below the point Claude Code compacts at (`self-watch.ts`, `claude-settings.ts`).
  */
 export const CREW_AUTOCOMPACT = "auto";
 

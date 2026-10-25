@@ -2344,7 +2344,23 @@ describe("the actions", () => {
     }
   });
 
-  test("an off scout or worker shows its switch's own default on the Slots page, not off", async () => {
+  test("D66: an off scout or worker shows its switch's default, off, on the Slots page", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.call("/");
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain("&quot;worker&quot;:false");
+      expect(slots.body).toContain("&quot;scout&quot;:false");
+      expect(slots.body).toContain("&quot;opus&quot;:false");
+      expect(slots.body).not.toContain("&quot;worker&quot;:true");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("an off worker shows its switch's default on the Slots page, and its saved chain keeps the person's on", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
@@ -2356,18 +2372,20 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(off.body).ok).toBe(true);
-      // The CLI turns worker off; the page must not read that as "fallback off".
-      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
-        slots: Record<string, string[]>;
-      };
-      delete config.slots["cc-smart-dev-kit-worker"];
-      writeFileSync(world.paths.gatewayConfigFile, JSON.stringify(config, null, 2), {
-        mode: 0o600,
-      });
+      // The person turned the worker's fallback switch on (it is off by default, D66).
+      const on = await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
+      expect(JSON.parse(on.body).ok).toBe(true);
+      // The worker answers as Claude now: its chain and its on switch move to `kept` (a
+      // `fallback` entry for a slot with no chain would be an invalid config).
+      const toClaude = await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
+      expect(JSON.parse(toClaude.body).ok).toBe(true);
       const slots = await world.call("/slots");
-      expect(slots.body).toContain("&quot;worker&quot;:true");
-      // Opus has no chain either, and its default is off.
+      expect(slots.body).toContain("&quot;worker&quot;:false");
+      // Opus has no chain either, and its switch was never set: off, the default.
       expect(slots.body).toContain("&quot;opus&quot;:false");
+      // The saved chain still holds the switch the person set.
+      const overview = await world.call("/");
+      expect(overview.body).toContain("saved, not in use: omniroute:glm-5.3-flash (fallback on)");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2433,8 +2451,8 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
-      const off = await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
-      expect(JSON.parse(off.body).ok).toBe(true);
+      const on = await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
+      expect(JSON.parse(on.body).ok).toBe(true);
       // The one home: the config, read fresh by the same reader every command uses
       // (`gateway status`, `doctor`, the router).
       const config = loadConfigFile(world.paths.gatewayConfigFile);
@@ -2442,7 +2460,7 @@ describe("the actions", () => {
         "omniroute:glm-5.3-flash",
         "omniroute:deepseek-v4.1-flash",
       ]);
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
       // The portal keeps no copy of its own: no `portal.json` was made.
       expect(existsSync(world.paths.portalStateFile)).toBe(false);
       // And the page shows that chain next.
@@ -2466,7 +2484,7 @@ describe("the actions", () => {
         { slot: "worker", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
         csrf,
       );
-      await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
+      await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
       // To Claude: the chain and its switch move to `kept`.
       const toClaude = await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
       expect(JSON.parse(toClaude.body).ok).toBe(true);
@@ -2474,7 +2492,7 @@ describe("the actions", () => {
       expect(off.slots).not.toHaveProperty("cc-smart-dev-kit-worker");
       expect(off.kept).toEqual({
         "cc-smart-dev-kit-worker": {
-          fallback: false,
+          fallback: true,
           targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"],
         },
       });
@@ -2487,7 +2505,7 @@ describe("the actions", () => {
         "omniroute:glm-5.3-flash",
         "omniroute:deepseek-v4.1-flash",
       ]);
-      expect(back.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      expect(back.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
       expect(back).not.toHaveProperty("kept");
     } finally {
       world.portal.stop();
@@ -2582,10 +2600,10 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
-      // Off is the judge's non-default switch since D44 (on is the default, so "on" would be
+      // On is the judge's non-default switch since D66 (off is the default, so "off" would be
       // written as no entry and there would be nothing to put back).
       expect(
-        JSON.parse((await world.post("slot.fallback", { on: false, slot: "judge" }, csrf)).body).ok,
+        JSON.parse((await world.post("slot.fallback", { on: true, slot: "judge" }, csrf)).body).ok,
       ).toBe(true);
       expect(
         JSON.parse((await world.post("switch", { name: "judge", on: false }, csrf)).body).ok,
@@ -2595,7 +2613,7 @@ describe("the actions", () => {
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         fallback?: Record<string, boolean>;
       };
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": false });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": true });
     } finally {
       world.portal.stop();
       backend.stop();

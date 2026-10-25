@@ -28,7 +28,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   claudeFamily,
-  FALLBACK_OFF_BY_DEFAULT,
   FAMILY_SLOTS,
   isBackendName,
   isProfileName,
@@ -200,7 +199,7 @@ export const gatewayConfigSchema = z
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
      * its family now (`familySlotFor`), and the entry changes nothing: such a chain starts
-     * with its fallback switch at the model slots' default, off (`fallbackOn`). Kept so such
+     * with its fallback switch at the default, off (`fallbackOn`). Kept so such
      * a config loads; `gateway slot opus|fable` drops the entry.
      */
     modelSlots: z.record(z.string(), z.string()).optional(),
@@ -407,6 +406,20 @@ export function effortPin(
 export type ProfileConfig = z.output<typeof profileSchema>;
 
 /**
+ * True when `profile` names the slot itself (a chain, or `"claude"`); false when it does not
+ * name it, or does not exist, and so uses the machine's chain there (`profileSlotChain`).
+ */
+export function profileNamesSlot(
+  config: Pick<GatewayConfig, "profiles">,
+  profile: string,
+  slot: string,
+): boolean {
+  const named = config.profiles !== undefined && Object.hasOwn(config.profiles, profile);
+  const slots = named ? config.profiles?.[profile]?.slots : undefined;
+  return slots !== undefined && Object.hasOwn(slots, slot);
+}
+
+/**
  * The chain a slot has in a profile: the profile's own chain, null when the profile says
  * `"claude"`, and the machine's chain when the profile does not name the slot. Null too when
  * neither has one (the slot is off there).
@@ -456,18 +469,18 @@ export function modelSlotError(
 }
 
 /**
- * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
- * one. Otherwise the slot's default: off for the model slots (`FALLBACK_OFF_BY_DEFAULT`),
- * on for every other slot, the judge included (D44: while Claude cannot judge, the worker's
- * tested targets do; `gateway fallback judge off` keeps Claude alone). A 0.4.x opus or fable
- * chain gets that default too: it moved on only at the plan's usage limit, and "on" now
- * moves on at any 408, 429, 5xx, 529 or network error, so turning it on is the person's
- * choice (`gateway fallback <slot> on`).
+ * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is one,
+ * else off, for every slot (D66, the owner): a chain answers with its first target alone until
+ * the person turns the switch on (`gateway fallback <slot> on`). That holds for the judge too:
+ * with no judge chain of the person's own, Claude judges alone, and the worker's tested targets
+ * stand in while Claude is limited or down (D44) only after `gateway fallback judge on`. A
+ * 0.4.x opus or fable chain, and every other chain, starts off the same way: "on" moves on at
+ * any 408, 429, 5xx, 529 or network error, so turning it on is the person's choice.
  */
 export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 
 /**
@@ -557,6 +570,20 @@ function aliasError(
 }
 
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
+
+/**
+ * The aliases that point at a slot in Claude mode (the slot is not in `slots`), as
+ * `[alias, slot]`, sorted by alias. 1.2.0's `aliasError` accepts them; a 1.1.x router refuses
+ * the whole file for one, so a command that would save one asks the running router for the
+ * `claude-slot-aliases` feature first (`routerFeature`).
+ */
+export function aliasesAtClaudeSlots(
+  config: Pick<GatewayConfig, "aliases" | "slots">,
+): [string, string][] {
+  return Object.entries(config.aliases)
+    .filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
 
 /** A chain saved, not in use, and the slot's fallback switch with it (`kept`). */
 export type KeptChain = z.output<typeof keptChainSchema>;

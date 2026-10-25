@@ -29,7 +29,17 @@ import { withLock } from "../setup/lock";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
-import { chainProblem, chainToCheck, notSlotName, SLOT_WORDS, slotName } from "./commands-chains";
+import {
+  chainProblem,
+  chainToCheck,
+  JUDGE_WARNING,
+  judgeDefaultWords,
+  judgeSwitchWords,
+  notSlotName,
+  SLOT_WORDS,
+  slotName,
+  standInTradeOff,
+} from "./commands-chains";
 import { changeLines, gatewayOut, printChanges } from "./commands-out";
 import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./commands-profile";
 import {
@@ -43,6 +53,7 @@ import {
   projectStateOf,
 } from "./commands-project";
 import {
+  aliasesAtClaudeSlots,
   breakerOn,
   breakerWords,
   ConfigError,
@@ -65,7 +76,13 @@ import {
   saveConfig,
   workerJudgeTargets,
 } from "./config";
-import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
+import {
+  type HealthFetch,
+  type HealthProbe,
+  routerFeature,
+  routerHealth,
+  routerLacksClaudeSlotAliases,
+} from "./health";
 import { HISTORY_RETENTION_DAYS, historyDbBytes, historyDbExists } from "./history";
 import {
   bucketWords,
@@ -103,10 +120,11 @@ import { scheduledTaskService } from "./service-windows";
 import {
   BASE_URL_KEY,
   baseUrlPointsAtGateway,
+  foreignRouting,
   gatewayEnv,
   maskKey,
+  REMOTE_CONTROL_HOST,
   RETIRED_GATEWAY_ENV_KEYS,
-  readGatewaySettings,
   retireOldModelKeys,
   settingsReport,
   shownValue,
@@ -118,7 +136,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   FAMILY_SLOTS,
-  formatTarget,
   isModelSlot,
   JUDGE_SLOT,
   parseTarget,
@@ -165,8 +182,8 @@ Commands:
   slot <slot> clear      Delete the slot's chain, in use or saved.
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
-                         On by default for scout, worker and judge; off for opus, fable.
-                         "fallback judge off": Claude alone judges.
+                         Off by default, for every slot. "fallback judge on": the worker's
+                         tested targets judge while Claude is limited or down.
   effort <slot> <target> <level>|off
                          Pin a backend target's effort (${BACKEND_EFFORT_LEVELS.join(", ")}).
                          Tests the target before saving; off follows Claude Code again.
@@ -1249,38 +1266,10 @@ function keptWords(key: string, kept: KeptChain): string {
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
-/** The trade-off of a judge other than Claude, said wherever one is set or shown. */
-export const JUDGE_WARNING =
-  "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
-
-/** The worker chain's backend targets that have not passed the judge test, in its order. */
-function untestedWorkerTargets(config: GatewayConfig): string[] {
-  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
-    const parsed = parseTarget(text);
-    return (
-      "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text)
-    );
-  });
-}
-
-/**
- * What the judge is, in words, while the person set no judge chain (owner D44): Claude
- * judges every check first, as it always did; while it is limited or down, the worker
- * chain's targets that passed the judge test judge in its place, as long as the judge's
- * fallback switch is on (it is, by default). One home for the words that `gateway status`,
- * `slot judge off`, `fallback judge` and `doctor` say.
- */
-export function judgeDefaultWords(config: GatewayConfig): string {
-  if (!fallbackOn(config, JUDGE_SLOT)) return "Claude judges every check, alone (fallback off)";
-  const standIns = workerJudgeTargets(config).map(formatTarget);
-  const untested = untestedWorkerTargets(config);
-  if (standIns.length === 0) {
-    return untested.length > 0
-      ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)`
-      : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
-  }
-  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
-}
+// What the judge is while no judge chain is set, and the trade-off of a judge other than
+// Claude, moved to `commands-chains.ts` (the profile commands say them too); every caller of
+// this module still imports them from here.
+export { JUDGE_WARNING, judgeDefaultWords };
 
 /** What a slot's fallback switch means for its chain, in words. */
 function fallbackWords(config: GatewayConfig, key: string): string {
@@ -1445,25 +1434,12 @@ async function testWorkerTargets(
 }
 
 /**
- * Whether the worker's tested targets stand in for Claude as the judge, after the worker chain
- * or the judge's default changed: then the caller says `JUDGE_WARNING` (D44: said wherever it
- * is set).
- */
-function standInTradeOff(config: GatewayConfig): boolean {
-  return (
-    !Object.hasOwn(config.slots, JUDGE_SLOT) &&
-    fallbackOn(config, JUDGE_SLOT) &&
-    workerJudgeTargets(config).length > 0
-  );
-}
-
-/**
  * A slot turned off, or whose fallback switch went off, loses its fallback record in the
  * router's state file at once, so the status line stops showing it even before the router's
  * next request (the router drops it too, when it reads the changed config). A file that is
  * not there, or not readable, stays.
  */
-function dropFallbackRecord(statePath: string, slot: string): void {
+export function dropFallbackRecord(statePath: string, slot: string): void {
   let state: ReturnType<typeof parseLimitState>;
   try {
     state = parseLimitState(readFileSync(statePath, "utf8"));
@@ -1500,6 +1476,41 @@ function slotChangeLines(plan: SlotPlan): string[] {
 /** The verdict of every command that changes a slot: the config is read at each request. */
 const ROUTER_TAKES_IT = "The router uses it from its next request.";
 
+/** The verdict when no running router could be asked: saved, and read by the one that runs next. */
+const SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+
+/**
+ * Before `gateway slot` saves: will the router that runs read this config? 1.2.0 accepts an
+ * alias that points at a slot in Claude mode; a 1.1.x router (the one still running until
+ * `gateway setup` replaces it) refuses the whole file, keeps its last good config and ignores
+ * every later change. The router carries no version, so its health page's features say
+ * (`routerFeature`). An older router refuses the change before anything is written; one that
+ * does not answer cannot say, so the change is saved with a warning (`unproved`). A config with
+ * no such alias asks no router.
+ */
+async function routerReadsAliases(
+  ctx: GatewayContext,
+  out: Out,
+  config: GatewayConfig,
+): Promise<{ unproved: boolean }> {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined) return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line(
+      "warn",
+      `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" → ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`,
+    );
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(
+      `${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`,
+    );
+  }
+  return { unproved: false };
+}
+
 /** A slot's change: its first line marked `~`, the lines under it as they are (indented). */
 function printSlotChange(out: Out, lines: readonly string[]): void {
   const [first, ...rest] = lines;
@@ -1530,6 +1541,8 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
   const out = gatewayOut(ctx);
+  // The router is asked outside the lock, like the model lists: it is the network.
+  const router = await routerReadsAliases(ctx, out, first.config);
   /** Each target that passed the test, and the backend URL it passed on. */
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
@@ -1616,7 +1629,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     }
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {
@@ -1669,9 +1682,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now
-        ? "  The worker's tested targets answer when Claude is limited or down."
-        : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+      `  ${judgeSwitchWords(plan.now)}`,
     ]);
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   } else {
@@ -1927,13 +1938,11 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
   } else if (!pointsAtGateway) {
-    out.verdict("info", "The router answers, and Claude Code does not use it.");
-    out.next([
-      {
-        command: `${COMMAND} gateway on`,
-        text: "Point every Claude Code session on this machine at it:",
-      },
-    ]);
+    // The default state (D66): information, how to change it, no to-do.
+    out.verdict(
+      "info",
+      `The gateway is off: the router answers, and Claude Code does not use it. ${COMMAND} gateway on points every Claude Code session on this machine at it.`,
+    );
   } else out.verdict("ok", "The gateway is on, and its router and backends answer.");
   return 0;
 }
@@ -2312,14 +2321,14 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             `  the config as it was before these changes is in ${tildify(backups, paths.home)}`,
           );
         }
-        if (answers !== null) saveAnsweredChains(ctx, answers);
+        if (existsSync(configPath)) warnUntestedJudge(ctx);
         const now = existsSync(configPath) ? loadConfigFile(configPath) : null;
         if (now !== null && Object.keys(now.slots).length === 0) {
           const saved = Object.keys(now.kept ?? {}).length;
           ctx.print(
             saved > 0
-              ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.`
-              : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
+              ? `Every slot is Claude, so every Claude model stays plain Claude, on your own login. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.`
+              : "Every slot is Claude, so every Claude model stays plain Claude, on your own login.",
           );
         }
         if (keyBackedUp) ctx.print(keyBackupLine(backups, paths.home));
@@ -2346,12 +2355,10 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
           );
         }
-        if (
-          !baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) &&
-          answers?.turnOn !== true
-        ) {
+        // Setup never turns the gateway on (D66): it says what is, and the one command.
+        if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
           ctx.print(
-            `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
+            `The gateway is off: Claude Code sends its requests to Anthropic itself. ${COMMAND} gateway on routes them through the router.`,
           );
         }
         return 0;
@@ -2365,7 +2372,6 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   // After the try, never inside it: the key is saved by now, and a failure here must not
   // delete it again. This step catches its own.
   if (code === 0) await proveWorkerTargets(ctx);
-  if (code === 0 && answers?.turnOn === true) return await commandOn(ctx);
   return code;
 }
 
@@ -2386,73 +2392,29 @@ function savedOmniroute(configPath: string): null | { apiKey: string; baseUrl: s
 }
 
 /**
- * The facts `setup`'s questions are asked from (`askSetupQuestions`): the config as it is now,
- * the live model list through the context's own fetch (a test's fake, so no test reaches a real
- * OmniRoute), and `planSlotChange`'s checks for a chain, against the address and key answered.
+ * The facts `setup`'s questions are asked from (`askSetupQuestions`): OmniRoute's address and
+ * key in the config as it is now. No model list, no slot and no gateway state: setup asks the
+ * address and the key only (D66).
  */
 function setupFacts(ctx: GatewayContext): Parameters<typeof askSetupQuestions>[1] {
   const configPath = ctx.paths.gatewayConfigFile;
-  const config = existsSync(configPath) ? loadConfigFile(configPath) : null;
   return {
-    backend: OMNIROUTE,
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
-    hasConfig: config !== null,
+    hasConfig: existsSync(configPath),
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
-    slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
-      chain: config?.slots[key] ?? [],
-      family,
-      key,
-      name: slotName(key),
-    })),
-    claudeWords: SLOT_WORDS.claude,
-    listModels: async ({ apiKey, baseUrl }) => {
-      const listed = await listModels(baseUrl, apiKey, LIST_MODELS_TIMEOUT_MS, ctx.apiFetch);
-      if ("error" in listed) return { reason: listed.error };
-      if (listed.status !== 200) return { reason: `HTTP ${String(listed.status)}` };
-      return { ids: listed.models.map((model) => model.id) };
-    },
-    checkChain: (slot, text, ids, backend) => {
-      const base = config ?? defaultConfig(backend.apiKey, backend.baseUrl);
-      const answered = { apiKey: backend.apiKey, baseUrl: backend.baseUrl };
-      const withBackend = { ...base, backends: { ...base.backends, [OMNIROUTE]: answered } };
-      const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
-      return "error" in plan ? plan.error : null;
-    },
-    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
-    pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print,
   };
 }
 
-/** How long setup waits for OmniRoute's model list before it asks no slot question. */
-const LIST_MODELS_TIMEOUT_MS = 10_000;
-
 /**
- * The chains answered at setup's questions, saved under setup's lock into the config as it is
- * then (the key and the address are in it by now). Each is planned again here: a chain another
- * command made impossible since the question is said in one line and left as it is, never a
- * failed setup.
+ * A judge chain whose targets have no judge test for the address now saved is not used (the
+ * router takes only a target with a matching proof): said once, with the command that tests
+ * it. The chain is the person's own; setup never changes it.
  */
-function saveAnsweredChains(ctx: GatewayContext, answers: SetupAnswers): void {
-  const configPath = ctx.paths.gatewayConfigFile;
-  for (const [slot, text] of Object.entries(answers.chains)) {
-    const plan = planSlotChange(loadConfigFile(configPath), slot, text, {
-      [OMNIROUTE]: answers.ids,
-    });
-    if ("error" in plan) {
-      ctx.print(`! ${slot} stays as it was: ${plan.error}`);
-      continue;
-    }
-    // A proof for a target no worker or judge chain holds any more goes, as with `gateway
-    // slot`; the worker's new targets get theirs from `proveWorkerTargets`, after the lock.
-    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
-    saveConfig(configPath, next);
-    if (plan.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
-    for (const line of slotChangeLines({ ...plan, config: next })) ctx.print(line);
-  }
-  const now = loadConfigFile(configPath);
+function warnUntestedJudge(ctx: GatewayContext): void {
+  const now = loadConfigFile(ctx.paths.gatewayConfigFile);
   const judge = now.slots[JUDGE_SLOT] ?? [];
   const untested = judge.filter((target) => !judgeTargetUsable(now, target));
   if (untested.length > 0) {
@@ -2614,6 +2576,10 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
     out.say(
       "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
     );
+    // A fact about Claude Code, not a suggestion (`docs/claude-code-contract.md` § The gateway).
+    out.say(
+      `Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`,
+    );
   }
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
@@ -2662,19 +2628,7 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   );
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  // A key of the person's own that already holds Anthropic's address sends every session
-  // exactly where `off` would: it routes nothing, and "the gateway is not all off" would be
-  // untrue (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
-  let ownAddressRoutes = true;
-  try {
-    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
-  } catch {
-    ownAddressRoutes = true;
-  }
-  // ENABLE_TOOL_SEARCH routes nothing, and many people set it themselves: theirs to keep.
-  const routing = foreign.filter(
-    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
-  );
+  const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {
       out.line(

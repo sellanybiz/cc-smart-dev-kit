@@ -104,7 +104,7 @@ function opusHold(
     all.filter((one) => one.id !== record.id),
     record.leadSessionId,
     crew,
-    usageFacts(ctx.paths, ctx.now()),
+    usageFacts(ctx.paths, ctx.now(), record.repo),
     { opus: true, unmet: [] },
   );
   const place = placeFor({
@@ -306,6 +306,7 @@ export async function runCrewModel(args: ModelArgs, ctx: CrewContext): Promise<n
     record.kind,
     changedLaunch({ effort: record.effort, model: record.model.named }, args),
     ctx,
+    record.repo,
   );
   if ("refusal" in chosen) {
     ctx.error(`crew model: ${chosen.refusal}`);

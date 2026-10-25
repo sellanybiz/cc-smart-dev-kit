@@ -29,6 +29,7 @@ import {
   readWaitFacts,
   resumeText,
   routerAnsweredSince,
+  targetsNow,
   type WaitFacts,
   waitFor,
   waitOver,
@@ -139,6 +140,7 @@ describe("what a pause waits for, from the router's state file", () => {
     expect(waitFor(paused(), read, NOW)).toEqual({
       kind: "unknown",
       since: "2026-10-21T22:00:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
     });
   });
 
@@ -644,6 +646,126 @@ describe("the router's own answer", () => {
     );
     expect(stateOnly).toMatchObject({ inUse: null, requests: null });
     expect(stateOnly.breakers["cc-smart-dev-kit-worker"]?.held).toBe(3);
+  });
+});
+
+describe("a profile's breaker (RV3: it is stored under <profile>/<slot>)", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const KEY = `my-project/${WORKER}`;
+
+  test("a session in a profile waits for its profile's breaker, and names the profile", () => {
+    const read = facts({ breakers: { [KEY]: breaker() } });
+    expect(waitFor(paused(), read, NOW, "my-project")).toEqual({
+      kind: "slot",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: KEY,
+    });
+    expect(
+      pauseText(
+        { kind: "slot", since: "2026-10-21T21:05:00.000Z", slot: KEY },
+        "rate_limit",
+        NOW,
+        "UTC",
+      ),
+    ).toBe(
+      "worker slot in profile my-project limited since 21:05; goes on by itself when it answers",
+    );
+  });
+
+  test("a profile's breaker is never taken for the machine's session, nor the machine's for a profile's", () => {
+    const profileOnly = facts({ breakers: { [KEY]: breaker() } });
+    expect(waitFor(paused(), profileOnly, NOW).kind).toBe("unknown");
+    const machineOnly = facts({ breakers: { [WORKER]: breaker() } });
+    expect(waitFor(paused(), machineOnly, NOW, "my-project").kind).toBe("unknown");
+    // Another profile's breaker is not this session's either.
+    expect(waitFor(paused(), profileOnly, NOW, "other").kind).toBe("unknown");
+  });
+
+  test("a Claude limit is judged on the profile's own chain, not the machine's", () => {
+    const SONNET_LIMIT = {
+      "claude-sonnet-5-5": { claim: "seven_day", resetsAt: 1_793_217_600, seenAt: NOW - MINUTE },
+    };
+    const onWorker = paused({
+      model: { named: WORKER, resolved: "omniroute:codex/gpt-6-luna", slot: WORKER, tier: null },
+    });
+    // The machine's worker chain starts with Claude; the profile's starts with a backend.
+    const read = facts({
+      inUse: {
+        [WORKER]: ["claude-sonnet-5-5"],
+        [KEY]: ["omniroute:codex/gpt-6-luna", "claude-sonnet-5-5"],
+      },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitFor(onWorker, read, NOW, "my-project")).toEqual({
+      kind: "slot",
+      since: "2026-10-21T22:00:00.000Z",
+      slot: KEY,
+    });
+    // On the machine's chain the same limit holds it.
+    expect(waitFor(onWorker, read, NOW).kind).toBe("claude-limit");
+    // The other way round: the profile's chain starts with Claude, the machine's with a backend.
+    const flipped = facts({
+      inUse: { [WORKER]: ["omniroute:codex/gpt-6-luna"], [KEY]: ["claude-sonnet-5-5"] },
+      limits: SONNET_LIMIT,
+    });
+    expect(waitFor(onWorker, flipped, NOW, "my-project").kind).toBe("claude-limit");
+  });
+
+  test("an unknown wait keeps the state key too, so the watch asks the session's own breaker (review)", () => {
+    expect(waitFor(paused(), facts(), NOW, "my-project")).toEqual({
+      kind: "unknown",
+      since: "2026-10-21T22:00:00.000Z",
+      slot: KEY,
+    });
+    const record = paused({
+      waitingFor: { kind: "unknown", since: "2026-10-21T21:55:00.000Z", slot: KEY },
+    });
+    // The machine's breaker is another session's: it does not hold this one.
+    expect(waitOver(record, facts({ breakers: { [WORKER]: breaker() } }), NOW)).toBe(true);
+    expect(waitOver(record, facts({ breakers: { [KEY]: breaker() } }), NOW)).toBe(false);
+  });
+
+  test("the watch holds a profile's wait while its breaker is open, and lets go when it closes", () => {
+    const record = paused({
+      waitingFor: { kind: "slot", since: "2026-10-21T21:05:00.000Z", slot: KEY },
+    });
+    const open = facts({
+      breakers: { [KEY]: breaker() },
+      inUse: { [KEY]: ["omniroute:glm-5.3-flash"] },
+    });
+    expect(waitOver(record, open, NOW)).toBe(false);
+    expect(waitOver(record, facts({ inUse: { [KEY]: ["omniroute:glm-5.3-flash"] } }), NOW)).toBe(
+      true,
+    );
+    // The profile's chain changed so its first target is not the one that rests.
+    expect(
+      waitOver(
+        record,
+        facts({ breakers: { [KEY]: breaker() }, inUse: { [KEY]: ["ollama:deepseek-v4.1-flash"] } }),
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  test("the chains in use are read for every profile too, over the machine's", () => {
+    const config = {
+      ...emptyConfig(),
+      backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
+      // The profile's own fallback switch is on (off by default, D66), so its whole chain is in use.
+      profiles: {
+        "my-project": {
+          fallback: { [WORKER]: true },
+          slots: { [WORKER]: ["omniroute:glm-5.3-flash", "omniroute:glm-5.3-pro"] },
+        },
+        shared: {},
+      },
+      slots: { [WORKER]: ["omniroute:glm-5.3-flash"] },
+    };
+    expect(targetsNow(config)).toEqual({
+      [WORKER]: ["omniroute:glm-5.3-flash"],
+      [KEY]: ["omniroute:glm-5.3-flash", "omniroute:glm-5.3-pro"],
+      [`shared/${WORKER}`]: ["omniroute:glm-5.3-flash"],
+    });
   });
 });
 

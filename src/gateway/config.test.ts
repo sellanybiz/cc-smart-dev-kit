@@ -11,6 +11,7 @@ import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  aliasesAtClaudeSlots,
   BREAKER_HOLD_CEILING_MS,
   BREAKER_HOLD_NON_STREAMING_MS,
   breakerHoldMs,
@@ -101,6 +102,31 @@ describe("D64: effort pins", () => {
     );
     saveConfig(file, cfg);
     expect(loadConfigFile(file)).toEqual(cfg);
+  });
+});
+
+describe("aliasesAtClaudeSlots (RV3: what a 1.1.x router would refuse)", () => {
+  it("lists the aliases whose slot is not in use, sorted by alias", () => {
+    const config = parsed(
+      raw({
+        aliases: { "old-worker": WORKER, "a-judge": JUDGE, "old-scout": SCOUT },
+        slots: { [SCOUT]: ["omniroute:m1"] },
+      }),
+    );
+    expect(aliasesAtClaudeSlots(config)).toEqual([
+      ["a-judge", JUDGE],
+      ["old-worker", WORKER],
+    ]);
+  });
+
+  it("lists nothing when every aliased slot is in use, or the alias names a model", () => {
+    const config = parsed(
+      raw({
+        aliases: { "old-scout": SCOUT, "to-model": "omniroute:m1" },
+        slots: { [SCOUT]: ["omniroute:m1"] },
+      }),
+    );
+    expect(aliasesAtClaudeSlots(config)).toEqual([]);
   });
 });
 
@@ -371,11 +397,28 @@ describe("the judge's targets (D44)", () => {
     expect(workerJudgeTargets(parsed(raw()))).toEqual([]);
   });
 
-  it("the judge's fallback switch is on by default, and can be saved off with no judge chain", () => {
+  it("D66: every slot's fallback switch is off by default, the judge's too", () => {
     const config = parsed(raw());
-    expect(fallbackOn(config, JUDGE)).toBe(true);
+    for (const slot of [SCOUT, WORKER, OPUS, FABLE, JUDGE, "cc-smart-dev-kit-own"]) {
+      expect(fallbackOn(config, slot)).toBe(false);
+    }
+    // No config at all (a `kept` chain's default reads `fallbackOn({}, slot)`).
+    expect(fallbackOn({}, SCOUT)).toBe(false);
+    expect(fallbackOn({}, JUDGE)).toBe(false);
+  });
+
+  it("D66: a switch the person turned on stays on, the judge's with no judge chain too", () => {
+    const on = parsed(raw({ fallback: { [JUDGE]: true, [SCOUT]: true } }));
+    expect(fallbackOn(on, JUDGE)).toBe(true);
+    expect(fallbackOn(on, SCOUT)).toBe(true);
+    // A slot the person did not switch on stays off beside it.
+    expect(fallbackOn(on, WORKER)).toBe(false);
     const off = parsed(raw({ fallback: { [JUDGE]: false } }));
     expect(fallbackOn(off, JUDGE)).toBe(false);
+  });
+
+  it("the judge's fallback switch can be saved with no judge chain; another slot's cannot", () => {
+    expect("config" in parseConfig(raw({ fallback: { [JUDGE]: true } }))).toBe(true);
     // Another slot with no chain is still refused.
     const refused = parseConfig(raw({ fallback: { "cc-smart-dev-kit-nope": false } }));
     expect("error" in refused && refused.error).toContain(

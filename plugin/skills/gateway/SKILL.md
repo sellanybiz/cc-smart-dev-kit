@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, running one session on plain Claude, the gateway or a profile (`launch`), and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use GLM until it resets", "how much is on Opus".
+description: Use when the person wants another model behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute or a backend model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, running one session on plain Claude, the gateway or a profile (`launch`), and what never to do. Trigger phrases - "use another model for subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use another model until it resets", "how much is on Opus".
 ---
 
 # The AI Gateway
@@ -22,15 +22,16 @@ repository (the installed plugin does not carry the docs).
   `cc-smart-dev-kit-judge`.
 - **Every slot is Claude or Custom, and `slots` in the config alone says which** (D2): a slot
   with a chain there is Custom, and the chain answers; a slot without one is Claude — that
-  model is plain Claude, sent to Anthropic unchanged. A fresh setup gives no slot a chain, and
-  the plugin never picks a model for anyone.
+  model is plain Claude, sent to Anthropic unchanged. **Every slot is Claude by default, the
+  judge's too, the gateway is off, and no fallback is on** (D66): setup gives no slot a chain,
+  and the plugin never picks a model for anyone.
 - **A switch to Claude never forgets the chain**: `gateway slot <slot> claude` moves it to the
   config's `kept` field, saved and not in use; `custom` brings it back with its fallback
   switch; `clear` deletes it. `off` still means `claude`. A router or CLI of 0.5.x reads the
   same file right (it never looks at `kept`), so a rollback turns nothing back on.
 - **A slot's chain** is a list of targets the person picked: the first answers; the next
-  only while the slot's **fallback switch** is on (default: on for scout, worker and judge, off
-  for opus and fable). The router never adds a target, Claude included: a chain that is
+  only while the slot's **fallback switch** is on (default: off for every slot; the person
+  turns it on, slot by slot). The router never adds a target, Claude included: a chain that is
   used up returns its error.
 - A target is `claude-<id>` or `<backend>:<model>`, from the live list (`gateway models`).
   A `claude-<id>` target that is the very model asked for gets the request as sent; another
@@ -43,13 +44,13 @@ repository (the installed plugin does not carry the docs).
 
 ## Set it up
 
-1. A backend first, for example OmniRoute with an Ollama Cloud connection. **On a terminal,
-   plain `cc-smart-dev-kit gateway setup` asks its questions one at a time** — OmniRoute's
-   address (Enter keeps `http://127.0.0.1:20128` or the saved one), its API key with no echo
-   (Enter keeps the saved one), a chain for each model slot picked by number from the live model
-   list (Enter keeps the slot as it is: "off" for a slot with no chain, so no model is picked for
-   anyone; the judge is not asked), and whether to turn the gateway on now (default no). Every
-   question comes before any change; Ctrl+C at one stops it with exit 130 and nothing changed.
+1. A backend first: OmniRoute, with a connection to the provider the person uses. **On a
+   terminal, plain `cc-smart-dev-kit gateway setup` asks two questions** — OmniRoute's address
+   (Enter keeps `http://127.0.0.1:20128` or the saved one) and its API key with no echo (Enter
+   keeps the saved one). It asks no slot, offers no model, and does not turn the gateway on:
+   every slot stays Claude and the gateway stays off until the person gives a slot a chain
+   (§ Give a slot a chain) and runs `gateway on`. Both questions come before any change; Ctrl+C
+   at one stops it with exit 130 and nothing changed.
    Any key flag, `--no-backend-key` or `--yes`, and every run with no terminal (a script, a
    pipe, this shell tool), asks nothing. The first key is the `omniroute` backend's. **Two ways
    to give it with a flag**, and neither puts a secret on the command line:
@@ -77,11 +78,11 @@ repository (the installed plugin does not carry the docs).
    have an OmniRoute key the backend accepts? — with an exit code (0 works, 1 no key yet and
    OmniRoute answers, 3 could not be judged, 4 the key is refused); read-only, and it never asks
    the router's port.
-3. `cc-smart-dev-kit gateway on`. **Every running Claude session on the machine switches on
-   save.** Pick the moment with the person, and let the person run it when this session's
-   own requests would switch (§ A change to your own model path).
+3. `cc-smart-dev-kit gateway on`, when the person asks for it. **Every running Claude session
+   on the machine switches on save.** Pick the moment with the person, and let the person run
+   it when this session's own requests would switch (§ A change to your own model path).
 
-## Give a slot a chain ("use GLM for subagents", "Claude for subagents again")
+## Give a slot a chain ("use another model for subagents", "Claude for subagents again")
 
 1. `cc-smart-dev-kit gateway models`: every model each backend offers, and the slot table.
    Take every target from this list; never suggest one from memory.
@@ -129,7 +130,7 @@ exception (D65):
   a second. Take every target from `gateway models`; never pick one from memory.
 - The whole contract: `docs/gateway.md` § The breaker.
 
-## Opus and Fable ("use GLM until it resets", "try this model as Opus")
+## Opus and Fable ("use another model until it resets", "try this model as Opus")
 
 The opus and fable slots work exactly like scout and worker. Any model can answer every
 Opus request, the main session's included:
@@ -152,16 +153,14 @@ Opus request, the main session's included:
   conversation may be more than a backend takes. Its 400 gets a WARN in the router log:
   `/compact`, a new session, or a target with a larger window first.
 
-**The alert.** With the gateway set up, a turn stopped at the limit shows a desktop
-notification about the session's own model and its family's slot. On Linux, "Use <target>
-until it resets" runs `cc-smart-dev-kit gateway slot <slot> …` (the model first, then a Claude
-target of another family from your own chains when only that family's window ran out, such
-as `seven_day_opus`, then the affordable targets of your worker chain, then your scout's),
-then `cc-smart-dev-kit gateway fallback <slot> on`; then send a message in Claude Code to go
-on now. A slot that already has your chain with its fallback off gets only the second
-command. "Wait" does nothing. On macOS it names the commands. With no affordable target in
-any of your chains, it offers nothing and points at `gateway models`. A `gateway.json`
-that cannot be read still gives the alert, without the action.
+**The alert.** With the gateway set up, a turn stopped at the limit shows a plain desktop
+notification about the session's own model: which limit was hit and when it resets, and that
+Claude Code continues by itself after the reset. It offers nothing — no model, no chain, no
+fallback switch, no `gateway on`, no button — whatever the session runs on. When a stop should
+not have happened (the slot that answers the model starts with a backend, or its fallback is
+on), it adds that one fact and points at `cc-smart-dev-kit gateway status`. To change a chain or
+a fallback, use `gateway slot` and `gateway fallback` yourself. A `gateway.json` that cannot
+be read still gives the plain alert.
 
 **The status line.** `cc-smart-dev-kit setup --statusline` (asked once in a terminal when none is
 set; a "no" is remembered) shows the 5-hour and 7-day usage, warns from 85 %, and shows
@@ -173,12 +172,13 @@ launched, which model wrote each reply, and the share on Opus. Read only; no mes
 
 ## The judge for auto mode
 
-**Claude judges auto mode's safety checks (should this action run?) first.** While Claude is
-limited or down, the person's worker-slot targets that passed the judge test judge in its place,
-in that chain's order. `gateway setup` and `gateway slot worker …` run the test and say which
-target passed and which failed; a failed or untested target never judges, and `doctor` does not
-fail on it. The judge's fallback switch is on by default; `cc-smart-dev-kit gateway fallback
-judge off` keeps Claude alone. There is no hidden Claude step after a judge chain's targets.
+**Claude judges auto mode's safety checks (should this action run?) first, and alone by
+default.** The judge's fallback switch is off (D66). Only when the person turns it on
+(`cc-smart-dev-kit gateway fallback judge on`) do the person's worker-slot targets that passed the
+judge test judge in Claude's place, while Claude is limited or down, in that chain's order.
+`gateway slot worker …` runs the test and says which target passed and which failed; a failed
+or untested target never judges, and `doctor` does not fail on it. There is no hidden Claude
+step after a judge chain's targets.
 
 The person may give the judge slot a chain of their own, which wins (the worker's targets are
 never added to it), only when they ask:
@@ -196,7 +196,7 @@ never added to it), only when they ask:
 included: it decides worse. It can block good work, and a weak one can let a risky command
 through; the test proves one obvious case only. Every check sends the conversation and the next
 action to that provider. "Auto mode blocks good work": `gateway slot judge claude` for your own
-chain, or `gateway fallback judge off` so Claude alone judges.
+chain, or `gateway fallback judge off` so Claude alone judges (the default).
 
 **WebSearch** runs on Claude only: a request that carries Anthropic's web search tool goes to
 Anthropic as sent, whatever the slot. When Claude is at its limit or down, the search result is
@@ -267,7 +267,10 @@ project this session itself runs in, the person runs it** (§ A change to your o
 one session, in the folder it runs in, whatever the machine's and the project's settings say:
 
 - `--no-gateway`: plain Claude at Anthropic, on the person's own claude.ai login. Use it for a
-  task that must not go through an affordable model.
+  task that must not go through an affordable model. A login key or helper in their settings
+  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) still bills the session in the
+  three modes that pass a file: the launch starts anyway and names each one on stderr, with its
+  file.
 - `--gateway`: this machine's router; `--profile <name>`: the router with one profile's chains.
 - No mode: no `--settings` file, and the settings decide as for `claude`.
 - Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). The session is
@@ -275,8 +278,9 @@ one session, in the folder it runs in, whatever the machine's and the project's 
 
 It passes a `--settings` file holding only `env.ANTHROPIC_BASE_URL`, because a settings file
 beats the shell and the project's files for that one session. It refuses an unknown profile,
-`--gateway` on a machine with no gateway, and running inside a Claude Code session — the person
-runs it in their own terminal.
+`--gateway` or `--profile` on a machine with no gateway or while the router does not answer
+(`gateway setup` is the fix), and running inside a Claude Code session — the person runs it in
+their own terminal.
 
 ## Profiles: a project's own chains
 
@@ -292,6 +296,10 @@ A profile is a named set of chains and switches over the machine's, reached by t
   this profile. `clear` forgets the entry, so the machine's chain applies there again.
 - `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the
   one before it fails or rests?
+- `gateway profile <name> breaker <slot> on|off`: may the router hold a request while every target
+  of the profile's slot is limited or down? The judge has none. This is the profile's own switch.
+  `gateway breaker` sets the machine's, which a profile that sets none follows; it never changes a
+  profile's own setting.
 - `gateway profile <name> remove`: deletes the profile; a project whose URL still names it answers
   as plain Claude.
 - The change is live: the router reads the config again within about a second.
@@ -308,8 +316,9 @@ after no file points at it any more (`restore`'s second stage does that), or its
 
 **Remote Control is off while the gateway is on.** `claude remote-control` needs
 `api.anthropic.com` (it answers "Remote Control is only available when using Claude via
-api.anthropic.com"), and `gateway on` points every session at the router. `restore`, or a
-session started without the base URL, is the way back.
+api.anthropic.com"), and `gateway on` points every session at the router. `gateway off` is the
+way back: Claude Code compares the host, and the address `off` writes is Anthropic's own. A
+session that started with the gateway on connects after a restart or `/remote-control`.
 
 `cc-smart-dev-kit restore` takes the gateway out in two stages for the same reason: the first run
 writes Anthropic's own address into each settings file's address key instead of removing it —
@@ -352,7 +361,7 @@ one the moment the port is free.
 - **Set `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`** in Claude Code's settings: it
   replaces the person's own login.
 - **Set `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`**: an agent
-  launched without a `model` (a reviewer, say) would run on an affordable slot.
+  launched without a `model` (a reviewer, say) would run on a slot's backend model.
 - **Pick a model for the person**, or add one to a chain as a hidden fallback: every target
   comes from the live list, by the person's choice.
 - **Change prompt text** to help an affordable model: no edited prompts, no output style, no

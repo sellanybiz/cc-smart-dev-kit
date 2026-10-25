@@ -71,8 +71,12 @@ The guarantees:
   each file before it changes it. With the gateway on, the
   router's copy and unit wait for a second restore (§ The AI gateway), and its first stage
   names the command that runs the second one — the `bun --no-env-file --config=… …/dist/cli.js
-  restore` line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. A
-  restore with nothing left changes nothing.
+  restore` line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. That
+  first stage keeps a file tracked only for a key it **wrote again** (the gateway's address, the
+  `writeInstead` list); a value a take-over recorded that comes back is the person's own, so it is
+  named as put back and the file is forgotten. When no address was written because every one is
+  the person's — set, changed or removed — the stage says the sessions keep the router until they
+  restart. A restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
 `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the lock and `backups/`. The
@@ -88,6 +92,15 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
   `src/setup/` under its lock, and `cc-smart-dev-kit setup` does that by hand today.)
 - **The background self-update** installs a newer plugin version with Claude Code's own
   `claude plugin` commands. It writes no user file and restarts nothing.
+- **The move to the Claude defaults (D66) is `setup`'s alone.** Once per machine, in its own
+  section of the report ("Gateway"): a backup of `gateway.json`, every slot's chain moved to
+  Claude (a machine's chain waits in `kept`, a profile's is removed) and every fallback switch
+  removed, the gateway turned off through `gateway off`'s code (`turnOff`), claude-mem back on
+  Claude, one line per change. `doctor` says in one `·` line when a `gateway.json` still waits
+  for it. Its marker (`claude-by-default` in the state
+  folder) is written at the first real setup on every machine; `--dry-run` writes nothing, and
+  `restore` leaves the marker, as it leaves `gateway.json`. A session start and the background
+  update never reach it (a test walks their imports). `docs/gateway.md` § Slots and defaults.
 - **A manual run** (`cc-smart-dev-kit setup`, `cc-smart-dev-kit gateway setup`, `restore`) is the
   only thing that restarts or stops a service or changes a permission. It shows the change
   first, and asks before it cuts the answers in flight. Two more restart a service, and both

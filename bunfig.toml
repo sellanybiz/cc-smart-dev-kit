@@ -1,3 +1,6 @@
 [test]
 # Removes each test's temp folders after it runs.
 preload = ["./src/testing/setup.ts"]
+# portal/ is its own package, with its own node_modules: its tests need React, which the
+# kit's install does not carry. CI's "The portal's tests" step runs them from portal/.
+pathIgnorePatterns = ["portal/**"]
