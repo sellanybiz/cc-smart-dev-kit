@@ -9,11 +9,20 @@
  * Read with the one shell reader (`invocationsOf`, `src/shell/command.ts`): wrappers, `bash -c`
  * and the dialect of the tool are stepped through like every guard does. A read (`gh issue
  * list`, `view`, `status`, a GET) and `--help` are no write; a subcommand this reader does not
- * know counts as one (a guard fails closed). **Not read**, as for the merge guard: a `gh`
- * alias, a script file, `xargs`-style runners. The program of a line worked out when it runs
- * (`$GH issue create`) is a risk of its own (`computedIssueRisk`).
+ * know counts as one (a guard fails closed). Flags are read the way gh reads them: before the
+ * subcommand an option takes the next word, and a `-h` after an option is that option's value.
+ * The runners `find -exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they
+ * name. **Not read**, as for the merge guard: a `gh` alias and a script file. The program of a
+ * line worked out when it runs (`$GH issue create`) is a risk of its own (`computedIssueRisk`).
  */
-import { type Dialect, invocationsOf, isShort, shortFlags } from "../shell/command";
+import {
+  type Dialect,
+  invocationsOf,
+  isShort,
+  programName,
+  shortFlags,
+  wordsOf,
+} from "../shell/command";
 import {
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
@@ -26,9 +35,6 @@ const ISSUE_READS: ReadonlySet<string> = new Set(["help", "list", "ls", "status"
 
 /** The methods that change something. */
 const WRITE_METHODS: ReadonlySet<string> = new Set(["DELETE", "PATCH", "POST", "PUT"]);
-
-/** `gh`'s own options that take a value, so a value is never read as the subcommand. */
-const GH_VALUED: ReadonlySet<string> = new Set(["-R", "--repo", "--hostname"]);
 
 /** A repository's issues endpoints: `repos/<o>/<r>/issues`, below it, or by repository id. */
 const ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
@@ -104,18 +110,33 @@ function apiIssueWrite(rest: readonly string[]): string | null {
   return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
 }
 
+/**
+ * True when `words[index]` is a help flag gh answers with usage and no work: `-h` or `--help`,
+ * and NOT the value of the option before it (gh's flag library hands an option the next word
+ * whatever it looks like: `--title -h` is a title). A help flag that follows another option is
+ * read as that option's value, so the reader errs toward "a write".
+ */
+function isHelpAt(words: readonly string[], index: number): boolean {
+  const word = words[index] ?? "";
+  if (word !== "-h" && word !== "--help") return false;
+  const before = words[index - 1] ?? "";
+  return !(before.startsWith("-") && !before.includes("="));
+}
+
 /** What a `gh …` invocation writes to the issues, named; null when it writes none. */
 function ghIssueWrite(args: readonly string[]): string | null {
   // `--help` prints the usage and does nothing (before a `--`, as gh's own parser reads it).
   const dashes = args.indexOf("--");
-  if ((dashes === -1 ? args : args.slice(0, dashes)).some((w) => w === "-h" || w === "--help")) {
-    return null;
-  }
+  const words = dashes === -1 ? args : args.slice(0, dashes);
+  if (words.some((_, index) => isHelpAt(words, index))) return null;
   const positional: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const word = args[index] ?? "";
     if (word.startsWith("-")) {
-      if (!word.includes("=") && GH_VALUED.has(word)) index += 1;
+      // Before the subcommand cobra strips the flags it may not know to find the command word
+      // (`gh issue -t view create` runs `create`, with `view` as `-t`'s value): an option
+      // without an `=` takes the next word, so that word is never read as the subcommand.
+      if (!word.includes("=") && word !== "-h" && word !== "--help") index += 1;
       continue;
     }
     positional.push(word);
@@ -139,11 +160,34 @@ function ghIssueWrite(args: readonly string[]): string | null {
  */
 export function issueWrites(command: string, dialect?: Dialect): string[] {
   const found: string[] = [];
-  for (const run of invocationsOf(command, dialect)) {
-    if (run.program !== "gh" || run.computed) continue;
-    const write = ghIssueWrite(run.args);
+  const note = (write: string | null) => {
     if (write !== null && !found.includes(write)) found.push(write);
+  };
+  for (const run of invocationsOf(command, dialect)) {
+    if (run.computed) continue;
+    if (run.program === "gh") note(ghIssueWrite(run.args));
+    else if (RUNNER_PROGRAMS.has(run.program)) {
+      for (const args of runnerGhArgs(run.words)) note(ghIssueWrite(args));
+    }
   }
+  return found;
+}
+
+/** Programs that run the `gh` named in their own words: `find -exec`, `watch`, `su -c`, … */
+const RUNNER_PROGRAMS: ReadonlySet<string> = new Set(["find", "parallel", "su", "watch", "xargs"]);
+
+/** The words after each `gh` a runner names: a `gh` word, and a quoted `gh …` script. */
+function runnerGhArgs(words: readonly string[]): string[][] {
+  const found: string[][] = [];
+  words.forEach((word, index) => {
+    if (programName(word) === "gh") {
+      found.push(words.slice(index + 1));
+    } else if (/\s/.test(word)) {
+      const inner = wordsOf(word, "bash");
+      const at = inner.findIndex((one) => programName(one) === "gh");
+      if (at !== -1) found.push(inner.slice(at + 1));
+    }
+  });
   return found;
 }
 

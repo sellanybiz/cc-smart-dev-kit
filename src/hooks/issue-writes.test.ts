@@ -31,6 +31,32 @@ describe("a raw issue write", () => {
     expect(requestsIssueWrite(command, "bash")).toBe(true);
   });
 
+  // The review of GI1: gh reads flags its own way, and runs what other programs name.
+  test.each([
+    "gh issue --title list create --body x", // an option before the subcommand takes `list`
+    "gh issue -t view create -b x",
+    "gh issue create --title -h --body x", // `-h` is the title
+    "gh issue comment 5 --body --help",
+    "find . -name a -exec gh issue create -t t -b b ;",
+    "watch -n 60 gh issue create -t t -b b",
+    `su -c "gh issue create -t t -b b" me`,
+    `parallel "gh issue create -t {} -b b" ::: a`,
+    "xargs -n1 gh issue close < ids",
+  ])("review: %s is a write", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(true);
+  });
+
+  test.each([
+    "gh issue --help create",
+    "gh issue create -h",
+    "gh issue -R o/r list",
+    "gh issue --repo=o/r view 5",
+    "find . -name a -exec gh issue list ;",
+    "watch -n 60 gh issue view 5",
+  ])("review: %s is no write", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(false);
+  });
+
   test.each([
     "gh api repos/o/r/issues -X POST -f title=t",
     "gh api repos/o/r/issues -f title=t",

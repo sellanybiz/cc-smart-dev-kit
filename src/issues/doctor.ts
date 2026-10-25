@@ -54,7 +54,9 @@ export async function issuesChecks(world: IssuesDoctorWorld): Promise<Check[]> {
   const named = own.repo.slice(`${HOST}/`.length);
   const call: GhCall = { env: world.env, folder: world.cwd, timeoutMs: GH_TIMEOUT_MS };
 
-  const auth = await world.gh(["auth", "status", "--hostname", HOST], call);
+  // `--active`: only the account gh uses here. Without it a second, stale account on the host
+  // makes gh exit 1 while the active one works (`gh auth status --help`).
+  const auth = await world.gh(["auth", "status", "--hostname", HOST, "--active"], call);
   if (auth.kind === "missing") {
     return [
       {

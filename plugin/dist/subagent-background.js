@@ -6294,9 +6294,9 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
-var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma";
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
 function isLabelName(name) {
-  return name.length >= 1 && name.length <= 50 && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
 }
 var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
@@ -15602,6 +15602,155 @@ function fableSession(input, env, paths) {
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
+// src/hooks/issue-writes.ts
+var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
+var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
+var ISSUE_MUTATION = /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
+function apiPath(endpoint) {
+  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+}
+function isGraphql(endpoint) {
+  const path = apiPath(endpoint).toLowerCase();
+  return path === "graphql" || path.endsWith("/graphql");
+}
+function apiIssueWrite(rest) {
+  const fields = [];
+  let endpoint = null;
+  let body = false;
+  let method = null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      endpoint ??= rest[index + 1] ?? null;
+      break;
+    }
+    if (word === "-h" || word === "--help")
+      return null;
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name))
+        return null;
+      if (name === "--input")
+        body = true;
+      if (name === "--method")
+        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
+      if (name === "--field" || name === "--raw-field") {
+        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+      }
+      if (at === -1 && API_VALUE_FLAGS.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const letter = flags.slice(-1);
+      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
+        continue;
+      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      if (wantsNext)
+        index += 1;
+      if (letter === "f" || letter === "F")
+        fields.push(value);
+      if (letter === "X")
+        method = value;
+      continue;
+    }
+    endpoint ??= word;
+  }
+  if (endpoint === null)
+    return null;
+  if (isGraphql(endpoint)) {
+    for (const field of fields) {
+      if (!field.startsWith("query="))
+        continue;
+      const mutation = ISSUE_MUTATION.exec(field)?.[0];
+      if (mutation !== undefined)
+        return `a gh api graphql mutation (${mutation})`;
+    }
+    return null;
+  }
+  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  const path = apiPath(endpoint);
+  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
+}
+function isHelpAt(words, index) {
+  const word = words[index] ?? "";
+  if (word !== "-h" && word !== "--help")
+    return false;
+  const before = words[index - 1] ?? "";
+  return !(before.startsWith("-") && !before.includes("="));
+}
+function ghIssueWrite(args) {
+  const dashes = args.indexOf("--");
+  const words = dashes === -1 ? args : args.slice(0, dashes);
+  if (words.some((_, index) => isHelpAt(words, index)))
+    return null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word.startsWith("-")) {
+      if (!word.includes("=") && word !== "-h" && word !== "--help")
+        index += 1;
+      continue;
+    }
+    positional.push(word);
+    if (positional[0] === "api")
+      return apiIssueWrite(args.slice(index + 1));
+    if (positional.length === 2)
+      break;
+  }
+  const [group, sub] = positional;
+  if (group !== "issue" || sub === undefined)
+    return null;
+  const name = sub.toLowerCase();
+  if (ISSUE_READS.has(name))
+    return null;
+  if (name === "develop" && args.some((word) => word === "-l" || word === "--list"))
+    return null;
+  return `gh issue ${name}`;
+}
+function issueWrites(command, dialect) {
+  const found = [];
+  const note = (write) => {
+    if (write !== null && !found.includes(write))
+      found.push(write);
+  };
+  for (const run of invocationsOf(command, dialect)) {
+    if (run.computed)
+      continue;
+    if (run.program === "gh")
+      note(ghIssueWrite(run.args));
+    else if (RUNNER_PROGRAMS.has(run.program)) {
+      for (const args of runnerGhArgs(run.words))
+        note(ghIssueWrite(args));
+    }
+  }
+  return found;
+}
+var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch", "xargs"]);
+function runnerGhArgs(words) {
+  const found = [];
+  words.forEach((word, index) => {
+    if (programName(word) === "gh") {
+      found.push(words.slice(index + 1));
+    } else if (/\s/.test(word)) {
+      const inner = wordsOf(word, "bash");
+      const at = inner.findIndex((one) => programName(one) === "gh");
+      if (at !== -1)
+        found.push(inner.slice(at + 1));
+    }
+  });
+  return found;
+}
+function computedIssueRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)));
+}
+function requestsIssueWrite(command, dialect) {
+  return issueWrites(command, dialect).length > 0 || computedIssueRisk(command, dialect);
+}
+
 // src/jobs/classify.ts
 import { isAbsolute as isAbsolute4, join as join27, normalize } from "path";
 function runOf(source) {
@@ -17522,7 +17671,8 @@ var runGh = async (args, { folder, env, input, timeoutMs }) => {
       child.exited
     ]);
     if (child.signalCode !== null) {
-      return { code: null, err: err.trim(), kind: "timeout", out };
+      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
+      return { code: null, err: err.trim(), kind, out };
     }
     return {
       code: child.exitCode,
@@ -17534,7 +17684,7 @@ var runGh = async (args, { folder, env, input, timeoutMs }) => {
     return {
       code: null,
       err: error instanceof Error ? error.message : String(error),
-      kind: "missing",
+      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
       out: ""
     };
   }
@@ -17834,127 +17984,6 @@ function openPrRefusal(resolved, base, opening) {
   return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
 }
 
-// src/hooks/issue-writes.ts
-var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
-var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
-var GH_VALUED2 = new Set(["-R", "--repo", "--hostname"]);
-var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
-var ISSUE_MUTATION = /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
-function apiPath(endpoint) {
-  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
-}
-function isGraphql(endpoint) {
-  const path = apiPath(endpoint).toLowerCase();
-  return path === "graphql" || path.endsWith("/graphql");
-}
-function apiIssueWrite(rest) {
-  const fields = [];
-  let endpoint = null;
-  let body = false;
-  let method = null;
-  for (let index = 0;index < rest.length; index++) {
-    const word = rest[index] ?? "";
-    if (word === "--") {
-      endpoint ??= rest[index + 1] ?? null;
-      break;
-    }
-    if (word === "-h" || word === "--help")
-      return null;
-    if (word.startsWith("--")) {
-      const at = word.indexOf("=");
-      const name = at === -1 ? word : word.slice(0, at);
-      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name))
-        return null;
-      if (name === "--input")
-        body = true;
-      if (name === "--method")
-        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
-      if (name === "--field" || name === "--raw-field") {
-        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
-      }
-      if (at === -1 && API_VALUE_FLAGS.has(name))
-        index += 1;
-      continue;
-    }
-    if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
-      const letter = flags.slice(-1);
-      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
-        continue;
-      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
-      if (wantsNext)
-        index += 1;
-      if (letter === "f" || letter === "F")
-        fields.push(value);
-      if (letter === "X")
-        method = value;
-      continue;
-    }
-    endpoint ??= word;
-  }
-  if (endpoint === null)
-    return null;
-  if (isGraphql(endpoint)) {
-    for (const field of fields) {
-      if (!field.startsWith("query="))
-        continue;
-      const mutation = ISSUE_MUTATION.exec(field)?.[0];
-      if (mutation !== undefined)
-        return `a gh api graphql mutation (${mutation})`;
-    }
-    return null;
-  }
-  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
-  const path = apiPath(endpoint);
-  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
-}
-function ghIssueWrite(args) {
-  const dashes = args.indexOf("--");
-  if ((dashes === -1 ? args : args.slice(0, dashes)).some((w) => w === "-h" || w === "--help")) {
-    return null;
-  }
-  const positional = [];
-  for (let index = 0;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (word.startsWith("-")) {
-      if (!word.includes("=") && GH_VALUED2.has(word))
-        index += 1;
-      continue;
-    }
-    positional.push(word);
-    if (positional[0] === "api")
-      return apiIssueWrite(args.slice(index + 1));
-    if (positional.length === 2)
-      break;
-  }
-  const [group, sub] = positional;
-  if (group !== "issue" || sub === undefined)
-    return null;
-  const name = sub.toLowerCase();
-  if (ISSUE_READS.has(name))
-    return null;
-  if (name === "develop" && args.some((word) => word === "-l" || word === "--list"))
-    return null;
-  return `gh issue ${name}`;
-}
-function issueWrites(command, dialect) {
-  const found = [];
-  for (const run of invocationsOf(command, dialect)) {
-    if (run.program !== "gh" || run.computed)
-      continue;
-    const write = ghIssueWrite(run.args);
-    if (write !== null && !found.includes(write))
-      found.push(write);
-  }
-  return found;
-}
-function computedIssueRisk(command, dialect) {
-  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)));
-}
-function requestsIssueWrite(command, dialect) {
-  return issueWrites(command, dialect).length > 0 || computedIssueRisk(command, dialect);
-}
-
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
@@ -17967,9 +17996,10 @@ function crewPullRequestAnswer(input, env, cwd) {
   if (command === null)
     return SILENT;
   const dialect = dialectOfTool(input.tool_name);
-  if (!requestsPullRequestChange(command, dialect)) {
-    return requestsIssueWrite(command, dialect) ? toolDecision("deny", CREW_ISSUE_REFUSAL) : SILENT;
-  }
+  if (requestsIssueWrite(command, dialect))
+    return toolDecision("deny", CREW_ISSUE_REFUSAL);
+  if (!requestsPullRequestChange(command, dialect))
+    return SILENT;
   if (computedMergeRisk(command, dialect))
     return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect))
@@ -18029,8 +18059,7 @@ async function mergeGuard(context) {
   const answer = await pullRequestGuard(context);
   if (answer.stdout !== undefined)
     return answer;
-  const question = issueWriteQuestion(context);
-  return question === null ? SILENT : toolDecision("ask", question);
+  return issueWriteAnswer(context);
 }
 function issueWriteQuestion(context) {
   const { project, input } = context;
@@ -18043,6 +18072,12 @@ function issueWriteQuestion(context) {
     return null;
   const what = writes.length > 0 ? `writes to GitHub's issues (${writes.join(", ")})` : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
   return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+}
+function issueWriteAnswer(context) {
+  const question = issueWriteQuestion(context);
+  if (question === null)
+    return SILENT;
+  return crewIdOf(context.env) !== null ? toolDecision("deny", CREW_ISSUE_REFUSAL) : toolDecision("ask", question);
 }
 async function pullRequestGuard(context) {
   const { project, input, env, cwd, paths } = context;
@@ -19199,7 +19234,12 @@ var mergeGuardHook = {
     if (crewIdOf(context.env) !== null)
       return SILENT;
     const command = stringField(toolInput(input).command);
-    return command !== null && requestsPullRequestChange(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
+    if (command === null)
+      return SILENT;
+    if (requestsPullRequestChange(command)) {
+      return toolDecision("ask", cannotCheck("whether this merge may happen by itself", message));
+    }
+    return requestsIssueWrite(command) ? toolDecision("ask", cannotCheck("whether this issue write may happen by itself", message)) : SILENT;
   },
   logFacts: (input) => {
     const command = stringField(toolInput(input).command);
@@ -19207,7 +19247,7 @@ var mergeGuardHook = {
   },
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
     const command = commandOf3(input);
-    return command !== "" && requestsPullRequestChange(command);
+    return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
   }),
   crewLimits: (input, _checkout, { env }) => crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard

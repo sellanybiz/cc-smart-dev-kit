@@ -68,10 +68,12 @@ describe("the switch", () => {
     expect((await fileIssue(w, REQUEST)).kind).toBe("filed");
   });
 
-  test("a policy that cannot be read is a refusal, never a guess", async () => {
-    const { gh, world: w } = world({ committed: null });
-    // No committed file and no personal file: the default (off) applies.
-    expect(refusal(await fileIssue(w, REQUEST))).toContain("issues.enabled is off");
+  test("a project that never opted in files nothing, even with the person's own switch on", async () => {
+    // The review of GI1: one global switch must not file into every repository ever cloned.
+    const { gh, world: w } = world({ committed: null, personal: { issues: { enabled: true } } });
+    const why = refusal(await fileIssue(w, REQUEST));
+    expect(why).toContain("no .claude/cc-smart-dev-kit.json");
+    expect(why).toContain("project init");
     expect(gh.calls).toEqual([]);
   });
 });
@@ -160,7 +162,64 @@ describe("filing and the hidden marker", () => {
     const created = gh.calls.filter(
       (call) => call.args[0] === "label" && call.args[1] === "create",
     );
-    expect(created.map((call) => call.args[2])).toEqual(["hooks"]);
+    // Options first, then `--`, then the name: it can never be read as an option (the review).
+    expect(created.map((call) => call.args)).toEqual([
+      [
+        "label",
+        "create",
+        "--repo",
+        OWN_REPO,
+        "--description",
+        "Filed by cc-smart-dev-kit",
+        "--",
+        "hooks",
+      ],
+    ]);
+  });
+
+  test("a label that starts with a dash is refused, and a label is screened like the text", async () => {
+    const { gh, world: w } = world();
+    expect(refusal(await fileIssue(w, { ...REQUEST, labels: ["-d"] }))).toContain("label");
+    const why = refusal(
+      await fileIssue(w, { ...REQUEST, labels: ["ghp_abcdefghijklmnopqrstuvwxyz0123456789"] }),
+    );
+    expect(why).toContain("a label, line 1, column 1");
+    expect(why).not.toContain("ghp_");
+    expect(gh.calls).toEqual([]);
+  });
+
+  test("an update of a closed issue says so, and does not reopen it", async () => {
+    const closed = {
+      body: `old\n\n${markerLine(fingerprintHash(REQUEST.fingerprint))}\n`,
+      closed: true,
+      labels: ["kit:found"],
+      number: 9,
+      title: "old",
+      url: "https://github.com/example-org/my-app/issues/9",
+    };
+    const { gh, world: w } = world({ gh: { issues: [closed] } });
+    const outcome = await fileIssue(w, REQUEST);
+    expect(issueLine(outcome)).toBe(
+      "updated #9 https://github.com/example-org/my-app/issues/9 (closed issue)",
+    );
+    expect(gh.calls.some((call) => call.args[0] === "issue" && call.args[1] === "reopen")).toBe(
+      false,
+    );
+  });
+
+  test("the big list read gets the write time, and asks for the state", async () => {
+    const { gh, world: w } = world();
+    const timeouts: number[] = [];
+    const inner = w.gh;
+    w.gh = async (args, call) => {
+      if (args[0] === "issue" && args[1] === "list") timeouts.push(call.timeoutMs);
+      return inner(args, call);
+    };
+    await fileIssue(w, REQUEST);
+    expect(timeouts).toEqual([30_000]);
+    expect(
+      gh.calls.find((call) => call.args[1] === "list" && call.args[0] === "issue")?.args,
+    ).toContain("number,url,body,state");
   });
 
   test("a label the schema would refuse is refused before gh is called", async () => {

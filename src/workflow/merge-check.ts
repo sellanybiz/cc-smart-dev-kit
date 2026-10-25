@@ -100,7 +100,9 @@ export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => 
       child.exited,
     ]);
     if (child.signalCode !== null) {
-      return { code: null, err: err.trim(), kind: "timeout", out };
+      // The time limit stops the child with SIGTERM; any other signal is gh dying, not time.
+      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
+      return { code: null, err: err.trim(), kind, out };
     }
     return {
       code: child.exitCode,
@@ -109,11 +111,12 @@ export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => 
       out,
     };
   } catch (error) {
-    // No gh on PATH (spawn throws ENOENT).
+    // The spawn threw: no gh on the PATH the call runs with, or something else (a folder that
+    // is not there). Only the first is "missing".
     return {
       code: null,
       err: error instanceof Error ? error.message : String(error),
-      kind: "missing",
+      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
       out: "",
     };
   }

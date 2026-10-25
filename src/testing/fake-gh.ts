@@ -9,6 +9,8 @@ import type { GhCall, GhExec, GhResult } from "../workflow/merge-check";
 /** One issue the fake holds. */
 export interface FakeIssue {
   body: string;
+  /** True: the issue is closed (`state: CLOSED` in a list). */
+  closed?: boolean;
   labels: string[];
   number: number;
   title: string;
@@ -87,7 +89,8 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
         return result("ok", JSON.stringify(state.labels.map((name) => ({ name }))));
       }
       if (group === "label" && action === "create") {
-        state.labels.push(args[2] ?? "");
+        // The label is the word after `--`, the way gh's positional argument is given.
+        state.labels.push(args.at(-1) ?? "");
         return result("ok", "ok\n");
       }
       if (group === "issue" && action === "list") {
@@ -97,7 +100,14 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
         );
         return result(
           "ok",
-          JSON.stringify(listed.map(({ body, number, url }) => ({ body, number, url }))),
+          JSON.stringify(
+            listed.map(({ body, closed, number, url }) => ({
+              body,
+              number,
+              state: closed === true ? "CLOSED" : "OPEN",
+              url,
+            })),
+          ),
         );
       }
       if (group === "issue" && action === "create") {

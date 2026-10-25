@@ -86,12 +86,20 @@ function numberField(key: NumberKey) {
  * comma (`gh issue create --label` splits on it). One home: the schema checks a file with it,
  * and `parseWorkflowValue` a value a person types, in the same words.
  */
-export const LABEL_RULE = "a label name of 1-50 characters on one line, with no comma";
+export const LABEL_RULE =
+  "a label name of 1-50 characters on one line, with no comma, not starting with -";
 
-/** True when `name` is a label name the kit may ask GitHub for (`LABEL_RULE`). */
+/**
+ * True when `name` is a label name the kit may ask GitHub for (`LABEL_RULE`). A leading `-`
+ * is refused: a command line could read the name as an option.
+ */
 export function isLabelName(name: string): boolean {
   return (
-    name.length >= 1 && name.length <= 50 && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name
+    name.length >= 1 &&
+    name.length <= 50 &&
+    !name.startsWith("-") &&
+    !/[\p{Cc}\p{Cf},]/u.test(name) &&
+    name.trim() === name
   );
 }
 

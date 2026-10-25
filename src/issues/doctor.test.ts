@@ -29,7 +29,7 @@ describe("doctor: GitHub Issues", () => {
       },
     ]);
     // Logged in is asked of origin's host; the repository is named in full each time.
-    expect(gh.calls[0]?.args).toEqual(["auth", "status", "--hostname", "github.com"]);
+    expect(gh.calls[0]?.args).toEqual(["auth", "status", "--hostname", "github.com", "--active"]);
   });
 
   test("gh missing: a failure, with where to get it", async () => {

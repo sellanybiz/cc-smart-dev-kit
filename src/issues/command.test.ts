@@ -150,6 +150,23 @@ describe.skipIf(process.platform === "win32")("the real gh executor", () => {
     expect(result.kind).toBe("timeout");
   });
 
+  test("review: a folder that is not there is a failure, not a missing gh", async () => {
+    const env = withGh("echo hi");
+    const result = await runGh(["--version"], {
+      env,
+      folder: "/nonexistent-folder-gi1",
+      timeoutMs: 5_000,
+    });
+    expect(result.kind).toBe("failed");
+  });
+
+  test("review: gh killed by another signal is a failure, not a timeout", async () => {
+    const env = withGh("kill -9 $$");
+    const result = await runGh(["--version"], call(env));
+    expect(result.kind).toBe("failed");
+    expect(result.code).toBeNull();
+  });
+
   test("a write is given more time than a read", () => {
     expect(GH_WRITE_TIMEOUT_MS).toBeGreaterThan(10_000);
   });

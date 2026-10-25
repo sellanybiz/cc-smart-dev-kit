@@ -188,10 +188,11 @@ export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): 
   // The cheap pure read first, as `mergeGuard` does: an ordinary call finds nothing and pays
   // nothing, and `gh alias list` is read only for a word that may be an alias.
   const dialect = dialectOfTool(input.tool_name);
-  if (!requestsPullRequestChange(command, dialect)) {
-    // Not a pull request: a raw issue write is the other thing a crew session never does (D67).
-    return requestsIssueWrite(command, dialect) ? toolDecision("deny", CREW_ISSUE_REFUSAL) : SILENT;
-  }
+  // A raw issue write is the other thing a crew session never does (D67). Read FIRST: a line
+  // that also holds a `gh <word>` this guard cannot name (an extension) is a pull request
+  // question whose alias read can end in silence, and must not hide the write behind it.
+  if (requestsIssueWrite(command, dialect)) return toolDecision("deny", CREW_ISSUE_REFUSAL);
+  if (!requestsPullRequestChange(command, dialect)) return SILENT;
   // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
   // cannot be named: its words name an opening or a merge, which a crew session never does
   // (D24), so it is denied here rather than left to the guard's project part (F5-1).
@@ -303,8 +304,7 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
   // Any answer about a pull request already puts the whole command to the person (or refuses
   // it); a line that changes none is asked about when it writes to GitHub's issues (D67).
   if (answer.stdout !== undefined) return answer;
-  const question = issueWriteQuestion(context);
-  return question === null ? SILENT : toolDecision("ask", question);
+  return issueWriteAnswer(context);
 }
 
 /**
@@ -327,6 +327,15 @@ function issueWriteQuestion(context: HookContext): string | null {
       ? `writes to GitHub's issues (${writes.join(", ")})`
       : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
   return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+}
+
+/** The guard's last answer for an issue write: asked, and for a crew session denied (D67). */
+function issueWriteAnswer(context: HookContext): HookResult {
+  const question = issueWriteQuestion(context);
+  if (question === null) return SILENT;
+  return crewIdOf(context.env) !== null
+    ? toolDecision("deny", CREW_ISSUE_REFUSAL)
+    : toolDecision("ask", question);
 }
 
 /** The pull request half of the guard: merges, openings and readying. */

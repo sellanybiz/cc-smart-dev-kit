@@ -31,7 +31,7 @@
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { githubRepoInUrl } from "../setup/marketplace-access";
 import {
   GH_TIMEOUT_MS,
@@ -68,14 +68,26 @@ export interface IssueWorld {
 }
 
 export type IssueOutcome =
-  | { kind: "filed" | "updated"; number: number; public: boolean; url: string }
+  | {
+      /** An update of an issue that is closed: said, never reopened. */
+      closed?: true;
+      kind: "filed" | "updated";
+      number: number;
+      public: boolean;
+      url: string;
+    }
   | { kind: "refused"; why: string };
 
-/** The one line `issue file` prints: `filed #n url`, `updated #n url`, or `refused: why`. */
+/**
+ * The one line `issue file` prints: `filed #n url`, `updated #n url`, or `refused: why`, with
+ * ` (closed issue)` after an update of a closed issue and ` (public repository)` after a post
+ * to a public one.
+ */
 export function issueLine(outcome: IssueOutcome): string {
   if (outcome.kind === "refused") return `refused: ${outcome.why}`;
+  const closed = outcome.closed === true ? " (closed issue)" : "";
   const where = outcome.public ? " (public repository)" : "";
-  return `${outcome.kind} #${outcome.number} ${outcome.url}${where}`;
+  return `${outcome.kind} #${outcome.number} ${outcome.url}${closed}${where}`;
 }
 
 /** How many issues one list may return: the most `gh issue list --limit` is asked for. */
@@ -99,6 +111,7 @@ function textProblem(request: IssueRequest, home: string | null): string | null 
   for (const [part, text] of [
     ["the title", request.title],
     ["the body", request.body],
+    ...request.labels.map((label) => ["a label", label] as const),
   ] as const) {
     const hit = screenText(text, home)[0];
     if (hit !== undefined) {
@@ -177,7 +190,15 @@ export function resolveSwitch(
   try {
     const checkout = locateCheckout(world.cwd, { env: world.env });
     if (checkout === null) return { why: "this folder is not in a git project" };
-    const base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
+    const { config } = loadProjectConfig(checkout);
+    // A project that never opted in has not agreed to GitHub issues: the person's own switch
+    // alone must not file into every repository they happen to have cloned.
+    if (config === null) {
+      return {
+        why: `this project has no ${CONFIG_PATH}, so it has not opted in to the kit; the kit files issues only in a project that has (${COMMAND} project init)`,
+      };
+    }
+    const base = config.worktrees?.base ?? null;
     const read = resolveGate(world.paths, checkout, base, {
       env: world.env,
       timeoutMs: GIT_TIMEOUT_MS,
@@ -194,19 +215,21 @@ export function resolveSwitch(
 }
 
 /** The issues that carry `label`, every state, once: number, url and body. */
-type Listed = { issues: { body: string; number: number; url: string }[] } | { why: string };
+type ListedIssue = { body: string; closed: boolean; number: number; url: string };
+type Listed = { issues: ListedIssue[] } | { why: string };
 
 function parseListed(out: string): Listed {
   try {
     const rows = JSON.parse(out) as unknown;
     if (!Array.isArray(rows)) return { why: "gh answered something this command cannot read" };
-    const issues: { body: string; number: number; url: string }[] = [];
+    const issues: ListedIssue[] = [];
     for (const row of rows as Record<string, unknown>[]) {
       if (typeof row.number !== "number" || typeof row.url !== "string") {
         return { why: "gh answered something this command cannot read" };
       }
       issues.push({
         body: typeof row.body === "string" ? row.body : "",
+        closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
         url: row.url,
       });
@@ -275,7 +298,8 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   }
 
   const hash = fingerprintHash(request.fingerprint);
-  const listed = await read([
+  // The one big read: up to 1000 bodies, fetched a page at a time, so it gets the write time.
+  const listed = await write([
     "issue",
     "list",
     "--repo",
@@ -287,7 +311,7 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body",
+    "number,url,body,state",
   ]);
   if (listed.kind !== "ok") return refuse(ghProblem("listed the issues", listed));
   const all = parseListed(listed.out);
@@ -308,19 +332,28 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
       );
       if (edit.kind !== "ok") return refuse(ghProblem("updated the issue", edit));
     }
-    return { kind: "updated", number: double.number, public: facts.isPublic, url: double.url };
+    return {
+      ...(double.closed ? { closed: true as const } : {}),
+      kind: "updated",
+      number: double.number,
+      public: facts.isPublic,
+      url: double.url,
+    };
   }
 
   for (const label of labels) {
     if (existing.includes(label.toLowerCase())) continue;
+    // The label is a positional word: every option first, then `--`, so a name can never be
+    // read as an option and take `--repo` with it (the repository would be gh's own guess).
     const made = await write([
       "label",
       "create",
-      label,
       "--repo",
       repo,
       "--description",
       `Filed by ${COMMAND}`,
+      "--",
+      label,
     ]);
     if (made.kind !== "ok") return refuse(ghProblem(`created the label ${label}`, made));
   }

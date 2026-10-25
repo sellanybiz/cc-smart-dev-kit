@@ -34,8 +34,14 @@ set` writes the person's own value, `--project` the project's file.
 **A session cannot turn it on.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
 inside Claude Code (`OUTBOUND_KEYS`, as a review-gate key does): a session must not open its own
 way out. `workflow propose` stays open, because a person reviews and merges its pull request. The
-refusal is a courtesy that a command can drop (`env -u CLAUDECODE`); the committed-file rule is
-what keeps a session's own edits out.
+refusal is a courtesy that a command can drop (`env -u CLAUDECODE`); what stops a session from
+dropping it, or from writing the person's `workflow.json` directly, is the session-escape guard
+(`src/hooks/session-escape-guard.ts`), and what keeps a session's own edit of the project's file
+out is the committed-file rule.
+
+**Only a project that opted in.** `issue file` and `doctor` need a `.claude/cc-smart-dev-kit.json`
+in the project: the person's own switch alone does not file into every repository they have
+cloned. Without the file the command refuses and names `project init`.
 
 A project that sets `workflow.issues` raises `requires` to `>=1.3` (`WORKFLOW_ISSUES_SINCE`).
 
@@ -51,7 +57,9 @@ It prints one line and exits 0 (filed, updated), 1 (refused) or 2 (not a command
 - `updated #<n> <url>` — the fingerprint was there: the body is updated, never a second issue.
 - `refused: <why>`
 
-A public repository adds ` (public repository)` to the first two. The code is `src/issues/`
+An update of a closed issue adds ` (closed issue)` (the issue is not reopened), and a public
+repository adds ` (public repository)`, in that order, to the first two. A caller reads the first
+word and the number. The code is `src/issues/`
 (`file.ts` the work, `screen.ts`, `marker.ts`, `command.ts`, `doctor.ts`).
 
 ### What it checks, in this order, before anything is sent
@@ -97,8 +105,14 @@ issues that carry `foundLabel`, every state, **once** (`gh issue list --label �
 - A closed issue with the marker is still the same finding: the body is updated, and the issue is
   not reopened. (Reopening is a person's or a later part's.)
 - A label with 1000 issues is refused (the list may be cut); close the settled ones.
-- An update changes the body only — never the title, the labels or the state.
-- A missing label is created (`gh label create`; it takes the **Write** role).
+- An update replaces the **whole body** with the new text and the marker — a note a person added
+  to the body of a kit issue is overwritten (GitHub keeps the edit history). It never changes the
+  title, the labels or the state, and it skips the edit when the body is already the same.
+- A missing label is created (`gh label create`, which takes the **Write** role; its options come
+  first and its name after `--`, so a name can never be read as an option). A label name may not
+  start with `-` (`isLabelName`), and labels are screened like the text.
+- The list read asks for `number,url,body,state` and gets the write time, `GH_WRITE_TIMEOUT_MS`:
+  up to 1000 bodies are fetched a page at a time.
 
 **A limit.** Two `issue file` calls with one new fingerprint at the same moment can both find
 nothing and open two issues; no lock spans GitHub.
@@ -115,7 +129,12 @@ that are not reads), a `gh api` POST, PATCH, PUT or DELETE to a repository's `is
 endpoints, or a GraphQL query that names an issue mutation, and **denies** it in a crew session
 (`CREW_ISSUE_REFUSAL`, which names `issue file`). Reads, `--help` and the kit's own `issue file`
 pass (it is not a `gh` command). Never looser: this only adds a question. A pull request answer
-on the same line wins. The reader is described in `docs/design/hooks.md` (the `merge-guard` row)
+on the same line wins for a person; for a crew session the issue denial is read **first**, so a
+`gh <unknown word>` beside the write cannot hide it. gh's flags are read the way gh reads them
+(before the subcommand an option takes the next word; a `-h` after an option is its value), and
+the runners `find -exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they
+name. Not read: a `gh` alias and a script file. The guard's fail-closed answers (a broken or
+too new project file, a crash) cover an issue write like a pull request change. The reader is described in `docs/design/hooks.md` (the `merge-guard` row)
 and `.claude/rules/hooks-guards.md`.
 
 `issue file` is the sanctioned path: with the switch on it files without a question, and every
@@ -124,7 +143,8 @@ refusal above is its own.
 ## doctor
 
 With `issues.enabled` on, one line in the project's group: `gh` is logged in for github.com
-(`gh auth status --hostname github.com`) and can file issues in `origin`'s repository, each failure
+(`gh auth status --hostname github.com --active`: only the account gh uses, so a stale second
+account does not fail the line) and can file issues in `origin`'s repository, each failure
 with its fix — `gh` missing, logged out, timed out; `origin` not on github.com; issues turned off
 for the repository; read-only access (Read cannot apply a label). Triage (it applies labels but
 cannot create them) and a public repository with `allowPublic` off are `!` warnings. With the

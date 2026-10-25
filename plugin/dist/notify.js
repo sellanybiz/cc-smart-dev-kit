@@ -6368,9 +6368,9 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
-var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma";
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
 function isLabelName(name) {
-  return name.length >= 1 && name.length <= 50 && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
 }
 var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
