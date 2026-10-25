@@ -63,13 +63,19 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
   the kind of the phase's riskiest part; a kind that runs on opus is for design judgment, never
   a way to get a stronger builder. `ui` is opus at `high` — never an affordable model, because
   UI/UX design is not affordable work — and `crew start` refuses an override that would put it
-  there. Override `--model` or `--effort` only when the person asks.
+  there.
+- **You pick each phase's effort by its task.** On a Claude model the kind's effort is the
+  default, not a rule: set `--effort` per phase from its brief — `medium` for mechanical work,
+  `high` by default, `xhigh` or `max` for a hard or risky phase — and write the reason in the
+  plan's row. On an affordable backend the effort stays `max` (the launch policy). **`--model`
+  changes only when the person asks.** A `ui` phase keeps its floor (`high` or above, on
+  `opus` or `fable`). A running crew session is changed with `crew model` (§ 3).
 
 ## 3. Start each phase
 
 ```sh
 cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
-  --files <glob,...> [--waits-for <phase,...>] [--base <ref>]
+  --files <glob,...> [--effort <effort>] [--waits-for <phase,...>] [--base <ref>]
 ```
 
 - **At plan approval, start the whole plan at once**, in one message: every phase of every
@@ -93,6 +99,16 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   watch tells you once, and the dependent stays queued. Start that phase again and merge it, or
   drop the wait: `cc-smart-dev-kit crew rm "<waiting crew session>"` (a queued one goes at
   once), then start the waiting phase again without `--waits-for` it.
+- **Change a crew session's model or effort later** with
+  `cc-smart-dev-kit crew model "<crew session>" [--model <model>] [--effort <effort>]` — when the
+  person asks for another model, when a phase turns out harder or easier than its brief said, or
+  when the model a session was started on is available again. The same checks as `crew start`
+  judge the values (a `ui` session never goes onto an affordable model). A running session is
+  stopped and resumed with the new flags and a prompt that says what changed; a stopped or paused
+  one keeps its state and takes them at its next resume. A move onto opus that a cap holds
+  (`perLeadOpus`, `maxOpus`, the usage window) is queued with its reason: the session runs on, and
+  your watch applies the change once the caps allow. One line says which: `resumed`, `stored for
+  the next resume`, or `queued`. A `--continue` start takes `--model` and `--effort` the same way.
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 
