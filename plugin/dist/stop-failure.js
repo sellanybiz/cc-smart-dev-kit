@@ -7732,6 +7732,7 @@ var runRecordSchema = looseObject({
   baseRef: text,
   base: looseObject({ ref: text, sha: text }).nullable(),
   brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
+  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
   lead: actor,
   continues: string2().nullable(),
   continuedBy: string2().nullable(),
@@ -7876,6 +7877,7 @@ var crewFields = object({
   }).optional(),
   planFile: text2.nullable().optional(),
   briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
+  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
   createdAt: text2,
   updatedAt: text2
 });

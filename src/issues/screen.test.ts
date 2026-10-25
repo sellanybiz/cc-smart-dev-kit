@@ -3,7 +3,7 @@
  * in characters), and what it lets through. Expected values are written by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { screenText } from "./screen";
+import { redactText, screenText } from "./screen";
 
 const HOME = "/home/tester";
 
@@ -80,5 +80,47 @@ describe("what passes", () => {
   test("no home to name: only the other shapes are looked for", () => {
     expect(screenText(`${HOME}/x`, null)).toEqual([]);
     expect(screenText(`${HOME}/x`, "/")).toEqual([]);
+  });
+});
+
+describe("redactText: nothing of a secret is left behind", () => {
+  const redact = (text: string) => redactText(text, "/home/tester");
+
+  test("a private key goes from its BEGIN line to its END line", () => {
+    const key =
+      "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234\nabcd/+==\n-----END RSA PRIVATE KEY-----";
+    expect(redact(`before\n${key}\nafter`)).toBe("before\n[redacted: a key or token]\nafter");
+  });
+
+  test("a private key with no END line goes to the end of the text", () => {
+    expect(redact("x\n-----BEGIN PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234")).toBe(
+      "x\n[redacted: a key or token]",
+    );
+  });
+
+  test("a value longer than the pattern's length cap is redacted whole", () => {
+    expect(redact(`password=${"a".repeat(300)} and more`)).toBe(
+      "[redacted: a key or token] and more",
+    );
+    expect(redact(`Authorization: Bearer ${"b".repeat(700)} end`)).toBe(
+      "Authorization: [redacted: a key or token] end",
+    );
+  });
+
+  test("a token shape longer than its cap is redacted whole", () => {
+    expect(redact(`ghp_${"c".repeat(400)}!`)).toBe("[redacted: a key or token]");
+  });
+
+  test("a JWT after token= is redacted whole, not cut where the shorter match ends", () => {
+    const jwt = `eyJ${"a".repeat(300)}.eyJ${"b".repeat(300)}.${"c".repeat(300)}`;
+    expect(redact(`token=${jwt} done`)).toBe("[redacted: a key or token] done");
+  });
+
+  test("overlapping matches become one marker", () => {
+    expect(redact(`key=ghp_${"d".repeat(40)} next`)).toBe("[redacted: a key or token] next");
+  });
+
+  test("text with nothing to hide is returned as it is", () => {
+    expect(redact("a commit a1b2c3d4e5f6 and ~/path")).toBe("a commit a1b2c3d4e5f6 and ~/path");
   });
 });
