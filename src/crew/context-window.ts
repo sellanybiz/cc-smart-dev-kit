@@ -22,8 +22,8 @@
  *      out: its last `/` segment names it too. The list is read once and kept, and only for the
  *      models a chain names (`<stateDir>/backend-windows.json`) — never one network call per poll.
  *
- * Anything else has an unknown window: no percentage, and so no context hand-off line (the
- * time lines still apply). `windowWatch` is what `crew self-watch` reads.
+ * Anything else has an unknown window: no percentage (the token cap and the time lines still
+ * apply). `windowWatch` is what `crew self-watch` reads.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,6 +41,7 @@ import {
   versionAtLeast,
 } from "../gateway/targets";
 import { gatewayConfigOf } from "../hooks/agent-guard";
+import type { CompactEnv } from "../machine/claude-settings";
 import { writeStoreFile } from "./store";
 
 /** The 1M window every Claude family has from `WINDOW_1M_SINCE` on, in tokens. */
@@ -60,6 +61,37 @@ export const WINDOW_1M_SINCE: Readonly<Record<ClaudeFamily, { major: number; min
   opus: { major: 4, minor: 6 },
   sonnet: { major: 4, minor: 6 },
 };
+
+/**
+ * What Claude Code keeps free below its auto-compact window, in tokens (the 2.1.310 binary;
+ * the "Autocompact buffer" row of `/context` shows the two together, 33 000, live,
+ * `docs/claude-code-contract.md`): room for the reply, then a summary buffer. A model with a
+ * smaller output limit keeps less room for the reply, so the sum is the larger guess: the
+ * hand-off comes early, never late.
+ */
+export const COMPACT_OUTPUT_RESERVE_TOKENS = 20_000;
+export const COMPACT_SUMMARY_BUFFER_TOKENS = 13_000;
+
+/**
+ * The context size, in tokens, at which Claude Code compacts a crew session, or null when the
+ * kit cannot tell. A crew session runs with `--autocompact auto`, so the window is the model's
+ * own, held down by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set (`claude-settings.ts`).
+ * The point is the window less the output reserve less the summary buffer; with
+ * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` it is that share of the window less the output reserve when
+ * that is lower. With no model window the variable's own window stands in.
+ */
+export function compactPointOf(modelWindow: null | number, env: CompactEnv): null | number {
+  const window =
+    env.window === null
+      ? modelWindow
+      : modelWindow === null
+        ? env.window
+        : Math.min(modelWindow, env.window);
+  if (window === null) return null;
+  const room = window - COMPACT_OUTPUT_RESERVE_TOKENS;
+  const point = room - COMPACT_SUMMARY_BUFFER_TOKENS;
+  return env.percent === null ? point : Math.min(point, Math.floor((room * env.percent) / 100));
+}
 
 /**
  * The window of `model` from the kit's own table, in tokens; null for anything that is not a

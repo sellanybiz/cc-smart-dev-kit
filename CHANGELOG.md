@@ -97,6 +97,17 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   backend models for the fallback on every route); an empty fallback provider is
   now shown as Claude with the model it really runs on.
 
+- **A crew session hands off at 400k tokens or 70 % of its window, whichever comes first, and
+  before Claude Code would auto-compact it.** The hand-off used to be a share of the model's
+  full window only, so a 1M window handed off at 700k, and a person's auto-compact setting was
+  never looked at. The new setting `crew.handoffTokens` (default `400000`) caps it: a 1M model
+  hands off at 400k, a 200k model at 140k, and a model whose window the kit cannot know still
+  hands off at the cap. Crew sessions start with `--autocompact auto`, which Claude Code reads as
+  "skip the `autoCompactWindow` settings", so your own setting does not move a crew session's
+  compaction; the variables `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+  still do, and the hand-off now stays 13 000 tokens below the point they set (the point is the
+  window less 33 000). Your own `crew.handoffPercent` stays in force beside the cap (at 40 on a 1M window it is the same 400k).
+
 ### Also in 1.2.0: what 1.1.3 was to ship
 
 **Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before

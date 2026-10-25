@@ -312,8 +312,10 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    --settings <settings.json> "<first line>"`. The
    first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
    `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: Claude Code's own window for
-   the model stands, and its compaction comes after the crew's own hand-off share of it
-   (`workflow.crew.handoffPercent`; the window the gauge measures is `context-window.ts`).
+   the model stands, and none of the person's `autoCompactWindow` settings applies to the crew
+   session (`auto` skips them; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still does). Its compaction comes
+   after the crew's own hand-off line (`workflow.crew.handoffTokens` and `handoffPercent`, and a
+   margin below the compaction point; the window the gauge measures is `context-window.ts`).
    `--mcp-config` comes **before** `--settings`, never last: it takes any number of files, so the
    prompt after it would read as another config (proved live on 2.1.309). The settings are a
    **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
@@ -628,9 +630,27 @@ config's slot chain names — a catalog id names it by its last segment too, bec
 leaves the provider out (`ollama-cloud/deepseek-v4.1-flash` is answered as
 `deepseek-v4.1-flash`). The list is read once, and only the models a chain names are kept in
 `<stateDir>/backend-windows.json` — never one network call per poll. A model whose window none of
-the three gives has no window and so no context line. At
-`workflow.crew.handoffPercent` (70 %) the crew session is told to **hand off**: commit the work in
-progress and run `crew report --status handoff`. At `workflow.crew.softHours` (2) it gets a
+the three gives has no window and so no percent line; the token cap still applies. **The hand-off
+line** is the smallest of three numbers (`handoffTokensOf`): `workflow.crew.handoffTokens`
+(400 000), `workflow.crew.handoffPercent` (70 %) of the window when it is known, and
+`HANDOFF_MARGIN_TOKENS` (13 000) below the point Claude Code compacts the session at, when the
+kit can tell where that is (it does for every Claude model; for a model it cannot size and with no
+variable set, the cap and the share stand alone, and a guard that leaves no room — a window under
+about 46k — is dropped). So a 1M
+window hands off at 400k, a 200k window at 140k, and a window held lower by the environment
+earlier still. At that line the crew session is told to **hand off**: commit the work in
+progress and run `crew report --status handoff`. **The compaction point** (`compactPointOf`) is
+what Claude Code does with `--autocompact auto`: the window is the model's, held down by
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set, and Claude Code compacts 33 000 below it
+(`COMPACT_OUTPUT_RESERVE_TOKENS`, 20 000 for the reply, and `COMPACT_SUMMARY_BUFFER_TOKENS`, 13 000),
+or at the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` share of the window less the 20 000 when that is lower.
+The window is the one of the model the session **started on** (`record.model.resolved`), never a
+backend's that answered: Claude Code compacts by its own model's window, and the answering model's
+window measures the share only. The person's `autoCompactWindow` keys do not count: `auto` skips
+them. One read-only reader holds the two variables (`src/machine/claude-settings.ts`), in Claude
+Code's own order — the main checkout's `.claude/settings.local.json`, the session folder's
+`settings.local.json`, its `.claude/settings.json`, the user's `settings.json`, then the
+environment: the first that sets a variable decides it. It is re-read at every poll. At `workflow.crew.softHours` (2) it gets a
 **note** (the phase is long); at `workflow.crew.maxHours` (4) it is told to hand off again —
 the hours count from when its session **started** (`startedAt` in the record), not from when it
 was recorded, because a crew session that waited in the queue has not run for the hours it waited. The
