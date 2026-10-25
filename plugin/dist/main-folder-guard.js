@@ -9957,6 +9957,7 @@ var reportFields = object({
     findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
   docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
   needsLead: array(text2),
   open: array(text2),
   question: text2.nullable(),
@@ -17599,251 +17600,38 @@ function routeFacts(input, context) {
   return facts;
 }
 
-// src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync9, readFileSync as readFileSync28, readlinkSync as readlinkSync3 } from "fs";
-import { join as join31 } from "path";
-var REBUILDABLE = [
-  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
-  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
-  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
-  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
-  /\.(?:tsbuildinfo|pyc|pyo)$/,
-  /(?:^|\/)\.DS_Store$/,
-  /(?:^|\/)Thumbs\.db$/,
-  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
-];
-var MAX_COMPARED = 2000;
-function parseIgnored(porcelain) {
-  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
-}
-function sameAsMain(worktree, mainCheckout, path) {
-  let budget = MAX_COMPARED;
-  const same = (relative) => {
-    if (--budget < 0)
-      return false;
-    const here = join31(worktree, relative);
-    const there = join31(mainCheckout, relative);
-    try {
-      const a = lstatSync2(here);
-      const b = lstatSync2(there);
-      if (a.isSymbolicLink() || b.isSymbolicLink()) {
-        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
-      }
-      if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync9(here).every((entry) => same(join31(relative, entry)));
-      }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync28(here).equals(readFileSync28(there));
-    } catch {
-      return false;
-    }
-  };
-  return same(path.replace(/\/$/, ""));
-}
-function safeIgnoredEntry(worktree, mainCheckout, entry) {
-  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
-    if (!entry.endsWith("/cli-latest"))
-      return true;
-    try {
-      if (lstatSync2(join31(worktree, entry)).isFile())
-        return true;
-    } catch {
-      return false;
-    }
-  }
-  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
-}
-function localFiles(worktree, mainCheckout, env) {
-  const status = runGit(worktree, [
-    "--no-optional-locks",
-    "status",
-    "--porcelain",
-    "-z",
-    "--ignored=traditional",
-    "--untracked-files=normal"
-  ], env, 30000);
-  if (!status.ok)
+// src/workflow/auto-merge.ts
+function autoMergeOff(resolved, base) {
+  if (resolved.autoMerge.value)
     return null;
-  const safe = (entry) => safeIgnoredEntry(worktree, mainCheckout, entry);
-  const supabaseCacheOnly = (entry) => {
-    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
-      return false;
-    let budget = MAX_COMPARED;
-    const visit = (path) => {
-      if (--budget < 0)
-        return false;
-      if (safe(path))
-        return true;
-      try {
-        const stat = lstatSync2(join31(worktree, path));
-        return stat.isDirectory() && readdirSync9(join31(worktree, path)).every((name) => visit(`${path.replace(/\/$/, "")}/${name}`));
-      } catch {
-        return false;
-      }
-    };
-    return visit(entry);
-  };
-  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
+  const where = base ?? "the integration base (worktrees.base)";
+  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
 }
-
-// src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync19, readFileSync as readFileSync29, statSync as statSync12 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute6, join as join32, resolve as resolve8 } from "path";
-var IDLE_MINUTES = 60;
-function idleMinutesOrNull(worktree, now) {
-  let admin;
-  try {
-    admin = readFileSync29(join32(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
-  } catch {
-    return null;
+function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
+  const off = autoMergeOff(resolved, prBase);
+  if (off !== null)
+    return off;
+  const integration = projectConfig?.worktrees?.base;
+  if (integration === undefined) {
+    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
   }
-  if (!isAbsolute6(admin))
-    admin = resolve8(worktree, admin);
-  let last = 0;
-  for (const file of ["index", "HEAD", join32("logs", "HEAD")]) {
-    try {
-      last = Math.max(last, statSync12(join32(admin, file)).mtimeMs);
-    } catch {}
+  if (prBase !== integration) {
+    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
   }
-  return last === 0 ? null : (now - last) / 60000;
-}
-function idleMinutes(worktree, now) {
-  return idleMinutesOrNull(worktree, now) ?? 0;
-}
-function judgeWorktree(repo, listed, base, sessions, env, now) {
-  if (listed.locked)
-    return "kept";
-  if (listed.prunable)
-    return "gone";
-  try {
-    statSync12(listed.path);
-  } catch {
-    return "gone";
+  if (integration === defaultBranch) {
+    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
   }
-  if (sessions.some((session) => isInside(session.cwd, listed.path)))
-    return "kept";
-  const ahead = runGit(repo, ["rev-list", "--count", `refs/remotes/origin/${base}..${listed.head}`], env);
-  if (!ahead.ok || ahead.out !== "0")
-    return "kept";
-  if (idleMinutes(listed.path, now) < IDLE_MINUTES)
-    return "kept";
-  if (hasChanges(listed.path, env))
-    return "kept";
-  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
-}
-function leftoversNote(base, finished, gone, keptBy = new Map) {
-  const parts = [];
-  if (finished.length > 0) {
-    const names = finished.map((worktree) => {
-      const why = keptBy.get(worktree.path);
-      return why === undefined ? basename6(worktree.path) : `${basename6(worktree.path)} (kept by the last clean: ${why})`;
-    }).join(", ");
-    const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
-    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
+  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
+  if (targets.includes(integration)) {
+    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
   }
-  if (gone.length > 0) {
-    parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
-  }
-  return parts.length === 0 ? null : parts.join(`
-`);
-}
-function operationInProgress(repo, env) {
-  const paths = runGit(repo, [
-    "rev-parse",
-    "--git-path",
-    "MERGE_HEAD",
-    "--git-path",
-    "rebase-merge",
-    "--git-path",
-    "rebase-apply",
-    "--git-path",
-    "CHERRY_PICK_HEAD"
-  ], env, GUARD_GIT_TIMEOUT_MS);
-  if (!paths.ok)
-    return null;
-  const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync19(resolve8(repo, path));
-  if (held(merge))
-    return "merge";
-  if (held(rebaseMerge) || held(rebaseApply))
-    return "rebase";
-  if (held(cherryPick))
-    return "cherry-pick";
   return null;
-}
-function mainFolderNotes(repo, main, base, env, guarded) {
-  if (!isAttended(env))
-    return [];
-  const notes = [];
-  const fix = (own, command, when) => guarded ? `ask the person to run \`${command}\` in the main checkout ${when}` : `${own} ${when}`;
-  const operation = operationInProgress(repo, env);
-  if (operation !== null) {
-    notes.push(guarded ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.` : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
-  }
-  const onBase = main.branch === base;
-  if (!onBase) {
-    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
-    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
-  }
-  const behind = runGit(repo, ["rev-list", "--count", `refs/heads/${base}..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
-  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
-  if (count > 0) {
-    const commits = `${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}`;
-    const step = fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.");
-    notes.push(onBase ? `The main checkout is ${commits}: ${step}` : `The main checkout's \`${base}\` is ${commits}: after the switch, ${step}`);
-  }
-  return notes;
-}
-function worktreeLeftovers(context) {
-  const { project, env, paths, event } = context;
-  const base = project.config?.worktrees?.base;
-  if (base === undefined)
-    return SILENT;
-  const repo = project.mainCheckout ?? project.root;
-  const told = takeToldLine(context, repo);
-  const [main, ...linked] = listWorktrees(repo, env);
-  const guarded = project.config?.worktrees?.guardMainFolder === true;
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
-  const answer = (note) => {
-    const lines = [...mainNotes, ...note === null ? [] : [note]];
-    if (lines.length === 0)
-      return told === null ? SILENT : systemMessage(told);
-    const text = lines.join(`
-`);
-    return told === null ? addContext(event, text) : addContextAndMessage(event, text, told);
-  };
-  if (linked.length === 0)
-    return answer(null);
-  startAutoClean(context, repo, "session");
-  if (!runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], env).ok) {
-    return answer(null);
-  }
-  let sessions;
-  try {
-    sessions = liveSessions(paths.claudeConfigDir);
-  } catch {
-    return answer(null);
-  }
-  const now = Date.now();
-  const crewRecords = crewRecordsOf(paths, repo);
-  const finished = [];
-  const gone = [];
-  for (const listed of linked) {
-    if (crewOfWorktree(crewRecords, listed.path) !== null)
-      continue;
-    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
-    if (verdict === "finished")
-      finished.push(listed);
-    if (verdict === "gone")
-      gone.push(listed);
-  }
-  const kept = readRepoRecord(autoCleanFiles(paths.stateDir, repo))?.kept ?? [];
-  return answer(leftoversNote(base, finished, gone, new Map(kept.map((one) => [one.path, one.why]))));
 }
 
 // src/workflow/review-cover.ts
 import { mkdtempSync, rmSync as rmSync2 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join33 } from "path";
+import { join as join31 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -17944,7 +17732,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join33(tmpdir3(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join31(tmpdir3(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -17964,7 +17752,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join33(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join31(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -18118,297 +17906,6 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
     throw first;
   const listed = candidates.map(short).join(", ");
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
-}
-
-// src/crew/lifecycle.ts
-var STOPPED_REMINDER_MS = 24 * 60 * 60000;
-
-// src/crew/board.ts
-var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
-
-// src/crew/discard.ts
-var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
-var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
-var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
-var DISCARD_IGNORED_MAX_FILES = 256;
-var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
-
-// src/ports.ts
-var DEFAULT_PORTAL_PORT = 20150;
-// src/crew/transcript.ts
-var TAIL_BYTES = 256 * 1024;
-
-// src/crew/archive.ts
-var DAY_MS = 24 * 60 * 60 * 1000;
-
-// src/worktrees/command.ts
-function crewRecordsOf(paths, repo) {
-  try {
-    return listCrew(paths.stateDir, repo).records;
-  } catch {
-    return [];
-  }
-}
-
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
-// src/setup/retry-watchdog.ts
-var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
-var RETRY_WATCHDOG_VALUE = "1";
-var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
-var RETRY_WATCHDOG_RECHECK_MS = 300000;
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
-var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
-var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
-  "env",
-  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
-];
-var RETRY_WATCHDOG_SETTINGS = [
-  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
-  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
-];
-var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
-var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
-var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
-var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
-
-// src/crew/start.ts
-var CLASH_STATES = [...RUNNING_STATES, "queued"];
-
-// src/crew/watch.ts
-var WORKTREE_CONFIRM_MS = 3 * 60000;
-var PARKED_PASS_MS = 5 * 60000;
-var CLIP_CHARS = 120;
-function clip(text) {
-  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
-  return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
-}
-function reportDetail(record) {
-  if (record === null || record.reportPath === null)
-    return null;
-  let report;
-  try {
-    report = readReport(record.reportPath);
-  } catch {
-    return null;
-  }
-  if (report === null)
-    return null;
-  if (report.status === "blocked" && report.question !== null) {
-    return `waits on: ${clip(report.question)}`;
-  }
-  if (report.status === "failed") {
-    const why = report.summary ?? report.open[0] ?? null;
-    return why === null ? null : `why: ${clip(why)}`;
-  }
-  return null;
-}
-function eventLine(event, record, waits, reviewed) {
-  const name = event.name;
-  switch (event.type) {
-    case "state": {
-      if (event.state === "starting" && (event.text === null || event.text === ""))
-        return null;
-      const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
-      return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;
-    }
-    case "step": {
-      const parts = [`${name}: ${event.text ?? "step"}`];
-      if (typeof event.sha === "string")
-        parts.push(event.sha.slice(0, 7));
-      if (typeof event.note === "string" && event.note !== "")
-        parts.push(clip(event.note));
-      return parts.join(" \xB7 ");
-    }
-    case "report": {
-      const status = event.text ?? "reported";
-      const parts = [`${name}: ${status}`];
-      const detail = reportDetail(record);
-      if (detail !== null)
-        parts.push(detail);
-      if (status === "done" || status === "handoff")
-        parts.push(reviewed ? "review \u2713" : "review \u2717");
-      if (status === "done" && waits.length > 0)
-        parts.push(`unblocks ${waits.join(", ")}`);
-      if (typeof record?.reportPath === "string")
-        parts.push(`report ${record.reportPath}`);
-      return parts.join(" \xB7 ");
-    }
-    case "question":
-      return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
-    case "person":
-      return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
-    case "tell": {
-      const told = event.tell?.to ?? [];
-      const kind = event.tell?.kind ?? "note";
-      return `${name}: told ${told.join(", ")} \xB7 ${kind} \xB7 ${clip(event.text ?? "")}`;
-    }
-    case "lead-tell": {
-      const kind = event.tell?.kind ?? "note";
-      return `${name}: ${kind} from another lead \xB7 ${clip(event.text ?? "")}`;
-    }
-    case "clash":
-    case "merge":
-      return event.text === null || event.text === "" ? null : event.text;
-    default:
-      return null;
-  }
-}
-function phasesWaitingFor(record, records) {
-  const phases = new Set;
-  for (const one of records) {
-    if (one.id === record.id)
-      continue;
-    if (one.waitsFor.includes(record.phase))
-      phases.add(one.phase);
-  }
-  return [...phases].sort();
-}
-
-// src/hooks/lead-notes.ts
-function notesLine(lines) {
-  const newest = lines.at(-1);
-  if (newest === undefined)
-    return null;
-  const more = lines.length - 1;
-  return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
-}
-function leadTitle(input, event, env, sessionId, name) {
-  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
-}
-function leadStartNote() {
-  return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
-}
-function taskListReminder() {
-  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
-}
-function reminderFor(paths, env, sessionId, event) {
-  if (event !== "UserPromptSubmit")
-    return null;
-  const listId = taskListId(env, sessionId);
-  if (listId === "")
-    return null;
-  const read = readSessionTasks(paths.claudeConfigDir, listId);
-  if (read.state === "unreadable")
-    return null;
-  return read.state === "read" && read.files > 0 ? null : taskListReminder();
-}
-function answered(event, lines, name) {
-  const text = lines.length === 0 ? null : lines.join(`
-`);
-  const { problem, title } = name;
-  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
-  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
-}
-function leadNotesAnswer(input, event, paths, repo, env) {
-  const sessionId = input.session_id;
-  if (repo === null || !isSessionId(sessionId))
-    return SILENT;
-  const lead = readLead(paths.stateDir, repo, sessionId);
-  if (lead === null)
-    return SILENT;
-  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
-  const reminder = reminderFor(paths, env, sessionId, event);
-  const cursor = readNotesState(paths.stateDir, repo, sessionId);
-  if (cursor === null) {
-    writeNotesState(paths.stateDir, repo, sessionId, {
-      offset: eventsEndOffset(paths.stateDir, repo)
-    });
-    return answered(event, [...startNote, ...reminder === null ? [] : [reminder]], leadTitle(input, event, env, sessionId, lead.name));
-  }
-  const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
-  const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
-  const reviewFile = reviewsFile(paths.stateDir, repo);
-  const lines = [];
-  for (const crewEvent of read.events) {
-    if (crewEvent.lead !== sessionId)
-      continue;
-    const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
-    const reviewed = record !== null && reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
-    const line = eventLine(crewEvent, record, record === null ? [] : phasesWaitingFor(record, mine), reviewed);
-    if (line !== null)
-      lines.push(line);
-  }
-  writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  const note = notesLine(lines);
-  return answered(event, [...startNote, ...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
-}
-
-// src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
-function editedFile(input, cwd) {
-  const fields = toolInput(input);
-  const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
-  if (path === null)
-    return null;
-  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
-}
-function editsMainFolder(file, mainCheckout, worktrees) {
-  if (!isInside(file, mainCheckout))
-    return false;
-  return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
-}
-function mainFolderRefusal(mainCheckout) {
-  return [
-    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
-    "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
-  ].join(`
-`);
-}
-function mainFolderGuard(context) {
-  const { project, input, cwd, env } = context;
-  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
-    return SILENT;
-  }
-  const file = editedFile(input, cwd);
-  if (file === null)
-    return SILENT;
-  const main = realPath(project.mainCheckout);
-  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
-  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
-    return SILENT;
-  }
-  return toolDecision("deny", mainFolderRefusal(main));
-}
-
-// src/workflow/auto-merge.ts
-function autoMergeOff(resolved, base) {
-  if (resolved.autoMerge.value)
-    return null;
-  const where = base ?? "the integration base (worktrees.base)";
-  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
-}
-function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
-  const off = autoMergeOff(resolved, prBase);
-  if (off !== null)
-    return off;
-  const integration = projectConfig?.worktrees?.base;
-  if (integration === undefined) {
-    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
-  }
-  if (prBase !== integration) {
-    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
-  }
-  if (integration === defaultBranch) {
-    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
-  }
-  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
-  if (targets.includes(integration)) {
-    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
-  }
-  return null;
 }
 
 // src/workflow/merge-check.ts
@@ -18743,6 +18240,535 @@ function openPrRefusal(resolved, base, opening) {
   return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
 }
 
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/fixed.ts
+var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
+
+// src/issues/pending.ts
+var RETRY_MS = 5 * 60000;
+var sha2 = string2().regex(/^[0-9a-f]{40}$/);
+var pendingSchema = object({
+  marks: array(object({
+    base: string2().min(1),
+    branch: string2().min(1),
+    issue: number2().int().positive(),
+    merge: sha2.nullable(),
+    told: boolean2().default(false),
+    tip: sha2,
+    triedAt: number2().int().min(0).optional()
+  })),
+  version: literal(1)
+});
+
+// src/hooks/local-files.ts
+import { lstatSync as lstatSync2, readdirSync as readdirSync9, readFileSync as readFileSync28, readlinkSync as readlinkSync3 } from "fs";
+import { join as join32 } from "path";
+var REBUILDABLE = [
+  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
+  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
+  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
+  /\.(?:tsbuildinfo|pyc|pyo)$/,
+  /(?:^|\/)\.DS_Store$/,
+  /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
+];
+var MAX_COMPARED = 2000;
+function parseIgnored(porcelain) {
+  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
+}
+function sameAsMain(worktree, mainCheckout, path) {
+  let budget = MAX_COMPARED;
+  const same = (relative) => {
+    if (--budget < 0)
+      return false;
+    const here = join32(worktree, relative);
+    const there = join32(mainCheckout, relative);
+    try {
+      const a = lstatSync2(here);
+      const b = lstatSync2(there);
+      if (a.isSymbolicLink() || b.isSymbolicLink()) {
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
+      }
+      if (a.isDirectory()) {
+        return b.isDirectory() && readdirSync9(here).every((entry) => same(join32(relative, entry)));
+      }
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync28(here).equals(readFileSync28(there));
+    } catch {
+      return false;
+    }
+  };
+  return same(path.replace(/\/$/, ""));
+}
+function safeIgnoredEntry(worktree, mainCheckout, entry) {
+  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+    if (!entry.endsWith("/cli-latest"))
+      return true;
+    try {
+      if (lstatSync2(join32(worktree, entry)).isFile())
+        return true;
+    } catch {
+      return false;
+    }
+  }
+  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+}
+function localFiles(worktree, mainCheckout, env) {
+  const status = runGit(worktree, [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "-z",
+    "--ignored=traditional",
+    "--untracked-files=normal"
+  ], env, 30000);
+  if (!status.ok)
+    return null;
+  const safe = (entry) => safeIgnoredEntry(worktree, mainCheckout, entry);
+  const supabaseCacheOnly = (entry) => {
+    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
+      return false;
+    let budget = MAX_COMPARED;
+    const visit = (path) => {
+      if (--budget < 0)
+        return false;
+      if (safe(path))
+        return true;
+      try {
+        const stat = lstatSync2(join32(worktree, path));
+        return stat.isDirectory() && readdirSync9(join32(worktree, path)).every((name) => visit(`${path.replace(/\/$/, "")}/${name}`));
+      } catch {
+        return false;
+      }
+    };
+    return visit(entry);
+  };
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
+}
+
+// src/hooks/worktree-leftovers.ts
+import { existsSync as existsSync19, readFileSync as readFileSync29, statSync as statSync12 } from "fs";
+import { basename as basename6, isAbsolute as isAbsolute6, join as join33, resolve as resolve8 } from "path";
+var IDLE_MINUTES = 60;
+function idleMinutesOrNull(worktree, now) {
+  let admin;
+  try {
+    admin = readFileSync29(join33(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+  } catch {
+    return null;
+  }
+  if (!isAbsolute6(admin))
+    admin = resolve8(worktree, admin);
+  let last = 0;
+  for (const file of ["index", "HEAD", join33("logs", "HEAD")]) {
+    try {
+      last = Math.max(last, statSync12(join33(admin, file)).mtimeMs);
+    } catch {}
+  }
+  return last === 0 ? null : (now - last) / 60000;
+}
+function idleMinutes(worktree, now) {
+  return idleMinutesOrNull(worktree, now) ?? 0;
+}
+function judgeWorktree(repo, listed, base, sessions, env, now) {
+  if (listed.locked)
+    return "kept";
+  if (listed.prunable)
+    return "gone";
+  try {
+    statSync12(listed.path);
+  } catch {
+    return "gone";
+  }
+  if (sessions.some((session) => isInside(session.cwd, listed.path)))
+    return "kept";
+  const ahead = runGit(repo, ["rev-list", "--count", `refs/remotes/origin/${base}..${listed.head}`], env);
+  if (!ahead.ok || ahead.out !== "0")
+    return "kept";
+  if (idleMinutes(listed.path, now) < IDLE_MINUTES)
+    return "kept";
+  if (hasChanges(listed.path, env))
+    return "kept";
+  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
+}
+function leftoversNote(base, finished, gone, keptBy = new Map) {
+  const parts = [];
+  if (finished.length > 0) {
+    const names = finished.map((worktree) => {
+      const why = keptBy.get(worktree.path);
+      return why === undefined ? basename6(worktree.path) : `${basename6(worktree.path)} (kept by the last clean: ${why})`;
+    }).join(", ");
+    const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
+    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
+  }
+  if (gone.length > 0) {
+    parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
+  }
+  return parts.length === 0 ? null : parts.join(`
+`);
+}
+function operationInProgress(repo, env) {
+  const paths = runGit(repo, [
+    "rev-parse",
+    "--git-path",
+    "MERGE_HEAD",
+    "--git-path",
+    "rebase-merge",
+    "--git-path",
+    "rebase-apply",
+    "--git-path",
+    "CHERRY_PICK_HEAD"
+  ], env, GUARD_GIT_TIMEOUT_MS);
+  if (!paths.ok)
+    return null;
+  const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
+  const held = (path) => path !== undefined && path !== "" && existsSync19(resolve8(repo, path));
+  if (held(merge))
+    return "merge";
+  if (held(rebaseMerge) || held(rebaseApply))
+    return "rebase";
+  if (held(cherryPick))
+    return "cherry-pick";
+  return null;
+}
+function mainFolderNotes(repo, main, base, env, guarded) {
+  if (!isAttended(env))
+    return [];
+  const notes = [];
+  const fix = (own, command, when) => guarded ? `ask the person to run \`${command}\` in the main checkout ${when}` : `${own} ${when}`;
+  const operation = operationInProgress(repo, env);
+  if (operation !== null) {
+    notes.push(guarded ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.` : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+  }
+  const onBase = main.branch === base;
+  if (!onBase) {
+    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
+    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
+  }
+  const behind = runGit(repo, ["rev-list", "--count", `refs/heads/${base}..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
+  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
+  if (count > 0) {
+    const commits = `${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}`;
+    const step = fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.");
+    notes.push(onBase ? `The main checkout is ${commits}: ${step}` : `The main checkout's \`${base}\` is ${commits}: after the switch, ${step}`);
+  }
+  return notes;
+}
+function worktreeLeftovers(context) {
+  const { project, env, paths, event } = context;
+  const base = project.config?.worktrees?.base;
+  if (base === undefined)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  const told = takeToldLine(context, repo);
+  const [main, ...linked] = listWorktrees(repo, env);
+  const guarded = project.config?.worktrees?.guardMainFolder === true;
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
+  const answer = (note) => {
+    const lines = [...mainNotes, ...note === null ? [] : [note]];
+    if (lines.length === 0)
+      return told === null ? SILENT : systemMessage(told);
+    const text = lines.join(`
+`);
+    return told === null ? addContext(event, text) : addContextAndMessage(event, text, told);
+  };
+  if (linked.length === 0)
+    return answer(null);
+  startAutoClean(context, repo, "session");
+  if (!runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], env).ok) {
+    return answer(null);
+  }
+  let sessions;
+  try {
+    sessions = liveSessions(paths.claudeConfigDir);
+  } catch {
+    return answer(null);
+  }
+  const now = Date.now();
+  const crewRecords = crewRecordsOf(paths, repo);
+  const finished = [];
+  const gone = [];
+  for (const listed of linked) {
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
+      continue;
+    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
+    if (verdict === "finished")
+      finished.push(listed);
+    if (verdict === "gone")
+      gone.push(listed);
+  }
+  const kept = readRepoRecord(autoCleanFiles(paths.stateDir, repo))?.kept ?? [];
+  return answer(leftoversNote(base, finished, gone, new Map(kept.map((one) => [one.path, one.why]))));
+}
+
+// src/crew/lifecycle.ts
+var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+
+// src/crew/board.ts
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
+// src/crew/discard.ts
+var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
+var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
+var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
+var DISCARD_IGNORED_MAX_FILES = 256;
+var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
+
+// src/ports.ts
+var DEFAULT_PORTAL_PORT = 20150;
+// src/crew/transcript.ts
+var TAIL_BYTES = 256 * 1024;
+
+// src/crew/archive.ts
+var DAY_MS = 24 * 60 * 60 * 1000;
+
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/setup/retry-watchdog.ts
+var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
+var RETRY_WATCHDOG_VALUE = "1";
+var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
+var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
+var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
+  "env",
+  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
+];
+var RETRY_WATCHDOG_SETTINGS = [
+  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
+  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
+];
+var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
+var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
+var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
+
+// src/crew/start.ts
+var CLASH_STATES = [...RUNNING_STATES, "queued"];
+
+// src/crew/watch.ts
+var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
+var CLIP_CHARS = 120;
+function clip(text) {
+  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+  return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
+}
+function reportDetail(record) {
+  if (record === null || record.reportPath === null)
+    return null;
+  let report;
+  try {
+    report = readReport(record.reportPath);
+  } catch {
+    return null;
+  }
+  if (report === null)
+    return null;
+  if (report.status === "blocked" && report.question !== null) {
+    return `waits on: ${clip(report.question)}`;
+  }
+  if (report.status === "failed") {
+    const why = report.summary ?? report.open[0] ?? null;
+    return why === null ? null : `why: ${clip(why)}`;
+  }
+  return null;
+}
+function eventLine(event, record, waits, reviewed) {
+  const name = event.name;
+  switch (event.type) {
+    case "state": {
+      if (event.state === "starting" && (event.text === null || event.text === ""))
+        return null;
+      const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
+      return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;
+    }
+    case "step": {
+      const parts = [`${name}: ${event.text ?? "step"}`];
+      if (typeof event.sha === "string")
+        parts.push(event.sha.slice(0, 7));
+      if (typeof event.note === "string" && event.note !== "")
+        parts.push(clip(event.note));
+      return parts.join(" \xB7 ");
+    }
+    case "report": {
+      const status = event.text ?? "reported";
+      const parts = [`${name}: ${status}`];
+      const detail = reportDetail(record);
+      if (detail !== null)
+        parts.push(detail);
+      if (status === "done" || status === "handoff")
+        parts.push(reviewed ? "review \u2713" : "review \u2717");
+      if (status === "done" && waits.length > 0)
+        parts.push(`unblocks ${waits.join(", ")}`);
+      if (typeof record?.reportPath === "string")
+        parts.push(`report ${record.reportPath}`);
+      return parts.join(" \xB7 ");
+    }
+    case "question":
+      return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
+    case "person":
+      return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
+    case "tell": {
+      const told = event.tell?.to ?? [];
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: told ${told.join(", ")} \xB7 ${kind} \xB7 ${clip(event.text ?? "")}`;
+    }
+    case "lead-tell": {
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: ${kind} from another lead \xB7 ${clip(event.text ?? "")}`;
+    }
+    case "clash":
+    case "merge":
+      return event.text === null || event.text === "" ? null : event.text;
+    default:
+      return null;
+  }
+}
+function phasesWaitingFor(record, records) {
+  const phases = new Set;
+  for (const one of records) {
+    if (one.id === record.id)
+      continue;
+    if (one.waitsFor.includes(record.phase))
+      phases.add(one.phase);
+  }
+  return [...phases].sort();
+}
+
+// src/hooks/lead-notes.ts
+function notesLine(lines) {
+  const newest = lines.at(-1);
+  if (newest === undefined)
+    return null;
+  const more = lines.length - 1;
+  return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
+}
+function leadTitle(input, event, env, sessionId, name) {
+  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
+}
+function leadStartNote() {
+  return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
+}
+function taskListReminder() {
+  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+}
+function reminderFor(paths, env, sessionId, event) {
+  if (event !== "UserPromptSubmit")
+    return null;
+  const listId = taskListId(env, sessionId);
+  if (listId === "")
+    return null;
+  const read = readSessionTasks(paths.claudeConfigDir, listId);
+  if (read.state === "unreadable")
+    return null;
+  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+}
+function answered(event, lines, name) {
+  const text = lines.length === 0 ? null : lines.join(`
+`);
+  const { problem, title } = name;
+  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
+  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
+}
+function leadNotesAnswer(input, event, paths, repo, env) {
+  const sessionId = input.session_id;
+  if (repo === null || !isSessionId(sessionId))
+    return SILENT;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null)
+    return SILENT;
+  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
+  const reminder = reminderFor(paths, env, sessionId, event);
+  const cursor = readNotesState(paths.stateDir, repo, sessionId);
+  if (cursor === null) {
+    writeNotesState(paths.stateDir, repo, sessionId, {
+      offset: eventsEndOffset(paths.stateDir, repo)
+    });
+    return answered(event, [...startNote, ...reminder === null ? [] : [reminder]], leadTitle(input, event, env, sessionId, lead.name));
+  }
+  const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
+  const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
+  const reviewFile = reviewsFile(paths.stateDir, repo);
+  const lines = [];
+  for (const crewEvent of read.events) {
+    if (crewEvent.lead !== sessionId)
+      continue;
+    const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
+    const reviewed = record !== null && reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
+    const line = eventLine(crewEvent, record, record === null ? [] : phasesWaitingFor(record, mine), reviewed);
+    if (line !== null)
+      lines.push(line);
+  }
+  writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
+  const note = notesLine(lines);
+  return answered(event, [...startNote, ...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
+}
+
+// src/hooks/main-folder-guard.ts
+import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
+function editedFile(input, cwd) {
+  const fields = toolInput(input);
+  const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
+  if (path === null)
+    return null;
+  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
+}
+function editsMainFolder(file, mainCheckout, worktrees) {
+  if (!isInside(file, mainCheckout))
+    return false;
+  return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
+}
+function mainFolderRefusal(mainCheckout) {
+  return [
+    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    "Already working in a worktree? Edit the same file under that worktree's folder.",
+    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
+  ].join(`
+`);
+}
+function mainFolderGuard(context) {
+  const { project, input, cwd, env } = context;
+  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
+    return SILENT;
+  }
+  const file = editedFile(input, cwd);
+  if (file === null)
+    return SILENT;
+  const main = realPath(project.mainCheckout);
+  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
+  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
+    return SILENT;
+  }
+  return toolDecision("deny", mainFolderRefusal(main));
+}
+
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
@@ -18791,7 +18817,7 @@ function adminRefusal(ref) {
 function adminMerge(calls) {
   return calls.find((one) => one.admin && !one.disarms);
 }
-function ownRepository(project, env, timeoutMs) {
+function ownRepository2(project, env, timeoutMs) {
   const folder = project.mainCheckout ?? project.root;
   const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
   return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
@@ -18963,7 +18989,7 @@ async function pullRequestGuard(context) {
       const left = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (left <= 0)
         return { late: true, reason: null };
-      own = ownRepository(project, env, left);
+      own = ownRepository2(project, env, left);
       ownRead = true;
     }
     return { late: false, reason: foreignRepository(repo, own) };

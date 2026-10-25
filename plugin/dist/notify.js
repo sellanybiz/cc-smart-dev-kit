@@ -8128,6 +8128,7 @@ var reportFields = object({
     findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
   docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
   needsLead: array(text2),
   open: array(text2),
   question: text2.nullable(),

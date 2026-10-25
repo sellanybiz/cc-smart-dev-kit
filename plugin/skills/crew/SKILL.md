@@ -96,6 +96,11 @@ report with an empty field is refused.
   `extra`; it is not dropped, but the lead reads the fields above first.
 - `docs`, `needsLead` (what only the lead may do: a version bump, the lockfile, a shared index),
   `open` (what is still open, and every file outside the brief with its reason).
+- `issues`: the numbers of the GitHub issues your phase fixes, as whole numbers (`[12, 14]`, or
+  `--issue 12` on the command, once for each). Fill it only with an issue the brief names or the
+  phase's own commits fix; never guess a number. A phase started from an issue has it already.
+  The lead's merge then marks each one fixed (a comment, and the label `fixed-unreleased`) and the
+  release closes it. You never file, comment on or close an issue yourself: the guard refuses it.
 - Anything worth keeping in memory: the lead saves it; say it in `open`.
 
 **A `done` report is refused** while a test run or a check in it failed, while the whole suite is

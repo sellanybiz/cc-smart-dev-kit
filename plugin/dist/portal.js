@@ -13897,6 +13897,7 @@ var reportFields = object({
     findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
   docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
   needsLead: array(text2),
   open: array(text2),
   question: text2.nullable(),
@@ -28928,6 +28929,113 @@ function pauseText(waiting, error, nowMs, timeZone) {
   }
 }
 
+// src/workflow/pr-switches.ts
+function turnOn2(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
+}
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
+    return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
+}
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
+      return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
+  }
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
+}
+function publicIssuesOff(resolved, base) {
+  if (resolved.issues.allowPublic.value)
+    return null;
+  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
+}
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/file.ts
+var GIT_TIMEOUT_MS2 = 5000;
+var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
+function parseRepoFacts(out) {
+  try {
+    const view = JSON.parse(out);
+    if (typeof view.visibility !== "string" || typeof view.hasIssuesEnabled !== "boolean") {
+      return { why: "gh answered something this command cannot read about the repository" };
+    }
+    return {
+      hasIssues: view.hasIssuesEnabled,
+      isPublic: view.visibility.toUpperCase() === "PUBLIC",
+      permission: typeof view.viewerPermission === "string" ? view.viewerPermission.toUpperCase() : null
+    };
+  } catch {
+    return { why: "gh answered something this command cannot read about the repository" };
+  }
+}
+function ownRepository(cwd, env) {
+  const origin = runGit(cwd, ["remote", "get-url", "origin"], env, GIT_TIMEOUT_MS2);
+  if (!origin.ok || origin.out === "") {
+    return {
+      why: "this project has no `origin` remote, so it has no repository of its own to file in"
+    };
+  }
+  const named = githubRepoInUrl(origin.out);
+  return named === null ? { why: "this project's origin is not on github.com, and issues are filed on github.com only" } : { repo: `github.com/${named}` };
+}
+function resolveSwitch(world) {
+  try {
+    const checkout = locateCheckout(world.cwd, { env: world.env });
+    if (checkout === null)
+      return { why: "this folder is not in a git project" };
+    const { config } = loadProjectConfig(checkout);
+    if (config === null) {
+      return {
+        why: `this project has no ${CONFIG_PATH}, so it has not opted in to the kit; the kit files issues only in a project that has (${COMMAND} project init)`
+      };
+    }
+    const base = config.worktrees?.base ?? null;
+    const read = resolveGate(world.paths, checkout, base, {
+      env: world.env,
+      timeoutMs: GIT_TIMEOUT_MS2
+    });
+    if (!read.ok) {
+      return {
+        why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
+      };
+    }
+    return { base, resolved: read.gate.resolved };
+  } catch (error) {
+    return { why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// src/issues/fixed.ts
+var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
+
+// src/issues/pending.ts
+var RETRY_MS = 5 * 60000;
+var sha2 = string2().regex(/^[0-9a-f]{40}$/);
+var pendingSchema = object({
+  marks: array(object({
+    base: string2().min(1),
+    branch: string2().min(1),
+    issue: number2().int().positive(),
+    merge: sha2.nullable(),
+    told: boolean2().default(false),
+    tip: sha2,
+    triedAt: number2().int().min(0).optional()
+  })),
+  version: literal(1)
+});
+
 // src/setup/launcher-cmd.ts
 var LAUNCHER_CMD_NAME = "cc-smart-dev-kit.cmd";
 var FIND_INSTALL_JS2 = [
@@ -29060,7 +29168,7 @@ function retryWatchdogLine(state, settingsFile) {
 }
 
 // src/crew/diff.ts
-var GIT_TIMEOUT_MS2 = 20000;
+var GIT_TIMEOUT_MS3 = 20000;
 
 class DiffError extends Error {
   name = "DiffError";
@@ -29076,7 +29184,7 @@ function numstatRecord(record) {
   };
 }
 function diffAgainstBase(folder, baseSha, env) {
-  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS2);
+  const run = runGit(folder, ["diff", "--numstat", "-z", "--no-renames", baseSha, "HEAD"], env, GIT_TIMEOUT_MS3);
   if (!run.ok) {
     throw new DiffError(`git diff ${baseSha.slice(0, 7)}..HEAD failed in ${folder}: ${run.err === "" ? "no reason given" : run.err}`);
   }
@@ -35231,36 +35339,6 @@ function mainFolderGuard(context) {
   return toolDecision("deny", mainFolderRefusal(main));
 }
 
-// src/workflow/pr-switches.ts
-function turnOn2(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  const literal = value === "true" ? "true" : `"${value}"`;
-  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
-}
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
-    return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
-    return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
-  }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
-}
-function publicIssuesOff(resolved, base) {
-  if (resolved.issues.allowPublic.value)
-    return null;
-  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
-}
-
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
@@ -35309,7 +35387,7 @@ function adminRefusal(ref) {
 function adminMerge(calls) {
   return calls.find((one) => one.admin && !one.disarms);
 }
-function ownRepository(project, env, timeoutMs) {
+function ownRepository2(project, env, timeoutMs) {
   const folder = project.mainCheckout ?? project.root;
   const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
   return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
@@ -35481,7 +35559,7 @@ async function pullRequestGuard(context) {
       const left = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (left <= 0)
         return { late: true, reason: null };
-      own = ownRepository(project, env, left);
+      own = ownRepository2(project, env, left);
       ownRead = true;
     }
     return { late: false, reason: foreignRepository(repo, own) };
@@ -36712,64 +36790,6 @@ var MACHINE_WIDE_HOOKS = [
   "user-away"
 ];
 
-// src/issues/marker.ts
-var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
-
-// src/issues/file.ts
-var GIT_TIMEOUT_MS4 = 5000;
-var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
-function parseRepoFacts(out) {
-  try {
-    const view = JSON.parse(out);
-    if (typeof view.visibility !== "string" || typeof view.hasIssuesEnabled !== "boolean") {
-      return { why: "gh answered something this command cannot read about the repository" };
-    }
-    return {
-      hasIssues: view.hasIssuesEnabled,
-      isPublic: view.visibility.toUpperCase() === "PUBLIC",
-      permission: typeof view.viewerPermission === "string" ? view.viewerPermission.toUpperCase() : null
-    };
-  } catch {
-    return { why: "gh answered something this command cannot read about the repository" };
-  }
-}
-function ownRepository2(cwd, env) {
-  const origin = runGit(cwd, ["remote", "get-url", "origin"], env, GIT_TIMEOUT_MS4);
-  if (!origin.ok || origin.out === "") {
-    return {
-      why: "this project has no `origin` remote, so it has no repository of its own to file in"
-    };
-  }
-  const named = githubRepoInUrl(origin.out);
-  return named === null ? { why: "this project's origin is not on github.com, and issues are filed on github.com only" } : { repo: `github.com/${named}` };
-}
-function resolveSwitch(world) {
-  try {
-    const checkout = locateCheckout(world.cwd, { env: world.env });
-    if (checkout === null)
-      return { why: "this folder is not in a git project" };
-    const { config } = loadProjectConfig(checkout);
-    if (config === null) {
-      return {
-        why: `this project has no ${CONFIG_PATH}, so it has not opted in to the kit; the kit files issues only in a project that has (${COMMAND} project init)`
-      };
-    }
-    const base = config.worktrees?.base ?? null;
-    const read = resolveGate(world.paths, checkout, base, {
-      env: world.env,
-      timeoutMs: GIT_TIMEOUT_MS4
-    });
-    if (!read.ok) {
-      return {
-        why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
-      };
-    }
-    return { base, resolved: read.gate.resolved };
-  } catch (error) {
-    return { why: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 // src/issues/doctor.ts
 var HOST = "github.com";
 var READ_ONLY = "READ";
@@ -36779,7 +36799,7 @@ async function issuesChecks(world) {
   const policy = resolveSwitch({ ...world, home: null });
   if ("why" in policy || !policy.resolved.issues.enabled.value)
     return [];
-  const own = ownRepository2(world.cwd, world.env);
+  const own = ownRepository(world.cwd, world.env);
   if ("why" in own) {
     return [
       {
