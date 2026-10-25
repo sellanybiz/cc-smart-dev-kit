@@ -335,6 +335,28 @@ function Test-MarketplaceAdded([string]$Name) {
   return Test-JsonKey $KnownMarketplaces $Name
 }
 
+# Claude Code's other record of a marketplace: the user settings' `extraKnownMarketplaces`,
+# which `claude plugin marketplace add` writes with the entry's `source`. `setup` reads this
+# one (it writes its `autoUpdate` key into the entry), so a marketplace the first record holds
+# and this one lost -- another tool rewriting settings.json -- stops `setup`. Only the add
+# writes the entry whole, so only the add repairs it: proved live that a repeat add of a
+# marketplace already on disk declares it again and fetches nothing
+# (docs/claude-code-contract.md).
+#
+# The same test `setup` makes (`marketplaceKnown`): the entry is an object. Three answers: a
+# missing file is "not declared"; a file this reader cannot parse (ConvertFrom-Json refuses
+# keys that differ only in case, which Claude Code and setup read fine) is NOT judged here --
+# `setup` reads it with the plugin's own reader, and a repair loop cannot fix a file Claude
+# Code reads differently -- so it counts as declared; a parsed file answers by the entry.
+function Test-MarketplaceDeclared([string]$Name) {
+  if (-not (Test-Path $SettingsFile)) { return $false }
+  try { $data = Get-Content -Raw -Path $SettingsFile | ConvertFrom-Json } catch { return $true }
+  $declared = $data.extraKnownMarketplaces
+  if ($null -eq $declared) { return $false }
+  $entry = $declared.PSObject.Properties[$Name]
+  return $null -ne $entry -and $entry.Value -is [System.Management.Automation.PSCustomObject]
+}
+
 # True when this machine can run the gateway's router: on Windows it is a per-user Scheduled
 # Task, which needs PowerShell (the plugin's own rule, `routerServiceKind`).
 function Test-GatewayServicePossible {
@@ -653,6 +675,7 @@ if ([string]::IsNullOrEmpty($Bun)) {
 
 # --- 4. marketplaces -------------------------------------------------------------------
 $Added = [System.Collections.Generic.List[string]]::new()
+$Redeclared = [System.Collections.Generic.List[string]]::new()
 # Before the first add: read access is what makes it possible at all (the same check step 2 runs
 # when git could not read the repository). Only when this repository's marketplace is not added
 # yet -- a machine that already has it added is installed as before.
@@ -664,7 +687,16 @@ if (-not $DryRun -and -not (Test-MarketplaceAdded $Marketplace)) { Assert-RepoRe
 foreach ($entry in $MarketplacesToAdd) {
   $name = $entry.Name
   $source = $entry.Source
-  if (Test-MarketplaceAdded $name) { continue }
+  # This repository's marketplace is added only when BOTH of Claude Code's records hold it:
+  # known_marketplaces.json and the user settings, which is what `setup` reads. Only the
+  # first: the same add runs again, and says it is a repair. The two companions stay on the
+  # first record alone: `setup` reads nothing of them in the settings, and Claude Code
+  # registers Anthropic's own marketplace by itself, which may leave no settings entry.
+  $onDisk = $false
+  if (Test-MarketplaceAdded $name) {
+    if ($name -ne $Marketplace -or (Test-MarketplaceDeclared $name)) { continue }
+    $onDisk = $true
+  }
   if (-not $DryRun) {
     # Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH key
     # (or a blocked port 22) is refused. The same marketplace over HTTPS works, and it lands
@@ -684,14 +716,21 @@ foreach ($entry in $MarketplacesToAdd) {
       if (-not [string]::IsNullOrEmpty($addOut)) { [Console]::Error.WriteLine($addOut) }
       Stop-Failed "adding the marketplace $source failed" @("claude plugin marketplace add $source")
     }
+    # The add is what writes the settings entry: if it is still missing, `setup` would stop on
+    # it, so stop here with the command.
+    if ($name -eq $Marketplace -and -not (Test-MarketplaceDeclared $name)) {
+      Stop-Failed "the settings still do not list the $name marketplace after adding $source" @("claude plugin marketplace add $source")
+    }
   }
-  $Added.Add($source)
+  if ($onDisk) { $Redeclared.Add($source) } else { $Added.Add($source) }
 }
-if ($Added.Count -gt 0) {
+if ($Added.Count -gt 0 -or $Redeclared.Count -gt 0) {
   if ($DryRun) {
-    Write-Skip "4/8 the plan adds: $($Added -join ', ')"
+    if ($Added.Count -gt 0) { Write-Skip "4/8 the plan adds: $($Added -join ', ')" }
+    if ($Redeclared.Count -gt 0) { Write-Skip "4/8 the plan re-declares in your settings: $($Redeclared -join ', ')" }
   } else {
-    Write-Step "4/8 marketplaces added: $($Added -join ', ')"
+    if ($Added.Count -gt 0) { Write-Step "4/8 marketplaces added: $($Added -join ', ')" }
+    if ($Redeclared.Count -gt 0) { Write-Step "4/8 re-declared in your settings: $($Redeclared -join ', ')" }
   }
 } else {
   Write-Step "4/8 all three marketplaces are already added"

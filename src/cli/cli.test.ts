@@ -46,7 +46,10 @@ setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
 interface SetupOptions {
+  /** The user settings declare the marketplace (`extraKnownMarketplaces`). Default: true. */
   marketplace?: boolean;
+  /** Claude Code's own record (`known_marketplaces.json`) holds the marketplace. Default: true. */
+  marketplaceOnDisk?: boolean;
   gitOk?: boolean;
   /**
    * What the fake git prints on stderr as it fails, line by line. Default: the URL-with-a-token
@@ -171,10 +174,12 @@ function setup(options: SetupOptions = {}) {
   writeFileSync(
     join(configDir, "plugins", "known_marketplaces.json"),
     JSON.stringify({
-      "cc-smart-dev-kit": {
-        source: options.source ?? { source: "github", repo: "example-org/cc-smart-dev-kit" },
-        installLocation,
-      },
+      ...(options.marketplaceOnDisk !== false && {
+        "cc-smart-dev-kit": {
+          source: options.source ?? { source: "github", repo: "example-org/cc-smart-dev-kit" },
+          installLocation,
+        },
+      }),
       ...(companions && COMPANION_MARKETPLACES),
     }),
   );
@@ -763,13 +768,32 @@ describe("cc-smart-dev-kit setup", () => {
   });
 
   test("refuses when the marketplace is not added yet", () => {
-    const { launcher, run } = setup({ marketplace: false });
+    const { launcher, run } = setup({ marketplace: false, marketplaceOnDisk: false });
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain(
-      `Run first: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
+    expect(result.stderr).toBe(
+      "~/.claude/settings.json does not list the cc-smart-dev-kit marketplace yet.\n" +
+        `Run first: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n` +
+        "Then:      claude plugin install cc-smart-dev-kit@cc-smart-dev-kit\n",
     );
     expect(existsSync(launcher)).toBe(false);
+  });
+
+  test("refuses when Claude Code has the marketplace but the settings do not declare it: the one add repairs it", () => {
+    // The live bug (Windows, 1.2.0): known_marketplaces.json held the marketplace, the user
+    // settings had lost it. The plugin IS installed, so no `plugin install` is asked for.
+    const { launcher, settingsFile, run } = setup({ marketplace: false });
+    const before = readFileSync(settingsFile, "utf8");
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      "~/.claude/settings.json does not declare the cc-smart-dev-kit marketplace, although Claude Code has it on disk.\n" +
+        `Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
+    );
+    expect(result.stderr).not.toContain("plugin install");
+    expect(existsSync(launcher)).toBe(false);
+    // The gate stays: setup wrote no entry of its own.
+    expect(readFileSync(settingsFile, "utf8")).toBe(before);
   });
 
   test("restore undoes setup's last change", () => {
