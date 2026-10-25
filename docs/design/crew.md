@@ -673,7 +673,10 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
     So it is removed (`rmSync`, links as links, nothing outside it) only when nothing runs from
     it, it is no repository and has no registration of its own, it crosses no mount, and no file
     in it is newer than its move (a directory's own time is not read: it moves when git deletes an
-    entry). Anything else stays, with the reason.
+    entry). Anything else stays, with the reason. Such a folder is finished only where the kit
+    can read the mount points, which today means Linux (`mountPoints`,
+    `src/worktrees/machine-facts.ts`). On Windows and macOS it stays, and the clean's log says why
+    ("its mount points could not be read"); remove it by hand.
 
   An unreadable scan retains every requested parked path with its error; a busy clean lock refuses
   the pass before any removal. `crew rm` finishes both kinds in the repository — its own record's first, and it refuses while

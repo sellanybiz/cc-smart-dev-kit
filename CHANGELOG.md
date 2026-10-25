@@ -258,7 +258,9 @@ it is a minor version.
   whether their stop was intentional. A `…-removing-<time>` folder is finished by the next `crew
   rm`, `worktrees --clean` or watch pass: while git lists it, under the usual checks; when git no
   longer lists it (5 of the 8 found on one machine), only when nothing runs from it and no file in
-  it is newer than the move its name records. `worktrees` names a crew worktree as one, with its
+  it is newer than the move its name records, and only on Linux, where the kit can read the mount
+  points: on Windows and macOS that folder stays, the log says why, and you remove it by hand.
+  `worktrees` names a crew worktree as one, with its
   lead and who removes it, and `--clean` leaves it alone instead of listing 30 of them "kept" and
   saying "Nothing finished to clear". A finished session's unanswered question is closed, so it
   leaves the Needs page.
