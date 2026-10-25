@@ -478,11 +478,14 @@ function leftAloneNote(read: ClaudeMemSettings, key: string, value: unknown): st
  * the person's own login, which is its own default (provider `claude`, model Haiku), so setup
  * takes out the provider keys it set for a backend before. They go together or not at all, as
  * they were set: one key that is the person's keeps all five, and a note names it. A key that
- * holds only claude-mem's own default is nobody's and stays as it is. The model key is never
+ * holds only claude-mem's own default is nobody's and stays as it is. With no key of setup's
+ * there is nothing to take out and nothing to say: a person who set claude-mem's route by hand
+ * gets no note at every run, now that every scout is Claude by default. The model key is never
  * setup's (`CLAUDE_MEM_MODEL`): no Haiku id is written or named anywhere in the kit.
  */
 function planBackToClaude(read: ClaudeMemSettings, notes: string[]): KeyPath[] {
   const setups: KeyPath[] = [];
+  let theirs: string | null = null;
   for (const key of PROVIDER_KEYS) {
     const path = read.at(key);
     const current = getKey(read.data, path);
@@ -490,16 +493,18 @@ function planBackToClaude(read: ClaudeMemSettings, notes: string[]): KeyPath[] {
     const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours") {
       setups.push(path);
-    } else if (!(whose === "none" && unchosen(path, current.value))) {
-      notes.push(leftAloneNote(read, key, current.value));
-      return [];
+    } else if (theirs === null && !(whose === "none" && unchosen(path, current.value))) {
+      theirs = leftAloneNote(read, key, current.value);
     }
   }
-  if (setups.length > 0) {
-    notes.push(
-      `  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`,
-    );
+  if (setups.length === 0) return [];
+  if (theirs !== null) {
+    notes.push(theirs);
+    return [];
   }
+  notes.push(
+    `  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`,
+  );
   return setups;
 }
 

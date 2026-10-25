@@ -10709,6 +10709,7 @@ function leftAloneNote(read, key, value) {
 }
 function planBackToClaude(read, notes) {
   const setups = [];
+  let theirs = null;
   for (const key of PROVIDER_KEYS) {
     const path = read.at(key);
     const current = getKey(read.data, path);
@@ -10717,14 +10718,17 @@ function planBackToClaude(read, notes) {
     const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours") {
       setups.push(path);
-    } else if (!(whose === "none" && unchosen(path, current.value))) {
-      notes.push(leftAloneNote(read, key, current.value));
-      return [];
+    } else if (theirs === null && !(whose === "none" && unchosen(path, current.value))) {
+      theirs = leftAloneNote(read, key, current.value);
     }
   }
-  if (setups.length > 0) {
-    notes.push(`  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`);
+  if (setups.length === 0)
+    return [];
+  if (theirs !== null) {
+    notes.push(theirs);
+    return [];
   }
+  notes.push(`  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`);
   return setups;
 }
 function planProvider(paths, install, read, notes, after) {
@@ -29234,8 +29238,8 @@ Commands:
   slot <slot> clear      Delete the slot's chain, in use or saved.
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
-                         On by default for scout, worker and judge; off for opus, fable.
-                         "fallback judge off": Claude alone judges.
+                         Off by default, for every slot. "fallback judge on": the worker's
+                         tested targets judge while Claude is limited or down.
   effort <slot> <target> <level>|off
                          Pin a backend target's effort (${BACKEND_EFFORT_LEVELS.join(", ")}).
                          Tests the target before saving; off follows Claude Code again.

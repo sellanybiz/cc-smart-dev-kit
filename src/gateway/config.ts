@@ -199,7 +199,7 @@ export const gatewayConfigSchema = z
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
      * its family now (`familySlotFor`), and the entry changes nothing: such a chain starts
-     * with its fallback switch at the model slots' default, off (`fallbackOn`). Kept so such
+     * with its fallback switch at the default, off (`fallbackOn`). Kept so such
      * a config loads; `gateway slot opus|fable` drops the entry.
      */
     modelSlots: z.record(z.string(), z.string()).optional(),

@@ -434,6 +434,20 @@ describe("D66: claude-mem follows the scout back to Claude", () => {
     expect(plan.notes).toEqual([]);
   });
 
+  test("the person's own provider, none of it setup's: nothing to take out, so nothing is said on every run", () => {
+    const w = machine({
+      settings: {
+        ...SEEDED,
+        CLAUDE_MEM_PROVIDER: "gemini",
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL: "by-hand",
+      },
+    });
+    writeSlots(w, {});
+    const plan = planOf(w);
+    expect(plan.remove).toEqual(RETIRED);
+    expect(plan.notes).toEqual([]);
+  });
+
   test("no gateway.json at all: the old note stays (the gateway is not set up), nothing is taken out", () => {
     const w = pointedAtTheScout();
     rmSync(w.paths.gatewayConfigFile);

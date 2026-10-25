@@ -509,10 +509,9 @@ These are metadata only; no prompt or answer is logged.
 
 Each slot has one: `"fallback": {"<slot>": true | false}` in `gateway.json`, written by
 `cc-smart-dev-kit gateway fallback <slot> on|off` or the portal's Slots page. Absent, the slot's
-default applies (`fallbackOn`, `src/gateway/config.ts`): on for scout, worker and any slot a
-machine adds, and the judge; off for opus and fable. The judge's switch needs no judge chain:
-with none, it says whether the worker's tested targets stand in while Claude cannot (§ The
-judge slot).
+default applies (`fallbackOn`, `src/gateway/config.ts`): off, for every slot, the judge's
+included (D66). The judge's switch needs no judge chain: with none, it says whether the
+worker's tested targets stand in while Claude cannot (§ The judge slot).
 
 - **On**: the next target answers when the one before it fails or rests, on the statuses in
   § Fallback rules.
