@@ -134,9 +134,9 @@ import {
   listLeads,
   readLead,
   readReport,
+  setLeadPlanFile,
   updateCrew,
   writeJsonFile,
-  setLeadPlanFile,
   writeStoreFile,
 } from "./store";
 import { usageFacts, usageUnreadLine } from "./usage-guard";
