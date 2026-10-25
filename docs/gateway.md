@@ -1361,15 +1361,17 @@ reaches Claude Code**.
 - **The stream idle limit (SC1).** `timeouts.firstByteMs` covers only the wait for the first
   byte. After it, a stream that went silent had no bound: on 2026-10-24, 12 of 4,957 answers
   from one OmniRoute target in 3 hours sent a 200 and then nothing, and one crew session waited
-  21 minutes, until Claude Code's own timeout. Claude Code has none for a stream that has
-  started (`docs/claude-code-contract.md` § The gateway: a stalled body was still open after
-  180 s). So `"timeouts": {"streamIdleMs": <ms>}` is how long an affordable backend's streaming
-  answer may send **no byte** after its first. Any byte counts: an event, a `ping`, or
-  OmniRoute's `: keepalive` comment line. Absent, it is **120000** (120 s,
-  `DEFAULT_STREAM_IDLE_MS`): the request history (metadata only: it holds a request's whole
-  time, not the gaps between its events) shows no completed answer taking over 102 s unless it
-  wrote over a hundred thousand tokens, and a gap can never be longer than the answer, so 120 s
-  is above every real gap seen and still ends a stall in two minutes. When it passes, the
+  21 minutes, until Claude Code gave up. Claude Code ended no stalled stream by itself in the
+  179 s a probe watched (`docs/claude-code-contract.md` § The gateway). So `"timeouts":
+  {"streamIdleMs": <ms>}` is how long an affordable backend's streaming answer may send **no
+  byte** after its first. Any byte counts: an event, a `ping`, or OmniRoute's `: keepalive`
+  comment line. At most 2147483647 (the longest a timer waits; above it the wait would be 1 ms
+  and every stream would be cut). Absent, it is **120000** (120 s, `DEFAULT_STREAM_IDLE_MS`),
+  **a judgment, not a measurement**: the request history is metadata only and its `ms` is the
+  time to the answer's headers (the first real event, for a held stream), never the gaps
+  between events. On 88,926 rows that time is at most 60 s for 99 of 100 answers on the
+  slowest target and 102 s at most; a pause inside an answer is likely of the same size, so
+  120 s sits above the longest wait seen and still ends a stall in two minutes. When it passes, the
   router cancels the upstream and fails the body (`endIfSilent`), the way a cut connection
   does: Claude Code then sends the same request again within a second, as a stream (proved on
   2.1.310, P14 and P15). The router logs `WARN <target> sent no byte for <ms> ms after its first
@@ -1378,7 +1380,12 @@ reaches Claude Code**.
   the next target when the fallback switch is on. With it off, or a chain of one, the retry asks
   the same target again: the last target is always tried. The clock starts at the first byte, so
   it never replaces `firstByteMs`; it runs only while the router waits for the upstream (a
-  client slow to read pauses it); a request that does not stream is not covered. **A Claude
+  client slow to read pauses it); a request that does not stream is not covered. **Not covered:
+  a last backend that sends its headers and then no byte at all**, when it has no deadline of
+  its own (the breaker off or `breakerHoldMs` 0: § The breaker, list item 4). The history
+  records a cut answer as the 200 its headers were, with the tokens read before the cut; the
+  `WARN` line is the only mark. A stream that breaks on the network after its first byte rests
+  nothing, as before. **A Claude
   target's stalled stream is not cut** (the owner, 2026-10-25): every answer from Anthropic
   passes unchanged, and an ended stream is a changed answer. `endsStalledStream` is the one
   place to widen it. Bun logs the failed body as an `error:` stack on the router's stderr

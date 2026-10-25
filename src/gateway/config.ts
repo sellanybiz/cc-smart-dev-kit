@@ -45,14 +45,17 @@ export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_FIRST_BYTE_MS = 60_000;
 /**
  * The default of `timeouts.streamIdleMs`: how long a streaming answer may send no byte after
- * its first before the router ends it. The request history (88,926 rows, 2026-10) shows no
- * completed answer taking longer than 102 s unless it wrote over a hundred thousand tokens,
- * and a gap can never be longer than the answer's whole time; a stalled stream (12 of 4,957
- * answers in 3 hours on one target) never moves again. So 120 s is above every real gap seen
- * and still ends a stall in two minutes, not Claude Code's 21 (it has no limit of its own
- * once a stream has started: `docs/claude-code-contract.md` § The gateway).
+ * its first before the router ends it. A judgment, not a measurement: the request history
+ * holds each answer's time to its headers (the first real event, for a held stream), never
+ * the gaps between events (88,926 rows, 2026-10: that time is at most 60 s for 99 of 100 answers
+ * on the slowest target and 102 s at most). A pause inside an answer (a reasoning pause, a large
+ * tool call) is likely of the same size, so 120 s sits above the longest wait seen, and still ends
+ * a stall in two minutes, not in the 21 a session once waited (Claude Code ended no stalled
+ * stream in 179 s: `docs/claude-code-contract.md` § The gateway).
  */
 export const DEFAULT_STREAM_IDLE_MS = 120_000;
+/** The longest a `setTimeout` waits (2^31 - 1 ms); a longer one fires after 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * The longest the breaker holds a request while every target of its slot is limited or down,
@@ -244,7 +247,14 @@ export const gatewayConfigSchema = z
          * all count) after its first before the router ends it, in whole milliseconds. Absent:
          * `DEFAULT_STREAM_IDLE_MS`, read through `streamIdleMs`.
          */
-        streamIdleMs: z.int().positive().optional(),
+        streamIdleMs: z
+          .int()
+          .positive()
+          .max(
+            MAX_TIMER_MS,
+            `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)`,
+          )
+          .optional(),
       })
       .default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
     version: z.literal(1),

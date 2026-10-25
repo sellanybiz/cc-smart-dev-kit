@@ -327,6 +327,18 @@ describe("timeouts.streamIdleMs (SC1)", () => {
     }
   });
 
+  it("refuses a value no timer can wait: above it the wait is 1 ms and every stream is cut", () => {
+    expect(streamIdleMs(parsed(raw({ timeouts: { streamIdleMs: 2_147_483_647 } })))).toBe(
+      2_147_483_647,
+    );
+    expect(parseConfig(raw({ timeouts: { streamIdleMs: 2_147_483_648 } }))).toEqual({
+      error: [
+        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)",
+        "  → at timeouts.streamIdleMs",
+      ].join("\n"),
+    });
+  });
+
   it("refuses 0, a fraction and a word", () => {
     expect(parseConfig(raw({ timeouts: { streamIdleMs: 0 } }))).toEqual({
       error: "✖ Too small: expected number to be >0\n  → at timeouts.streamIdleMs",

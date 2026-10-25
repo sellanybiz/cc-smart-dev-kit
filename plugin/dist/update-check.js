@@ -8790,6 +8790,7 @@ var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
+var MAX_TIMER_MS = 2147483647;
 var BREAKER_HOLD_CEILING_MS = 240000;
 var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
@@ -8832,7 +8833,7 @@ var gatewayConfigSchema = looseObject({
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
     firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS),
-    streamIdleMs: int().positive().optional()
+    streamIdleMs: int().positive().max(MAX_TIMER_MS, `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)`).optional()
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {

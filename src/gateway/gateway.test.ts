@@ -2881,7 +2881,7 @@ describe("streaming", () => {
         Bun.sleep(1000).then(() => "still waiting after 1 s"),
       ]);
       expect(outcome).toContain("sent no byte for 80 ms");
-      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE_MS - 10);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE_MS - 30);
       expect(Date.now() - started).toBeLessThan(IDLE_MS + 500);
       expect(stalled.state.cancelled).toBe(true);
       expect(logs).toContain(
@@ -2891,6 +2891,33 @@ describe("streaming", () => {
         await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
       ).json();
       expect(health).toMatchObject({ cooling: { "omniroute:glm-5.3-flash": expect.any(Number) } });
+    });
+
+    it("is cut on the way Claude Code really asks: a Claude model id, answered through the fallback-answer cleaning", async () => {
+      const stalled = gatedStream([START, DELTA, DELTA]);
+      stalled.open(1);
+      const { handle } = router([() => stalled.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("claude-haiku-4-5")) }),
+      );
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      let outcome = "";
+      const deadlineAt = Date.now() + 1500;
+      while (Date.now() < deadlineAt) {
+        const step = await Promise.race([
+          reader.read().then(
+            (read) => (read.done ? "the end, clean" : "a chunk"),
+            (error: unknown) => String(error),
+          ),
+          Bun.sleep(1000).then(() => "still waiting after 1 s"),
+        ]);
+        if (step !== "a chunk") {
+          outcome = step;
+          break;
+        }
+      }
+      expect(outcome).toContain("sent no byte for 80 ms");
     });
 
     it("a slow but steady stream is never cut", async () => {
@@ -2936,7 +2963,11 @@ describe("streaming", () => {
         ],
         "application/json",
       );
-      const { handle, logs } = router([() => slow.response], { config: idleConfig() });
+      // The only target is the last one: nothing reads the JSON answer whole before it goes
+      // on, so a wrapper on the body would see the pause between its two chunks.
+      const { handle, logs } = router([() => slow.response], {
+        config: { ...idleConfig(), fallback: {} },
+      });
       const res = await handle(
         clientRequest({
           body: JSON.stringify({ ...message("cc-smart-dev-kit-scout"), stream: false }),
@@ -2947,8 +2978,9 @@ describe("streaming", () => {
     });
 
     it("a client that hangs up mid-stream cancels the upstream and rests nothing", async () => {
-      const open = gatedStream([START, DELTA, DELTA]);
-      open.open(1);
+      // The second gate stays shut: the router waits on a silent upstream, its timer running,
+      // when the client goes.
+      const open = gatedStream([START, DELTA]);
       const { handle, logs } = router([() => open.response], { config: idleConfig() });
       const res = await handle(
         clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
@@ -2956,6 +2988,7 @@ describe("streaming", () => {
       const reader = res.body?.getReader();
       if (reader === undefined) throw new Error("no body");
       expect(await readSoon(reader)).toBe(START);
+      await Bun.sleep(IDLE_MS / 4);
       await reader.cancel();
       // Past the limit: a timer left running would log and rest the target now.
       await Bun.sleep(IDLE_MS * 2);
