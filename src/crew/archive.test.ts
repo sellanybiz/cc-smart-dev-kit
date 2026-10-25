@@ -436,6 +436,24 @@ describe("sessionsNeverTaken", () => {
     ).toBe(false);
   });
 
+  test("RX1: every session of a record still on the board is kept, the earlier ones too", async () => {
+    const w = world();
+    const earlier = "e1e1e1e1-0000-1111-2222-333333333333";
+    const { createdAt: _c, updatedAt: _u, version: _v, ...base } = w.record();
+    await createCrew(
+      w.paths.stateDir,
+      { ...base, earlierSessions: [{ sessionId: earlier, shortId: "e1e1e1e1" }], state: "working" },
+      NOW,
+    );
+    const kept = sessionsNeverTaken(w.paths.stateDir, null);
+    expect(kept.has(earlier)).toBe(true);
+    expect(kept.has(SESSION)).toBe(true);
+    // The record being removed holds none of them back.
+    const removing = sessionsNeverTaken(w.paths.stateDir, base.id);
+    expect(removing.has(earlier)).toBe(false);
+    expect(removing.has(SESSION)).toBe(false);
+  });
+
   test("a record it cannot read: it throws, so nothing is taken", () => {
     const w = world();
     const broken = join(w.paths.stateDir, "crew", repoKey(w.repo), "leads", `${LEAD}.json`);

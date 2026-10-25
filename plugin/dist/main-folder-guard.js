@@ -6082,7 +6082,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.2.0",
+  version: "1.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7640,498 +7640,6 @@ function currentBreakers(state, nowMs) {
   return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 
-// src/user-away/state.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync8 } from "fs";
-import { join as join10 } from "path";
-var PARK_KINDS = ["question", "action", "decision"];
-var AWAY_LOCK_WAIT_MS = 5000;
-var MAX_ITEMS = 500;
-var MAX_SAID = 100;
-var itemSchema = object({
-  id: number2().int().positive(),
-  kind: _enum(PARK_KINDS),
-  text: string2(),
-  command: string2().nullable(),
-  tool: string2().nullable(),
-  options: array(string2()),
-  recommend: number2().int().positive().nullable(),
-  session: string2(),
-  crew: string2(),
-  cwd: string2(),
-  at: string2()
-});
-var stateSchema2 = object({
-  unavailable: boolean2(),
-  since: string2().nullable(),
-  until: string2().nullable(),
-  items: array(itemSchema),
-  nextId: number2().int().positive(),
-  said: record(string2(), string2())
-});
-
-class AwayStateError extends Error {
-  name = "AwayStateError";
-}
-function freshState() {
-  return { unavailable: false, since: null, until: null, items: [], nextId: 1, said: {} };
-}
-function awayDir(stateDir) {
-  return join10(stateDir, "user-away");
-}
-function awayStateFile(stateDir) {
-  return join10(awayDir(stateDir), "state.json");
-}
-function readAway(stateDir) {
-  const file = awayStateFile(stateDir);
-  let text;
-  try {
-    text = readFileSync8(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return freshState();
-    throw new AwayStateError(`${file} cannot be read: ${error.message}`);
-  }
-  try {
-    return stateSchema2.parse(JSON.parse(text));
-  } catch (error) {
-    throw new AwayStateError(`${file} is not a state file (${error.message.split(`
-`)[0]}). Fix it or remove it.`);
-  }
-}
-async function change(stateDir, apply) {
-  const folder = awayDir(stateDir);
-  mkdirSync5(folder, { mode: 448, recursive: true });
-  return await withLock(folder, () => {
-    const state = readAway(stateDir);
-    const result = apply(state);
-    atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}
-`, 384);
-    return { result, state };
-  }, { waitMs: AWAY_LOCK_WAIT_MS });
-}
-function sameItem(items, draft) {
-  const what = (item) => item.command ?? item.text;
-  return items.find((item) => item.kind === draft.kind && what(item) === what(draft));
-}
-async function parkItem(stateDir, draft, nowMs) {
-  const { result } = await change(stateDir, (state) => {
-    const same = sameItem(state.items, draft);
-    if (same !== undefined)
-      return { added: false, item: same };
-    if (state.items.length >= MAX_ITEMS) {
-      throw new AwayStateError(`the list already holds ${String(MAX_ITEMS)} items: go through it with the user-available skill first`);
-    }
-    const item = { ...draft, id: state.nextId, at: new Date(nowMs).toISOString() };
-    state.nextId += 1;
-    state.items.push(item);
-    return { added: true, item };
-  });
-  return result;
-}
-async function sayOnce(stateDir, session, key) {
-  if (readAway(stateDir).said[session] === key)
-    return false;
-  const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === key)
-      return false;
-    delete state.said[session];
-    state.said[session] = key;
-    for (const old of Object.keys(state.said).slice(0, -MAX_SAID))
-      delete state.said[old];
-    return true;
-  });
-  return result;
-}
-async function forgetSaid(stateDir, session) {
-  if (readAway(stateDir).said[session] === undefined)
-    return false;
-  const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === undefined)
-      return false;
-    delete state.said[session];
-    return true;
-  });
-  return result;
-}
-
-// src/user-away/words.ts
-var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
-var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
-var TEXT_MAX = 4000;
-var COMMAND_MAX = 16000;
-var USER_USAGE = `Usage: ${COMMAND} user <command>
-
-The person's availability. While they cannot answer, a session parks what needs them instead
-of asking, and the hooks hold the line (${UNAVAILABLE_SKILL}).
-
-Commands:
-  unavailable [--until <time>]
-                 The person cannot answer now. --until says when they are expected back
-                 (8h, 90m, 07:30 or an ISO time): a note only, it never switches back.
-  available      They can answer again. What was parked stays on the list for them.
-  status [--json]
-                 Whether they can answer, and how many items wait.
-  park --kind <question|action|decision> "<text>" [--command "<command>"]
-       [--option "<option>"]... [--recommend <n>] [--crew <name>]
-                 Put one item on the list. An action names its exact command, a question its
-                 options and the recommended one (counted from 1). --crew names the crew
-                 session the item is for, when a lead parks its crew session's question.
-  list [--json]  The items, each with its exact command.
-  clear <n>... | --all
-                 Take answered items off the list.
-
-Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
-
-// src/hooks/prompt-source.ts
-var NOT_PERSON_PREFIXES = [
-  "<cross-session-message",
-  "<task-notification",
-  "<agent-message",
-  "Stop hook feedback:"
-];
-function hasNotPersonWrapper(prompt) {
-  return NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix));
-}
-
-// src/hooks/user-away.ts
-var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
-var SHELL_TOOLS = ["Bash", "PowerShell"];
-var REASON_MAX = 600;
-function inAwayDomain(input) {
-  const tool = stringField(input.tool_name);
-  return tool !== null && AWAY_ASK_TOOLS.includes(tool);
-}
-function plural(count, one, many) {
-  return `${String(count)} ${count === 1 ? one : many}`;
-}
-function whenText(state, nowMs, options) {
-  const clock = (iso) => {
-    const at = Date.parse(iso);
-    return Number.isNaN(at) ? iso : formatClock(at / 1000, nowMs, options.timeZone);
-  };
-  const from = state.since === null ? "" : ` since ${clock(state.since)}`;
-  const back = state.until === null ? "" : `, back about ${clock(state.until)}`;
-  return `${from}${back}`;
-}
-function stateLine(error) {
-  return `cc-smart-dev-kit user-away: ${error.message}`;
-}
-function questionStep(when) {
-  return `The person is unavailable${when}: do not wait for an answer. Park the question with \`${COMMAND} user park --kind question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` and go on with whatever it does not block. A choice that is easy to undo, with a recommended option in the plan, you take yourself and park as \`--kind decision\`. The rules: ${UNAVAILABLE_SKILL}.`;
-}
-function planStep(when) {
-  return `The person is unavailable${when}: the plan cannot be approved now. Park it with \`${COMMAND} user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${UNAVAILABLE_SKILL}.`;
-}
-function questionToolStep(tool, when, env) {
-  if (crewIdOf(env) !== null)
-    return CREW_QUESTION_STEP;
-  return tool === "ExitPlanMode" ? planStep(when) : questionStep(when);
-}
-function parkedStep(when, item) {
-  return `The person is unavailable${when}, so this was not asked: it is parked as #${String(item.id)}, an action that waits for their yes. Do not run it another way; go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
-}
-function notParkedStep(when, why) {
-  return `The person is unavailable${when}, so this was not asked, and it could not be parked (${why}): park it by hand with \`${COMMAND} user park --kind action "<what>" --command "<command>"\`, then go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
-}
-var TARGET_FIELDS = ["file_path", "notebook_path", "to", "url", "path", "pattern", "query"];
-var DETAIL_MAX = 300;
-function callLabel(input) {
-  const tool = stringField(input.tool_name) ?? "a tool";
-  if (SHELL_TOOLS.includes(tool))
-    return tool;
-  const args = toolInput(input);
-  const field = TARGET_FIELDS.find((name) => stringField(args[name]) !== null);
-  const target = field === undefined ? null : maskedLine(stringField(args[field]) ?? "", [], DETAIL_MAX);
-  const rest = Object.fromEntries(Object.entries(args).filter(([name]) => name !== field));
-  const detail = Object.keys(rest).length === 0 ? "" : ` ${maskedLine(JSON.stringify(rest), [], DETAIL_MAX)}`;
-  return `${tool}${target === null ? "" : ` ${target}`}${detail}`;
-}
-function callCommand(input) {
-  const tool = stringField(input.tool_name);
-  if (tool === null || !SHELL_TOOLS.includes(tool))
-    return null;
-  return stringField(toolInput(input).command);
-}
-async function parkCall(input, env, paths, nowMs, words) {
-  const full = callCommand(input);
-  const cut = full !== null && full.length > COMMAND_MAX;
-  const command = cut ? full.slice(0, COMMAND_MAX) : full;
-  const text = `${words}${cut ? ` The command was cut at ${String(COMMAND_MAX)} characters.` : ""}`;
-  try {
-    const { item } = await parkItem(paths.stateDir, {
-      command,
-      crew: crewIdOf(env) ?? "",
-      cwd: stringField(input.cwd) ?? "",
-      kind: "action",
-      options: [],
-      recommend: null,
-      session: stringField(input.session_id) ?? "",
-      text: text.slice(0, TEXT_MAX),
-      tool: stringField(input.tool_name)
-    }, nowMs);
-    return { item, ok: true };
-  } catch (error) {
-    return { ok: false, why: error instanceof Error ? error.message : String(error) };
-  }
-}
-function permissionDeny(message) {
-  return {
-    stdout: JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PermissionRequest",
-        decision: { behavior: "deny", message }
-      }
-    })
-  };
-}
-async function permissionAnswer(input, env, paths, nowMs, options) {
-  const state = readAway(paths.stateDir);
-  if (!state.unavailable)
-    return SILENT;
-  const when = whenText(state, nowMs, options);
-  const tool = stringField(input.tool_name) ?? "";
-  if (AWAY_ASK_TOOLS.includes(tool)) {
-    return permissionDeny(questionToolStep(tool, when, env));
-  }
-  const parked = await parkCall(input, env, paths, nowMs, `Claude Code's own permission prompt: ${callLabel(input)}`);
-  if (parked.ok)
-    return permissionDeny(parkedStep(when, parked.item));
-  return {
-    ...permissionDeny(notParkedStep(when, parked.why)),
-    stderr: `cc-smart-dev-kit user-away: could not park: ${parked.why}`
-  };
-}
-function isPersonsPrompt(input, env) {
-  if (crewIdOf(env) !== null)
-    return false;
-  const prompt = stringField(input.prompt);
-  return prompt !== null && !hasNotPersonWrapper(prompt);
-}
-function parkedText(count) {
-  if (count === 0)
-    return "Nothing is parked yet.";
-  return `${plural(count, "item is", "items are")} parked.`;
-}
-async function noteAnswer(input, env, paths, nowMs, options) {
-  const session = stringField(input.session_id);
-  if (session === null)
-    return SILENT;
-  const state = readAway(paths.stateDir);
-  const count = state.items.length;
-  if (!state.unavailable) {
-    if (!await forgetSaid(paths.stateDir, session))
-      return SILENT;
-    const left = count === 0 ? "Nothing is left parked." : `${plural(count, "item still waits", "items still wait")} for them (${AVAILABLE_SKILL}).`;
-    return addContext("UserPromptSubmit", `The person is available again: ask your questions as usual. ${left}`);
-  }
-  const when = whenText(state, nowMs, options);
-  const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
-  if (isPersonsPrompt(input, env)) {
-    const waiting = count === 0 ? "Nothing is parked yet." : `${plural(count, "item waits", "items wait")} for ${AVAILABLE_SKILL}.`;
-    return addContext("UserPromptSubmit", `The person wrote, and is still marked unavailable${when}: a message does not switch it back (it may come from a phone). Do what it asks, and keep following ${UNAVAILABLE_SKILL}. ${waiting}`);
-  }
-  if (!first)
-    return SILENT;
-  return addContext("UserPromptSubmit", `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`);
-}
-async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
-  try {
-    if (event === "PreToolUse") {
-      const tool = stringField(input.tool_name);
-      if (tool === null || !AWAY_ASK_TOOLS.includes(tool))
-        return SILENT;
-      const state = readAway(paths.stateDir);
-      if (!state.unavailable)
-        return SILENT;
-      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options), env));
-    }
-    if (event === "PermissionRequest")
-      return await permissionAnswer(input, env, paths, nowMs, options);
-    if (event === "UserPromptSubmit")
-      return await noteAnswer(input, env, paths, nowMs, options);
-    return SILENT;
-  } catch (error) {
-    if (error instanceof AwayStateError)
-      return { stderr: stateLine(error) };
-    throw error;
-  }
-}
-async function askedWhileAway(input, result, env, paths, nowMs, options = {}) {
-  const reason = askReason(result);
-  if (reason === null || input === null)
-    return result;
-  if (stringField(input.hook_event_name) !== "PreToolUse")
-    return result;
-  let state;
-  try {
-    state = readAway(paths.stateDir);
-  } catch (error) {
-    if (error instanceof AwayStateError)
-      return { ...result, stderr: stateLine(error) };
-    throw error;
-  }
-  if (!state.unavailable)
-    return result;
-  const when = whenText(state, nowMs, options);
-  const parked = await parkCall(input, env, paths, nowMs, `${callLabel(input)}: ${maskedLine(reason, [], REASON_MAX)}`);
-  const lead = reason === "" ? "" : `${reason}
-
-`;
-  if (parked.ok)
-    return toolDecision("deny", `${lead}${parkedStep(when, parked.item)}`);
-  return {
-    ...toolDecision("deny", `${lead}${notParkedStep(when, parked.why)}`),
-    stderr: `cc-smart-dev-kit user-away: could not park: ${parked.why}`
-  };
-}
-
-// src/hooks/run.ts
-var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function saysSomething(result) {
-  return result.stdout !== undefined || result.stderr !== undefined || (result.exitCode ?? 0) !== 0;
-}
-function crashResult(spec, why, input, event, context) {
-  const line = {
-    exitCode: spec.crashExitCode ?? 0,
-    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
-  };
-  if (spec.onCrash === undefined)
-    return line;
-  try {
-    return spec.onCrash(why, input, event, context);
-  } catch {
-    return line;
-  }
-}
-function recordAsk(spec, input, result, context) {
-  const reason = askReason(result);
-  if (reason === null)
-    return result;
-  try {
-    appendAsk(askLogFile(context.paths.stateDir), {
-      at: context.nowMs,
-      hook: spec.name,
-      session: stringField(input?.session_id) ?? "",
-      tool: stringField(input?.tool_name) ?? "",
-      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
-    });
-  } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
-    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
-${note}` };
-  }
-  return result;
-}
-async function answer(spec, input, context) {
-  const { env } = context;
-  let event = "";
-  try {
-    if (input === null) {
-      return crashResult(spec, "the hook input is not JSON", null, "", context);
-    }
-    const named = stringField(input.hook_event_name);
-    if (named === null || !spec.events.includes(named))
-      return SILENT;
-    event = named;
-    const cwd = stringField(input.cwd);
-    const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null)
-      return await outside(input, event, "the hook input has no cwd", context);
-    let checkout;
-    try {
-      checkout = locateCheckout(cwd, { env });
-    } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
-    }
-    if (checkout === null)
-      return await outside(input, event, `${cwd} is not in a git checkout`, context);
-    if (spec.crewLimits !== undefined) {
-      const crew = await spec.crewLimits(input, checkout, context);
-      if (saysSomething(crew))
-        return crew;
-    }
-    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
-      return SILENT;
-    let project;
-    try {
-      project = loadProjectConfig(checkout);
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError) {
-        return await spec.onConfigProblem(error.message, input, event, checkout, context);
-      }
-      throw error;
-    }
-    return await spec.run({
-      input,
-      event,
-      cwd,
-      project,
-      env,
-      paths: context.paths,
-      nowMs: context.nowMs,
-      ...context.start !== undefined && { start: context.start }
-    });
-  } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
-  }
-}
-async function whileAway(spec, input, result, context) {
-  if (spec.name === "user-away" || askReason(result) === null)
-    return result;
-  try {
-    return await askedWhileAway(input, result, context.env, context.paths, context.nowMs);
-  } catch (error) {
-    return {
-      ...result,
-      stderr: `cc-smart-dev-kit ${spec.name}: the person's availability could not be read (${errorMessage(error)})`
-    };
-  }
-}
-async function handleHook(spec, text, env, nowMs = Date.now(), start) {
-  const context = {
-    env,
-    paths: cliPaths(env),
-    nowMs,
-    ...start !== undefined && { start }
-  };
-  const input = parseHookInput(text);
-  const result = await answer(spec, input, context);
-  return recordAsk(spec, input, await whileAway(spec, input, result, context), context);
-}
-function logRun(spec, text, result, env, nowMs) {
-  const file = env[HOOK_LOG_ENV];
-  if (file === undefined || file === "")
-    return;
-  try {
-    const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
-    appendFileSync3(file, `${JSON.stringify({
-      hook: spec.name,
-      event: stringField(input?.hook_event_name),
-      cwd: stringField(input?.cwd),
-      exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000),
-      ...Object.keys(facts).length === 0 ? {} : { facts }
-    })}
-`);
-  } catch {}
-}
-async function runHookEntry(spec) {
-  const text = await Bun.stdin.text();
-  const nowMs = Date.now();
-  const result = await handleHook(spec, text, process.env, nowMs);
-  logRun(spec, text, result, process.env, nowMs);
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
-`);
-  process.exit(result.exitCode ?? 0);
-}
-
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
@@ -9577,6 +9085,543 @@ function invocationsOf(command, dialect) {
   });
 }
 
+// src/user-away/state.ts
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync8 } from "fs";
+import { join as join10 } from "path";
+var PARK_KINDS = ["question", "action", "decision"];
+var AWAY_LOCK_WAIT_MS = 5000;
+var MAX_ITEMS = 500;
+var MAX_SAID = 100;
+var itemSchema = object({
+  id: number2().int().positive(),
+  kind: _enum(PARK_KINDS),
+  text: string2(),
+  command: string2().nullable(),
+  tool: string2().nullable(),
+  options: array(string2()),
+  recommend: number2().int().positive().nullable(),
+  session: string2(),
+  crew: string2(),
+  cwd: string2(),
+  at: string2()
+});
+var stateSchema2 = object({
+  unavailable: boolean2(),
+  since: string2().nullable(),
+  until: string2().nullable(),
+  items: array(itemSchema),
+  nextId: number2().int().positive(),
+  said: record(string2(), string2())
+});
+
+class AwayStateError extends Error {
+  name = "AwayStateError";
+}
+function freshState() {
+  return { unavailable: false, since: null, until: null, items: [], nextId: 1, said: {} };
+}
+function awayDir(stateDir) {
+  return join10(stateDir, "user-away");
+}
+function awayStateFile(stateDir) {
+  return join10(awayDir(stateDir), "state.json");
+}
+function readAway(stateDir) {
+  const file = awayStateFile(stateDir);
+  let text;
+  try {
+    text = readFileSync8(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return freshState();
+    throw new AwayStateError(`${file} cannot be read: ${error.message}`);
+  }
+  try {
+    return stateSchema2.parse(JSON.parse(text));
+  } catch (error) {
+    throw new AwayStateError(`${file} is not a state file (${error.message.split(`
+`)[0]}). Fix it or remove it.`);
+  }
+}
+async function change(stateDir, apply, waitMs = AWAY_LOCK_WAIT_MS) {
+  const folder = awayDir(stateDir);
+  mkdirSync5(folder, { mode: 448, recursive: true });
+  return await withLock(folder, () => {
+    const state = readAway(stateDir);
+    const result = apply(state);
+    atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}
+`, 384);
+    return { result, state };
+  }, { waitMs });
+}
+function sameItem(items, draft) {
+  const what = (item) => item.command ?? item.text;
+  return items.find((item) => item.kind === draft.kind && what(item) === what(draft) && item.cwd === draft.cwd && item.crew === draft.crew);
+}
+async function parkItem(stateDir, draft, nowMs, waitMs = AWAY_LOCK_WAIT_MS) {
+  const { result } = await change(stateDir, (state) => {
+    const same = sameItem(state.items, draft);
+    if (same !== undefined)
+      return { added: false, item: same };
+    if (state.items.length >= MAX_ITEMS) {
+      throw new AwayStateError(`the list already holds ${String(MAX_ITEMS)} items: go through it with the user-available skill first`);
+    }
+    const item = { ...draft, id: state.nextId, at: new Date(nowMs).toISOString() };
+    state.nextId += 1;
+    state.items.push(item);
+    return { added: true, item };
+  }, waitMs);
+  return result;
+}
+async function sayOnce(stateDir, session, key) {
+  if (readAway(stateDir).said[session] === key)
+    return false;
+  const { result } = await change(stateDir, (state) => {
+    if (state.said[session] === key)
+      return false;
+    delete state.said[session];
+    state.said[session] = key;
+    for (const old of Object.keys(state.said).slice(0, -MAX_SAID))
+      delete state.said[old];
+    return true;
+  });
+  return result;
+}
+async function forgetSaid(stateDir, session) {
+  if (readAway(stateDir).said[session] === undefined)
+    return false;
+  const { result } = await change(stateDir, (state) => {
+    if (state.said[session] === undefined)
+      return false;
+    delete state.said[session];
+    return true;
+  });
+  return result;
+}
+
+// src/user-away/words.ts
+var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
+var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
+var TEXT_MAX = 4000;
+var COMMAND_MAX = 16000;
+var USER_USAGE = `Usage: ${COMMAND} user <command>
+
+The person's availability. While they cannot answer, a session parks what needs them instead
+of asking, and the hooks hold the line (${UNAVAILABLE_SKILL}).
+
+Commands:
+  unavailable [--until <time>]
+                 The person cannot answer now. --until says when they are expected back
+                 (8h, 90m, 07:30 or an ISO time): a note only, it never switches back.
+  available      They can answer again. What was parked stays on the list for them.
+  status [--json]
+                 Whether they can answer, and how many items wait.
+  park --kind <question|action|decision> "<text>" [--command "<command>"]
+       [--option "<option>"]... [--recommend <n>] [--crew <name>]
+                 Put one item on the list. An action names its exact command, a question its
+                 options and the recommended one (counted from 1). --crew names the crew
+                 session the item is for, when a lead parks its crew session's question.
+  list [--json]  The items, each with its exact command.
+  clear <n>... | --all
+                 Take answered items off the list.
+
+Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
+
+// src/hooks/budget.ts
+var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
+}
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
+  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
+}
+
+// src/hooks/prompt-source.ts
+var NOT_PERSON_PREFIXES = [
+  "<cross-session-message",
+  "<task-notification",
+  "<agent-message",
+  "Stop hook feedback:"
+];
+function hasNotPersonWrapper(prompt) {
+  return NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix));
+}
+
+// src/hooks/user-away.ts
+var PARK_WAIT_MS = BUDGET_MARGIN_MS / 2;
+var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
+var SHELL_TOOLS = ["Bash", "PowerShell"];
+var STATE_COMMANDS = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"]
+];
+var REASON_MAX = 600;
+function inAwayDomain(input) {
+  const tool = stringField(input.tool_name);
+  return tool !== null && AWAY_ASK_TOOLS.includes(tool);
+}
+function plural(count, one, many) {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+function whenText(state, nowMs, options) {
+  const clock = (iso) => {
+    const at = Date.parse(iso);
+    return Number.isNaN(at) ? iso : formatClock(at / 1000, nowMs, options.timeZone);
+  };
+  const from = state.since === null ? "" : ` since ${clock(state.since)}`;
+  const back = state.until === null ? "" : `, back about ${clock(state.until)}`;
+  return `${from}${back}`;
+}
+function stateLine(error) {
+  return `cc-smart-dev-kit user-away: ${error.message}`;
+}
+function questionStep(when) {
+  return `The person is unavailable${when}: do not wait for an answer. Park the question with \`${COMMAND} user park --kind question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` and go on with whatever it does not block. A choice that is easy to undo, with a recommended option in the plan, you take yourself and park as \`--kind decision\`. The rules: ${UNAVAILABLE_SKILL}.`;
+}
+function planStep(when) {
+  return `The person is unavailable${when}: the plan cannot be approved now. Park it with \`${COMMAND} user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${UNAVAILABLE_SKILL}.`;
+}
+function questionToolStep(tool, when, env) {
+  if (crewIdOf(env) !== null)
+    return CREW_QUESTION_STEP;
+  return tool === "ExitPlanMode" ? planStep(when) : questionStep(when);
+}
+function parkedStep(when, item) {
+  return `The person is unavailable${when}, so this was not asked: it is parked as #${String(item.id)}, an action that waits for their yes. Do not run it another way; go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
+}
+function notParkedStep(when, why) {
+  return `The person is unavailable${when}, so this was not asked, and it could not be parked (${why}): park it by hand with \`${COMMAND} user park --kind action "<what>" --command "<command>"\`, then go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
+}
+var TARGET_FIELDS = ["file_path", "notebook_path", "to", "url", "path", "pattern", "query"];
+var DETAIL_MAX = 300;
+function callLabel(input) {
+  const tool = stringField(input.tool_name) ?? "a tool";
+  if (SHELL_TOOLS.includes(tool))
+    return tool;
+  const args = toolInput(input);
+  const field = TARGET_FIELDS.find((name) => stringField(args[name]) !== null);
+  const target = field === undefined ? null : maskedLine(stringField(args[field]) ?? "", [], DETAIL_MAX);
+  const rest = Object.fromEntries(Object.entries(args).filter(([name]) => name !== field));
+  const detail = Object.keys(rest).length === 0 ? "" : ` ${maskedLine(JSON.stringify(rest), [], DETAIL_MAX)}`;
+  return `${tool}${target === null ? "" : ` ${target}`}${detail}`;
+}
+function callCommand(input) {
+  const tool = stringField(input.tool_name);
+  if (tool === null || !SHELL_TOOLS.includes(tool))
+    return null;
+  return stringField(toolInput(input).command);
+}
+async function parkCall(input, env, paths, nowMs, words) {
+  const full = callCommand(input);
+  const cut = full !== null && full.length > COMMAND_MAX;
+  const command = cut ? full.slice(0, COMMAND_MAX) : full;
+  const text = `${words}${cut ? ` The command was cut at ${String(COMMAND_MAX)} characters.` : ""}`;
+  try {
+    const { item } = await parkItem(paths.stateDir, {
+      command,
+      crew: crewIdOf(env) ?? "",
+      cwd: stringField(input.cwd) ?? "",
+      kind: "action",
+      options: [],
+      recommend: null,
+      session: stringField(input.session_id) ?? "",
+      text: text.slice(0, TEXT_MAX),
+      tool: stringField(input.tool_name)
+    }, nowMs, PARK_WAIT_MS);
+    return { item, ok: true };
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+function isStateCommand(input) {
+  const command = callCommand(input);
+  if (command === null)
+    return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0)
+    return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    if (invocation.program !== COMMAND)
+      return false;
+    const operands = invocation.args;
+    if (withoutRedirections(operands).length !== operands.length)
+      return false;
+    return STATE_COMMANDS.some((known) => known.length === operands.length && known.every((word, at) => word === operands[at]));
+  });
+}
+function permissionDeny(message) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "deny", message }
+      }
+    })
+  };
+}
+async function permissionAnswer(input, env, paths, nowMs, options) {
+  const state = readAway(paths.stateDir);
+  if (!state.unavailable)
+    return SILENT;
+  if (crewIdOf(env) === null && isStateCommand(input))
+    return SILENT;
+  const when = whenText(state, nowMs, options);
+  const tool = stringField(input.tool_name) ?? "";
+  if (AWAY_ASK_TOOLS.includes(tool)) {
+    return permissionDeny(questionToolStep(tool, when, env));
+  }
+  const parked = await parkCall(input, env, paths, nowMs, `Claude Code's own permission prompt: ${callLabel(input)}`);
+  if (parked.ok)
+    return permissionDeny(parkedStep(when, parked.item));
+  return {
+    ...permissionDeny(notParkedStep(when, parked.why)),
+    stderr: `cc-smart-dev-kit user-away: could not park: ${parked.why}`
+  };
+}
+function isPersonsPrompt(input, env) {
+  if (crewIdOf(env) !== null)
+    return false;
+  const prompt = stringField(input.prompt);
+  return prompt !== null && !hasNotPersonWrapper(prompt);
+}
+function parkedText(count) {
+  if (count === 0)
+    return "Nothing is parked yet.";
+  return `${plural(count, "item is", "items are")} parked.`;
+}
+async function noteAnswer(input, env, paths, nowMs, options) {
+  const session = stringField(input.session_id);
+  if (session === null)
+    return SILENT;
+  const state = readAway(paths.stateDir);
+  const count = state.items.length;
+  if (!state.unavailable) {
+    if (!await forgetSaid(paths.stateDir, session))
+      return SILENT;
+    const left = count === 0 ? "Nothing is left parked." : `${plural(count, "item still waits", "items still wait")} for them (${AVAILABLE_SKILL}).`;
+    return addContext("UserPromptSubmit", `The person is available again: ask your questions as usual. ${left}`);
+  }
+  const when = whenText(state, nowMs, options);
+  const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
+  if (isPersonsPrompt(input, env)) {
+    const waiting = count === 0 ? "Nothing is parked yet." : `${plural(count, "item waits", "items wait")} for ${AVAILABLE_SKILL}.`;
+    return addContext("UserPromptSubmit", `The person wrote, and is still marked unavailable${when}: a message does not switch it back (it may come from a phone). Do what it asks, and keep following ${UNAVAILABLE_SKILL}. ${waiting}`);
+  }
+  if (!first)
+    return SILENT;
+  return addContext("UserPromptSubmit", `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`);
+}
+async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
+  try {
+    if (event === "PreToolUse") {
+      const tool = stringField(input.tool_name);
+      if (tool === null || !AWAY_ASK_TOOLS.includes(tool))
+        return SILENT;
+      const state = readAway(paths.stateDir);
+      if (!state.unavailable)
+        return SILENT;
+      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options), env));
+    }
+    if (event === "PermissionRequest")
+      return await permissionAnswer(input, env, paths, nowMs, options);
+    if (event === "UserPromptSubmit")
+      return await noteAnswer(input, env, paths, nowMs, options);
+    return SILENT;
+  } catch (error) {
+    if (error instanceof AwayStateError)
+      return { stderr: stateLine(error) };
+    throw error;
+  }
+}
+async function askedWhileAway(input, result, env, paths, nowMs, options = {}) {
+  const reason = askReason(result);
+  if (reason === null || input === null)
+    return result;
+  if (stringField(input.hook_event_name) !== "PreToolUse")
+    return result;
+  let state;
+  try {
+    state = readAway(paths.stateDir);
+  } catch (error) {
+    if (error instanceof AwayStateError)
+      return { ...result, stderr: stateLine(error) };
+    throw error;
+  }
+  if (!state.unavailable)
+    return result;
+  const when = whenText(state, nowMs, options);
+  const parked = await parkCall(input, env, paths, nowMs, `${callLabel(input)}: ${maskedLine(reason, [], REASON_MAX)}`);
+  const lead = reason === "" ? "" : `${reason}
+
+`;
+  if (parked.ok)
+    return toolDecision("deny", `${lead}${parkedStep(when, parked.item)}`);
+  return {
+    ...toolDecision("deny", `${lead}${notParkedStep(when, parked.why)}`),
+    stderr: `cc-smart-dev-kit user-away: could not park: ${parked.why}`
+  };
+}
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function saysSomething(result) {
+  return result.stdout !== undefined || result.stderr !== undefined || (result.exitCode ?? 0) !== 0;
+}
+function crashResult(spec, why, input, event, context) {
+  const line = {
+    exitCode: spec.crashExitCode ?? 0,
+    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
+  };
+  if (spec.onCrash === undefined)
+    return line;
+  try {
+    return spec.onCrash(why, input, event, context);
+  } catch {
+    return line;
+  }
+}
+function recordAsk(spec, input, result, context) {
+  const reason = askReason(result);
+  if (reason === null)
+    return result;
+  try {
+    appendAsk(askLogFile(context.paths.stateDir), {
+      at: context.nowMs,
+      hook: spec.name,
+      session: stringField(input?.session_id) ?? "",
+      tool: stringField(input?.tool_name) ?? "",
+      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
+    });
+  } catch (error) {
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
+${note}` };
+  }
+  return result;
+}
+async function answer(spec, input, context) {
+  const { env } = context;
+  let event = "";
+  try {
+    if (input === null) {
+      return crashResult(spec, "the hook input is not JSON", null, "", context);
+    }
+    const named = stringField(input.hook_event_name);
+    if (named === null || !spec.events.includes(named))
+      return SILENT;
+    event = named;
+    const cwd = stringField(input.cwd);
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return await outside(input, event, "the hook input has no cwd", context);
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return await outside(input, event, errorMessage(error), context);
+    }
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (spec.crewLimits !== undefined) {
+      const crew = await spec.crewLimits(input, checkout, context);
+      if (saysSomething(crew))
+        return crew;
+    }
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
+      return SILENT;
+    let project;
+    try {
+      project = loadProjectConfig(checkout);
+    } catch (error) {
+      if (error instanceof CcSmartDevKitConfigError) {
+        return await spec.onConfigProblem(error.message, input, event, checkout, context);
+      }
+      throw error;
+    }
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project,
+      env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+      ...context.start !== undefined && { start: context.start }
+    });
+  } catch (error) {
+    return crashResult(spec, errorMessage(error), input, event, context);
+  }
+}
+async function whileAway(spec, input, result, context) {
+  if (spec.name === "user-away" || askReason(result) === null)
+    return result;
+  try {
+    return await askedWhileAway(input, result, context.env, context.paths, context.nowMs);
+  } catch (error) {
+    return {
+      ...result,
+      stderr: `cc-smart-dev-kit ${spec.name}: the person's availability could not be read (${errorMessage(error)})`
+    };
+  }
+}
+async function handleHook(spec, text, env, nowMs = Date.now(), start) {
+  const context = {
+    env,
+    paths: cliPaths(env),
+    nowMs,
+    ...start !== undefined && { start }
+  };
+  const input = parseHookInput(text);
+  const result = await answer(spec, input, context);
+  return recordAsk(spec, input, await whileAway(spec, input, result, context), context);
+}
+function logRun(spec, text, result, env, nowMs) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
+    appendFileSync3(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const nowMs = Date.now();
+  const result = await handleHook(spec, text, process.env, nowMs);
+  logRun(spec, text, result, process.env, nowMs);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
+}
+
 // src/workflow/reviews.ts
 import { createHash } from "crypto";
 import { mkdirSync as mkdirSync6, readFileSync as readFileSync9 } from "fs";
@@ -10205,6 +10250,7 @@ var crewFields = object({
   name: text2,
   sessionId: text2.nullable(),
   shortId: text2.nullable(),
+  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
   leadSessionId: text2,
   leadName: text2,
   repo: text2,
@@ -10251,6 +10297,7 @@ var crewFields = object({
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
+  stoppedByWatch: boolean2().optional(),
   mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
   archive: discardArchiveSchema.optional(),
   archiveHistory: array(discardArchiveSchema).optional(),
@@ -10454,7 +10501,7 @@ async function updateCrew(stateDir, repo, id, change, atMs, text = null, memoryM
   }), by);
   return record2;
 }
-async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null) {
+async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null, by = null) {
   return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     if (!states.includes(before.state))
       return null;
@@ -10462,7 +10509,7 @@ async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text 
       change,
       event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text)
     };
-  });
+  }, by);
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -10505,8 +10552,20 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped")
-      merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
+    }
+    if (merged.state !== "stopped")
+      delete merged.stoppedByWatch;
+    if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
+      const kept = before.earlierSessions ?? [];
+      if (!kept.some((one) => one.sessionId === before.sessionId)) {
+        merged.earlierSessions = [
+          ...kept,
+          { sessionId: before.sessionId, shortId: before.shortId ?? before.sessionId.slice(0, 8) }
+        ];
+      }
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);
@@ -10868,20 +10927,6 @@ function takeToldLine(context, repo) {
     return null;
   }
   return toldLine(record);
-}
-
-// src/hooks/budget.ts
-var GUARD_BUDGET_MS = 25000;
-var SHORT_GUARD_BUDGET_MS = 8000;
-var BUDGET_MARGIN_MS = 2000;
-var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
-  const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
-}
-function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
-  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
-  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
 // src/hooks/git-guard.ts

@@ -25,7 +25,12 @@ import {
   TODO_TOOLS_VALUE,
   WORK_STATE_KEY,
 } from "../machine/claude-mem";
-import { type CompanionStep, companionPlan, runCompanionSteps } from "../machine/companions";
+import {
+  type CompanionStep,
+  companionPlan,
+  marketplaceAdded,
+  runCompanionSteps,
+} from "../machine/companions";
 import type { Machine } from "../machine/machine";
 import {
   clearWarpStage,
@@ -93,6 +98,7 @@ import {
   planRemoteControl,
   REMOTE_CONTROL_KEY,
   REMOTE_CONTROL_VALUE,
+  remoteControlReleasedFile,
 } from "../setup/remote-control";
 import {
   RETRY_WATCHDOG_DECLINED_NOTE,
@@ -364,6 +370,11 @@ function applySetup(
   // is let go once (`src/setup/remote-control.ts`).
   const remoteControl = planRemoteControl(paths);
   if (remoteControl === "set") set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
+  // The record of the release comes before the claim goes: a crash between the two plans
+  // "drop" again, and the record is never missing once the claim is gone.
+  if (remoteControl === "drop" && !dryRun) {
+    atomicWrite(remoteControlReleasedFile(paths.stateDir), "released\n", 0o600);
+  }
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
   if (managed.tavilyKeyPlan.kind === "write") {
@@ -987,6 +998,16 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const out = options.out ?? createOut(currentTerminal(process.env, machine.platform));
 
   if (!marketplaceKnown(paths.settingsFile)) {
+    // Claude Code's own record has it, the settings do not: the plugin is installed, and a
+    // repeat `marketplace add` declares the entry again (docs/claude-code-contract.md).
+    // Setup never writes the entry itself: it needs the `source` only that command knows.
+    if (marketplaceAdded(paths, MARKETPLACE)) {
+      console.error(
+        `${short(paths.settingsFile)} does not declare the ${MARKETPLACE} marketplace, although Claude Code has it on disk.\n` +
+          `Run: ${MARKETPLACE_ADD_COMMAND}`,
+      );
+      return 1;
+    }
     console.error(
       `${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.\n` +
         `Run first: ${MARKETPLACE_ADD_COMMAND}\n` +

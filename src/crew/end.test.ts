@@ -15,7 +15,7 @@ import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { repoKey } from "../workflow/reviews";
 import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
-import { procEnviron, stopLeftoverProcesses } from "./end";
+import { procEnviron, stopLeftoverProcesses, stopSession } from "./end";
 import {
   claimResume,
   crewMcpFile,
@@ -182,6 +182,43 @@ describe("crew stop", () => {
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "done",
     });
+  });
+
+  test("RX1: a stop never overwrites the end a crew session reported after the stopper read it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    // The stopper read `working`; the session reported `done` before the stop's write.
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "done" }, NOW, "done");
+
+    const stopped = await stopSession(record, world.ctx());
+
+    expect(stopped).toEqual({ gone: false, ok: true, state: "done", stored: true });
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "done",
+    });
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+        (one) => one.state === "stopped",
+      ),
+    ).toEqual([]);
+  });
+
+  test("RX1: the lead's own stop of a session the watch stopped makes the removal the lead's call", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "working" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "stopped", stoppedByWatch: true },
+      NOW,
+    );
+
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("stopped");
+    expect(after?.stoppedByWatch).toBeUndefined();
   });
 
   test("a session Claude Code no longer lists is stopped all the same, and the line says so", async () => {

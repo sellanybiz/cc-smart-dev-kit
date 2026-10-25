@@ -37,7 +37,11 @@ import { atomicWrite } from "../setup/write";
 export const PARK_KINDS = ["question", "action", "decision"] as const;
 export type ParkKind = (typeof PARK_KINDS)[number];
 
-/** How long a park waits for the folder's lock: a write takes milliseconds. */
+/**
+ * How long a park waits for the folder's lock by default: a write takes milliseconds. The
+ * commands wait this long; a hook passes a shorter wait to `parkItem` (`PARK_WAIT_MS`,
+ * `src/hooks/user-away.ts`), to stay inside its own time.
+ */
 export const AWAY_LOCK_WAIT_MS = 5_000;
 
 /** The most items the list holds: a loop that parks without end must not grow the file for good. */
@@ -125,6 +129,7 @@ export function readAway(stateDir: string): AwayState {
 async function change<T>(
   stateDir: string,
   apply: (state: AwayState) => T,
+  waitMs: number = AWAY_LOCK_WAIT_MS,
 ): Promise<{ result: T; state: AwayState }> {
   const folder = awayDir(stateDir);
   mkdirSync(folder, { mode: 0o700, recursive: true });
@@ -136,7 +141,7 @@ async function change<T>(
       atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}\n`, 0o600);
       return { result, state };
     },
-    { waitMs: AWAY_LOCK_WAIT_MS },
+    { waitMs },
   );
 }
 
@@ -171,35 +176,52 @@ export async function setAvailable(stateDir: string): Promise<AwayState> {
   return state;
 }
 
-/** The item with the same kind and the same command (or, with none, the same words), if any. */
+/**
+ * The item with the same kind, the same command (or, with none, the same words), the same folder
+ * and the same crew session, if any. The session is not part of the key: a retry from the same
+ * folder is the same thing. The folder is: a yes runs an action in its `cwd` only, so the same
+ * command from two worktrees is two actions. The crew is: an answer goes to that crew session.
+ */
 function sameItem(items: readonly ParkedItem[], draft: ParkDraft): ParkedItem | undefined {
   const what = (item: { command: null | string; text: string }) => item.command ?? item.text;
-  return items.find((item) => item.kind === draft.kind && what(item) === what(draft));
+  return items.find(
+    (item) =>
+      item.kind === draft.kind &&
+      what(item) === what(draft) &&
+      item.cwd === draft.cwd &&
+      item.crew === draft.crew,
+  );
 }
 
 /**
- * Adds one item to the list. A kind and a command (or words) that already wait stay one item: a
- * session denied the same command again is not a second thing for the person to answer. Throws
- * `AwayStateError` when the list is full.
+ * Adds one item to the list. A kind, a command (or words), a folder and a crew that already wait
+ * stay one item: a session denied the same command again is not a second thing for the person
+ * to answer. Throws `AwayStateError` when the list is full, and `LockBusyError` when the lock
+ * stays held for `waitMs`.
  */
 export async function parkItem(
   stateDir: string,
   draft: ParkDraft,
   nowMs: number,
+  waitMs: number = AWAY_LOCK_WAIT_MS,
 ): Promise<{ added: boolean; item: ParkedItem }> {
-  const { result } = await change(stateDir, (state) => {
-    const same = sameItem(state.items, draft);
-    if (same !== undefined) return { added: false, item: same };
-    if (state.items.length >= MAX_ITEMS) {
-      throw new AwayStateError(
-        `the list already holds ${String(MAX_ITEMS)} items: go through it with the user-available skill first`,
-      );
-    }
-    const item: ParkedItem = { ...draft, id: state.nextId, at: new Date(nowMs).toISOString() };
-    state.nextId += 1;
-    state.items.push(item);
-    return { added: true, item };
-  });
+  const { result } = await change(
+    stateDir,
+    (state) => {
+      const same = sameItem(state.items, draft);
+      if (same !== undefined) return { added: false, item: same };
+      if (state.items.length >= MAX_ITEMS) {
+        throw new AwayStateError(
+          `the list already holds ${String(MAX_ITEMS)} items: go through it with the user-available skill first`,
+        );
+      }
+      const item: ParkedItem = { ...draft, id: state.nextId, at: new Date(nowMs).toISOString() };
+      state.nextId += 1;
+      state.items.push(item);
+      return { added: true, item };
+    },
+    waitMs,
+  );
   return result;
 }
 

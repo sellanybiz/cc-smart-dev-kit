@@ -47,6 +47,14 @@ Windows has neither, so:
 - **Liveness is `process.kill(pid, 0)`**, Node's existence test: it sends nothing, also on
   Windows, and throws when the process is gone. A dead holder's lease is freed at the next
   look, with no clean-up step, exactly as on Linux — no PowerShell call is needed for that.
+  `processIsGone` reads only the code `ESRCH` as "gone"; any other error counts as alive
+  (`EPERM`: another user's process), so the wait errs toward waiting, never toward running on
+  top of a live holder. libuv's `uv_kill` returns `UV_ESRCH` for a pid that is gone, but
+  that Bun's own `process.kill` throws that code on native Windows was not proved by reading.
+  The Windows CI job proves it (`scripts/windows-hook-smoke.sh`, case 6: it ends a child,
+  then checks the code Bun throws and `processIsGone` for it and for the running process); a
+  different code fails that job, with the code in its message, before a release. It has not
+  run on Windows yet — the first run is the proof.
 - **Fail safe: a holder nobody can judge counts as alive.** A start time that cannot be read
   — no PowerShell on the machine, or a process it may not open — hands the recorded value
   back, so the holder counts as held and a waiting job keeps waiting. It never runs on top

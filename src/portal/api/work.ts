@@ -19,6 +19,7 @@ import {
   type CrewEvent,
   type CrewRecord,
   crewBriefFile,
+  crewSessions,
   type LeadRecord,
   listAllCrew,
   listAllLeads,
@@ -55,8 +56,8 @@ import { routerFacts, shownDetail } from "../facts";
 import { openWaitsOffLoop, readFlowOffLoop } from "../flow-read";
 import { type PageDataDeps, updateFacts } from "../page-data";
 import { readWorktreesOffLoop } from "../worktrees-read";
-import { readPortalAgents } from "./agents-read";
-import { readCleanupOffLoop } from "./cleanup-read";
+import { readPortalAgentsForPage } from "./agents-read";
+import { readCleanupForPage } from "./cleanup-read";
 import {
   type BreakerNeed,
   type CrewAnswer,
@@ -246,7 +247,7 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   } catch (error) {
     note = note ?? `the crew store could not be read: ${reasonOf(error)}`;
   }
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const finished = readFinishedSessions(paths, { agents: () => agents.sessions, now });
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) =>
@@ -286,9 +287,13 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   if (found.kind === "repo") {
     const { repo } = found;
     // The crew sessions' and leads' own sessions, by their full ids: a saved session that is
-    // one of them is not "another session" on the Work page.
+    // one of them is not "another session" on the Work page. A crew session counts every
+    // session it has had (`crewSessions`): a resume is a copy with a new id, and the earlier one
+    // stays saved.
     const crewSessionIds = new Set<string>(
-      records.flatMap((record) => (record.sessionId === null ? [] : [record.sessionId])),
+      records.flatMap((record) =>
+        crewSessions(record).flatMap((one) => (one.sessionId === null ? [] : [one.sessionId])),
+      ),
     );
     const leadIds = new Set<string>(leadRecords.map((one) => one.sessionId));
     const others = savedSessions(
@@ -438,7 +443,7 @@ export async function crewAnswerFor(
     .filter(([, entry]) => entry.branches?.includes(record.branch) === true)
     .map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha }))
     .sort((a, b) => b.at.localeCompare(a.at));
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const lead =
     listAllLeads(paths.stateDir).records.find(
       (one) => one.repo === record.repo && one.sessionId === record.leadSessionId,
@@ -596,7 +601,7 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
   const permissions: PermissionWait[] =
     "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
-  const cleanup = await readCleanupOffLoop(deps.action.portal, deps.action.cwd);
+  const cleanup = await readCleanupForPage(deps.action.portal, deps.action.cwd);
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {

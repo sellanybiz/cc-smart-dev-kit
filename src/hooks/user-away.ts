@@ -12,7 +12,10 @@
  *   question (or the plan awaiting approval). Nothing is parked here: the session parks the
  *   question itself, in its own words, or takes the choice and parks it as a decision.
  * - **Claude Code's own permission prompt (`PermissionRequest`)**: denied with a message, and the
- *   call parked as an `action` with its exact command, so the person's later yes can run it.
+ *   call parked as an `action` with its exact command, so the person's later yes can run it. One
+ *   exception, the way back: a line that is nothing but the kit's own `user available`, `user
+ *   status` or `user list` (`isStateCommand`) gets silence, so the person who is back answers
+ *   Claude Code's prompt. Never in a crew session, which never asks the person.
  * - **A kit guard that would ask** (`askedWhileAway`, called by the frame for every hook): the
  *   ask becomes a deny that keeps the guard's own words, and the call is parked the same way.
  *   One home for all the guards, so a new guard needs nothing here.
@@ -37,6 +40,13 @@ import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { formatClock } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
 import {
+  dialectOfTool,
+  invocationOf,
+  shellSteps,
+  withoutRedirections,
+  wordsOf,
+} from "../shell/command";
+import {
   type AwayState,
   AwayStateError,
   forgetSaid,
@@ -46,6 +56,7 @@ import {
   sayOnce,
 } from "../user-away/state";
 import { AVAILABLE_SKILL, COMMAND_MAX, TEXT_MAX, UNAVAILABLE_SKILL } from "../user-away/words";
+import { BUDGET_MARGIN_MS } from "./budget";
 import {
   addContext,
   askReason,
@@ -59,11 +70,35 @@ import {
 import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
 
+/**
+ * How long a park waits for the state's lock: half of what a guard keeps back for its answer
+ * (`BUDGET_MARGIN_MS`). A guard that ran on its budget (`src/hooks/budget.ts`: 8 s of its 10 s,
+ * 25 s of 30 s) and then waited the full `AWAY_LOCK_WAIT_MS` (5 s) would pass its hook's
+ * `timeout`, and Claude Code, killing it, blocks the call with no word to the session
+ * (`onFailure: block`). A lock held longer is a park that failed, which still denies and says to
+ * park by hand.
+ */
+const PARK_WAIT_MS = BUDGET_MARGIN_MS / 2;
+
 /** The two tools that put a question to the person: each waits for an answer nobody reads. */
 export const AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
 
 /** The shell tools: their `command` is what a parked action runs. */
 const SHELL_TOOLS: readonly string[] = ["Bash", "PowerShell"];
+
+/**
+ * The kit's own commands that read or end the away state, as the arguments after the kit's name.
+ * The person who is back runs them through the `user-available` skill, and Claude Code raises its
+ * own prompt for each one: that prompt is the person's to answer, never parked. Nothing else
+ * is on the list, flags included.
+ */
+const STATE_COMMANDS: readonly (readonly string[])[] = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"],
+];
 
 /** The longest piece of a guard's own words a parked item keeps. */
 const REASON_MAX = 600;
@@ -195,11 +230,46 @@ async function parkCall(
         tool: stringField(input.tool_name),
       },
       nowMs,
+      PARK_WAIT_MS,
     );
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * True when a shell call is nothing but the kit's own `user available`, `user status` or
+ * `user list`: every command of the line, read with the one shell reader (`shellSteps`,
+ * `invocationOf`), and the program is the kit's own command by name. **Not `kitArguments`**
+ * (`kit-invocation.ts`): it leans toward yes on purpose, for guards that ask or deny, and reads
+ * the words after a kit word in *any* program's arguments (`bash -c '…' cc-smart-dev-kit user
+ * available`) as the kit's. An allow-list needs the opposite lean. A second command, a
+ * substitution, a redirection, a prefix (`FOO=1`, `sudo`), a computed program, another
+ * program, an argument off the list, or a line that does not parse is any other call. A line
+ * the hook cannot be sure of is parked, as before: this only ever leaves a prompt alone for the
+ * person to answer. (A file of another folder that is named like the kit passes too: the name is
+ * what is read, and the feature stops mistakes, not a session set on getting past it.)
+ */
+function isStateCommand(input: HookInput): boolean {
+  const command = callCommand(input);
+  if (command === null) return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0) return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    if (invocation.program !== COMMAND) return false;
+    const operands = invocation.args;
+    if (withoutRedirections(operands).length !== operands.length) return false;
+    return STATE_COMMANDS.some(
+      (known) =>
+        known.length === operands.length && known.every((word, at) => word === operands[at]),
+    );
+  });
 }
 
 /** The deny (or the parked action) a `PermissionRequest` gets while the person is away. */
@@ -223,6 +293,10 @@ async function permissionAnswer(
 ): Promise<HookResult> {
   const state = readAway(paths.stateDir);
   if (!state.unavailable) return SILENT;
+  // The kit's own switch-back and reads: the person who is back answers Claude Code's prompt,
+  // as before this feature. Parking them would deny the one command that ends the state. A crew
+  // session never asks the person, so it keeps the deny and the park under its name.
+  if (crewIdOf(env) === null && isStateCommand(input)) return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
   // The two tools that ask are denied by their PreToolUse answer first; Claude Code's prompt for

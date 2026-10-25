@@ -57,11 +57,13 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    project, prints one `·` line per listed hook, and warns (`!`) when a listed hook has no
    project hook left to answer, or when a project hook runs next to a plugin hook the list
    does not name. A hook the project wires itself skips this step: that wiring is its
-   opt-in. **Two hooks skip the step themselves:** `session-escape-guard` and `job-route`
-   are `alwaysOn` (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for them — the
-   project's file is one of the things the first guards, and the second limits what the session
-   itself may launch (§ The session-escape guard, § The Bash judge and the job route).
-   `ownHooks` does not accept `session-escape-guard`'s name; it still accepts `job-route`'s,
+   opt-in. **Three hooks skip the step themselves:** `session-escape-guard`, `job-route` and
+   `user-away` are `alwaysOn` (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for
+   them — the project's file is one of the things the first guards, the second limits what the
+   session itself may launch, and the switch of the third is the person's (§ The session-escape
+   guard, § The Bash judge and the job route, § While the person is away).
+   `ownHooks` does not accept `session-escape-guard`'s or `user-away`'s name; it still accepts
+   `job-route`'s,
    because a project file written before 1.0.0 may carry it, and the name silences nothing
    (`UNSWITCHABLE_HOOK_NAMES`).
 4. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
@@ -252,7 +254,9 @@ D36, D47; § The crew talks), so a project that never opted in
 sees only Claude Code's own worktrees and the limits a session may not get around. `job-route`
 and `session-escape-guard` are also `alwaysOn`: `ownHooks` cannot switch them off, because they
 limit what the session itself may do — their crew answer lives in their own `run` and config
-answer (§ The Bash judge and the job route, § The session-escape guard). The machine-wide
+answer (§ The Bash judge and the job route, § The session-escape guard). `user-away` is the
+third `alwaysOn` hook, for another reason: the switch is the person's (§ While the person is
+away). The machine-wide
 `notify` hook needs no project file
 and acts without one; the
 `workflow.alerts` settings are the one thing it reads from a project that has them (§ The
@@ -650,8 +654,11 @@ both keep their item; a reader takes no lock. It holds `unavailable`, `since`, `
 a note only: it shows in the notes and never switches back. An item has a kind — `question`
 (with its options and the recommended one), `action` (with its exact command) or `decision`
 (what was chosen, why, how to undo it) — the session and the crew session that parked it, and
-the time. The same kind with the same command (or, with none, the same words) parks once. The
-list holds 500 items and `said` 100 sessions. **A file that cannot be read is an
+the time. The same kind with the same command (or, with none, the same words) **in the same
+folder and for the same crew session** parks once: a retry from one session is one item, while
+the same `git push` from two worktrees is two actions (a yes runs an action in its own `cwd`
+only), and two crew sessions' same-worded questions are two (each answer goes to its own
+session). The session is not part of the key. The list holds 500 items and `said` 100 sessions. **A file that cannot be read is an
 `AwayStateError`, never "available"**: a reader that cannot tell must not guess in the loose
 direction. A parked command is kept **exactly**, as the session's own transcript already holds
 it — masking would break "a later yes can run it" — and one over 16,000 characters is cut, and
@@ -674,12 +681,37 @@ where there was a question, never an allow.
   shell command keeps its target and a short, masked piece of its other arguments in the item's
   words (`WebFetch <url> {"prompt":…}`, `Edit <file> {"old_string":…}`), so two prompts of one tool
   at different targets are two items, and a session denied the same call again is told the
-  same number. A shell call is its `command`, kept whole.
+  same number. A shell call is its `command`, kept whole. **One exception, so the person can
+  come back:** a shell call that is nothing but the kit's own `user available`, `user status`
+  (with or without `--json`) or `user list` (the same) gets silence, and Claude Code's own
+  prompt goes to the person, who is back and answers it. Without it the skill's own calls would
+  be parked and denied in the default permission mode, and the one command that ends the state
+  could never run. The line is read with the one shell reader and the one kit-command reader
+  (`kitArguments` is not used for this: it leans toward yes for guards and would read
+  `bash -c '…' cc-smart-dev-kit user available` as the kit's; here the program must be the kit's
+  own command by name); a second command, a substitution, a redirection, a prefix, a computed
+  program, another program or any other argument is parked as before, so nothing gets looser. A
+  crew session never gets the silence: it never asks the person, so its call is denied and parked
+  under its name. **The trade-off:** the hook cannot tell the returning person's run from a
+  session's own `user status` or `user list` while the person is away, so such a call waits for
+  Claude Code's prompt; the `user-unavailable` skill tells a session not to run them (the hook's
+  note carries the state and the count). When a session
+  still cannot run it, the person types `! cc-smart-dev-kit user available` in the session
+  (`/cc-smart-dev-kit:user-available` says so).
 - **A kit guard that would ask** — the frame's step 6, for every hook, so a new guard needs
   nothing: the ask becomes a deny that keeps the guard's own words and adds "parked as #N", and
   the call is parked as an `action`. A deny, an allow and silence pass through unchanged. A park
   that fails (a full list, a lock held too long) still denies, and the deny says to park by hand:
-  the person is away, so the call must not wait. `user-away`'s own crash-ask is not converted.
+  the person is away, so the call must not wait. **The park fits inside the hook's time:** it
+  waits at most `PARK_WAIT_MS` (1 s) for the lock, half of `BUDGET_MARGIN_MS`, the time a guard
+  keeps back for its answer. For a guard that runs on a budget (the merge guard 25 s of its 30 s,
+  `job-route`'s `workflow propose` question and `after-merge`, `src/hooks/budget.ts`) the last
+  child ends by 6 s of 10 s, or 23 s of 30 s, so the park ends well inside the hook's `timeout`.
+  A guard with no budget (`git-guard`, `main-folder-guard`, `message-guard`, and the frame's own
+  project lookup, each with 5 s git calls) was never held to a shared deadline: the short wait
+  does not fix that, it only stops the park from adding 5 s. The command `user park` still waits
+  5 s (`AWAY_LOCK_WAIT_MS`). A hook the host kills answers nothing, and `onFailure: block` then
+  blocks the call with no word to the session. `user-away`'s own crash-ask is not converted.
 - **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
   …: follow `/cc-smart-dev-kit:user-unavailable`", with the expected return and how many items
   wait — **said once per change** (`since|until|count`, per session, in `said`), never at every
@@ -715,6 +747,16 @@ waits for them, so it raises no alert (a state it cannot read keeps the alert).
 
 **What it cannot reach.** A project's own copy of a guard (`ownHooks`) answers in Claude Code
 directly: only the prompt Claude Code then raises is caught, by the `PermissionRequest` answer.
+**An MCP server's elicitation dialog** (a server asking the person for input mid-call) is
+reached by neither event: Claude Code has its own `Elicitation` hook event for it, apart from
+`PermissionRequest` (read from the 2.1.310 binary: "Fired when an MCP server requests user input.
+Hooks can auto-respond (accept/decline) instead of showing the dialog" — read only, not proved
+live), and `user-away` wires neither. While the person is away, such a dialog waits for them like
+any other; the notifier still raises its alert. **A call two guards judge differently** (one
+denies, one asks — a polling loop job-route denies, with a force-push git-guard asks about,
+in one line) is parked by the asking guard's own process, which cannot see the other's deny: the
+list may hold a line a guard refuses. A yes to it runs the line again, through the same
+hooks, so the deny holds and nothing gets through; the item shows the exact line.
 The shim's `--missing=ask` (no bun at all) cannot read any state, so there the ask goes to the
 person. A session that started before the update carries an older plugin version with none of this
 (no step 6, no `PermissionRequest` entry), and `user unavailable` still succeeds for it: restart it.
@@ -933,7 +975,8 @@ ported so a machine that moves to the plugin loses nothing.
 
 Everything that waits runs in a detached worker — the notifier's `alert-worker`, through the
 launcher, never in the hook (the usage-limit alert has no button and starts no worker: it says
-which limit was hit and when it resets, and offers nothing) — and each extra runs only where its
+which limit was hit and, when that limit holds the session, when it resets — a limit that does
+not hold it gets no reset date, `docs/gateway.md` — and offers nothing) — and each extra runs only where its
 tool is on PATH: `xdotool` to raise a window (the terminal's `WINDOWID`, or a VS Code or
 Warp window found by its class and title); `gdbus`, the notification server itself, for the
 notification's id — the minute and the one-per-session rule need it, and `notify-send`

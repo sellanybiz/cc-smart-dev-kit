@@ -63,7 +63,8 @@ whose `ownHooks` lists its own copy of the guard. Without `CC_SMART_DEV_KIT_CREW
 silent: an ordinary session pays nothing, and the guard's other answers are exactly as they
 were.
 
-`job-route` and `session-escape-guard` are `alwaysOn` (§ A machine-wide hook), so a project
+`job-route`, `session-escape-guard` and `user-away` are `alwaysOn` (§ A machine-wide hook; the
+switch of `user-away` is the person's), so a project
 cannot switch them off either; their crew answer lives in their own `run` and in
 `onConfigProblem`/`outsideGit`, so no call is judged twice. Each guard's detector is shared
 with its own `run` — one function, never a copy — so a spelling that gets past one gets past
@@ -159,7 +160,7 @@ While it is on, nobody reads a question, so no hook may leave one open. The desi
 | The answer | While the person is away |
 |---|---|
 | `AskUserQuestion` or `ExitPlanMode` (PreToolUse) | `user-away` **denies**, with the step that parks the question |
-| Claude Code's own permission prompt (`PermissionRequest`) | `user-away` **denies** and parks the call as an `action` |
+| Claude Code's own permission prompt (`PermissionRequest`) | `user-away` **denies** and parks the call as an `action`; the one exception is a plain session's line that is nothing but the kit's own `user available`, `user status` or `user list` (the program by name, never `kitArguments`), which is left to Claude Code's prompt so the returning person can answer it |
 | Any hook's PreToolUse **ask** | the frame's step 6 (`askedWhileAway`) turns it into a **deny**: the hook's own words, "parked as #N", and the call parked as an `action` with its exact command |
 | A deny, an allow, silence | unchanged |
 

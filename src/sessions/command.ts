@@ -519,6 +519,7 @@ async function crewLeftoversPart(
     const outcome = await archiveConversation({
       neverTaken,
       nowMs: deps.now,
+      only: new Set(current.sessionIds),
       paths,
       record: current.record,
       running,
@@ -528,6 +529,8 @@ async function crewLeftoversPart(
         "removed",
         `Moved the conversation of ${one.record.name} (${counted(outcome.files, "file", "files")}) into ${tildify(outcome.dir, home)}.`,
       );
+      for (const why of outcome.stayed ?? [])
+        out.line("info", `Kept another conversation of ${one.record.name}: ${why}.`);
     } else if (outcome.kind === "kept") {
       out.line("info", `Kept ${one.record.name}: ${outcome.why}.`);
     } else if (outcome.kind === "failed") {

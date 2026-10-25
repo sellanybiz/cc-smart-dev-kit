@@ -33,11 +33,13 @@
  * A folder git does not list as a worktree is not ours to delete: it is said, and the command
  * stops there. Nothing is called gone that is not.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
 import { liveSessions } from "../hooks/sessions";
+import { LockBusyError, withLock } from "../setup/lock";
 import { holdCleanLock } from "../worktrees/clean";
 import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
 import {
@@ -92,7 +94,7 @@ import {
   stopSession,
 } from "./end";
 import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, type CrewRecord, listCrew } from "./store";
+import { appendCrewEvent, type CrewRecord, crewFilesDir, crewSessions, listCrew } from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -147,19 +149,72 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
   }
 }
 
-/** `crew rm <name|id>`; the exit code. */
+/** What `crew rm` may be given besides the crew session. */
+interface CrewRmOptions {
+  skipParked?: boolean;
+  against?: { label: string; ref: string };
+  discard?: boolean;
+  yes?: boolean;
+  expectedDiscardToken?: string;
+  /** Called only by the interactive command; automated callers cannot prompt. */
+  confirm?: (question: string) => boolean;
+}
+
+/**
+ * The folder whose lock one crew session's removal holds (RX1): beside its other files, so it goes
+ * with them. A person's `crew rm` and the lead's watch both remove a record, and a discard changes
+ * the worktree under the watch's feet (its signature moves, so the watch tries again): without the
+ * lock the second run finds `discardPending`, takes the first run's work for a crash and rolls it
+ * back under the person's process.
+ */
+export function crewRemovalLockDir(stateDir: string, repo: string, id: string): string {
+  return join(crewFilesDir(stateDir, repo, id), "removal");
+}
+
+/**
+ * `crew rm <name|id>`; the exit code. One removal of a crew session runs at a time: a second one
+ * (the watch's after the person's, or two of the person's) refuses at once and changes nothing.
+ * A removal that crashed leaves no lock behind (`withLock` judges its holder), so a later run
+ * recovers it as before.
+ */
 export async function runCrewRm(
   ref: string,
   ctx: CrewContext,
-  options: {
-    skipParked?: boolean;
-    against?: { label: string; ref: string };
-    discard?: boolean;
-    yes?: boolean;
-    expectedDiscardToken?: string;
-    /** Called only by the interactive command; automated callers cannot prompt. */
-    confirm?: (question: string) => boolean;
-  } = {},
+  options: CrewRmOptions = {},
+): Promise<number> {
+  const first = actOn(ref, "rm", ctx);
+  if (isRefusal(first)) return refuse(first, ctx);
+  const dir = crewRemovalLockDir(ctx.paths.stateDir, first.record.repo, first.record.id);
+  let entered = false;
+  try {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+    return await withLock(
+      dir,
+      async () => {
+        entered = true;
+        return await removeCrewSession(ref, ctx, options);
+      },
+      { waitMs: 0 },
+    );
+  } catch (error) {
+    // Only the lock being held is "busy": a LockBusyError from inside the removal is its own.
+    if (error instanceof LockBusyError && !entered) {
+      return refuse(
+        failure(
+          `crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`,
+        ),
+        ctx,
+      );
+    }
+    throw error;
+  }
+}
+
+/** The removal itself; the caller holds the record's removal lock. */
+async function removeCrewSession(
+  ref: string,
+  ctx: CrewContext,
+  options: CrewRmOptions,
 ): Promise<number> {
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
@@ -575,19 +630,22 @@ export async function runCrewRm(
   if (discard && record.discardPending !== undefined && !branchLeft())
     record = await completeCrewDiscard(record, ctx);
 
-  // 8. Last, `claude rm`: it refuses a worktree that is still there.
-  if (record.shortId !== null) {
-    const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
+  // 8. Last, `claude rm`: it refuses a worktree that is still there. Every session the crew
+  // session has had goes (`crewSessions`): a resume is a copy with a new id (WF1), and the
+  // original stays in `/resume` and agent view until it is removed too.
+  const sessions = crewSessions(record);
+  for (const one of sessions) {
+    const rm = claudeFailure(ctx, repo, ["rm", one.shortId]);
     // A job Claude Code no longer has cannot be removed again: `claude rm` fails on it ("No job
     // matching") however often it runs. When agent view does not list the session at all, it is
     // gone already — the state this step wants — so the record goes too.
-    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    const goneAlready = rm !== null && sessionUnknown(ctx, record, one.shortId);
     if (rm !== null && !goneAlready) {
       // What is left is said as it is: a branch git keeps is not called gone.
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
       ctx.error(
-        `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`,
+        `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`,
       );
       try {
         await appendCrewEvent(
@@ -609,13 +667,11 @@ export async function runCrewRm(
       return 1;
     }
     ctx.print(
-      goneAlready
-        ? `session ${record.shortId} was gone already`
-        : `removed session ${record.shortId}`,
+      goneAlready ? `session ${one.shortId} was gone already` : `removed session ${one.shortId}`,
     );
-    // 9. Its conversation leaves `/resume` (AR1): only now that Claude Code has let the session go.
-    await archiveAfterRemoval(record, ctx);
   }
+  // 9. Its conversations leave `/resume` (AR1): only now that Claude Code has let the sessions go.
+  if (sessions.length > 0) await archiveAfterRemoval(record, ctx);
   if (discard) record = await completeCrewDiscard(record, ctx);
   const state = discard ? "discarded" : "removed";
   const stored = await markState(
@@ -641,7 +697,11 @@ export async function archiveAfterRemoval(
 ): Promise<void> {
   const home = ctx.paths.home;
   const daysOf = archiveDaysOf(ctx.paths, ctx.env);
-  const session = `session ${record.shortId ?? record.sessionId ?? record.name}`;
+  const shortIds = crewSessions(record).map((one) => one.shortId);
+  const session =
+    shortIds.length === 0
+      ? `session ${record.sessionId ?? record.name}`
+      : `session${shortIds.length > 1 ? "s" : ""} ${shortIds.join(", ")}`;
   let outcome: ArchiveOutcome;
   try {
     // The machine's facts were read before this removal began (the background clean reads them
@@ -671,6 +731,9 @@ export async function archiveAfterRemoval(
     ctx.print(
       `archived the conversation of ${session} (${String(outcome.files)} file${outcome.files === 1 ? "" : "s"}) in ${tildify(outcome.dir, home)}: it leaves /resume, and ${until}`,
     );
+    for (const why of outcome.stayed ?? []) {
+      ctx.error(`note: another conversation of ${record.name} stays where it is: ${why}`);
+    }
   } else if (outcome.kind === "kept") {
     ctx.error(`note: the conversation of ${session} stays where it is: ${outcome.why}`);
   } else if (outcome.kind === "failed") {

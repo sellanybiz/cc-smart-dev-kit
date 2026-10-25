@@ -245,6 +245,13 @@ export async function runCliChildText(
   }
 }
 
+/**
+ * How long a page's read of a heavy child is reused (`shortCache`), where the read has no
+ * reason of its own for another time: longer than the header's 300 ms debounce, short enough
+ * to feel live.
+ */
+export const PAGE_READ_FRESH_MS = 5_000;
+
 /** One key's entry: the read, and when its answer arrived (null while the child is on its way). */
 interface Kept<Answer> {
   at: null | number;

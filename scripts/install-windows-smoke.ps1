@@ -126,6 +126,31 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     New-Item -ItemType Directory -Force -Path (Join-Path $configDir "plugins") | Out-Null
     Set-Content -Path (Join-Path $configDir "plugins\known_marketplaces.json") -Value ((@{ anymodel = @{ source = @{ source = "github"; repo = "example-org/anymodel" }; installLocation = "C:\old" } } | ConvertTo-Json -Depth 8))
   }
+  if ($Options.ContainsKey("MarketplacesOnDisk")) {
+    # The three marketplaces are on disk (known_marketplaces.json, with their clones) before
+    # the run. "declared": the user settings hold them too. "lost": they do not -- the machine
+    # the Windows run of 1.2.0 found, where `setup` stopped on "does not list the marketplace".
+    # Not combined with InstalledVersion: both write settings.json.
+    $sources = [ordered]@{ "cc-smart-dev-kit" = $repo; "thedotmack" = "thedotmack/claude-mem"; "claude-plugins-official" = "anthropics/claude-plugins-official" }
+    $known = [ordered]@{}
+    $declared = [ordered]@{}
+    foreach ($marketplaceName in $sources.Keys) {
+      $location = Join-Path $configDir ("plugins\marketplaces\" + $marketplaceName)
+      New-Item -ItemType Directory -Force -Path (Join-Path $location "plugin\.claude-plugin") | Out-Null
+      if ($marketplaceName -eq "cc-smart-dev-kit") {
+        Set-Content -Path (Join-Path $location "plugin\.claude-plugin\plugin.json") -Value ((@{ name = $marketplaceName; version = $marketplaceVersion } | ConvertTo-Json))
+      }
+      $known[$marketplaceName] = @{ source = @{ source = "github"; repo = $sources[$marketplaceName] }; installLocation = $location }
+      $declared[$marketplaceName] = @{ source = @{ source = "github"; repo = $sources[$marketplaceName] } }
+    }
+    New-Item -ItemType Directory -Force -Path (Join-Path $configDir "plugins") | Out-Null
+    Set-Content -Path (Join-Path $configDir "plugins\known_marketplaces.json") -Value ($known | ConvertTo-Json -Depth 8)
+    $settings = @{}
+    if ($Options["MarketplacesOnDisk"] -eq "declared") { $settings["extraKnownMarketplaces"] = $declared }
+    # "repo-declared": the settings hold this repository's marketplace and neither companion.
+    if ($Options["MarketplacesOnDisk"] -eq "repo-declared") { $settings["extraKnownMarketplaces"] = @{ "cc-smart-dev-kit" = $declared["cc-smart-dev-kit"] } }
+    Set-Content -Path (Join-Path $configDir "settings.json") -Value ($settings | ConvertTo-Json -Depth 8)
+  }
   if ($Options["ProgressFile"] -eq $true) {
     New-Item -ItemType Directory -Force -Path (Join-Path $configDir "cc-smart-dev-kit") | Out-Null
     Set-Content -Path (Join-Path $configDir "cc-smart-dev-kit\migrate-progress.json") -Value '{"done":["folders"],"version":1}'
@@ -196,6 +221,7 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
       FAKE_GH_VIEW_FAILS = $(if ($Options["GhViewFails"] -eq $true) { "yes" } else { "no" })
       FAKE_CLAUDE_SSH_REFUSED = $(if ($Options["ClaudeSshRefused"] -eq $true) { "yes" } else { "no" })
       FAKE_CLAUDE_ADD_NOT_FOUND = $(if ($Options["ClaudeAddNotFound"] -eq $true) { "yes" } else { "no" })
+      FAKE_CLAUDE_NO_DECLARE = $(if ($Options["ClaudeNoDeclare"] -eq $true) { "yes" } else { "no" })
     }
   }
 }
@@ -608,6 +634,67 @@ try {
   }
   $passed++
   $names.Add("a repository that cannot be read")
+
+  # 15c. The marketplaces are on disk but the settings lost them (the live bug of 1.2.0): step 4
+  #      adds them again and says it is a repair, and setup passes. Both records holding them:
+  #      "already added" and no add. -DryRun on the lost state: the plan, no add. An add that
+  #      leaves the settings alone: step 4 fails with the command.
+  #      Only this repository's marketplace is held to both records: `setup` reads nothing of the
+  #      two companions in the settings.
+  $lost = New-World "lost" @{ Answers = @("y", ("A" * 43), "n", "n"); MarketplacesOnDisk = "lost" }
+  $result = Invoke-Install $lost @($repo)
+  Assert-Code "the settings lost the marketplaces" $result 0 $lost
+  Assert-Contains "the settings lost the marketplaces" $result.out "[ok] 4/8 re-declared in your settings: $repo"
+  $adds = @(Get-Calls $lost | Where-Object { $_ -like "claude plugin marketplace add *" })
+  if ($adds.Count -ne 1 -or $adds -notcontains "claude plugin marketplace add $repo") {
+    Stop-Smoke "the settings lost the marketplaces: expected the one add of $repo, the log is:`n$((Get-Calls $lost) -join "`n")"
+  }
+  $declaredNow = (Get-Content -Raw -Path (Join-Path $lost.home ".claude\settings.json") | ConvertFrom-Json).extraKnownMarketplaces
+  $declaredNames = @($declaredNow.PSObject.Properties | ForEach-Object { $_.Name })
+  if ($declaredNames.Count -ne 1 -or $declaredNames -notcontains "cc-smart-dev-kit") {
+    Stop-Smoke "the settings lost the marketplaces: the settings declare $($declaredNames -join ', ') afterwards"
+  }
+  if (-not (Test-Called $lost "setup")) { Stop-Smoke "the settings lost the marketplaces: setup did not run" }
+  $passed++
+  $names.Add("the settings lost the marketplaces")
+
+  $declaredWorld = New-World "declared" @{ Answers = @("y", ("A" * 43), "n", "n"); MarketplacesOnDisk = "declared" }
+  $result = Invoke-Install $declaredWorld @($repo)
+  Assert-Code "marketplaces on disk and declared" $result 0 $declaredWorld
+  Assert-Contains "marketplaces on disk and declared" $result.out "[ok] 4/8 all three marketplaces are already added"
+  if (Get-Calls $declaredWorld | Where-Object { $_ -like "*marketplace add*" }) {
+    Stop-Smoke "marketplaces on disk and declared: an add ran:`n$((Get-Calls $declaredWorld) -join "`n")"
+  }
+  $passed++
+  $names.Add("marketplaces on disk and declared")
+
+  $companionsBare = New-World "companions-bare" @{ Answers = @("y", ("A" * 43), "n", "n"); MarketplacesOnDisk = "repo-declared" }
+  $result = Invoke-Install $companionsBare @($repo)
+  Assert-Code "companions on disk without a settings entry" $result 0 $companionsBare
+  Assert-Contains "companions on disk without a settings entry" $result.out "[ok] 4/8 all three marketplaces are already added"
+  if (Get-Calls $companionsBare | Where-Object { $_ -like "*marketplace add*" }) {
+    Stop-Smoke "companions on disk without a settings entry: an add ran:`n$((Get-Calls $companionsBare) -join "`n")"
+  }
+  $passed++
+  $names.Add("companions on disk without a settings entry")
+
+  $lostDry = New-World "lost-dry" @{ MarketplacesOnDisk = "lost" }
+  $result = Invoke-Install $lostDry @("-DryRun", $repo)
+  Assert-Code "-DryRun, the settings lost the marketplaces" $result 0 $lostDry
+  Assert-Contains "-DryRun, the settings lost the marketplaces" $result.out "- 4/8 the plan re-declares in your settings: $repo"
+  if (Get-Calls $lostDry | Where-Object { $_ -like "claude *" }) {
+    Stop-Smoke "-DryRun, the settings lost the marketplaces: claude ran:`n$((Get-Calls $lostDry) -join "`n")"
+  }
+  $passed++
+  $names.Add("-DryRun, the settings lost the marketplaces")
+
+  $noDeclare = New-World "no-declare" @{ Answers = @("n"); MarketplacesOnDisk = "lost"; ClaudeNoDeclare = $true }
+  $result = Invoke-Install $noDeclare @($repo)
+  Assert-Code "an add that leaves the settings alone" $result 1 $noDeclare
+  Assert-Contains "an add that leaves the settings alone" $result.out "[x] the settings still do not list the cc-smart-dev-kit marketplace after adding $repo"
+  Assert-Contains "an add that leaves the settings alone" $result.out "claude plugin marketplace add $repo"
+  $passed++
+  $names.Add("an add that leaves the settings alone")
 
   # 16. The GitHub account cannot see the repository: stopped before any add, with the account,
   #     the owner and the invitation, and exit 1 (live, 2026-10-17).

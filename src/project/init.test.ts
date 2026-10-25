@@ -544,6 +544,66 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("a workflow.crew key that came with 1.2.0 or 1.3.0 needs that release", () => {
+    // `handoffTokens` is on the 1.2.0 plugin; `loadPerCore` and `archiveDays` are new in 1.3.0.
+    // A plugin one release older refuses each as an unknown field.
+    expect(requiresFloor({ workflow: { crew: { handoffTokens: 400000 } } })).toEqual({
+      floor: ">=1.2",
+      version: "1.2.0",
+    });
+    for (const crew of [{ loadPerCore: 3 }, { archiveDays: 7 }]) {
+      expect(requiresFloor({ workflow: { crew } })).toEqual({ floor: ">=1.3", version: "1.3.0" });
+    }
+    // The newest key wins.
+    expect(requiresFloor({ workflow: { crew: { handoffTokens: 1, loadPerCore: 2 } } })).toEqual({
+      floor: ">=1.3",
+      version: "1.3.0",
+    });
+  });
+
+  test("an ownHooks name that came after ownHooks needs the release that brought it", () => {
+    // A plugin that predates the hook validates the name as an enum and refuses the file.
+    expect(requiresFloor({ ownHooks: ["tier-view"] })).toEqual({
+      floor: ">=1.3",
+      version: "1.3.0",
+    });
+    expect(requiresFloor({ ownHooks: ["git-guard", "verify-gate"] })).toEqual({
+      floor: ">=1.1",
+      version: "1.1.0",
+    });
+    expect(requiresFloor({ ownHooks: ["crew-role"] })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+  });
+
+  test("an ownHooks name the 0.5.2 plugin already took leaves the floor where it is", () => {
+    // Includes the retired and the unswitchable names: every plugin since 0.3.0 accepts them.
+    expect(
+      requiresFloor({ ownHooks: ["git-guard", "fable-session", "serena-root", "job-route"] }),
+    ).toEqual({ floor: ">=0.5.2", version: "0.5.2" });
+    expect(requiresFloor({ ownHooks: [] })).toEqual({ floor: ">=0.5.2", version: "0.5.2" });
+  });
+
+  test("an ownHooks that is not a list changes no floor", () => {
+    expect(requiresFloor({ ownHooks: "tier-view" })).toEqual({
+      floor: ">=0.5.2",
+      version: "0.5.2",
+    });
+  });
+
+  test("the plan keeps an ownHooks name of a later release, and asks for that release", () => {
+    const root = tempDir("project-init");
+    const existing = JSON.stringify(
+      { requires: ">=1.0", worktrees: { base: "dev" }, ownHooks: ["tier-view"] },
+      null,
+      2,
+    );
+    const plan = planProjectInit(input({ root, existing }));
+    expect(plan.text).toContain('"requires": ">=1.3"');
+    expect(plan.text).toContain('"tier-view"');
+  });
+
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(

@@ -4,7 +4,7 @@
  * Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -16,6 +16,7 @@ import { parseModelArgs, runCrew } from "./command";
 import { applyPendingModels } from "./model";
 import { readRunFile, runFile } from "./runs";
 import {
+  crewFile,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
@@ -343,6 +344,69 @@ describe("crew model: the caps", () => {
     await applyPendingModels([stale], world.ctx(), resolved, (line) => lines.push(line));
     expect(lines).toEqual([]);
     expect((await readCrew(world.paths.stateDir, world.repo, record.id))?.model).toEqual(SONNET);
+  });
+
+  test("RX1: a queued change read a pass ago is not applied to a session that ended since", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ perLeadOpus: 1 });
+    const other = await world.addCrew({
+      model: OPUS,
+      phase: "B2",
+      slug: "other",
+      suffix: "2b2b2b",
+    });
+    const record = await world.addCrew();
+    await runCrew(["model", NAME, "--model", "opus"], world.ctx());
+    // The watch read the record `working`, with its change queued.
+    const stale = await readCrew(world.paths.stateDir, world.repo, record.id);
+    if (stale === null) throw new Error("no record");
+    // The session reported `done` after that read (the change stays queued), and a place is free.
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "done" }, NOW, "done");
+    await updateCrew(world.paths.stateDir, world.repo, other.id, { state: "done" }, NOW);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("no checkout");
+    const resolved = resolveWorkflow(world.paths, loadProjectConfig(checkout).config);
+    const lines: string[] = [];
+
+    await applyPendingModels([stale], world.ctx(), resolved, (line) => lines.push(line));
+
+    expect(lines).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg" || call[0] === "stop")).toEqual(
+      [],
+    );
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      model: SONNET,
+      state: "done",
+    });
+  });
+
+  test("RX1: a session that reports done while its stop runs is not resumed, nor marked stopped", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    // The report lands between the view being read and the stop: `claude stop` is the moment.
+    const file = crewFile(world.paths.stateDir, world.repo, record.id);
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: liveView(world) });
+    const real = ctx.runProgram;
+    ctx.runProgram = (argv, options) => {
+      if (argv.includes("stop")) {
+        const stored = JSON.parse(readFileSync(file, "utf8"));
+        writeFileSync(file, JSON.stringify({ ...stored, state: "done" }));
+      }
+      return real(argv, options);
+    };
+
+    expect(await runCrew(["model", NAME, "--model", "opus"], ctx)).toBe(1);
+
+    expect(world.err).toEqual([
+      expect.stringContaining(
+        "it ended its phase (done) while it was stopped; the new values are kept for the next resume",
+      ),
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      model: OPUS,
+      state: "done",
+    });
   });
 
   test("a queued change of a crew session that ended is dropped", async () => {

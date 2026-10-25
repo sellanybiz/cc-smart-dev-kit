@@ -28,6 +28,23 @@ to the release that brought it — which is what `project init` writes.
 which `project init` asks for (it offers a `package.json` script with its lockfile's package
 manager, and `none` skips the field). The `verify-gate` Stop hook reads it (§ The hooks).
 
+**The floor covers every field and hook name that came after 0.5.2.** An older plugin reads
+the file strictly: a field it does not know, or an `ownHooks` name outside its list, makes it
+refuse the whole file, and every guard in that project fails closed. `requiresFloor`
+(`src/project/init.ts`) picks the lowest plugin version that reads everything the file holds,
+and `project init` and `workflow set --project` write it as `requires`. Each version has one
+home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
+file), `WORKFLOW_CREW_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
+`WORKFLOW_CREW_KEYS_SINCE` (the `workflow.crew` keys: `perLead`, `perLeadOpus`, `usagePercent`
+and `keep` in 1.1.0, `handoffTokens` in 1.2.0, `loadPerCore` and `archiveDays` in 1.3.0) and
+`OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background`, `crew-role` and
+`lead-notes` in 1.0.0, `verify-gate` and `agent-usage` in 1.1.0, `tier-view` in 1.3.0). The
+retired and unswitchable names (`serena-root`, `job-route`) are older than 0.5.2, so they
+raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
+the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the
+schema or `PLUGIN_HOOK_NAMES` gains one that is in neither, and when a since-table does not
+give the floor the list says.
+
 **The retired engine's fields are refused** (D20, 1.0.0): `worktrees.prefix`,
 `worktrees.setup` and `worktrees.engine` (`RETIRED_WORKTREE_FIELDS` in
 `src/project/config.ts`) were the plugin's own worktree engine's, and every project uses

@@ -1,6 +1,6 @@
 ---
 name: user-unavailable
-description: Use when the person says they are away, or a hook note or `cc-smart-dev-kit user status` says they cannot answer. Never stop to ask - park their questions and the actions that need their yes, and go on.
+description: Use when the person says they are away, or a hook note says they cannot answer. Never stop to ask - park their questions and the actions that need their yes, and go on.
 ---
 
 # While The Person Cannot Answer
@@ -12,6 +12,11 @@ The person is away: asleep, in a meeting, or on a phone. A question or a permiss
 stops the work for hours and nobody reads it. So you **park** what needs them on a list, and go
 on. They answer the list when they are back, with `/cc-smart-dev-kit:user-available`.
 `cc-smart-dev-kit user status` says whether this is on, and since when.
+
+**Once a hook note says the person is away, never run `user status`, `user list` or `user
+available`.** The note holds the state and the count, and in the default permission mode the
+prompt for those three goes to the person, who is not there: the session would wait for hours.
+They are for the person's return (`/cc-smart-dev-kit:user-available`).
 
 ## 0. Switch it on, once
 

@@ -7,7 +7,7 @@
  * schema would refuse cannot slip in. No portal is started.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import {
@@ -23,11 +23,14 @@ import {
 } from "../../crew/store";
 import { localDay } from "../../gateway/safety-checks";
 import type { OpenWait } from "../../sessions/flow";
+import { projectFolderName } from "../../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
-import { type ActionContext, portalOmnirouteContext } from "../actions";
+import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
+import { PAGE_READ_FRESH_MS } from "../cli-child";
 import type { PageDataDeps } from "../page-data";
+import { forgetAgentLists, readPortalAgents } from "./agents-read";
 import { testPortalContext } from "./test-context";
 import { crewAnswerFor, historyAnswer, needsAnswer, permissionWaitOf, workAnswer } from "./work";
 
@@ -401,19 +404,66 @@ describe("cleanup data for the portal", () => {
     const before = readFileSync(file, "utf8");
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(true);
     expect(readFileSync(file, "utf8")).toBe(before);
+    // Each answer of the fake agent list is a new look: the page's short memory is dropped
+    // (`shortCache`; the next test pins that it exists).
+    const nextLook = () => forgetAgentLists(w.deps.action.portal);
     writeFileSync(binary, `#!${process.execPath}\nconsole.log("not JSON");`);
+    nextLook();
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
     writeFileSync(binary, `#!${process.execPath}\nconsole.log('[{"state":"done"}]');`);
+    nextLook();
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
     writeFileSync(
       binary,
       `#!${process.execPath}\nconsole.log('[{"id":"lead-a","sessionId":"lead-a"}]');`,
     );
+    nextLook();
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
     writeFileSync(binary, `#!${process.execPath}\nconsole.log("[]");`);
+    nextLook();
     const page = await crewAnswerFor(w.deps, "crew-old");
     if ("error" in page) throw new Error(page.error);
     expect(page.crew.leadGone).toBe(true);
+  });
+});
+
+/** One saved, titled Claude Code session that last worked in `folder`, written at `atMs`. */
+function savedSession(paths: CliPaths, folder: string, id: string, atMs: number): void {
+  const dir = join(paths.claudeConfigDir, "projects", projectFolderName(folder));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${id}.jsonl`);
+  writeFileSync(
+    file,
+    `${JSON.stringify({ cwd: folder, type: "user" })}\n${JSON.stringify({ aiTitle: `title ${id}`, type: "ai-title" })}\n`,
+  );
+  utimesSync(file, atMs / 1000, atMs / 1000);
+}
+
+describe("the other sessions on the Work page", () => {
+  test("a crew session's earlier copies are not another session", async () => {
+    const w = world();
+    const first = "aaaa1111-0000-4000-8000-000000000000";
+    const resumed = "bbbb2222-0000-4000-8000-000000000000";
+    const stranger = "cccc3333-0000-4000-8000-000000000000";
+    await createCrew(
+      w.paths.stateDir,
+      { ...newCrew(w.repoA, "crew-A-1", "lead-a"), sessionId: first, shortId: "aaaa1111" },
+      NOW - 5_000,
+    );
+    // A resume is a copy with a new id: the record moves on and keeps the first one.
+    await updateCrew(
+      w.paths.stateDir,
+      w.repoA,
+      "crew-A-1",
+      { sessionId: resumed, shortId: "bbbb2222" },
+      NOW - 4_000,
+    );
+    // A crew session that has no session yet adds no id to the set.
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-2", "lead-a"), NOW - 3_000);
+    for (const id of [first, resumed, stranger]) savedSession(w.paths, w.repoA, id, NOW - 1_000);
+    const deps = { ...w.deps, action: { ...w.deps.action, cwd: w.repoA } };
+    const answer = await workAnswer(deps);
+    expect(answer.sessions.map((session) => session.id)).toEqual([stranger]);
   });
 });
 
@@ -529,5 +579,90 @@ describe("Work from a folder that is no git project", () => {
     const page = await crewAnswerFor(w.deps, "crew-A-1");
     if (!("crew" in page)) throw new Error("the crew page did not find the record");
     expect(page.crew.question).toBeNull();
+  });
+});
+
+describe("a page read starts one child inside the cache window (RX3)", () => {
+  /** A `claude` that logs each start, then runs `body`; the count of starts comes back. */
+  function countingClaude(w: ReturnType<typeof world>, body: string): () => number {
+    const bin = tempDir("portal-count-agent");
+    const binary = join(bin, "claude");
+    const log = join(bin, "starts");
+    writeFileSync(
+      binary,
+      `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(log)}, "x");\n${body}\n`,
+    );
+    chmodSync(binary, 0o755);
+    w.deps.action.portal.which = (name) => (name === "claude" ? binary : null);
+    return () => (existsSync(log) ? readFileSync(log, "utf8").length : 0);
+  }
+
+  /** A cleanup child that logs each start and answers no stopped session. */
+  function countingCleanup(w: ReturnType<typeof world>): () => number {
+    const folder = tempDir("count-cleanup-plugin");
+    mkdirSync(join(folder, "dist"));
+    writeFileSync(join(folder, "bunfig.toml"), "");
+    const log = join(folder, "starts");
+    writeFileSync(
+      join(folder, "dist", "cli.js"),
+      `require("node:fs").appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");\nconsole.log('{"stopped":[],"error":null}');`,
+    );
+    w.deps.action.portal.pluginFolder = () => ({ folder });
+    // Needs starts other children of the same bundle (the flow report): only cleanup counts.
+    return () =>
+      existsSync(log)
+        ? readFileSync(log, "utf8")
+            .split("\n")
+            .filter((line) => line.startsWith("crew cleanup")).length
+        : 0;
+  }
+
+  test("two overlapping and one later read of /api/needs start one cleanup child", async () => {
+    const w = world();
+    const starts = countingCleanup(w);
+    await Promise.all([needsAnswer(w.deps), needsAnswer(w.deps)]);
+    await needsAnswer(w.deps);
+    expect(starts()).toBe(1);
+    // Past the window, the next read asks again.
+    w.deps.action.portal.now = () => NOW + PAGE_READ_FRESH_MS;
+    await needsAnswer(w.deps);
+    expect(starts()).toBe(2);
+  });
+
+  test("two overlapping and one later read of /api/work start one agent-list child", async () => {
+    const w = world();
+    const starts = countingClaude(w, 'console.log("[]");');
+    await Promise.all([workAnswer(w.deps), workAnswer(w.deps)]);
+    await workAnswer(w.deps);
+    expect(starts()).toBe(1);
+    w.deps.action.portal.now = () => NOW + PAGE_READ_FRESH_MS;
+    await workAnswer(w.deps);
+    expect(starts()).toBe(2);
+  });
+
+  test("an action, whatever it answers, forgets what a page read kept", async () => {
+    const w = world();
+    const starts = countingCleanup(w);
+    await needsAnswer(w.deps);
+    await runAction("no.such.action", {}, w.deps.action);
+    await needsAnswer(w.deps);
+    expect(starts()).toBe(2);
+  });
+
+  test("a removal's own read is never the page's: the agent list is asked every time", async () => {
+    const w = world();
+    const starts = countingClaude(w, 'console.log("[]");');
+    await workAnswer(w.deps);
+    await readPortalAgents(w.deps.action.portal, w.deps.action.cwd);
+    await readPortalAgents(w.deps.action.portal, w.deps.action.cwd);
+    expect(starts()).toBe(3);
+  });
+
+  test("a failed read is shown and not kept: the next look asks again", async () => {
+    const w = world();
+    const starts = countingClaude(w, "process.exit(3);");
+    await workAnswer(w.deps);
+    await workAnswer(w.deps);
+    expect(starts()).toBe(2);
   });
 });

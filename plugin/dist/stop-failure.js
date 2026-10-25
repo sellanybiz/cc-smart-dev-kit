@@ -6740,7 +6740,7 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.2.0",
+  version: "1.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7849,6 +7849,7 @@ var crewFields = object({
   name: text2,
   sessionId: text2.nullable(),
   shortId: text2.nullable(),
+  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
   leadSessionId: text2,
   leadName: text2,
   repo: text2,
@@ -7895,6 +7896,7 @@ var crewFields = object({
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
+  stoppedByWatch: boolean2().optional(),
   mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
   archive: discardArchiveSchema.optional(),
   archiveHistory: array(discardArchiveSchema).optional(),

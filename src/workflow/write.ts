@@ -22,7 +22,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { checkCcSmartDevKitConfig } from "../project/config";
-import { raisedRequires, requiresFloor } from "../project/init";
+import { raisedRequires, requiresFloor, requiresTooLow } from "../project/init";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { jsonTextFor } from "../setup/json-edit";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
@@ -177,8 +177,13 @@ function writeProjectFile(
   // A write that brings a field a newer plugin added raises `requires` (never lowers it), as
   // `project init` does: a teammate on an older plugin then hears "update", not every guard
   // asking. Only then: a write the file's old floor already covers leaves `requires` alone.
+  // The file's own `requires` counts too: one an older plugin wrote below its fields (1.2.0 with
+  // `crew.handoffTokens` under `>=1.0`) is raised by any write, so the teammate hears "update".
   const needed = requiresFloor(data);
-  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+  if (
+    Bun.semver.order(needed.version, requiresFloor(before).version) > 0 ||
+    requiresTooLow(data.requires, needed.version)
+  ) {
     data.requires = raisedRequires(data.requires, needed.floor, needed.version);
   }
   // The same checks every reader of the file runs (`requires`, the retired engine fields, the
@@ -191,7 +196,30 @@ function writeProjectFile(
   // `realTarget`: a file linked into a dotfiles repo stays a link, and its target gets the
   // change — an atomic write straight at the link would replace it with a plain file.
   atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 0o644);
-  return shownWrite(file, key, value, text === null);
+  return shownProjectWrite(file, key, value, text === null, before, data);
+}
+
+/**
+ * The line of a write to the project's file. A raised `requires` is part of the diff the person
+ * commits, so the line names it; when the key itself was set already, the raise was the only
+ * change, and the line says so instead of showing a write that did nothing.
+ */
+function shownProjectWrite(
+  file: string,
+  key: WorkflowKey,
+  value: unknown,
+  created: boolean,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): string {
+  if (before.requires === after.requires) return shownWrite(file, key, value, created);
+  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const { requires: _was, ...restBefore } = before;
+  const { requires: _now, ...restAfter } = after;
+  if (Bun.deepEquals(restBefore, restAfter, true)) {
+    return `~ ${file}: ${raised}; ${saidValue(key, value)}${value === undefined ? "" : " (already set)"}`;
+  }
+  return `${shownWrite(file, key, value, created)}; ${raised}`;
 }
 
 /** `true`/`false`, or `undefined` for "unset". Anything else is refused. */

@@ -69,6 +69,30 @@ describe("crew lifecycle", () => {
       new Date(NOW - (3 * DAY) / 2).toISOString(),
     );
   });
+  test("RX1: the events log is read only for a record the need can apply to", async () => {
+    const world = await boardWorld();
+    const working = await world.addCrew({ atMs: NOW - 5 * DAY });
+    const reads: string[] = [];
+    const events = () => {
+      reads.push("read");
+      return [];
+    };
+
+    // A working record has no stopped-session need: the log (which only grows) is not read for it.
+    expect(stoppedCrewNeed(working, events, world.ctx(), [])).toBeNull();
+    expect(reads).toEqual([]);
+
+    const stopped = await world.addCrew({
+      atMs: NOW - 5 * DAY,
+      phase: "B2",
+      slug: "other",
+      state: "stopped",
+      suffix: "2b2b2b",
+    });
+    stoppedCrewNeed(stopped, events, world.ctx({ now: () => NOW }), []);
+    expect(reads).toEqual(["read"]);
+  });
+
   test("unknown lead must be continuously absent for more than a day, and a failed read proves nothing", async () => {
     const world = await boardWorld();
     const ctx = world.ctx();

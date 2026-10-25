@@ -4,7 +4,14 @@
  * Run in this process with a fake machine (`src/testing/fake-machine.ts`).
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { applyManagedJson, ForeignKeyError } from "../setup/managed-json";
+import {
+  planRemoteControl,
+  REMOTE_CONTROL_KEY,
+  REMOTE_CONTROL_VALUE,
+  remoteControlReleasedFile,
+} from "../setup/remote-control";
 import { restore } from "../setup/restore";
 import { capturePrinted, changeLines, printed, world } from "../testing/fake-machine";
 
@@ -95,6 +102,73 @@ describe("setup and Remote Control's auto-connect", () => {
     expect(printed.join("\n")).not.toContain(KEY);
     restore(w.paths.stateDir);
     expect(readJson(w.paths.settingsFile)[KEY]).toBe(true);
+  });
+
+  test("a key the person deleted stays out on the third run and after: setup remembers it let go", async () => {
+    const w = world();
+    expect(await w.setup()).toBe(0);
+    const settings = readJson(w.paths.settingsFile);
+    delete settings[KEY];
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0); // run 2: the claim goes
+    printed.length = 0;
+    const before = readFileSync(w.paths.settingsFile, "utf8");
+    expect(await w.setup()).toBe(0); // run 3: the key stays out
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBeUndefined();
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
+    expect(printed.join("\n")).not.toContain(KEY);
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBeUndefined();
+  });
+
+  test("a value the person changed and then deleted is not put back either", async () => {
+    const w = world();
+    expect(await w.setup()).toBe(0);
+    withSettings(w, { [KEY]: false });
+    expect(await w.setup()).toBe(0); // the claim goes
+    const settings = readJson(w.paths.settingsFile);
+    delete settings[KEY];
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBeUndefined();
+  });
+
+  test("--dry-run on the run that lets go writes no record", async () => {
+    const w = world();
+    expect(await w.setup()).toBe(0);
+    const settings = readJson(w.paths.settingsFile);
+    delete settings[KEY];
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(existsSync(remoteControlReleasedFile(w.paths.stateDir))).toBe(false);
+    expect(await w.setup()).toBe(0); // the real run 2 still lets go, once
+    expect(existsSync(remoteControlReleasedFile(w.paths.stateDir))).toBe(true);
+    expect(printed).toContain(
+      "  · ~/.claude/settings.json: remoteControlAtStartup: not in the file any more (removed since cc-smart-dev-kit set it); left alone",
+    );
+  });
+
+  test("a plan made from a file that changes before the write never overwrites the person's value", async () => {
+    // `planRemoteControl` reads outside `applyManagedJson`'s retry. When another program (Claude
+    // Code writes this file too) adds the key between the two, the plan says "set" from a stale
+    // file — and the write, which reads the file again, refuses: the person's value stays, and
+    // setup stops with a ForeignKeyError that the next run does not repeat.
+    const w = world();
+    const paths = { settingsFile: w.paths.settingsFile, stateDir: w.paths.stateDir };
+    expect(planRemoteControl(paths)).toBe("set");
+    withSettings(w, { [KEY]: false });
+    expect(() =>
+      applyManagedJson({
+        file: paths.settingsFile,
+        stateDir: paths.stateDir,
+        set: [[REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]],
+      }),
+    ).toThrow(ForeignKeyError);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBe(false);
+    expect(planRemoteControl(paths)).toBe("leave");
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBe(false);
   });
 
   test("a settings file with other keys and its own layout changes only by the key", async () => {

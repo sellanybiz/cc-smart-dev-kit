@@ -97,6 +97,7 @@ import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
 import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import { readPortalAgents } from "./api/agents-read";
 import { readCleanupOffLoop } from "./api/cleanup-read";
+import { forgetPageReads } from "./api/page-reads";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -1975,6 +1976,20 @@ export type ActionName = (typeof ACTION_NAMES)[number];
  * shows the last pass instead of running one on every load.
  */
 export async function runAction(
+  name: string,
+  body: Record<string, unknown>,
+  action: ActionContext,
+): Promise<ActionResult> {
+  try {
+    return await runActionByName(name, body, action);
+  } finally {
+    // The page reads that start a heavy child are kept for a few seconds (`shortCache`): an
+    // action may have changed what they show, so the page that reloads after a click asks again.
+    forgetPageReads(action.portal);
+  }
+}
+
+async function runActionByName(
   name: string,
   body: Record<string, unknown>,
   action: ActionContext,

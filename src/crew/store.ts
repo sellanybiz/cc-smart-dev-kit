@@ -436,6 +436,15 @@ const crewFields = z.object({
   sessionId: text.nullable(),
   /** The first 8 characters of the session id, as `claude agents` shows it; null until then. */
   shortId: text.nullable(),
+  /**
+   * The sessions this crew session had before the current one, oldest first. A resume is a copy
+   * with a new id (WF1), so the record's `sessionId` moves on and the original stays in Claude
+   * Code's `/resume` and agent view: `crew rm` removes, and the archive moves, every one of them
+   * (`crewSessions`). Kept by the store (`changeCrew`), from the session the record had, so no
+   * command can replace a session without keeping the one it replaces. Absent until the first
+   * replacement, and on a record an older kit wrote.
+   */
+  earlierSessions: z.array(z.looseObject({ sessionId: text, shortId: text })).optional(),
   /** The lead that started it: its session id and its name. */
   leadSessionId: text,
   leadName: text,
@@ -562,6 +571,14 @@ const crewFields = z.object({
    * (`changeCrew`), from the state the record was in; absent on any other record.
    */
   mergedWhileStopped: z.boolean().optional(),
+  /**
+   * Set when the watch itself stopped the crew session, for idling blocked past `idleStopMinutes`
+   * (RX1): that stop is not the lead's call, so a merge of its branch removes it like any other
+   * (`mergedWhileStopped` is not set from it). Only a `stopped` record carries it: any write that
+   * leaves `stopped` drops it (`changeCrew`). Absent on every other record, and on one an older
+   * kit wrote.
+   */
+  stoppedByWatch: z.boolean().optional(),
   /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
   mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
   /** Recovery is persisted before any removal; an unfinished active archive never expires. */
@@ -603,6 +620,28 @@ const crewFields = z.object({
 /** A crew record, as written and read (a newer kit's fields kept). */
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
+
+/**
+ * One Claude session of a crew session: its id and the short id `claude agents` shows. A start
+ * that could not read agent view records the short id alone, so the id may be null.
+ */
+export interface CrewSession {
+  sessionId: null | string;
+  shortId: string;
+}
+
+/**
+ * Every Claude session the crew session has had: the current one first, then the earlier ones,
+ * newest first (`earlierSessions`). Empty while it has no session.
+ */
+export function crewSessions(record: CrewRecord): CrewSession[] {
+  const shortId = record.shortId ?? record.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record.sessionId, shortId }];
+  const earlier = [...(record.earlierSessions ?? [])].reverse();
+  return [...current, ...earlier.filter((one) => one.sessionId !== record.sessionId)].map(
+    (one) => ({ sessionId: one.sessionId, shortId: one.shortId }),
+  );
+}
 
 /** What a caller gives for a new crew session: the store adds the version and the times. */
 export type NewCrew = Omit<CrewRecord, "createdAt" | "updatedAt" | "version">;
@@ -1028,14 +1067,22 @@ export async function updateCrewIfState(
   change: CrewChange,
   atMs: number,
   text: null | string = null,
+  by: RunActor | null = null,
 ): Promise<{ changed: boolean; record: CrewRecord }> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
-    if (!(states as readonly string[]).includes(before.state)) return null;
-    return {
-      change,
-      event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
-    };
-  });
+  return await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => {
+      if (!(states as readonly string[]).includes(before.state)) return null;
+      return {
+        change,
+        event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+      };
+    },
+    by,
+  );
 }
 
 /**
@@ -1331,7 +1378,24 @@ async function changeCrew(
     }
     // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
     // here, from the state the record was in, so the watch cannot forget it on a later pass.
-    if (merged.state === "merged" && before.state === "stopped") merged.mergedWhileStopped = true;
+    // The watch's own idle stop is not the lead's call (`stoppedByWatch`): the fact is set false,
+    // not left unset, because an unset one lets the watch's legacy reading of the events log
+    // ("stopped, then merged") make it true on a later pass.
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
+    }
+    // Who stopped it is kept only while it is stopped.
+    if (merged.state !== "stopped") delete merged.stoppedByWatch;
+    // A replaced session stays on the record (`earlierSessions`), whichever command replaced it.
+    if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
+      const kept = before.earlierSessions ?? [];
+      if (!kept.some((one) => one.sessionId === before.sessionId)) {
+        merged.earlierSessions = [
+          ...kept,
+          { sessionId: before.sessionId, shortId: before.shortId ?? before.sessionId.slice(0, 8) },
+        ];
+      }
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);
@@ -1678,6 +1742,9 @@ export async function recordCrewReport(
       },
       recordFile,
     );
+    // This write does not go through `changeCrew`, so the fact that holds only while `stopped`
+    // goes here too.
+    if (after.state !== "stopped") delete after.stoppedByWatch;
     // The report file first: a record that names a report the file lacks is the worse half-write.
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
