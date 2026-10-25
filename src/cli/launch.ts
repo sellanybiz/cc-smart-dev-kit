@@ -136,21 +136,24 @@ const FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
  * `execve`, so the launcher stays in front of the session rather than being replaced by it.
  */
 export const realRunSession: RunSession = async (argv, options) => {
-  const child = Bun.spawn(argv, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["inherit", "inherit", "inherit"],
-    windowsVerbatimArguments: options.verbatim,
-  });
   // A signal sent to the launcher alone (`kill <pid>`, a supervisor) would end it and leave the
   // session running with nobody to remove its settings file or pass its exit code on. So the
   // launcher hands each one on and keeps waiting, as `job run` does (`src/jobs/launch.ts`). One
   // the terminal sent reaches the session by itself too, so it gets it twice: for these three
-  // that ends it once, as it would have.
-  const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
+  // that ends it once, as it would have. The handlers are in place BEFORE the session starts: a
+  // signal that came between its start and the handlers would still find the default action.
+  // (A handler runs on the event loop, after `Bun.spawn` returned, so `child` is set by then.)
+  let child: ReturnType<typeof Bun.spawn> | null = null;
+  const forward = (signal: NodeJS.Signals) => () => child?.kill(signal);
   const handlers = FORWARDED_SIGNALS.map((signal) => [signal, forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
   try {
+    child = Bun.spawn(argv, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["inherit", "inherit", "inherit"],
+      windowsVerbatimArguments: options.verbatim,
+    });
     // A session killed by a signal has no exit code (Bun answers null there): 1 says "not clean".
     return (await child.exited) ?? 1;
   } finally {

@@ -37519,17 +37519,18 @@ function parseLaunchArgs(args) {
 }
 var FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"];
 var realRunSession = async (argv, options) => {
-  const child = Bun.spawn(argv, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["inherit", "inherit", "inherit"],
-    windowsVerbatimArguments: options.verbatim
-  });
-  const forward = (signal) => () => child.kill(signal);
+  let child = null;
+  const forward = (signal) => () => child?.kill(signal);
   const handlers = FORWARDED_SIGNALS.map((signal) => [signal, forward(signal)]);
   for (const [signal, handler] of handlers)
     process.on(signal, handler);
   try {
+    child = Bun.spawn(argv, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["inherit", "inherit", "inherit"],
+      windowsVerbatimArguments: options.verbatim
+    });
     return await child.exited ?? 1;
   } finally {
     for (const [signal, handler] of handlers)
@@ -37623,6 +37624,31 @@ async function launchTarget(mode, ctx) {
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" \xB7 ${url}`, url };
 }
+function settingsNotes(mode, ctx) {
+  if (mode.kind === "default")
+    return [];
+  const state = projectGatewayState(ctx.cwd, {
+    configPath: ctx.configPath,
+    settingsFile: ctx.settingsFile
+  });
+  const lines = [];
+  for (const file of state.files) {
+    if (file.problem !== null)
+      continue;
+    const where = tildify(file.path, ctx.home);
+    for (const key of file.loginOverrides) {
+      lines.push(`launch: ${key} is set in ${where}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`);
+    }
+    if (mode.kind !== "no-gateway")
+      continue;
+    for (const fact of file.modelKeys) {
+      if (!isSlotKey(fact.value.trim()))
+        continue;
+      lines.push(`launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`);
+    }
+  }
+  return lines;
+}
 async function runLaunch(args, ctx) {
   const parsed = parseLaunchArgs(args);
   if ("error" in parsed) {
@@ -37668,6 +37694,8 @@ See: ${COMMAND} launch --help`);
     }
   }
   ctx.print(target.line);
+  for (const line of settingsNotes(parsed.mode, ctx))
+    ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
@@ -52482,6 +52510,7 @@ function launchContext(paths) {
     platform: process.platform,
     print: (line) => console.log(line),
     runSession: realRunSession,
+    settingsFile: paths.settingsFile,
     stateDir: paths.stateDir,
     which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" })
   };
