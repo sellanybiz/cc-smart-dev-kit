@@ -12165,11 +12165,14 @@ function phaseIssues(record, report) {
   return [...new Set([...report?.issues ?? [], ...recordIssueNumbers(record)])].sort((a, b) => a - b);
 }
 var MAX_PHASE_ISSUES = 10;
+var LEFT_BEHIND_HEADING = /^## What .+ left behind[ \t]*$/m;
 function briefIssueNumbers(text) {
-  const own = text.split(`
+  const cut = LEFT_BEHIND_HEADING.exec(text);
+  const lead = cut === null ? text : text.slice(0, cut.index);
+  const own = lead.split(`
 `).filter((line) => !line.trimStart().startsWith(">")).join(`
 `);
-  const numbers = [...own.matchAll(/(?:#|\/issues\/)([1-9][0-9]{0,8})\b/g)].map((one) => Number(one[1]));
+  const numbers = [...own.matchAll(/#([1-9][0-9]{0,8})\b/g)].map((one) => Number(one[1]));
   return [...new Set(numbers)].sort((a, b) => a - b);
 }
 function checkPhaseIssues(record, report, brief) {
@@ -15221,19 +15224,33 @@ function isHidden(char) {
     return false;
   return /^(?:[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]|\p{Cc})$/u.test(char);
 }
-var DEFINITION_START = /^ {0,3}\[[^\]]+\]:/;
+var DEFINITION_START = /^ {0,3}\[(?:\\.|[^\]\\])+\]:/;
+var CONTAINER_PREFIX = /^(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)])[ \t]*)*/;
+var LABEL_WINDOW = 1100;
+function startsDefinition(text, offset) {
+  let window = text.slice(offset, offset + LABEL_WINDOW + 100);
+  const blank = /\n[ \t]*\n/.exec(window);
+  if (blank !== null)
+    window = window.slice(0, blank.index);
+  return DEFINITION_START.test(window.replace(CONTAINER_PREFIX, "").slice(0, LABEL_WINDOW));
+}
 function markDefinitions(text) {
   const lines = text.split(`
 `);
   const out = [];
+  let offset = 0;
   for (let at = 0;at < lines.length; at++) {
-    if (!DEFINITION_START.test(lines[at] ?? "")) {
+    const lineStart = offset;
+    offset += (lines[at] ?? "").length + 1;
+    if (!startsDefinition(text, lineStart)) {
       out.push(lines[at] ?? "");
       continue;
     }
     let end = at;
-    while (end + 1 < lines.length && (lines[end + 1] ?? "").trim() !== "")
+    while (end + 1 < lines.length && (lines[end + 1] ?? "").trim() !== "") {
       end++;
+      offset += (lines[end] ?? "").length + 1;
+    }
     out.push(`[hidden link reference definition: ${lines.slice(at, end + 1).join(`
 `)}]`);
     at = end;
@@ -15254,7 +15271,40 @@ var STRIPPED_CONTENT_TAGS = [
   "template",
   "xmp"
 ];
-var STRIPPED_CONTENT = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>([\\s\\S]*?)(?:</\\1\\s*>|$)`, "gi");
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
+function markStrippedContent(text) {
+  let out = "";
+  let from = 0;
+  STRIPPED_OPEN.lastIndex = 0;
+  for (let open = STRIPPED_OPEN.exec(text);open !== null; open = STRIPPED_OPEN.exec(text)) {
+    if (open[0].endsWith("/>"))
+      continue;
+    const tag = (open[1] ?? "").toLowerCase();
+    const pairs = STRIPPED_PAIRS.get(tag);
+    if (pairs === undefined)
+      continue;
+    const start = open.index + open[0].length;
+    let contentEnd = text.length;
+    let after = text.length;
+    let depth = 1;
+    pairs.lastIndex = start;
+    for (let next = pairs.exec(text);next !== null; next = pairs.exec(text)) {
+      if (next[1] === "" && next[0].endsWith("/>"))
+        continue;
+      depth += next[1] === "/" ? -1 : 1;
+      if (depth === 0) {
+        contentEnd = next.index;
+        after = next.index + next[0].length;
+        break;
+      }
+    }
+    out += `${text.slice(from, open.index)}[hidden <${tag}> content: ${text.slice(start, contentEnd)}]`;
+    from = after;
+    STRIPPED_OPEN.lastIndex = after;
+  }
+  return out + text.slice(from);
+}
 var HIDDEN_ENTITIES = {
   ApplyFunction: 8289,
   InvisibleComma: 8291,
@@ -15288,8 +15338,8 @@ function namedEntity(match, hex, decimal, name) {
   return isHidden(char) ? named(char) : match;
 }
 function visibleText(text) {
-  return markDefinitions(text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
-`)).replace(STRIPPED_CONTENT, (_match, tag, content) => `[hidden <${tag.toLowerCase()}> content: ${content}]`).replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(/&(?:#[xX]([0-9a-fA-F]{1,8})|#([0-9]{1,10})|([A-Za-z][A-Za-z0-9]*));/g, namedEntity).replace(HIDDEN_CHARACTER, (match, emoji) => emoji === undefined ? named(match) : match).replace(/(?![\n\t])\p{Cc}/gu, named);
+  return markStrippedContent(markDefinitions(text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
+`))).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "[hidden CDATA: $1]").replace(/<!([A-Za-z][^>]*)>/g, "[hidden HTML declaration: $1]").replace(/<\?([\s\S]*?)\?>/g, "[hidden processing instruction: $1]").replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(/&(?:#[xX]0*([0-9a-fA-F]{1,6})|#0*([0-9]{1,7})|([A-Za-z][A-Za-z0-9]*));/g, namedEntity).replace(HIDDEN_CHARACTER, (match, emoji) => emoji === undefined ? named(match) : match).replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 async function pickIssue(world, ref) {
   const given = parseIssueRef(ref);
@@ -17706,7 +17756,12 @@ function readWatchLease(stateDir, repo, leadSessionId) {
   }
 }
 function watchIsAlive(stateDir, repo, leadSessionId) {
-  const lease = readWatchLease(stateDir, repo, leadSessionId);
+  let lease;
+  try {
+    lease = readWatchLease(stateDir, repo, leadSessionId);
+  } catch {
+    return false;
+  }
   return lease !== null && !holderIsGone(lease, lease.at, FALLBACK_STALE_MS);
 }
 async function takeWatchLease(stateDir, repo, leadSessionId, lease) {
@@ -25360,12 +25415,12 @@ function passBudget(clock, limits = {}) {
     marks: limits.marks ?? MARKS_PER_PASS
   };
 }
-function hasTime(budget) {
-  return budget.clock() < budget.deadline;
-}
 var MIN_CALL_MS = 1000;
 function callTime(budget, limitMs) {
   return Math.min(limitMs, budget.deadline - budget.clock());
+}
+function hasCallTime(budget) {
+  return callTime(budget, GH_TIMEOUT_MS) >= MIN_CALL_MS;
 }
 function budgetedGh(gh, budget) {
   return async (args, call) => {
@@ -25380,7 +25435,7 @@ var where = (mark) => `#${mark.issue} (${mark.branch})`;
 async function settleMarks(file, world, now, budget = passBudget(() => now)) {
   const queued = readPending(file);
   const allDue = queued.filter((mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS);
-  if (allDue.length === 0 || budget.marks <= 0 || !hasTime(budget))
+  if (allDue.length === 0 || budget.marks <= 0 || !hasCallTime(budget))
     return [];
   const due = allDue.slice(0, budget.marks);
   const lines = [];
@@ -25401,7 +25456,7 @@ async function settleMarks(file, world, now, budget = passBudget(() => now)) {
     return lines;
   }
   for (const mark of due) {
-    if (!hasTime(budget)) {
+    if (!hasCallTime(budget)) {
       left.push(mark);
       continue;
     }
@@ -25507,7 +25562,7 @@ class Look {
   }
   async read(path, etag) {
     const { budget, now, world } = this.input;
-    if (callTime(budget, GH_TIMEOUT_MS) < MIN_CALL_MS)
+    if (!hasCallTime(budget))
       return { kind: "late" };
     const result = await world.gh([
       "api",
@@ -25602,7 +25657,7 @@ async function pollIssueFeed(input) {
   if (early !== null && early.source === name && notYetDue(early, now, intervalMs)) {
     return NOTHING;
   }
-  if (!hasTime(input.budget))
+  if (!hasCallTime(input.budget))
     return NOTHING;
   const held = await underIssueFeedLock(stateDir, repo, async () => {
     const known = stateFrom2(readIssueFeed(stateDir, repo), input.memory);
@@ -25627,7 +25682,8 @@ async function look(input, reader, name, state, intervalMs) {
       if (input.memory === undefined)
         throw error;
       input.memory.held = next;
-      input.memory.unwritten = error instanceof Error ? error.message : String(error);
+      const code = error?.code;
+      input.memory.unwritten = typeof code === "string" ? code : error instanceof Error ? error.message : String(error);
     }
     return result;
   };

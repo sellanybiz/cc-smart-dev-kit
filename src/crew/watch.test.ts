@@ -3709,6 +3709,25 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     expect(heard.map((one) => one.lead).sort()).toEqual([LEAD_SESSION, SECOND_LEAD].sort());
   });
 
+  test("IX2 review: one lead's unreadable lease file does not stop the look for the others", async () => {
+    const { advance, feed, watchOf, world } = await feedWorld();
+    // A folder where the other lead's lease file should be: reading it fails with EISDIR.
+    const lease = watchLeaseFile(world.paths.stateDir, world.repo, SECOND_LEAD);
+    rmSync(lease);
+    mkdirSync(lease);
+    const a = watchOf(LEAD_SESSION);
+    await a.pass();
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "Login fails",
+    });
+    advance(5 * MINUTE);
+    await a.pass();
+    expect(a.out).toEqual([`${FRAME} — issue #2 opened by alice: "Login fails"`]);
+  });
+
   test("IX2-3: a lead whose watch starts later hears nothing of what was said before", async () => {
     const { advance, feed, watchOf, world } = await feedWorld();
     const { stateDir, repo } = { stateDir: world.paths.stateDir, repo: world.repo };

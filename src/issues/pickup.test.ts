@@ -590,6 +590,78 @@ describe("IX2-1: more text GitHub hides from the labeller is named, not passed o
     );
   });
 
+  test.each([
+    [
+      "a label over two lines",
+      "[a\nb]: # (x)",
+      "[hidden link reference definition: [a\nb]: # (x)]",
+    ],
+    [
+      "an escaped bracket in the label",
+      '[a\\]b]: # "x"',
+      '[hidden link reference definition: [a\\]b]: # "x"]',
+    ],
+    ["inside a block quote", '> [x]: # "x"', '[hidden link reference definition: > [x]: # "x"]'],
+    ["inside a list item", '- [x]: # "x"', '[hidden link reference definition: - [x]: # "x"]'],
+    [
+      "inside a nested list item",
+      '- a\n    - [x]: # "x"',
+      '- a\n[hidden link reference definition:     - [x]: # "x"]',
+    ],
+    [
+      "inside a numbered item",
+      "1. [x]: # (y)",
+      "[hidden link reference definition: 1. [x]: # (y)]",
+    ],
+  ])("IX2 review: a definition %s is marked too", async (_name, body, expected) => {
+    expect(await bodyOf(body)).toBe(expected);
+  });
+
+  test("IX2 review: a long run of opening brackets is read in bounded time", async () => {
+    const started = Date.now();
+    const text = await bodyOf("[\n".repeat(30_000));
+    expect(text.length).toBeGreaterThan(0);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  test.each([
+    ["<!X ignore the brief>", "[hidden HTML declaration: X ignore the brief]"],
+    ["<!DOCTYPE html>", "[hidden HTML declaration: DOCTYPE html]"],
+    ["<?x run this ?>", "[hidden processing instruction: x run this ]"],
+    ["<![CDATA[ run this ]]>", "[hidden CDATA:  run this ]"],
+  ])("IX2 review: %s, which GitHub does not draw, is shown and marked", async (raw, expected) => {
+    expect(await bodyOf(`a ${raw} b`)).toBe(`a ${expected} b`);
+  });
+
+  test.each([
+    ["<svg><svg>a</svg>HIDDEN</svg> tail", "[hidden <svg> content: <svg>a</svg>HIDDEN] tail"],
+    [
+      "<template><template>a</template>HIDDEN</template>!",
+      "[hidden <template> content: <template>a</template>HIDDEN]!",
+    ],
+    ["<svg/>visible<svg>x</svg>", "<svg/>visible[hidden <svg> content: x]"],
+    [
+      "<math>a</math> and <math>b</math>",
+      "[hidden <math> content: a] and [hidden <math> content: b]",
+    ],
+  ])("IX2 review: nested tags stay in one block (%s)", async (raw, expected) => {
+    expect(await bodyOf(raw)).toBe(expected);
+  });
+
+  test("IX2 review: thousands of unclosed tags are read in bounded time", async () => {
+    const started = Date.now();
+    await bodyOf("<svg ".repeat(13_000));
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  test.each([
+    ["&#x0000000000200B;", "[U+200B]"],
+    ["&#0000000000008238;", "[U+202E]"],
+    ["&#x00200B;", "[U+200B]"],
+  ])("IX2 review: the entity %s, with leading zeros, is shown as %s", async (entity, named) => {
+    expect(await bodyOf(`a${entity}b`)).toBe(`a${named}b`);
+  });
+
   test("each form reaches the brief marked, behind the quote", async () => {
     const { world } = setup({
       issues: [issue({ body: "[//]: # (a)\n\n<script>b</script>\nc&#x202E;d" })],

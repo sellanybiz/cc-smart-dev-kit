@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { writeJsonFile } from "../crew/store";
-import type { GhCall, GhExec, GhResult } from "../workflow/merge-check";
+import { GH_TIMEOUT_MS, type GhCall, type GhExec, type GhResult } from "../workflow/merge-check";
 import type { IssueWorld } from "./file";
 import { type FixedMark, markFixed, openGate } from "./fixed";
 
@@ -122,6 +122,11 @@ export function callTime(budget: PassBudget, limitMs: number): number {
   return Math.min(limitMs, budget.deadline - budget.clock());
 }
 
+/** True while a read has the time to finish (`MIN_CALL_MS` or more of the pass is left). */
+export function hasCallTime(budget: PassBudget): boolean {
+  return callTime(budget, GH_TIMEOUT_MS) >= MIN_CALL_MS;
+}
+
 /**
  * `gh` bounded by the pass's deadline. Each call gets `callTime`, so the pass ends near its budget
  * and not one slow call after it; a call with under `MIN_CALL_MS` left is not made and answers as a
@@ -156,7 +161,8 @@ export async function settleMarks(
   const allDue = queued.filter(
     (mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS,
   );
-  if (allDue.length === 0 || budget.marks <= 0 || !hasTime(budget)) return [];
+  // Too little time for a call to finish is the same as none: the queue stays as it is, no line.
+  if (allDue.length === 0 || budget.marks <= 0 || !hasCallTime(budget)) return [];
   const due = allDue.slice(0, budget.marks);
   const lines: string[] = [];
   const gate = await openGate({ ...world, gh: budgetedGh(world.gh, budget) });
@@ -179,7 +185,7 @@ export async function settleMarks(
   }
   for (const mark of due) {
     // The time can run out inside the loop (a slow `gh`): the rest stay queued, untouched.
-    if (!hasTime(budget)) {
+    if (!hasCallTime(budget)) {
       left.push(mark);
       continue;
     }

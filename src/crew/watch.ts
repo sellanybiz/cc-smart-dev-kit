@@ -518,7 +518,7 @@ export function quotesGitHub(event: CrewEvent): boolean {
 
 /**
  * One look at GitHub (`src/issues/feed.ts`) inside this pass, and what it found written as one
- * event for each lead of the repository: every lead hears it, and none twice. The lead's own
+ * event for each lead of the repository whose watch runs: each hears it, and none twice. The lead's own
  * watch says the events in this pass or its next (`sayEvents`). Only the watch that holds its
  * lead's lease looks (WF1), and two watches share one look (the feed's own lock). A failure of
  * the look itself — the store cannot be written — is one line while it lasts, and the watch goes on.

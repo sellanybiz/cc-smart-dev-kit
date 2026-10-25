@@ -630,6 +630,36 @@ describe("the interval", () => {
     expect(readIssueFeed(made.paths.stateDir, made.repo)?.issues?.top).toBe(2);
   });
 
+  test("IX2 review: a write error is kept by its code, so a message with a changing temporary file name is one reason", async () => {
+    const { feed, made, world } = feedWorld();
+    history(feed);
+    const memory = newFeedMemory();
+    let attempt = 0;
+    const poll = (now: number) =>
+      pollIssueFeed({
+        budget: passBudget(() => now),
+        memory,
+        now,
+        repo: made.repo,
+        stateDir: made.paths.stateDir,
+        world,
+        write: () => {
+          attempt += 1;
+          throw Object.assign(
+            new Error(`EACCES: permission denied, open '/store/.state.json.tmp-${attempt}'`),
+            { code: "EACCES" },
+          );
+        },
+      });
+    await poll(T0);
+    const first = memory.unwritten;
+    memory.held = null;
+    await poll(T0);
+    expect(attempt).toBe(2);
+    expect(first).toBe("EACCES");
+    expect(memory.unwritten).toBe(first);
+  });
+
   test("the setting is the interval, down to its floor of two minutes", async () => {
     const { feed, poll, state } = feedWorld({ enabled: true, watch: true, watchMinutes: 2 });
     history(feed);

@@ -60,7 +60,7 @@ own repository, instead of losing them as a line in a summary.
   default, even with `enabled` on) lets the lead's watch make one conditional look at the
   project's issues and comments every `workflow.issues.watchMinutes` (default 5, at least 2),
   inside the pass it already runs, and print one line for each new one — `issue #<n> opened by
-  <author>: "<title>"`, `comment on #<n> by <author>` — to every lead of the repository. The `ETag`
+  <author>: "<title>"`, `comment on #<n> by <author>` — to every lead whose watch runs. The `ETag`
   and the cursor (the highest issue number and comment id told; each look reads the newest 100 of
   each list, so a full page of updates never hides a new issue) are kept once for the repository;
   the events are written before the cursor moves; a `304` costs nothing against GitHub's limit

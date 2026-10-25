@@ -51,7 +51,7 @@ import {
   sameAccount,
 } from "./file";
 import { hasKitMarker } from "./marker";
-import { budgetedGh, callTime, hasTime, MIN_CALL_MS, type PassBudget } from "./pending";
+import { budgetedGh, hasCallTime, type PassBudget } from "./pending";
 
 /** What a look found: the lines that quote GitHub (data), and the feed's own words (state). */
 export interface FeedResult {
@@ -271,7 +271,7 @@ class Look {
   async read(path: string, etag: null | string): Promise<Read> {
     const { budget, now, world } = this.input;
     // Too little time for a call to finish is the same as none: late, never a false "unreachable".
-    if (callTime(budget, GH_TIMEOUT_MS) < MIN_CALL_MS) return { kind: "late" };
+    if (!hasCallTime(budget)) return { kind: "late" };
     const result = await world.gh(
       [
         "api",
@@ -408,7 +408,7 @@ export async function pollIssueFeed(input: FeedInput): Promise<FeedResult> {
   if (early !== null && early.source === name && notYetDue(early, now, intervalMs)) {
     return NOTHING;
   }
-  if (!hasTime(input.budget)) return NOTHING;
+  if (!hasCallTime(input.budget)) return NOTHING;
   const held = await underIssueFeedLock(stateDir, repo, async () => {
     // Another look may have finished while this one waited for the lock's file.
     const known = stateFrom(readIssueFeed(stateDir, repo), input.memory);
@@ -445,7 +445,11 @@ async function look(
       // again (a line twice beat a line lost only while the delivery could fail).
       if (input.memory === undefined) throw error;
       input.memory.held = next;
-      input.memory.unwritten = error instanceof Error ? error.message : String(error);
+      // The error's code when it has one (ENOSPC, EACCES): its message may name a temporary file
+      // that differs at every try, and the line is said once per change of reason.
+      const code = (error as { code?: unknown } | null)?.code;
+      input.memory.unwritten =
+        typeof code === "string" ? code : error instanceof Error ? error.message : String(error);
     }
     return result;
   };

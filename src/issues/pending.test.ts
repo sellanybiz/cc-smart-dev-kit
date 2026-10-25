@@ -274,6 +274,20 @@ describe("IX2-4: no call outlives the pass's budget", () => {
     expect(readPending(path)).toEqual([]);
   });
 
+  test("IX2 review: under a second left, the marks wait untouched: no call, no line, nobody told", async () => {
+    const made = issuesWorld({ gh: { issues: [issue] } });
+    const path = file();
+    queueMarks(path, [MARK]);
+    let clock = 0;
+    const budget = passBudget(() => clock, { ms: 5_000 });
+    clock = 4_500;
+    expect(await settleMarks(path, made.world, 0, budget)).toEqual([]);
+    expect(made.gh.calls).toEqual([]);
+    const [left] = readPending(path);
+    expect(left?.told).toBe(false);
+    expect(left?.triedAt).toBeUndefined();
+  });
+
   test("budgetedGh: a call gets the smaller of its limit and the time left; under a second it is not made", async () => {
     let clock = 0;
     const seen: number[] = [];
@@ -302,12 +316,33 @@ describe("phaseIssues", () => {
     expect(phaseIssues({}, null)).toEqual([]);
   });
 
-  test("IX2-5: a brief names an issue by #n or by its address, outside the quoted lines", () => {
+  test("IX2-5: a brief names an issue by #n, outside the quoted lines; an address names none", () => {
     expect(
       briefIssueNumbers(
-        "Fix #12 and https://github.com/example-org/my-app/issues/7, not 5 or #0 or #x.\n> and #99\n  > and #98\n",
+        "Fix #12 and https://github.com/example-org/lib/issues/7, not 5 or #0 or #x.\n> and #99\n  > and #98\n",
       ),
-    ).toEqual([7, 12]);
+    ).toEqual([12]);
+  });
+
+  test("IX2 review: a continuation's brief counts only what the lead wrote, not the old report's words", () => {
+    // The shape `continuationBrief` writes: the lead's text, then `## What <phase> left behind`
+    // with the crew session's own words (`start.ts` › `reportBlock`).
+    const brief = [
+      "Fix #1.",
+      "",
+      "## What B6b left behind",
+      "",
+      "- What is still open: also fixes #99.",
+      "",
+      "Its own words:",
+      "",
+      "I also closed #98.",
+    ].join("\n");
+    expect(briefIssueNumbers(brief)).toEqual([1]);
+    expect(checkPhaseIssues({}, { issues: [1, 98, 99] }, brief)).toEqual({
+      marks: [1],
+      unnamed: [98, 99],
+    });
   });
 
   test("IX2-5: only the record's issue and the brief's numbers are marked; the rest are named", () => {

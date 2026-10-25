@@ -34,18 +34,27 @@ export function phaseIssues(
 export const MAX_PHASE_ISSUES = 10;
 
 /**
- * The issue numbers a brief names: `#12` and the address of an issue (`…/issues/12`), outside the
- * lines behind `> `. The brief quotes an issue's text that way (`issueBlock` in `brief.ts`), and
- * that text is somebody else's: a number in it names nothing the lead chose.
+ * The heading of the block a continuation's brief adds for what the old crew session left behind
+ * (`reportBlock` in `start.ts`): its own words, not the lead's.
+ */
+const LEFT_BEHIND_HEADING = /^## What .+ left behind[ \t]*$/m;
+
+/**
+ * The issue numbers the lead's own brief names, written `#12`. What is not the lead's is left out:
+ * the lines behind `> ` (an issue's quoted text, `issueBlock` in `brief.ts`) and everything from
+ * the block a continuation adds with the old crew session's report (`LEFT_BEHIND_HEADING`), whose
+ * words the crew session wrote. A number in either names nothing the lead chose. Only `#12` counts,
+ * not an address: an address may be another repository's. A number the lead writes for a pull
+ * request or a step counts too (it still has to be in the report to be marked at all).
  */
 export function briefIssueNumbers(text: string): number[] {
-  const own = text
+  const cut = LEFT_BEHIND_HEADING.exec(text);
+  const lead = cut === null ? text : text.slice(0, cut.index);
+  const own = lead
     .split("\n")
     .filter((line) => !line.trimStart().startsWith(">"))
     .join("\n");
-  const numbers = [...own.matchAll(/(?:#|\/issues\/)([1-9][0-9]{0,8})\b/g)].map((one) =>
-    Number(one[1]),
-  );
+  const numbers = [...own.matchAll(/#([1-9][0-9]{0,8})\b/g)].map((one) => Number(one[1]));
   return [...new Set(numbers)].sort((a, b) => a - b);
 }
 

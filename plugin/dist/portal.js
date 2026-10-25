@@ -30699,7 +30699,8 @@ var STRIPPED_CONTENT_TAGS = [
   "template",
   "xmp"
 ];
-var STRIPPED_CONTENT = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>([\\s\\S]*?)(?:</\\1\\s*>|$)`, "gi");
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
 
 // src/setup/launcher-cmd.ts
 var LAUNCHER_CMD_NAME = "cc-smart-dev-kit.cmd";
