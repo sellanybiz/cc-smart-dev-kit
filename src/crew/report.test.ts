@@ -545,6 +545,59 @@ describe("crew report", () => {
     expect(world.err[0]).toContain("give one, not both");
   });
 
+  describe("GI2: the issues a phase fixes", () => {
+    const ctxOf = (world: Awaited<ReturnType<typeof crewWorld1>>) =>
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
+    const stored = (world: Awaited<ReturnType<typeof crewWorld1>>) =>
+      readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+
+    test("a report with none has an empty list", async () => {
+      const world = await crewWorld1();
+      expect(await runCrew(doneArgs(), ctxOf(world))).toBe(0);
+      expect(stored(world)?.issues).toEqual([]);
+    });
+
+    test("the JSON part's issues are kept", async () => {
+      const world = await crewWorld1();
+      expect(await runCrew(doneArgs(modelPart({ issues: [14, 12] })), ctxOf(world))).toBe(0);
+      expect(stored(world)?.issues).toEqual([12, 14]);
+    });
+
+    test("--issue is repeatable and joins the JSON part's, each number once, in order", async () => {
+      const world = await crewWorld1();
+      const args = [...doneArgs(modelPart({ issues: [14, 15] })), "--issue", "12", "--issue", "14"];
+      expect(await runCrew(args, ctxOf(world))).toBe(0);
+      expect(stored(world)?.issues).toEqual([12, 14, 15]);
+    });
+
+    test.each([["abc"], ["0"], ["-3"], ["1.5"]])(
+      "--issue %p is not an issue number: refused, nothing written",
+      async (value) => {
+        const world = await crewWorld1();
+        expect(await runCrew([...doneArgs(), "--issue", value], ctxOf(world))).toBe(2);
+        expect(world.err[0]).toContain("--issue is the number of a GitHub issue");
+        expect(stored(world)).toBeNull();
+      },
+    );
+
+    test.each([[["x"]], [[0]], [[1.5]], ["12"]])(
+      "the JSON part's issues %p are refused when they are not numbers",
+      async (issues) => {
+        const world = await crewWorld1();
+        expect(await runCrew(doneArgs(modelPart({ issues })), ctxOf(world))).toBe(1);
+        expect(world.err[0]).toContain("issues");
+        expect(stored(world)).toBeNull();
+      },
+    );
+
+    test("--issue belongs to a report, not a question", async () => {
+      const world = await crewWorld1();
+      const args = ["report", "--question", "q?", "--option", "a", "--option", "b", "--issue", "3"];
+      expect(await runCrew(args, ctxOf(world))).toBe(2);
+      expect(world.err[0]).toContain("--issue belongs to a report");
+    });
+  });
+
   describe("RG1: a done report is held for red or missing work", () => {
     const fix =
       "Fix: fix it and run the whole suite and the checks again, then report `done` with the JSON part (`crew report --status done --file -`: tests, checks, review); report `failed` or `blocked` instead when the phase cannot be finished";

@@ -116,13 +116,15 @@ Commands:
                  Records one milestone of a crew session's phase: the step, the time
                  and HEAD's sha. A crew session runs it; the lead sees one line.
                  ${STEPS_LINE}
-  report --status done|blocked|failed|handoff [--file <file|->]
+  report --status done|blocked|failed|handoff [--file <file|->] [--issue <n>…]
                  The hand-back report a crew session gives its lead. The command fills
                  the branch, the commits, the diff counts, the files outside the
                  brief, the review record and the pull request; the crew session gives
                  the tests, the other checks, the review's findings, the docs,
                  what only the lead may do, and what is still open. The file is
-                 that part as JSON, or prose kept as the report's summary.
+                 that part as JSON, or prose kept as the report's summary. --issue
+                 names a GitHub issue the phase fixes (repeatable; the JSON part's
+                 "issues" list adds to it): the lead's merge marks it fixed.
   report --question "<the question>" --option "<choice>" --option "<choice>"
           [--recommend <n>]
                  Records a question for the lead. The crew session goes on with
@@ -617,9 +619,9 @@ export function parseStepArgs(
 export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: string } {
   const parsed = parseOptions(
     argv,
-    ["--status", "--file", "--question", "--option", "--recommend"],
+    ["--status", "--file", "--question", "--option", "--recommend", "--issue"],
     [],
-    ["--option"],
+    ["--option", "--issue"],
   );
   if ("error" in parsed) return parsed;
   const { options, lists, positionals } = parsed;
@@ -630,6 +632,13 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   }
   const question = options.get("--question") ?? null;
   const optionValues = lists.get("--option") ?? [];
+  const issues: number[] = [];
+  for (const raw of lists.get("--issue") ?? []) {
+    if (!/^[1-9][0-9]*$/.test(raw)) {
+      return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
+    }
+    issues.push(Number(raw));
+  }
   const recommendRaw = options.get("--recommend") ?? null;
   let recommend: null | number = null;
   if (recommendRaw !== null) {
@@ -651,11 +660,15 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   if (question === null && (optionValues.length > 0 || recommendRaw !== null)) {
     return { error: '--option and --recommend belong to a question: --question "<the question>"' };
   }
+  if (question !== null && issues.length > 0) {
+    return { error: "--issue belongs to a report: a question does not name the issues it fixes" };
+  }
   if (question !== null && options.has("--file")) {
     return { error: "A question has no file: the question and its options are the whole of it" };
   }
   return {
     file: options.get("--file") ?? null,
+    issues,
     options: optionValues,
     question,
     recommend,
