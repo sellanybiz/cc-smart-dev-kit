@@ -272,7 +272,11 @@ const READ_ONLY_KIT_KEYS: ReadonlySet<string> = new Set(
  * no hook of their own. A bare name only ever finds a saved file (`scriptByName`), never the
  * kit's own workflow: its id is the plugin-qualified `<plugin>:<name>` the skills call.
  */
-export const READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`] as const;
+export const READ_ONLY_WORKFLOWS = [
+  `${PLUGIN}:audit-run`,
+  `${PLUGIN}:review-split`,
+  `${PLUGIN}:research-sweep`,
+] as const;
 
 /** `READ_ONLY_WORKFLOWS` as Claude Code sends a plugin workflow's name, read once. */
 const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(

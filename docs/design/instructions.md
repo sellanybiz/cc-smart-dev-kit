@@ -118,6 +118,19 @@ tool's own description, not proved by a live run). A shared piece would be a thi
 runs agents, so the two stay self-contained (the checks are code, which `check:duplicates`,
 reading sentences, does not flag).
 
+The third, `plugin/workflows/research-sweep.js`, is the run the `research-first` skill starts for a question
+with several sources (D28's third): one read-only `auditor` per angle on `sonnet` at `max`, then
+one refuter per claim on `opus` at `high` that opens the cited source and confirms or refutes the
+claim with the quote. The researchers are on `max` for the same reason as the audit's: an
+affordable worker slot allows no lower effort, and a literal cannot depend on the gateway. The
+refuters are the judgment, so they take the premium tier, which runs at `high` with no question.
+The decisive claims are checked first, taken in turn from each angle so one angle cannot use the
+whole `budget` (1 to 40), which cuts the rest, and the cut claims come back
+as `unchecked`, never dropped; so do a claim a refuter could not settle (`unproven`) and an angle
+that returned no report (an open question). The script needs its argument object (a research
+question has no default), so a string, a missing field or an unknown field is refused before any
+agent starts.
+
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
