@@ -150,9 +150,18 @@ describe("every probe of a service on this machine reaches it straight (RV3, FX1
   });
 
   test("the OmniRoute health fetch of the CLI and of doctor, and the portal starter's probe, are the loopback helper", () => {
-    // Their `fetch` is built inside an entry or a long function, so the proof is the source: a
-    // bare `fetch(url, init)` on the `health` or `probe` line was the fault.
+    // Their `fetch` is built inside an entry or a long function, so the proof is the source: each
+    // names the helper, and none keeps a bare `fetch(url, init)` on a `health` or `probe` line.
     const root = join(import.meta.dir, "..");
+    const named: [string, RegExp][] = [
+      ["entries/cli.ts", /^\s*health: loopbackFetch,$/m],
+      ["cli/doctor.ts", /^\s*health: loopbackFetch,$/m],
+      ["entries/portal.ts", /^\s*fetch: loopbackFetch,$/m],
+      ["entries/portal.ts", /^\s*probe: realPortalProbe\(\),$/m],
+    ];
+    for (const [file, pattern] of named) {
+      expect(readFileSync(join(root, file), "utf8")).toMatch(pattern);
+    }
     for (const file of ["entries/cli.ts", "cli/doctor.ts", "entries/portal.ts"]) {
       const source = readFileSync(join(root, file), "utf8");
       expect(source).not.toMatch(/\b(health|probe)\b[^\n]*=> fetch\(url, init\)/);

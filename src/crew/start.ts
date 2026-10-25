@@ -1473,7 +1473,8 @@ export async function startQueued(
   resolved: ResolvedWorkflow,
   /**
    * The lead's own folder, where the session's worktree is cut from and whose settings it will
-   * run on (`crewSettingsFolder`); the watch gives its `mergeInto`. Default: the repository.
+   * run on (`crewSettingsFolder`); the watch gives its `mergeInto`. Default, and when that folder
+   * is gone (the lead's worktree was removed while its watch runs): the repository.
    */
   settingsFolder: string = listed.repo,
 ): Promise<void> {
@@ -1486,7 +1487,11 @@ export async function startQueued(
   let record: CrewRecord = early;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), settingsFolder);
+  const usage = usageFacts(
+    ctx.paths,
+    ctx.now(),
+    existsSync(settingsFolder) ? settingsFolder : record.repo,
+  );
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     // A compare-and-set: the copy the caller holds may be stale (a watch takeover leaves two
     // starters of one record, WF1), so the store says whether it is still queued. Only the starter

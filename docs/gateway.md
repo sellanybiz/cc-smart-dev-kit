@@ -371,7 +371,7 @@ the command's.
   127.0.0.1:<port> (<why>) …` and the fix `gateway setup`. `--gateway` needs only an answer;
   `--profile` also needs `profiles` in the page's `features`. `--no-gateway` and no mode ask
   nothing: they do not use the router. The question goes straight to 127.0.0.1, never through a
-  proxy in the environment (`routerFetch`, as `setup` and `doctor` ask it): Bun sends a loopback
+  proxy in the environment (`loopbackFetch`, as `setup`, `doctor`, the portal and the OmniRoute checks ask it): Bun sends a loopback
   request to `HTTP_PROXY` unless `NO_PROXY` names the host, and a running router would look
   silent.
 - **Windows is unproved** (P11 is owed): the CLI writes the file before it starts `claude`, and

@@ -24559,7 +24559,7 @@ async function startQueued(listed, ctx, resolved, settingsFolder = listed.repo) 
     return;
   } };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), settingsFolder);
+  const usage = usageFacts(ctx.paths, ctx.now(), existsSync31(settingsFolder) ? settingsFolder : record.repo);
   const sha = await withPlacesLock(ctx.paths.stateDir, async () => {
     const now = readCrew(ctx.paths.stateDir, early.repo, early.id);
     if (now === null || now.state !== "queued")
