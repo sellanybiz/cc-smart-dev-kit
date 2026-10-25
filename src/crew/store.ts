@@ -2149,8 +2149,11 @@ export async function underIssueFeedLock<T>(
   repo: string,
   look: () => Promise<T>,
 ): Promise<{ held: false } | { held: true; value: T }> {
+  const folder = issueFeedDir(stateDir, repo);
+  // Private like the store's own folders (the lock would make it with the umask's mode).
+  mkdirSync(folder, { mode: 0o700, recursive: true });
   try {
-    return { held: true, value: await withLock(issueFeedDir(stateDir, repo), look, { waitMs: 0 }) };
+    return { held: true, value: await withLock(folder, look, { waitMs: 0 }) };
   } catch (error) {
     if (error instanceof LockBusyError) return { held: false };
     throw error;
