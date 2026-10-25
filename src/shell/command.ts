@@ -123,6 +123,11 @@ interface Lexed {
   segments: string[];
   /** For each segment: the text of the command it is piped from (`a | b`), else null. */
   piped: (string | null)[];
+  /**
+   * For each segment: the shell fills text into it before it runs, so its quotes say nothing
+   * about what the program gets (the script of a here-doc with no quoted delimiter).
+   */
+  expanded: boolean[];
 }
 
 interface LexOptions {
@@ -169,6 +174,7 @@ function lex(text: string, options: LexOptions): Lexed {
   const double = DOUBLE[dialect];
   const segments: string[] = [];
   const piped: (string | null)[] = [];
+  const expanded: boolean[] = [];
   const owed: OwedBody[] = [];
   let open = false;
   let unparsable = false;
@@ -180,13 +186,14 @@ function lex(text: string, options: LexOptions): Lexed {
   /** Where each `;` is, counted up to an index: an arithmetic expansion holds none. */
   let semicolons: Int32Array | null = null;
 
-  const push = (piece: string, from: string | null): void => {
+  const push = (piece: string, from: string | null, filledIn = false): void => {
     segments.push(piece);
     piped.push(from);
+    expanded.push(filledIn);
   };
 
   /** Reads `inner` as text of its own and adds the commands it runs (a substitution, a script). */
-  function addInner(inner: string, body: boolean): void {
+  function addInner(inner: string, body: boolean, filledIn = false): void {
     const depth = (options.depth ?? 0) + 1;
     if (depth > MAX_INNER) {
       open = true;
@@ -196,7 +203,7 @@ function lex(text: string, options: LexOptions): Lexed {
     if (read.open) open = true;
     if (read.unparsable) unparsable = true;
     for (let i = 0; i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null);
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
     }
   }
 
@@ -220,8 +227,11 @@ function lex(text: string, options: LexOptions): Lexed {
       if (closedAt === -1 && blind) continue; // read blind, its lines are commands
       // A shell reads the body as its script (`sh <<'EOF' … EOF`): read it as one. An unquoted
       // body is expanded first, so its substitutions run, even with no closing line.
-      if (script) addInner(text.slice(at, bodyEnd), false);
-      else if (!quoted) addInner(text.slice(at, bodyEnd), true);
+      if (script) {
+        const body = text.slice(at, bodyEnd);
+        // With no quoted delimiter the shell fills the body in first: its quotes mean nothing.
+        addInner(body, false, !quoted && /[$`]/.test(body));
+      } else if (!quoted) addInner(text.slice(at, bodyEnd), true);
       if (closedAt === -1) {
         open = true;
         at = text.length;
@@ -359,6 +369,7 @@ function lex(text: string, options: LexOptions): Lexed {
     open = true;
     segments.length = mark;
     piped.length = mark;
+    expanded.length = mark;
     return raw;
   }
 
@@ -574,7 +585,7 @@ function lex(text: string, options: LexOptions): Lexed {
 
   if (options.body === true) readDouble(false);
   else read(false);
-  return { open, piped, segments, unparsable };
+  return { expanded, open, piped, segments, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -595,6 +606,11 @@ export interface ShellStep {
   text: string;
   /** The text of the command this one is piped from (`a | b`), else null. */
   pipedFrom: string | null;
+  /**
+   * The shell fills text into this command before it runs, so its quotes say nothing about
+   * what the program gets: the script of a here-doc whose delimiter is not quoted.
+   */
+  expanded: boolean;
 }
 
 /**
@@ -610,7 +626,11 @@ export function shellSteps(
   if (read.unparsable) return [];
   const chosen =
     read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+  return chosen.segments.map((text, index) => ({
+    expanded: chosen.expanded[index] === true,
+    pipedFrom: chosen.piped[index] ?? null,
+    text,
+  }));
 }
 
 /** `shellSteps`, the text of each command only. */
@@ -668,24 +688,72 @@ const POWERSHELL_ESCAPES: Record<string, string> = {
  * `>log`; `2>x` keeps its `2`).
  */
 export function wordsOf(segment: string, dialect: Dialect = "bash"): string[] {
+  return wordsWithFill(segment, dialect).map((one) => one.text);
+}
+
+/** One word of a command, and whether the shell fills in part of it before the program runs. */
+export interface ShellWord {
+  text: string;
+  /**
+   * An expansion (`$x`, `${x}`, `$(…)`, `$((…))`) or a bash backtick outside single quotes: the
+   * program gets the shell's answer, not this text. Single quotes, bash's `$'…'` and an escaped
+   * `$` (`\$`, PowerShell's `` `$ ``) fill nothing.
+   */
+  filled: boolean;
+}
+
+/** The character after a `$` that starts an expansion; a lone `$` is text. */
+const EXPANDS: Record<Dialect, RegExp> = {
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
+  powershell: /[A-Za-z_0-9{(?$^:]/,
+};
+
+/**
+ * `wordsOf` with a flag on each word: does the shell fill in part of it (`ShellWord.filled`)?
+ * The one lexer for both, so the quote rules have one home. A guard that reads text the shell
+ * changes before the program sees it (a `$` in a `gh api` endpoint) asks this, because the
+ * quotes are gone from `wordsOf`'s words: `'$n'` and `"$n"` read alike there.
+ */
+export function wordsWithFill(segment: string, dialect: Dialect = "bash"): ShellWord[] {
   const bash = dialect === "bash";
   const escaper = ESCAPE[dialect];
   const single = SINGLE[dialect];
   const double = DOUBLE[dialect];
-  const words: string[] = [];
+  const expands = EXPANDS[dialect];
+  const words: ShellWord[] = [];
   let word = "";
   let inWord = false;
   /** The word so far has a quote or an escape: it cannot be a redirection's file number. */
   let quoted = false;
+  /** The word so far holds an expansion. */
+  let filled = false;
   const end = () => {
-    if (inWord) words.push(word);
+    if (inWord) words.push({ text: word, filled });
     word = "";
     inWord = false;
     quoted = false;
+    filled = false;
   };
   const add = (piece: string) => {
     word += piece;
     inWord = true;
+  };
+  /**
+   * A `$` that may expand: one before an expansion's first character, or one the line reader cut
+   * off from what follows (`$\<newline>P` is joined into `$ P`, PowerShell's `${x}` is cut at
+   * its brace), so the word ends in a lone `$` before a space, an escape, a closing quote or
+   * the end. A lone `$` can become anything, so it counts: the guards read it as filled.
+   */
+  const startsExpansion = (after: string) =>
+    expands.test(after) ||
+    after === "" ||
+    /\s/.test(after) ||
+    after === escaper ||
+    oneOf(double, after);
+  /** Adds a character read outside single quotes: a `$` that expands, or a bash backtick, fills. */
+  const addExpandable = (char: string, after: string) => {
+    if ((char === "$" && startsExpansion(after)) || (bash && char === "`")) filled = true;
+    add(char);
   };
   let i = 0;
   while (i < segment.length) {
@@ -750,12 +818,12 @@ export function wordsOf(segment: string, dialect: Dialect = "bash"): string[] {
           i += 2;
           continue;
         }
-        add(inside);
+        addExpandable(inside, after);
         i++;
       }
       i++;
     } else {
-      add(char);
+      addExpandable(char, next);
       i++;
     }
   }
@@ -969,16 +1037,29 @@ export function programName(word: string): string {
 
 /**
  * The letters of a short option group (`-fdx` → `fdx`), up to the first one that takes a
- * value (the rest of the word, or the next word when nothing is attached).
+ * value (the rest of the word, or the next word when nothing is attached). `value` is the
+ * attached rest of the word, with one leading `=` dropped: gh's flag library (pflag) reads
+ * `-X=POST` as `POST`, as it reads `-XPOST`. A caller for a program that keeps the `=` (git's
+ * `-c=x` is `=x`) slices the word itself.
  */
-export function shortFlags(arg: string, valued: string): { flags: string; wantsNext: boolean } {
+export function shortFlags(
+  arg: string,
+  valued: string,
+): { flags: string; value: string; wantsNext: boolean } {
   let flags = "";
   for (let i = 1; i < arg.length; i++) {
     const letter = arg.charAt(i);
     flags += letter;
-    if (valued.includes(letter)) return { flags, wantsNext: i === arg.length - 1 };
+    if (valued.includes(letter)) {
+      const attached = arg.slice(i + 1);
+      return {
+        flags,
+        value: attached.startsWith("=") ? attached.slice(1) : attached,
+        wantsNext: i === arg.length - 1,
+      };
+    }
   }
-  return { flags, wantsNext: false };
+  return { flags, value: "", wantsNext: false };
 }
 
 /** `-x` or `-xyz`, not `--long` and not a bare `-`. */
@@ -1140,6 +1221,8 @@ export function invocationOf(words: readonly string[]): Invocation | undefined {
  * names the command `cc-smart-dev-kit`, whatever folder it is in.
  */
 export function isComputedWord(word: string): boolean {
+  // `{}` is the file `find -exec` and `xargs -I{}` put in its place: whatever it names runs.
+  if (word === "{}") return true;
   if (!word.startsWith("$") && !word.startsWith("`")) return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
@@ -1377,6 +1460,402 @@ function writtenText(segment: string): string | null {
 }
 
 /**
+ * The programs whose own arguments name a command they run, and that do work of their own
+ * beside it (`find -delete`, `su`'s user switch, `watch`'s endless repeat, `parallel`'s remote
+ * hosts): `nestedCommand` reads the command each runs, and a caller that must not treat the
+ * step as just that command (the job route) asks here. `xargs` is a wrapper, not one of these.
+ */
+export const RUNNER_PROGRAM_NAMES: readonly string[] = ["find", "parallel", "su", "watch"];
+
+/** True when `program` is a runner (`RUNNER_PROGRAM_NAMES`). */
+export function isRunnerProgram(program: string): boolean {
+  return RUNNER_PROGRAM_NAMES.includes(program);
+}
+
+/** `find`'s actions that run a command, up to a `;` or a `{} +`. */
+const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/**
+ * `find`'s tests and actions that take the next word as their value: `-name -exec` tests for a
+ * file called `-exec`, which starts no command. (`-newerXY` takes one too.)
+ */
+const FIND_VALUED: ReadonlySet<string> = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype",
+]);
+
+/**
+ * True when `word` ends a `find -exec` command, given the word before it: a `;` (escaped or
+ * quoted, the shell hands find a bare `;`), or a `+` only right after `{}` — anywhere else a `+`
+ * is an argument (`-exec flock + git push \;`). A `\;` that reaches us whole was quoted: an
+ * argument too.
+ */
+function endsFindCommand(word: string, before: string): boolean {
+  return word === ";" || (word === "+" && before === "{}");
+}
+
+/**
+ * The commands `find` runs: the words of each `-exec`, `-execdir`, `-ok` and `-okdir` up to its
+ * `;` or `{} +`, quoted so they read back the same, joined by `;` (several actions are several
+ * commands). Undefined when `find` runs none.
+ */
+function findCommands(args: readonly string[]): string | undefined {
+  const commands: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    // A test that takes a value: its value is not an action, whatever it looks like.
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word)) continue;
+    const words: string[] = [];
+    for (
+      index++;
+      index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? "");
+      index++
+    ) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0) commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+
+/**
+ * The long option `word` names among `names`: the exact name, or the one name it is the start
+ * of (getopt accepts a unique prefix, `--int` for `--interval`); null when it names none or
+ * several. Any `=value` is left out of the comparison.
+ */
+function longOption(word: string, names: readonly string[]): string | null {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name)) return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? (starts[0] ?? null) : null;
+}
+
+/** The long options of `watch` (procps-ng 4.0.4), and the ones that take a value. */
+const WATCH_LONG = [
+  "--beep",
+  "--chgexit",
+  "--color",
+  "--cumulative",
+  "--differences",
+  "--equexit",
+  "--errexit",
+  "--exec",
+  "--help",
+  "--interval",
+  "--no-color",
+  "--no-title",
+  "--no-wrap",
+  "--precise",
+  "--version",
+] as const;
+const WATCH_VALUED = new Set<string>(["--equexit", "--interval"]);
+
+/**
+ * The command `watch` runs. Its options end at the first word that is no option (`-n 5`,
+ * `--interval=2`, `-d`), or at `--`; what follows is the command. Without `-x`/`--exec`, watch
+ * hands the words to `sh -c` joined by spaces — so they are read the same way; with it, each
+ * word is an argument of the program, quoted.
+ */
+function watchCommand(args: readonly string[]): string | undefined {
+  let exec = false;
+  let index = 0;
+  for (; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-") break;
+    if (word.startsWith("--")) {
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec") exec = true;
+      // `--interval 5` takes the next word; `--interval=5` carries it.
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("=")) index++;
+      continue;
+    }
+    // `-n <seconds>` and `-q <cycles>` take a value; `-d` takes one only attached (`-dq` is `-d`
+    // with the value `q`: the next word is the command); the rest are switches.
+    for (let at = 1; at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d") break;
+      if (letter === "x") exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1) index++;
+        break;
+      }
+    }
+  }
+  const words = args.slice(index);
+  if (words.length === 0) return undefined;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+
+/**
+ * The command line `su` runs: the value of `-c` / `--command` (also in a group, `-lc`), wherever
+ * the user's name stands (`su - me -c '…'`, `su -c '…' me`). Undefined for `su` alone, which
+ * opens a shell and runs no command line of its own.
+ */
+function suCommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    // After `--` su stops reading options, but the words still reach the shell it starts, and
+    // a `-c <command>` among them runs (`su -- me -c '…'`): keep looking.
+    if (word === "--") continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried) index++;
+      continue;
+    }
+    // The options of su that take a value: `-s <shell>`, `-g`, `-G`, `-w` and the command `-c`.
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c")) return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext) index++;
+    }
+  }
+  return undefined;
+}
+
+/** The long options of `su` (util-linux), and the ones that take a value. */
+const SU_LONG = [
+  "--command",
+  "--fast",
+  "--group",
+  "--help",
+  "--login",
+  "--preserve-environment",
+  "--pty",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--version",
+  "--whitelist-environment",
+] as const;
+const SU_VALUED = new Set<string>([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment",
+]);
+
+/** GNU parallel's long options that take the next word (`--jobs 4`; `--jobs=4` carries it). */
+const PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
+  "--colsep",
+  "--delay",
+  "--delimiter",
+  "--env",
+  "--eof",
+  "--halt",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--load",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
+  "--results",
+  "--retries",
+  "--rpl",
+  "--sshlogin",
+  "--sshloginfile",
+  "--tagstring",
+  "--timeout",
+  "--workdir",
+  // The rest of the man page's valued long options (GNU parallel 20240222), long and short forms.
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd",
+]);
+
+/** GNU parallel's long switches, which take no value. */
+const PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs",
+]);
+
+/** What starts the arguments of a parallel run: `:::` and friends (`::::` takes files). */
+const PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+
+const PARALLEL_LONG: readonly string[] = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+
+/**
+ * Where the command of a `parallel` line can start. Its options come first; one this reader does
+ * not know may or may not take the next word, so BOTH positions are possible — each index is
+ * visited once, so no number of unknown options can hide the command, and the cost is linear.
+ * A long option may be cut short to a unique prefix (Perl's Getopt::Long).
+ */
+function parallelStarts(args: readonly string[]): number[] {
+  const starts = new Set<number>();
+  const seen = new Set<number>();
+  const queue = [0];
+  for (let at = queue.pop(); at !== undefined; at = queue.pop()) {
+    if (seen.has(at)) continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
+      const carried = word.includes("=");
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null) queue.push(at + 1, at + 2);
+      else queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      // A short group: `-j4` carries its value, `-j 4` takes the next word, `-k` and `-u` none.
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+
+/**
+ * The command lines GNU parallel runs, as they can be read, for each place the command may
+ * start (`parallelStarts`): its words up to the first `:::`. The `:::` arguments run too —
+ * parallel adds each to the command, quoted, or puts it where the command holds `{}` — so those
+ * readings are returned as well; and when the command is a shell, each argument is also a script
+ * of its own. With no command, the arguments are the commands ("If no command is given, the line
+ * of input is executed"). `--arg-sep <s>` replaces `:::`.
+ */
+function parallelLines(args: readonly string[]): string[] {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator =
+    sepWord === undefined
+      ? null
+      : sepWord.includes("=")
+        ? sepWord.slice(sepWord.indexOf("=") + 1)
+        : (args[sepAt + 1] ?? null);
+  const isSource = (word: string) =>
+    separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines: string[] = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command: string[] = [];
+    for (; index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    // The arguments after a `:::` (those after `::::` are file names).
+    const given: string[] = [];
+    let reading = false;
+    for (; index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word)) reading = !word.startsWith("::::");
+      else if (reading) given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0) lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0) continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval") lines.push(...given);
+  }
+  return lines;
+}
+
+/** The command GNU parallel runs (`parallelLines`), the readings joined by `;`; undefined for none. */
+function parallelCommand(args: readonly string[]): string | undefined {
+  const lines = [...new Set(parallelLines(args))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
+}
+
+/**
  * The command line a wrapper runs, when the line gives it one: `bash -c "…"` (a `c`
  * anywhere in a group of short options: `-ce`, `-ec`), a shell that reads its script from
  * standard input (`sh <<< "…"`, or the text piped from the command before it), `cmd /c …`,
@@ -1408,6 +1887,13 @@ export function nestedCommand(
           .map(shellQuote)
           .join(" ");
   }
+  // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
+  // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
+  // does to a merge still holds; the command they run is read here, once, for every guard.
+  if (program === "find") return findCommands(args);
+  if (program === "watch") return watchCommand(args);
+  if (program === "su") return suCommand(args);
+  if (program === "parallel") return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");
@@ -1465,4 +1951,126 @@ function programsIn(command: string, dialect: Dialect): string[] {
   };
   walk(command, dialect, 0);
   return found;
+}
+
+/** Does the shell fill in the word with this text? A reader of a command's arguments asks this. */
+export type FillTest = (word: string) => boolean;
+
+/**
+ * The test for text no shell read: any `$` or backtick counts as filled. A reader falls back to
+ * it for words that came from somewhere else (a gh alias's expansion) or that its caller did
+ * not read with `wordsWithFill`, so it errs toward "cannot be read".
+ */
+export const anyFill: FillTest = (word) => /[$`]/.test(word);
+
+/** The test for a command whose filled words are known (`RunInvocation.filled`). */
+export function fillTest(filled: readonly string[]): FillTest {
+  const set = new Set(filled);
+  return (word) => set.has(word);
+}
+
+/**
+ * The arguments of a command that are no word of its step: a wrapper cut them out of a string of
+ * its own (`env -S '…'`, `script -c '…'`, `Start-Process -ArgumentList '…'`), and that string is
+ * filled in by the wrapper, not by this line's quotes. They are read by their text: a `$` or a
+ * backtick counts as filled.
+ */
+export function derivedFill(words: readonly string[], args: readonly string[]): string[] {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
+
+/** What the shell fills in for one step of a line (`fillOfStep`). */
+export interface StepFill {
+  /** The texts of the step's words the shell fills in; all of them when the line was filled in. */
+  filled: string[];
+  /**
+   * The line this step hands to a command it runs (`bash -c "…"`, a pipe into `sh`, `eval`) was
+   * filled in too: the quotes in it were written before the shell chose the text, so a reader
+   * of that inner line treats every word of it as filled.
+   */
+  passes: boolean;
+}
+
+/**
+ * Which words of a step the shell fills in. `inherited`: the line holding the step was
+ * filled in already (`StepFill.passes` of the step that ran it). A step in the script of an
+ * unquoted here-doc (`ShellStep.expanded`) is such a line. Conservative on purpose: one filled
+ * word anywhere in a step that runs another line counts the whole inner line as filled.
+ */
+export function fillOfStep(
+  step: ShellStep,
+  words: readonly ShellWord[],
+  dialect: Dialect,
+  inherited: boolean,
+): StepFill {
+  const all = inherited || step.expanded;
+  const own = words.some((word) => word.filled);
+  const piped =
+    step.pipedFrom !== null && wordsWithFill(step.pipedFrom, dialect).some((w) => w.filled);
+  const filled = words.filter((word) => all || word.filled).map((word) => word.text);
+  return { filled: [...new Set(filled)], passes: all || own || piped };
+}
+
+/** One command a line runs: its program, its arguments (redirections left in), and its words. */
+export interface RunInvocation {
+  args: string[];
+  /** The program is worked out when the line runs (`$GH`, `$(which gh)`). */
+  computed: boolean;
+  program: string;
+  /**
+   * The texts of the words the shell fills in before the command runs (`ShellWord.filled`). A
+   * line a filled word is part of (`bash -c "…$K…"`, `echo "…$K…" | sh`, an unquoted here-doc
+   * script) hands the command it runs the whole of its words as filled: the quotes inside
+   * that line were written before the shell chose the text.
+   */
+  filled: string[];
+  /** Every word of the step, as the reader split it. */
+  words: string[];
+}
+
+/**
+ * Every command the line runs, in order, with its arguments: each command of it, and the inner
+ * command of a wrapper or a shell (`bash -c "gh issue create"`), three levels deep — the walk
+ * `programsOf` makes, handing back the whole invocation instead of the program. In `dialect`;
+ * not told the tool, both readings, each command once.
+ */
+export function invocationsOf(command: string, dialect?: Dialect): RunInvocation[] {
+  const walk = (
+    line: string,
+    one: Dialect,
+    depth: number,
+    into: RunInvocation[],
+    inherited: boolean,
+  ): void => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const read = wordsWithFill(step.text, one);
+      const words = read.map((word) => word.text);
+      const fill = fillOfStep(step, read, one, inherited);
+      const invocation = invocationOf(words);
+      if (invocation === undefined) continue;
+      into.push({
+        args: invocation.args,
+        computed: invocation.computed,
+        filled: [...fill.filled, ...derivedFill(words, invocation.args)],
+        program: invocation.program,
+        words,
+      });
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1, into, fill.passes);
+      }
+    }
+  };
+  const found: RunInvocation[] = [];
+  for (const one of dialect === undefined ? (["bash", "powershell"] as const) : [dialect]) {
+    walk(command, one, 0, found, false);
+  }
+  const seen = new Set<string>();
+  return found.filter((one) => {
+    const key = JSON.stringify(one);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

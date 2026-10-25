@@ -34,8 +34,10 @@ import {
 import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
 import {
+  CREW_ISSUE_REFUSAL,
   CREW_MERGE_REFUSAL,
   CREW_PR_REFUSAL,
+  crewGhWordRefusal,
   mergeGuard,
   OPENING_DEFAULT_UNREAD,
   opensElsewhere,
@@ -1314,6 +1316,22 @@ describe("a merge run by another program", () => {
       "the merge runs from `find -exec`, once for each match",
     ],
     ["watch -n 5 gh pr merge 7", "the merge runs from `watch`, over and over"],
+    // The finding of the GI1 review: the runners keep their own reason once the shell reader
+    // knows them, and the --admin forms are read too.
+    // With --admin it is still the runner's refusal (nothing the line says is what merges).
+    [
+      "find . -maxdepth 0 -exec gh pr merge 5 --admin \\;",
+      "the merge runs from `find -exec`, once for each match",
+    ],
+    [
+      'su -c "gh pr merge 5" user',
+      "the merge runs from `su`, whose command and environment come from outside the line",
+    ],
+    [
+      "su - user -c 'gh pr merge 5 --admin'",
+      "the merge runs from `su`, whose command and environment come from outside the line",
+    ],
+    ["watch 'gh pr merge 5'", "the merge runs from `watch`, over and over"],
   ])("%j: asks, and reads nothing with gh", async (command, reason) => {
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);
@@ -2318,5 +2336,278 @@ describe("WA1: an opening outside the base asks", () => {
         "gh api repos/example-org/app/pulls -f title=x -f head=a -f base=release",
       ),
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D67: a raw write to GitHub's issues is the person's yes; a crew session is denied. The kit's
+// own `issue file` is no gh command and is never asked about.
+// ---------------------------------------------------------------------------------------
+
+describe("D67: a raw write to GitHub's issues", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+  const WRITES = [
+    "gh issue create --title x --body y",
+    "gh issue comment 5 --body hi",
+    "gh issue edit 5 --add-label x",
+    "gh issue close 5",
+    "gh api repos/example-org/app/issues -X POST -f title=x",
+    "gh api repos/example-org/app/issues/5/comments -f body=hi",
+    "cd app && gh issue create -t x",
+    "bash -c 'gh issue delete 5 --yes'",
+  ];
+
+  test("the person's session is asked, with the kit's own way named, and gh is never called", async () => {
+    const { env, gh, repo } = ready(CONFIG);
+    for (const command of WRITES) {
+      const answer = await decide(env, repo, command);
+      expect([command, answer?.decision]).toEqual([command, "ask"]);
+      expect(answer?.reason).toContain("writes to GitHub's issues");
+      expect(answer?.reason).toContain("`cc-smart-dev-kit issue file`");
+    }
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("a read, a pull request view and the kit's own issue file are not asked about", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of [
+      "gh issue list",
+      "gh issue view 5",
+      "gh api repos/example-org/app/issues",
+      "gh pr view 5",
+      "cc-smart-dev-kit issue file --title t --body-file - --fingerprint k",
+    ]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  test("a line that also merges is answered by the merge question, not a second one", async () => {
+    const { env, repo } = ready(CONFIG);
+    const answer = await decide(env, repo, "gh issue close 5 && gh pr merge 7");
+    expect(answer?.decision).toBe("ask");
+    expect(answer?.reason).not.toContain("writes to GitHub's issues");
+  });
+
+  test("a program worked out when the line runs, naming an issue, is asked about", async () => {
+    const { env, repo } = ready(CONFIG);
+    const answer = await decide(env, repo, "$GH issue create -t x");
+    expect(answer?.decision).toBe("ask");
+    expect(answer?.reason).toContain("works out when it runs");
+  });
+
+  test("a project that never opted in is not asked (every project hook is silent there)", async () => {
+    const repo = makeRepo();
+    expect(await decide(hookEnv(), repo, "gh issue create -t x")).toBeNull();
+  });
+
+  test("a crew session is denied, in a project with no file too, and told the kit's way", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of WRITES) {
+      expect([command, await decide({ ...env, ...CREW }, repo, command)]).toEqual([
+        command,
+        { decision: "deny", reason: CREW_ISSUE_REFUSAL },
+      ]);
+    }
+    const bare = makeRepo();
+    expect(await decide({ ...hookEnv(), ...CREW }, bare, "gh issue create -t x")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+    // Reads, and the kit's own command, pass for a crew session.
+    expect(await decide({ ...env, ...CREW }, repo, "gh issue list")).toBeNull();
+    expect(
+      await decide(
+        { ...env, ...CREW },
+        repo,
+        "cc-smart-dev-kit issue file --title t --body-file - --fingerprint k",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("D67: the review of GI1 - the issue write in every path of the guard", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  test("a crew session's write is denied even beside a gh word the guard cannot name", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of [
+      "gh xyz; gh issue create -t t -b b",
+      "gh dash && gh issue comment 5 -b hi",
+      "gh issue --title list create --body x",
+    ]) {
+      expect([command, await decide({ ...env, ...CREW }, repo, command)]).toEqual([
+        command,
+        { decision: "deny", reason: CREW_ISSUE_REFUSAL },
+      ]);
+    }
+    // In a project whose own copy of the guard silences the project part, the crew part holds.
+    const own = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    expect(await decide({ ...own.env, ...CREW }, own.repo, "gh xyz; gh issue close 5")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("the run's own belt denies a crew session too, and a person is asked", async () => {
+    const { env, repo } = ready(CONFIG);
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const project = loadProjectConfig(checkout);
+    const call = input(repo, "gh issue create -t t");
+    const run = (over: Record<string, string>) =>
+      mergeGuard({
+        cwd: repo,
+        env: { ...env, ...over },
+        event: "PreToolUse",
+        input: call,
+        nowMs: 0,
+        paths: cliPaths(env),
+        project,
+      } as Parameters<typeof mergeGuard>[0]);
+    const decision = (result: { stdout?: string }) =>
+      JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.permissionDecision;
+    expect(decision(await run(CREW))).toBe("deny");
+    expect(decision(await run({}))).toBe("ask");
+  });
+
+  test("a broken or too new file still asks about an issue write (the guard's domain grew)", async () => {
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const context = { env, nowMs: 0, paths: cliPaths(env) };
+    const asked = await mergeGuardHook.onConfigProblem?.(
+      "the project's file needs a newer plugin",
+      input(repo, "gh issue create -t t"),
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(JSON.parse(asked?.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    const read = await mergeGuardHook.onConfigProblem?.(
+      "x",
+      input(repo, "gh issue list"),
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(read).toEqual({});
+  });
+});
+
+describe("IX1: gh aliases and unreadable gh words in the issue part of the guard", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+  const BUG_ALIAS = "bug: issue create --label bug\nls: issue list\n";
+
+  test("IX1-4: an alias for an issue write is asked about for the person, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    const asked = await decide(env, repo, "gh bug --title t");
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("writes to GitHub's issues (gh issue create)");
+    expect(await decide({ ...env, ...CREW }, repo, "gh bug --title t")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-4: an alias for a read is silent, and the person's run reads `gh alias list` once", async () => {
+    const { env, gh, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    expect(await decide(env, repo, "gh ls")).toBeNull();
+    expect(ghCalls(gh)).toEqual(["alias list"]);
+    expect(await decide({ ...env, ...CREW }, repo, "gh ls")).toBeNull();
+  });
+
+  test("IX1-4: a shell alias is asked about, for it cannot be read, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": "sh: '!gh issue close 5'\n" });
+    // The pull request part asks first (it reads a shell alias the same way); either way the
+    // person is asked, and the issue part holds for a crew session.
+    expect((await decide(env, repo, "gh sh"))?.decision).toBe("ask");
+    expect(await decide({ ...env, ...CREW }, repo, "gh sh")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-4: a gh word that is no command and no alias: silent for the person, denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    expect(await decide(env, repo, "gh dash")).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, "gh dash")).toEqual({
+      decision: "deny",
+      reason: crewGhWordRefusal(["dash"]),
+    });
+    // The same in a project with no file: the crew part holds.
+    const bare = makeRepo();
+    const word = await decide({ ...hookEnv(), ...CREW }, bare, "gh dash");
+    expect(word?.decision).toBe("deny");
+  });
+
+  test("IX1-4: an alias list that cannot be read: the person is asked, a crew session is denied", async () => {
+    const { env, repo } = ready(CONFIG, {}, true);
+    expect((await decide(env, repo, "gh bug"))?.decision).toBe("ask");
+    expect(await decide({ ...env, ...CREW }, repo, "gh bug")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-1: a write to an endpoint the shell fills in is asked about, a read is not", async () => {
+    const { env, repo } = ready(CONFIG);
+    const asked = await decide(env, repo, 'gh api "$EP" -f body=hi');
+    expect(asked?.reason).toContain("an endpoint that cannot be read");
+    expect(await decide(env, repo, 'gh api "$EP"')).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, 'gh api "$EP" -f body=hi')).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX3: a GraphQL read with its own $n variable is silent for the person and allowed in a crew session", async () => {
+    const { env, repo } = ready(CONFIG);
+    const read =
+      'gh api graphql -f query=\'query($n: Int!) { repository(owner: "o", name: "r") { issue(number: $n) { title } } }\' -F n=5';
+    expect(await decide(env, repo, read)).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, read)).toBeNull();
+    // The same query read from a variable the shell fills in is still the person's question.
+    const filled = 'gh api graphql -f query="$Q" -F n=5';
+    // (The pull request part asks first, in its own words.)
+    expect((await decide(env, repo, filled))?.decision).toBe("ask");
+    for (const command of [
+      filled,
+      'gh api graphql -f query="query { viewer { login } } $(cat q)"',
+      'gh api graphql -f query="`cat q`"',
+      "gh api graphql -F query=$Q",
+    ]) {
+      expect(await decide({ ...env, ...CREW }, repo, command)).toEqual({
+        decision: "deny",
+        reason: CREW_ISSUE_REFUSAL,
+      });
+    }
+  });
+
+  test("IX3: an endpoint in single quotes is read as written, one the shell fills in is not", async () => {
+    const { env, repo } = ready(CONFIG);
+    const literal = "gh api -X POST 'repos/o/r/issues/$x' -f body=hi";
+    expect((await decide(env, repo, literal))?.reason).toContain(
+      "a gh api POST to repos/o/r/issues/$x",
+    );
+    const filled = 'gh api -X POST "repos/o/r/$K/5/comments" -f body=hi';
+    expect((await decide(env, repo, filled))?.reason).toContain("an endpoint that cannot be read");
+    for (const command of [literal, filled]) {
+      expect(await decide({ ...env, ...CREW }, repo, command)).toEqual({
+        decision: "deny",
+        reason: CREW_ISSUE_REFUSAL,
+      });
+    }
+    expect(await decide({ ...env, ...CREW }, repo, "gh api 'repos/o/r/issues/$x'")).toBeNull();
+  });
+
+  test("IX1-11: a label write is asked about, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG);
+    const asked = await decide(env, repo, "gh label create ready");
+    expect(asked?.reason).toContain("writes to GitHub's issues (gh label create)");
+    expect(await decide(env, repo, "gh label list")).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, "gh api repos/o/r/labels -f name=x")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
   });
 });

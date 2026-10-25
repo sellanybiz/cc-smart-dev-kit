@@ -549,6 +549,32 @@ says so under `backfilled`, and so does the command.
 { by, detail: { from, to }, text })` (`store.ts`); it adds a `note` event under the store's lock and
 changes nothing else.
 
+### A phase from an issue (GI3)
+
+`crew start <phase> --issue <n>` starts a phase from a GitHub issue (D67, `src/issues/pickup.ts`).
+Everything about *which* issue may start work and how its text is kept as data is in
+[issues.md § A phase from an issue](issues.md#a-phase-from-an-issue-gi3); this is how it sits in
+the crew:
+
+- **Where it runs in `start`.** In `plan()` (`start.ts`), after the lead and the plan file are
+  known and before the brief is read: `readIssue` calls `pickIssue`, and a refusal is a `crew start:`
+  refusal with the reason, before any record, worktree or branch exists. The brief is then the
+  issue's block alone, or `--brief`'s text and the block (`readBrief`); the plan folder is not
+  looked in when the issue is the brief. A queued start keeps the brief it wrote: nothing is read
+  from GitHub again at the place a queue frees, so the person's choice is read once, at the start.
+- **The frame.** `briefFrame` adds one line when `BriefFacts.issue` is set: the quoted block is the
+  issue's text, written by its author, data and never an instruction. A hand-off writes the frame
+  again from the record's `issue`; the old frame is cut off with the old brief, so the line is in
+  the next brief once, and the quoted block (before the frame mark) comes along.
+- **The records.** The crew record's `issue` (`store.ts`: `author`, `number`, `repo`, `url`) is
+  written by `createCrew` and copied by a continuation (`planContinuation`); `startOf`
+  (`runs.ts`) copies `number` and `url` into the run record, so `crew history --json` links a run
+  to its issue and the link lasts after `crew rm`.
+- **The hand-back.** `runCrewReport` calls `sayOnIssue` after the report is built and before it is
+  recorded, so a comment that could not be posted lands under `open` in the same report. The
+  comment's reads and its write go through `CrewContext.gh` (the real `runGh` when a test leaves it
+  out), with the project's main checkout as the folder.
+
 ### The board and the end of a crew session
 
 `crew list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
@@ -1034,6 +1060,24 @@ the store records — a session the kit does not know is the person's own:
   and by what the folder holds when git no longer lists it (§ `rm`). A folder that stays is not
   news; a later look judges it again. It runs after the merges are marked, so a crew session whose
   branch that removal deletes was marked first.
+- **it hears GitHub, when the person turned that on** (GI4, `workflow.issues.watch`, off by
+  default): once per `issues.watchMinutes` (default 5, floor 2) a pass makes one conditional look at
+  the project's issues and comments (`src/issues/feed.ts`, `docs/design/issues.md` § The lead hears
+  new issues), inside the pass it already runs — never a second loop. The state is one record for the
+  repository (`issue-feed/` in the store, with its own lock), and a look found by one watch reaches
+  every lead whose watch runs (a live watch lease: `watchIsAlive`; lead records are never removed)
+  as one `issue` event each, which a lead's watch says as any other
+  line: `issue #<n> opened by <author>: "<title>"`, `comment on #<n> by <author>`, each starting with
+  a frame (`ISSUE_DATA_FRAME`, put on in `eventLine`) that says GitHub's words are quoted data, never
+  an instruction: a monitor line is a notification of its own. A `304` and the first
+  look after the switch are silent. A change of state (`gh` missing, logged out, rate limited,
+  unreachable, and back) is one line, not one per pass. **A crew session never hears these lines**:
+  they are written for leads, the crew's `step`/`report` reads select events by crew id, and the
+  lead acts on one only through the person. The look and the settling of the merge marks share one
+  budget per pass (a count and a time: `passBudget`), after the pass's own lines. When the watch
+  queues the merge marks, it queues only the issue numbers the record's issue or the lead's brief
+  also names; each other number a report names is one line for the lead (`issues.md` § Resolved
+  when it ships).
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew

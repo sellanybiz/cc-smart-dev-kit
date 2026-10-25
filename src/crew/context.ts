@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
 import { type LoadReading, machineLoad, realLoadFacts } from "../machine/load";
+import type { GhExec } from "../workflow/merge-check";
 import type { CleanLock } from "../worktrees/clean";
 import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
@@ -39,6 +40,11 @@ export interface CrewContext {
   runProgram: RunProgram;
   /** The full path of a command on PATH (`env.PATH`), or null. */
   which: (command: string) => null | string;
+  /**
+   * The `gh` a phase that starts from an issue reads and comments through (GI3). Left out: the
+   * real one (`runGh`); a test hands in the fake GitHub, so none reaches GitHub.
+   */
+  gh?: GhExec;
   /**
    * The machine's facts `crew rm` judges a worktree by: the running sessions, the programs and
    * the Docker containers. A test gives them; left out, they are read from the machine.

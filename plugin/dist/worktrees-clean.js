@@ -140,7 +140,7 @@ import {
   readlinkSync as readlinkSync5,
   readSync as readSync2,
   renameSync as renameSync4,
-  rmSync as rmSync5,
+  rmSync as rmSync6,
   writeFileSync as writeFileSync4
 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
@@ -918,13 +918,13 @@ function mountPoints(on = platform()) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync15, mkdtempSync, readdirSync as readdirSync11, rmSync as rmSync4, statSync as statSync10 } from "fs";
+import { existsSync as existsSync15, mkdtempSync, readdirSync as readdirSync11, rmSync as rmSync5, statSync as statSync10 } from "fs";
 import { tmpdir } from "os";
 import { join as join24 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.3.0",
+  version: "1.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1014,6 +1014,7 @@ import {
   readdirSync as readdirSync6,
   readFileSync as readFileSync7,
   readSync,
+  rmSync,
   statSync as statSync4
 } from "fs";
 import { dirname as dirname4, join as join9 } from "path";
@@ -7065,6 +7066,7 @@ var runRecordSchema = looseObject({
   baseRef: text,
   base: looseObject({ ref: text, sha: text }).nullable(),
   brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
+  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
   lead: actor,
   continues: string2().nullable(),
   continuedBy: string2().nullable(),
@@ -7257,6 +7259,7 @@ function startOf(after, at) {
     effort: after.effort,
     events: [],
     id: after.id,
+    ...after.issue === undefined ? {} : { issue: { number: after.issue.number, url: after.issue.url } },
     kind: after.kind,
     lead: leadOf(after),
     model: { named: after.model.named, resolved: after.model.resolved, slot: after.model.slot },
@@ -7519,6 +7522,7 @@ var crewFields = object({
   }).optional(),
   planFile: text2.nullable().optional(),
   briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
+  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
   createdAt: text2,
   updatedAt: text2
 });
@@ -7585,6 +7589,7 @@ var reportFields = object({
     findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
   docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
   needsLead: array(text2),
   open: array(text2),
   question: text2.nullable(),
@@ -7842,6 +7847,18 @@ var stopStateFields = object({
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
 
 // src/crew/session.ts
 import { readFileSync as readFileSync9 } from "fs";
@@ -8151,6 +8168,8 @@ var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ONE = { kind: "whole", min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
 var ABOVE_ZERO = { kind: "positive" };
+var WATCH_MINUTES_FLOOR = 2;
+var WATCH_MINUTES = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
 function numberSchema(rule) {
   if (rule.kind === "positive")
     return number2().positive();
@@ -8173,12 +8192,31 @@ var NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
+}
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+var labelSchema = string2().refine(isLabelName, LABEL_RULE);
+function labelsClash(labels) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
 }
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
@@ -8209,6 +8247,23 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  issues: strictObject({
+    enabled: boolean2().optional(),
+    allowPublic: boolean2().optional(),
+    watch: boolean2().optional(),
+    watchMinutes: numberField("issues.watchMinutes"),
+    foundLabel: labelSchema.optional(),
+    fixedLabel: labelSchema.optional(),
+    readyLabel: labelSchema.optional()
+  }).superRefine((issues, context) => {
+    const clash = labelsClash({
+      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
+    });
+    if (clash !== null)
+      context.addIssue({ code: "custom", message: clash });
+  }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
@@ -8249,6 +8304,15 @@ var workflowDefaults = {
     percent: 20
   },
   clearWorktreeAfterMerge: false,
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready"
+  },
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
@@ -8288,6 +8352,13 @@ var POLICY_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -9369,7 +9440,7 @@ import {
   mkdirSync as mkdirSync7,
   readdirSync as readdirSync8,
   readFileSync as readFileSync16,
-  rmSync,
+  rmSync as rmSync2,
   statSync as statSync8,
   writeFileSync as writeFileSync3
 } from "fs";
@@ -9453,6 +9524,9 @@ function mergeWorkflows(personal, project) {
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined)
     merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -9500,6 +9574,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -9515,6 +9590,15 @@ function resolveWorkflow(paths, projectConfig) {
       percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
     },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      watch: of("issues.watch", issues.watch ?? workflowDefaults.issues.watch),
+      watchMinutes: of("issues.watchMinutes", issues.watchMinutes ?? workflowDefaults.issues.watchMinutes),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
+    },
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
@@ -10127,7 +10211,7 @@ import { existsSync as existsSync13, mkdirSync as mkdirSync9 } from "fs";
 import { join as join22 } from "path";
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync11, lstatSync as lstatSync3, readdirSync as readdirSync9, readFileSync as readFileSync18, rmSync as rmSync2 } from "fs";
+import { existsSync as existsSync11, lstatSync as lstatSync3, readdirSync as readdirSync9, readFileSync as readFileSync18, rmSync as rmSync3 } from "fs";
 import { dirname as dirname6, join as join18, relative } from "path";
 
 // src/worktrees/verdict.ts
@@ -10425,7 +10509,7 @@ function finishStrays(repo, options, say, strays = strayParkedFolders(repo, opti
       continue;
     }
     try {
-      rmSync2(stray.path, { recursive: true });
+      rmSync3(stray.path, { recursive: true });
     } catch (error) {
       pass.kept.push({
         path: stray.path,
@@ -10454,7 +10538,7 @@ import {
   readFileSync as readFileSync19,
   renameSync as renameSync3,
   rmdirSync,
-  rmSync as rmSync3,
+  rmSync as rmSync4,
   unlinkSync as unlinkSync4,
   utimesSync as utimesSync2
 } from "fs";
@@ -10618,7 +10702,7 @@ async function gzipInto(from, to) {
     }
     renameSync3(temporary, to);
   } catch (error) {
-    rmSync3(temporary, { force: true });
+    rmSync4(temporary, { force: true });
     throw error;
   }
 }
@@ -10765,7 +10849,7 @@ async function moveConversation(input, sessionId) {
       utimesSync2(to, before.atime, before.mtime);
       const verdict = sourceAfterCopy(lstatSync4(from, { throwIfNoEntry: false }), before);
       if (verdict === "changed") {
-        rmSync3(to, { force: true });
+        rmSync4(to, { force: true });
         return {
           kind: "failed",
           moved,
@@ -10817,7 +10901,7 @@ async function pruneCrewArchives(stateDir, daysOf, nowMs, options = {}) {
     const outcome = { kept: found.kept, pruned: [] };
     for (const one of found.pruned) {
       try {
-        rmSync3(one.dir, { force: true, recursive: true });
+        rmSync4(one.dir, { force: true, recursive: true });
         outcome.pruned.push(one);
       } catch (error) {
         outcome.kept.push({ dir: one.dir, why: reasonOf2(error) });
@@ -11571,7 +11655,7 @@ function replayOntoBase(repo, baseRef, head, env) {
       return "unknown";
     return tree === base.out ? "nothing" : "changes";
   } finally {
-    rmSync4(objects.dir, { recursive: true, force: true });
+    rmSync5(objects.dir, { recursive: true, force: true });
   }
 }
 function replayerFor(repo, env) {
@@ -11955,6 +12039,57 @@ var FIRST_BACKOFF_MS = 5 * 60000;
 var MAX_BACKOFF_MS = 20 * 60000;
 var REPAUSE_WINDOW_MS = 15 * 60000;
 
+// src/workflow/merge-check.ts
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/fixed.ts
+var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
+
+// src/issues/pending.ts
+var RETRY_MS = 5 * 60000;
+var sha2 = string2().regex(/^[0-9a-f]{40}$/);
+var pendingSchema = object({
+  marks: array(object({
+    base: string2().min(1),
+    branch: string2().min(1),
+    issue: number2().int().positive(),
+    merge: sha2.nullable(),
+    told: boolean2().default(false),
+    tip: sha2,
+    triedAt: number2().int().min(0).optional()
+  })),
+  version: literal(1)
+});
+
+// src/issues/feed.ts
+var FAR_AHEAD_MIN_MS = 60 * 60000;
+var PAGE = 100;
+var ISSUES_QUERY = `state=all&sort=created&direction=desc&per_page=${PAGE}`;
+var COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
+
+// src/issues/pickup.ts
+var STRIPPED_CONTENT_TAGS = [
+  "iframe",
+  "math",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "script",
+  "style",
+  "svg",
+  "template",
+  "xmp"
+];
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -12263,7 +12398,7 @@ async function rollbackCrewDiscard(record, ctx) {
         closeSync5(fd);
       } catch {}
       try {
-        rmSync5(lock, { force: true });
+        rmSync6(lock, { force: true });
       } catch {}
       throw error;
     }
@@ -12273,8 +12408,8 @@ async function rollbackCrewDiscard(record, ctx) {
     archiveHistory: [...record.archiveHistory ?? [], archive],
     discardPending: undefined
   }, ctx.now());
-  rmSync5(pending.indexBackup, { force: true });
-  rmSync5(pending.indexArchived, { force: true });
+  rmSync6(pending.indexBackup, { force: true });
+  rmSync6(pending.indexArchived, { force: true });
   return updated;
 }
 async function completeCrewDiscard(record, ctx) {
@@ -12282,8 +12417,8 @@ async function completeCrewDiscard(record, ctx) {
   if (pending === undefined)
     return record;
   const updated = await updateCrew(ctx.paths.stateDir, record.repo, record.id, { discardPending: undefined }, ctx.now());
-  rmSync5(pending.indexBackup, { force: true });
-  rmSync5(pending.indexArchived, { force: true });
+  rmSync6(pending.indexBackup, { force: true });
+  rmSync6(pending.indexArchived, { force: true });
   return updated;
 }
 var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
@@ -12519,8 +12654,8 @@ async function archiveCrewDiscard(record, facts, ctx) {
       await updateCrew(ctx.paths.stateDir, record.repo, record.id, { archive, discardPending: pending }, ctx.now());
     } catch (error) {
       checkedGit(record.repo, ["update-ref", "-d", facts.archiveRef, commit], ctx);
-      rmSync5(indexBackup, { force: true });
-      rmSync5(indexArchived, { force: true });
+      rmSync6(indexBackup, { force: true });
+      rmSync6(indexArchived, { force: true });
       throw error;
     }
     try {
@@ -12538,7 +12673,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
           closeSync5(fd);
         } catch {}
         try {
-          rmSync5(lock, { force: true });
+          rmSync6(lock, { force: true });
         } catch {}
         throw error;
       }
@@ -12555,7 +12690,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
       throw error;
     }
   } finally {
-    rmSync5(dir, { recursive: true, force: true });
+    rmSync6(dir, { recursive: true, force: true });
   }
 }
 async function pruneCrewDiscarded(repo, ctx) {

@@ -92,6 +92,13 @@ export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 export const CHECKS_SINCE = "1.1.0";
 
 /**
+ * The release that brought `workflow.issues` (D67): the switch for GitHub Issues. A project
+ * file that sets it needs that plugin version or newer, for the same reason as
+ * `WORKFLOW_CREW_SINCE`.
+ */
+export const WORKFLOW_ISSUES_SINCE = "1.4.0";
+
+/**
  * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
  * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
  * start) in 1.1.0; `handoffTokens` (the hand-off at a token count) in 1.2.0; `loadPerCore`

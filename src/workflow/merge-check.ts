@@ -47,12 +47,80 @@ import { COMMIT_SHA, reviewsFile, trustedReviews } from "./reviews";
 /** How long one `gh` call may take: a read-only network call, and a guard has 30 s. */
 export const GH_TIMEOUT_MS = 10_000;
 
+/**
+ * How long one `gh` call that WRITES may take (`issue file`: create, edit, label): GitHub
+ * answers a write slower than a read, and a person waits for it, not a guard.
+ */
+export const GH_WRITE_TIMEOUT_MS = 30_000;
+
 /** Where and how one `gh` call runs: the repository's folder, the environment, its time. */
 export interface GhCall {
   env: Env;
   folder: string;
+  /** Text written to gh's stdin (`--body-file -`); none when left out. */
+  input?: string;
   timeoutMs: number;
 }
+
+/** What one `gh` call did: its streams and why it ended. */
+export interface GhResult {
+  /** gh's exit code; null when it did not exit on its own. */
+  code: number | null;
+  /** stderr, trimmed. */
+  err: string;
+  /** `ok` exit 0; `failed` another exit; `missing` no gh on PATH; `timeout` the time ran out. */
+  kind: "failed" | "missing" | "ok" | "timeout";
+  /** stdout, as gh printed it. */
+  out: string;
+}
+
+/**
+ * One `gh` call, awaited, with how it ended told apart. The one place the kit starts `gh`:
+ * a timeout, no console window on Windows, no blocking spawn (`spawnGh` reads through it, and
+ * so does `issue file`, which must tell a missing gh from a timeout from a refusal).
+ */
+export type GhExec = (args: string[], call: GhCall) => Promise<GhResult>;
+
+/** The `gh` executor in use. */
+export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => {
+  try {
+    const child = Bun.spawn(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: input === undefined ? "ignore" : new Blob([input]),
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      // A guard runs with no console of its own on Windows: without this, gh opens one.
+      windowsHide: true,
+    });
+    const [out, err] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (child.signalCode !== null) {
+      // The time limit stops the child with SIGTERM; any other signal is gh dying, not time.
+      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
+      return { code: null, err: err.trim(), kind, out };
+    }
+    return {
+      code: child.exitCode,
+      err: err.trim(),
+      kind: child.exitCode === 0 ? "ok" : "failed",
+      out,
+    };
+  } catch (error) {
+    // The spawn threw: no gh on the PATH the call runs with, or something else (a folder that
+    // is not there). Only the first is "missing".
+    return {
+      code: null,
+      err: error instanceof Error ? error.message : String(error),
+      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
+      out: "",
+    };
+  }
+};
 
 /**
  * One read-only `gh` command's stdout, or null when gh is not there, the call fails, or it
@@ -63,28 +131,11 @@ export interface GhCall {
 export type GhRunner = (args: string[], call: GhCall) => Promise<string | null>;
 
 /** The `gh` runner in use: the same command, environment and timeout as `ghStdout` always had. */
-export const spawnGh: GhRunner = async (args, { folder, env, timeoutMs }) => {
-  try {
-    const child = Bun.spawn(["gh", ...args], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      // A guard runs with no console of its own on Windows: without this, gh opens one.
-      windowsHide: true,
-    });
-    const [out] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return out.trim() === "" ? null : out;
-  } catch {
-    // No gh on PATH, or a call that timed out.
-    return null;
-  }
+export const spawnGh: GhRunner = async (args, call) => {
+  const { kind, out } = await runGh(args, call);
+  // No gh on PATH, or a call that timed out: nothing. Any other exit keeps what gh printed.
+  if (kind === "missing" || kind === "timeout") return null;
+  return out.trim() === "" ? null : out;
 };
 
 /** The fields `gh pr view --json` gives: the number, the base, and the head's branch and commit. */

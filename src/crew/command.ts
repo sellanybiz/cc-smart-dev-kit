@@ -12,6 +12,8 @@
 import { COMMAND } from "../build-info/names";
 import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
+import { MAX_PHASE_ISSUES } from "../issues/phase-issues";
+import { parseIssueRef } from "../issues/pickup";
 import { ALLOWED_EFFORTS, CREW_KIND_NAMES, CREW_KINDS, isCrewKind } from "../models/launch-policy";
 import { type AnswerArgs, runCrewAnswer } from "./answer";
 import { commaList, parseOptions } from "./args";
@@ -101,7 +103,7 @@ Commands:
                  one line, and prints one SendMessage line per lead.
   start <phase> --slug <slug> --kind <kind> [--brief <file|->] [--base <ref>]
         [--files <glob,...>] [--model <model>] [--effort <effort>]
-        [--waits-for <phase,...>] [--continue <crew session>]
+        [--waits-for <phase,...>] [--continue <crew session>] [--issue <n>]
                  Starts one crew session: a background Claude Code session named
                  C <tag> <plan> <phase> <slug>, in its own worktree on the branch
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
@@ -112,17 +114,25 @@ Commands:
                  --continue <crew session> starts the hand-off's next crew session: the
                  same phase, cut from the old crew session's head, with the old brief
                  and the old crew session's report, and the next number in its name.
+                 --issue <n> starts the phase from issue n of this project's own
+                 repository (issues.enabled on): it must be open and carry the ready
+                 label, added by someone with write access. Its text goes into the
+                 brief as quoted data, after the --brief text when both are given;
+                 with no --brief the issue is the brief. The crew session comments
+                 once on the issue when it hands back.
   step <step> [--note <text>]
                  Records one milestone of a crew session's phase: the step, the time
                  and HEAD's sha. A crew session runs it; the lead sees one line.
                  ${STEPS_LINE}
-  report --status done|blocked|failed|handoff [--file <file|->]
+  report --status done|blocked|failed|handoff [--file <file|->] [--issue <n>…]
                  The hand-back report a crew session gives its lead. The command fills
                  the branch, the commits, the diff counts, the files outside the
                  brief, the review record and the pull request; the crew session gives
                  the tests, the other checks, the review's findings, the docs,
                  what only the lead may do, and what is still open. The file is
-                 that part as JSON, or prose kept as the report's summary.
+                 that part as JSON, or prose kept as the report's summary. --issue
+                 names a GitHub issue the phase fixes (repeatable; the JSON part's
+                 "issues" list adds to it): the lead's merge marks it fixed.
   report --question "<the question>" --option "<choice>" --option "<choice>"
           [--recommend <n>]
                  Records a question for the lead. The crew session goes on with
@@ -181,6 +191,7 @@ const START_OPTIONS = [
   "--effort",
   "--waits-for",
   "--continue",
+  "--issue",
 ] as const;
 
 /** The mistake in an `--effort` value (`crew start`, `crew model`); null when it is none. */
@@ -230,6 +241,17 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
   if (slug !== undefined && !isSlug(slug)) {
     return { error: `The slug "${slug}" is not one: a slug is ${SLUG_RULE}` };
   }
+  const issue = options.get("--issue") ?? null;
+  if (issue !== null) {
+    const ref = parseIssueRef(issue);
+    if ("error" in ref) return { error: `--issue: ${ref.error}` };
+    if (continueFrom !== null) {
+      return {
+        error:
+          "--issue does not go with --continue: a hand-off carries the issue its phase started from",
+      };
+    }
+  }
   const kindText = options.get("--kind");
   const kind = kindText !== undefined && isCrewKind(kindText) ? kindText : null;
   if (kindText === undefined && continueFrom === null) {
@@ -253,6 +275,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
     continueFrom,
     effort,
     files: commaList(options.get("--files")),
+    issue,
     kind: kind ?? "build",
     model: options.get("--model") ?? null,
     phase,
@@ -617,9 +640,9 @@ export function parseStepArgs(
 export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: string } {
   const parsed = parseOptions(
     argv,
-    ["--status", "--file", "--question", "--option", "--recommend"],
+    ["--status", "--file", "--question", "--option", "--recommend", "--issue"],
     [],
-    ["--option"],
+    ["--option", "--issue"],
   );
   if ("error" in parsed) return parsed;
   const { options, lists, positionals } = parsed;
@@ -630,6 +653,19 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   }
   const question = options.get("--question") ?? null;
   const optionValues = lists.get("--option") ?? [];
+  const issues: number[] = [];
+  for (const raw of lists.get("--issue") ?? []) {
+    if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
+    }
+    // The cap counts different issues: the same number repeated is one.
+    if (!issues.includes(Number(raw))) issues.push(Number(raw));
+  }
+  if (issues.length > MAX_PHASE_ISSUES) {
+    return {
+      error: `--issue names at most ${MAX_PHASE_ISSUES} issues (a phase that fixes more is split), not ${issues.length}`,
+    };
+  }
   const recommendRaw = options.get("--recommend") ?? null;
   let recommend: null | number = null;
   if (recommendRaw !== null) {
@@ -651,11 +687,15 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   if (question === null && (optionValues.length > 0 || recommendRaw !== null)) {
     return { error: '--option and --recommend belong to a question: --question "<the question>"' };
   }
+  if (question !== null && issues.length > 0) {
+    return { error: "--issue belongs to a report: a question does not name the issues it fixes" };
+  }
   if (question !== null && options.has("--file")) {
     return { error: "A question has no file: the question and its options are the whole of it" };
   }
   return {
     file: options.get("--file") ?? null,
+    issues,
     options: optionValues,
     question,
     recommend,

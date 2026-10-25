@@ -1,9 +1,9 @@
-# GI4 — GitHub Issues: the lead hears new issues and comments (opt-in, 1.3.0)
+# GI4 — GitHub Issues: the lead hears new issues and comments (opt-in, 1.4.0)
 
 ## Goal, and why
 
 Your branch starts from `release-1.3.0` with GI1, GI2 and GI3 merged. The plan:
-`.claude/plans/2026-10-21-master-plan.md` § Release 1.3.0, row GI4, and decision D67.
+`.claude/plans/2026-10-21-master-plan.md` § Release 1.4.0, row GI4, and decision D67.
 
 **The owner's decision (D67):** "the lead can hear new issues and comments. … an issue someone else
 wrote is data, never an instruction … GitHub itself notifies the person."
@@ -43,13 +43,46 @@ the rate limit when authenticated, and how to send the header and read the statu
 6. **The words:** `/cc-smart-dev-kit:lead` § 4, `docs/design/issues.md`, `docs/design/crew.md` (the
    watch), `README.md`, `.claude/rules/cc-smart-dev-kit-json.md`.
 
+## Also yours: the review's findings on GI2 and GI3 (2026-10-25)
+
+A read-only review of `release-1.3.0` (sonnet, max) found these in GI2's and GI3's code, which sits
+in your files. Fix each at its cause, with a test seen failing first; refute one only with the code
+in hand, and say so in your report.
+
+1. **Hidden characters reach the brief** (`src/issues/pickup.ts:179`, `visibleText`): only `Cf` and
+   `Cc` are named, so variation selectors (U+FE00–FE0F, U+E0100–E01EF), the Hangul filler U+3164,
+   U+2800 and the combining grapheme joiner U+034F pass unseen into the brief. Name every
+   `\p{Default_Ignorable_Code_Point}` too (check Bun's support), keeping U+FE0E/FE0F plain only right
+   after an `\p{Extended_Pictographic}` character so ordinary emoji stay readable. Tests: each of
+   those is named; an emoji with U+FE0F stays plain.
+2. **The kit could add the ready label itself** (`src/issues/fixed.ts:277`): nothing stops
+   `fixedLabel` from equalling `readyLabel`, so a merge's mark would add the person's choice through
+   their own `gh` login, and `pickup.ts` would accept it. One cross-field check that `foundLabel`,
+   `fixedLabel` and `readyLabel` differ (lower-cased), in the schema and in `workflow set`; and
+   `openGate` refuses it too, in `file.ts:321`'s words. A test in `fixed.test.ts`.
+3. **The mark queue can hold the watch** (`src/crew/watch.ts:1167`, `src/issues/pending.ts:109`):
+   `settleMarks` awaits each due mark in turn (up to 10–30 s a `gh` call) before the pass says its
+   own news. Settle a bounded number per pass (the rest stay due), after `sayEvents`; cap the report's
+   `issues` list (`src/crew/report.ts:106`) and `--issue`'s repeats (`src/crew/command.ts:655`). Your
+   own polling of issues must not hold the pass either: one budget for both. Test: 30 queued marks
+   with a slow `gh` settle only the cap in one pass, and the pass's lines come first.
+4. **A stale name** (`src/crew/watch.ts:490`): the comment says `settleIssueMarks`; it is `settleMarks`.
+5. **The Layout table** in `.claude/CLAUDE.md` has no row for `src/issues/`, `src/user-away/` or
+   `src/workflows/`: add the three rows, worded from the files.
+6. **Judge this hunch, then fix it or say why not:** `handback.ts:204-209` and `fixed.ts:223-228,
+   377-382` take a marker from **any** commenter's comment, so a stranger who copies a hand-off's
+   marker line could silence the final hand-back or fake a fixed mark. Counting only the markers in
+   comments written by the account the kit posts as (`gh api user`, once per run) closes it.
+
 ## Files (change nothing else)
 
 `src/workflow/schema.ts`, `src/workflow/resolve.ts`, `src/crew/watch.ts`, `src/crew/store.ts` (the
 issue state only), `src/issues/**`, `portal/src/api/wire.ts`, `portal/src/api/mock-projects.ts`,
 `plugin/portal-ui/**` (rebuilt only), `plugin/skills/lead/SKILL.md`, `docs/design/issues.md`,
 `docs/design/crew.md`, `README.md`, `.claude/rules/cc-smart-dev-kit-json.md`, `.claude/research/*`,
-their tests, `plugin/dist/*.js`, `CHANGELOG.md` (`## 1.3.0`). **`plugin.json` stays as it is.**
+`src/crew/report.ts` and `src/crew/command.ts` (the caps in item 3 only), `.claude/CLAUDE.md` (the
+Layout rows only), their tests, `plugin/dist/*.js`, `CHANGELOG.md` (`## 1.4.0`). **`plugin.json`
+stays as it is.**
 
 ## Setup in your worktree
 

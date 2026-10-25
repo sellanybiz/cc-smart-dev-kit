@@ -48,6 +48,24 @@ heading reads as "not considered".
    dashboard or on their own machine. A pull request built on another open one says
    "stacked on #n — merge after it".
 
+## The issues it closes — a pull request into the default branch
+
+GitHub closes an issue only when a pull request that names it merges into the **default
+branch**: a fix merged into a release branch closes nothing, and a `Fixes` line in a pull
+request into any other branch is ignored. Where `workflow.issues.enabled` is on, the kit marked
+each issue a crew merge fixed with the label `fixed-unreleased`; the pull request that ships
+them lists them. Run
+
+```
+cc-smart-dev-kit issue fixed --base <default branch> --head <this branch>
+```
+
+and paste what it prints — one `Fixes #<n>` line for each open `fixed-unreleased` issue whose fix
+is in the pull request's commits — after the last heading. Never build that list by hand. It
+prints nothing when the switch is off or no issue is waiting; it exits 1 with a reason when
+GitHub or a branch cannot be read, and then say so under "Still owed": an empty list from a failed
+call looks complete. A pull request into any other branch has no `Fixes` line.
+
 ## Who made it — only when the project asks
 
 A body names no Claude session and no account by default: on a public repository everyone

@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { readCrewEvents, writeLead } from "../crew/store";
+import { RUNNER_PROGRAM_NAMES } from "../shell/command";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -15,6 +16,7 @@ import {
   type PullRequestView,
   parsePullRequestView,
   pullRequestMerges,
+  pullRequestOpenings,
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
@@ -174,6 +176,49 @@ describe("did the command merge a pull request?", () => {
     });
     expect(target("gh pr merge -Rorg/app 7")).toEqual({ ref: "7", repo: "org/app" });
     expect(target("ls")).toBeNull();
+  });
+
+  test("a merge a runner runs names no pull request: the note is skipped, not guessed (the review of the runner follow-up)", () => {
+    const target = (command: string) => mergeTargetOf(pullRequestMerges(command));
+    // The shell reader reads the command a runner runs; the merge reader must still refuse it
+    // as the runner's, not judge it as if the words on the line were what merges.
+    for (const command of [
+      "su -c 'gh pr merge 5' other",
+      'su - me -c "gh pr merge 5"',
+      "parallel gh pr merge ::: 5 6",
+      "parallel 'gh pr merge {}' ::: 5 6",
+      "find . -name x -exec gh pr merge 17 \\;",
+      "watch -n 5 gh pr merge 16",
+    ]) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
+    // su and parallel feed the command from outside the line: no pull request at all.
+    expect(target("su -c 'gh pr merge 5' other")).toBeNull();
+    expect(target("parallel gh pr merge ::: 5 6")).toBeNull();
+    expect(target("parallel 'gh pr merge {}' ::: 5 6")).toBeNull();
+  });
+
+  test("every runner the shell reader knows has a merge refusal here (the two lists agree)", () => {
+    // `isRunnerProgram` (src/shell/command.ts) and the RUNNERS table here are two lists; a
+    // runner in only the first would have its merges judged as the line's own: looser.
+    const merging: Record<string, string> = {
+      find: "find . -exec gh pr merge 5 \\;",
+      parallel: "parallel gh pr merge ::: 5",
+      su: "su -c 'gh pr merge 5' me",
+      watch: "watch gh pr merge 5",
+    };
+    expect(Object.keys(merging).sort()).toEqual([...RUNNER_PROGRAM_NAMES].sort());
+    for (const command of Object.values(merging)) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
   });
 
   test("same repository: https, ssh, an ssh alias; case does not matter", () => {
@@ -855,5 +900,126 @@ describe("the hook", () => {
     await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
     const note = await noteAfterMerge(join(worktree, "src"), env);
     expect(note).toContain("No other lead is recorded in this repo.");
+  });
+});
+
+describe("IX1: the merge reader reads gh's flags and a query the way gh and the shell do", () => {
+  test("IX1-2: `gh api -X=POST …/pulls` opens a pull request, as `-X POST` does", () => {
+    for (const command of [
+      "gh api -X=POST repos/o/r/pulls -f title=t",
+      "gh api -X POST repos/o/r/pulls -f title=t",
+      "gh api -XPOST repos/o/r/pulls -f title=t",
+    ]) {
+      expect([command, pullRequestOpenings(command, null, "bash").length]).toEqual([command, 1]);
+    }
+    // `=GET` is GET: a list, no opening.
+    expect(pullRequestOpenings("gh api -X=GET repos/o/r/pulls", null, "bash")).toEqual([]);
+  });
+
+  test("IX1-2: a bare `$Q` for a query is a refusal, like `$(…)`", () => {
+    for (const command of [
+      'gh api graphql -f query="$Q"',
+      "gh api graphql -F query=$Q",
+      'gh api graphql -f query="mutation { $M }"',
+    ]) {
+      const calls = pullRequestMerges(command, null, "bash");
+      expect([command, calls.length, calls[0]?.refusal]).toEqual([
+        command,
+        1,
+        "the GraphQL query is read from a file or built by the shell, so this guard cannot read it",
+      ]);
+    }
+    expect(
+      pullRequestMerges("gh api graphql -f query='{ viewer { login } }'", null, "bash"),
+    ).toEqual([]);
+  });
+});
+
+describe("IX3: the merge reader asks the shell reader which words the shell fills in", () => {
+  const SHELL_REFUSAL =
+    "the GraphQL query is read from a file or built by the shell, so this guard cannot read it";
+  const READ_QUERY =
+    'gh api graphql -f query=\'query($n: Int!) { repository(owner: "o", name: "r") { issue(number: $n) { title } } }\' -F n=5';
+
+  test("a GraphQL read with its own $n in single quotes is no merge and no opening", () => {
+    for (const dialect of ["bash", "powershell"] as const) {
+      expect(pullRequestMerges(READ_QUERY, null, dialect)).toEqual([]);
+      expect(pullRequestOpenings(READ_QUERY, null, dialect)).toEqual([]);
+    }
+  });
+
+  test("a literal query with variables is still judged by what it names", () => {
+    const merge =
+      "gh api graphql -f query='mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }'";
+    expect(pullRequestMerges(merge, null, "bash").map((one) => one.refusal)).toEqual([
+      "the GraphQL query it sends merges a pull request (`mergePullRequest`), which this guard does not judge",
+    ]);
+    const open =
+      "gh api graphql -f query='mutation($r: ID!) { createPullRequest(input: {repositoryId: $r, draft: true}) { clientMutationId } }'";
+    expect(pullRequestOpenings(open, null, "bash").map((one) => one.draft)).toEqual([true]);
+  });
+
+  test.each([
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -f query="query { viewer { login } } $(cat q)"',
+    'gh api graphql -f query="`cat q`"',
+    "gh api graphql -F query=$Q",
+    'gh api graphql -f query="query($n: Int!) { a(number: $n) { b } }" -F n=5',
+    "bash -c 'gh api graphql -f query=\"$Q\"'",
+    `bash -c "gh api graphql -f 'query=mutation { mergePullRequest(input: {pullRequestId: \\"$ID\\"}) { x } }'"`,
+    "bash <<EOF\ngh api graphql -f query='$Q'\nEOF",
+  ])("%s is still a query the guard cannot read: the shell fills it in", (command) => {
+    const calls = pullRequestMerges(command, null, "bash");
+    expect([command, calls.length, calls[0]?.refusal]).toEqual([command, 1, SHELL_REFUSAL]);
+  });
+
+  test("a quoted here-doc script and an escaped \\$ are read as written", () => {
+    expect(
+      pullRequestMerges("bash <<'EOF'\ngh api graphql -f query='$Q'\nEOF", null, "bash"),
+    ).toEqual([]);
+    expect(pullRequestMerges("gh api graphql -f query=\\$Q", null, "bash")).toEqual([]);
+  });
+
+  test("a `$` the line reader cuts off from what follows is a query it cannot read", () => {
+    for (const [command, dialect] of [
+      ["gh api graphql -f query=$\\\nQ", "bash"],
+      ['gh api graphql -f query="$\\\nQ"', "bash"],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      ["gh api graphql -f query=${env:Q}", "powershell"],
+    ] as const) {
+      const calls = pullRequestMerges(command, null, dialect);
+      expect([command, calls.map((one) => one.refusal)]).toEqual([command, [SHELL_REFUSAL]]);
+    }
+  });
+
+  test("words a wrapper splits out of a string of its own are read by their text", () => {
+    // `env -S` expands `${Q}` itself: no quote of this line says what the query becomes.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+    const calls = pullRequestMerges("env -S 'gh api graphql -f query=${Q}'", null, "bash");
+    expect(calls.map((one) => one.refusal)).toEqual([SHELL_REFUSAL]);
+  });
+
+  test("a query from a file or standard input stays unreadable", () => {
+    for (const command of ["gh api graphql -f query=@q.graphql", "gh api graphql --input q.json"]) {
+      expect(pullRequestMerges(command, null, "bash")).toHaveLength(1);
+    }
+  });
+
+  test("PowerShell: '$n' is text and \"$n\" is filled in", () => {
+    expect(
+      pullRequestMerges("gh api graphql -f query='query($n: Int!) { x }'", null, "powershell"),
+    ).toEqual([]);
+    expect(
+      pullRequestMerges('gh api graphql -f query="query($n) { x }"', null, "powershell"),
+    ).toHaveLength(1);
+  });
+
+  test("gh's aliases are case-sensitive: the word is looked up as typed", () => {
+    const aliases = new Map([["m", "pr merge"]]);
+    expect(pullRequestMerges("gh m 5", aliases, "bash")).toHaveLength(1);
+    // `gh M` is not the alias `m`: no gh command, no alias, and no merge in its words.
+    expect(pullRequestMerges("gh M 5", aliases, "bash")).toEqual([]);
+    // gh's own commands are found in any case.
+    expect(pullRequestMerges("gh PR merge 5", aliases, "bash")).toHaveLength(1);
   });
 });

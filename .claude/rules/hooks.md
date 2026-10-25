@@ -189,6 +189,12 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   words name a push or a pull request opening or merge, it denies instead (D24). A new
   wrapper or spelling
   goes in this one reader, never in a guard.
+- **The reader also reads what a runner runs**: `find -exec`/`-execdir`/`-ok`/`-okdir`, `watch`,
+  `su -c`/`--command` and `parallel` (`nestedCommand`, beside `bash -c`; `xargs` is a wrapper).
+  They stay the program of their step — the merge reader's rule for what a runner does to a merge
+  keys on that — and the command they run is a nested line every guard walks, so `watch git push`
+  and `find . -exec git push \;` are the git guard's business. A new runner goes there, with a
+  reader test and a test in each guard that matters, never as a list inside one guard.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.
 - A 64 KB line stays well inside the guard's time (`git-guard.test.ts`): no step may cost

@@ -51,7 +51,8 @@ parts, then the part you are changing.
 | Page | What it holds |
 |---|---|
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
-| [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, a plan's own folder with its briefs and the record of each crew run, the board and the end of a crew session, the crew session's steps and its report, the lead's watch, the crew talks, and the crew's own hooks. |
+| [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, a phase started from an issue (only one the person labelled, its text kept as data, the hand-back comment), and what the later issue parts add. |
+| [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, a plan's own folder with its briefs and the record of each crew run, a phase from an issue, the board and the end of a crew session, the crew session's steps and its report, the lead's watch, the crew talks, and the crew's own hooks. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
 | [Sessions and worktrees](design/sessions.md) | Reading Claude Code's saved sessions, reopening the ones a crash or a closed window stopped, confirmed targeted finished-session removal, orphan crew cleanup, stale-lock and cache safety, and the flow report. |
 | [Moving a machine from the old names](design/migrate.md) | What 0.2.x left, what `migrate` moves, and the order it moves it in. |

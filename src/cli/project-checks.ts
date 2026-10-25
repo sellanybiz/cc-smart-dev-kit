@@ -41,6 +41,7 @@ import {
   wiredHandlers,
 } from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS } from "../hooks/specs";
+import { issuesChecks } from "../issues/doctor";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
@@ -57,6 +58,7 @@ import {
 } from "../project/resolve";
 import { isObject } from "../setup/managed-json";
 import { readUserJson } from "../setup/user-json";
+import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
@@ -423,6 +425,7 @@ export async function projectChecks(
   env: Env,
   paths: CliPaths,
   pluginHooksFile: string,
+  gh: GhExec = runGh,
 ): Promise<ProjectLine[]> {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
@@ -470,6 +473,8 @@ export async function projectChecks(
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
     lines.push(...(await coverGitLines(checkout, env)));
   }
+  // GitHub Issues (D67): a line only while the switch is on, from the person's file or the base's.
+  lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   return lines;
 }
 

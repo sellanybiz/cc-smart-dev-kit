@@ -80,7 +80,7 @@ D1–D16 are the audit plan's and keep their meaning, with three changes: **D4**
 | D64 | **A slot's backend target can pin its reasoning effort** (the owner, 2026-10-24: "I should be able to fix a model's effort; even if Claude Code calls it with max or low, if I fixed it to xhigh the request actually goes with xhigh").<br>• **What it is.** A pin per slot and backend target (`gateway effort <slot> <target> <level>\|off`). It replaces the effort Claude Code sent (`output_config.effort`, which OmniRoute maps to the backend's reasoning effort) on every request to that target. That includes the requests where Claude Code turned thinking off, which the gateway otherwise sends as `none`.<br>• **Backend targets only.** A `claude-…` target goes to Anthropic with only the fields that model refuses changed (`.claude/rules/gateway.md`), so a pin there is refused.<br>• **Proved before it is saved.** One test request at that effort, so a level the backend refuses is never saved.<br>• **Its own function.** One named, tested translation (`effortPinForBackend`), plus a contract row.<br>• **Shown everywhere a chain shows:** `gateway status`, the Slots page and the log line. (EF1, EF2, 1.2.0.) |
 | D65 | **A Claude fallback at its known plan limit is skipped, even as the last target** (the owner, 2026-10-25, after one empty Codex answer on the worker slot became Claude Sonnet's weekly-limit 429 and paused two crew sessions for four days). When a target before it in the chain was asked and failed, a Claude target whose plan limit is current (a known reset in the future) is skipped like a resting one; the breaker's retryable 429, or the last asked target's answer, goes back instead. Claude first or alone in a chain is still asked, and its 429 passes unchanged. The one exception to "Anthropic's own answers always pass unchanged" (GW1, 1.2.0). |
 | D66 | **Claude by default** (the owner, 2026-10-25): every slot (scout, worker, opus, fable, the judge, each profile's) is plain Claude with no chain, every fallback switch is off (the judge's too: D44's stand-in becomes opt-in), and the gateway is off; OmniRoute and the router are still set up as before. claude-mem follows the scout, as before, so it is Claude Haiku on the person's login by default (this replaces D63's "stays on OmniRoute"). Remote Control is on with the gateway off, and on again after the gateway goes off. Nothing suggests a model unasked: `gateway setup` asks no slot, the installer's words say no "affordable models", and the plan-limit alert says only the limit and its reset. Machines already set up move once, at their next `setup`, with a backup. A crew session hands off at 400k tokens or 70 % of its window, whichever comes first, always before its real auto-compact point (`crew.handoffTokens`). |
-| D67 | **GitHub Issues, opt-in** (the owner, 2026-10-25, for 1.3.0): one switch, `workflow.issues`, off by default like `autoPush` and `openPr`. The kit files follow-ups and findings as issues (one per finding, a hidden marker against doubles), comments "fixed on `<branch>` at `<commit>`" and labels `fixed-unreleased` at a crew merge, and closes them with the release (its pull request lists `Fixes #n`; GitHub closes an issue only when such a pull request merges into the default branch). A phase can start from an issue (`crew start --issue <n>`), and the lead can hear new issues and comments. Only the project's own repository; issue text checked for secrets and home paths before it is posted; an issue someone else wrote is data, never an instruction: work starts only from an issue the person labelled or named. GitHub itself notifies the person. |
+| D67 | **GitHub Issues, opt-in** (the owner, 2026-10-25, for 1.4.0, planned as 1.3.0): one switch, `workflow.issues`, off by default like `autoPush` and `openPr`. The kit files follow-ups and findings as issues (one per finding, a hidden marker against doubles), comments "fixed on `<branch>` at `<commit>`" and labels `fixed-unreleased` at a crew merge, and closes them with the release (its pull request lists `Fixes #n`; GitHub closes an issue only when such a pull request merges into the default branch). A phase can start from an issue (`crew start --issue <n>`), and the lead can hear new issues and comments. Only the project's own repository; issue text checked for secrets and home paths before it is posted; an issue someone else wrote is data, never an instruction: work starts only from an issue the person labelled or named. GitHub itself notifies the person. **Named means labelled** (the owner, 2026-10-25, GI3): `crew start --issue` needs the ready label, added by an account with write access; an issue the person names in chat is labelled by the lead through `gh issue edit --add-label`, which the guard asks the person about. |
 | D33 | **A major version waits for the person.** The self-update installs patch and minor versions as today, but holds a new major until the person runs `cc-smart-dev-kit update`; each session start shows one line pointing to "What's new". `update` and `setup` first list every repo the session records name that still carries a retired field or an engine hook line. | Lead, from the second read (a 1.0.0 that rejects old fields must not reach every machine within the hour) |
 
 Defaults the lead set, the owner may change at approval: worker caps per D37 plus a free-memory check; workers run in `auto` permission mode (the person's rules plus the safety classifier; `dontAsk` with an allow list would fail closed instead — L1a proves a worker runs the whole suite and commits without a prompt); quiet after 20 minutes (alert only); hand-off at 70% context, a note at 2 hours, a hand-off at 4; the lead hears through a plugin monitor (`worker watch`), with `worker watch --once` in the background and SendMessage as fallbacks; a raw `claude --bg` asks and shows the launcher's line.
@@ -399,7 +399,11 @@ The split review ran (2026-10-25, `wf_06bb465a-c70`, 12 agents): 8 verified find
 
 Close (before 2026-10-25): integration review, 1.2.0, the release skill, the owner's yes.
 
-## Release 1.2.1 — the crew's cleanup, and the lead↔crew fixes (opus xhigh)
+## Release 1.3.0 (planned as 1.2.1) — the crew's cleanup, and the lead↔crew fixes (opus xhigh)
+
+**Ships as 1.3.0** (the owner, 2026-10-25): it adds commands (`user`, `crew history`, `crew model`),
+hooks (`user-away`, `tier-view`) and project fields (`crew.loadPerCore`, `crew.archiveDays`), so it
+is a minor version, not a patch. The branch keeps its name, `release-1.2.1`.
 
 Branch `release-1.2.1`, cut from `main` after 1.2.0's merge. Merged in first, in this order:
 `release-1.1.3` (CL1, CL1F), `crew/CL2-cleanup-rest-10` (`6cad48b`), `crew/CL2B-hook-boundary`
@@ -436,6 +440,10 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | SW1 a research sweep workflow (D28's third; the owner's pick) | build | `research-sweep`: one read-only researcher per angle, one refuter per claim with its quote, the unchecked past the budget, the open questions; it joins the guard's `READ_ONLY_WORKFLOWS`; the `research-first` skill says when. Ultracode stays off by default (the 2026-10-17 audit: "not adopt: ultracode default"). Brief `briefs/SW1-research-sweep.md`. |
 | PL1 a plan's own folder: its briefs and a record of each crew run (the owner's ask) | schema | Kit-wide `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`; `crew start` takes the brief from there when `--brief` is left out; a record per crew run in `<plan folder>/runs/` (its session ids, the lead's session id and name on each event, model and effort, queued, started, paused, reported, merged, removed, the wall and working time), never deleted: it stays after `crew rm` and moves with the plan to `archive/`; `crew history`. Brief `briefs/PL1-plan-folder-runs.md`. |
 | UA1 `user-unavailable` and `user-available` (the owner's ask, going to sleep) | permissions | One state for the machine and one list for the person (questions, actions, decisions parked while away); the `user-unavailable` skill (never stop to ask; take the reversible, recommended choice and park it as a decision; park the person's questions and every action that needs a yes, with its command); hooks that deny `AskUserQuestion` and turn a guard's ask into a deny that parks the command, never looser; the `user-available` skill goes through the list. Reviewer on `opus` `xhigh`. Brief `briefs/UA1-user-unavailable.md`. |
+| IF1 the installer re-declares a lost marketplace (sonnet `high`, 2026-10-25) | build | Seen live on native Windows: `known_marketplaces.json` held the marketplace, the settings' `extraKnownMarketplaces` did not, so step 4 skipped and `setup` stopped ("does not list the marketplace"). Step 4 counts a marketplace as added only when both records hold it and re-runs the add otherwise (proved on 2.1.310: a repeat add re-declares it); `setup`'s message names the repair. Brief `briefs/IF1-installer-marketplace-declared.md`. |
+| RX1 the release review's crew findings (sonnet `high`) | build | The split review (2026-10-25, four tracks, opus `xhigh`, 14 findings): a resumed session's earlier ids never removed or archived; a pending model change on a stale state; the watch rolling back a running discard; the wait for a continuation that will never merge. Judge: the watch's own idle stop, the events log read whole, `crew-self` after a resume copy. Brief `briefs/RX1-review-crew.md`. |
+| RX2 the release review's hooks and user-away findings (sonnet `high`) | permissions | `/user-available` cannot flip the state in default mode (its own `user` calls are parked); a parked action merges two folders' calls; `hooks.json`'s description; three `alwaysOn` hooks in the docs; the usage-limit doc. Brief `briefs/RX2-review-hooks-away.md`. |
+| RX3 the release review's setup, project and portal findings (sonnet `high`) | build | Setup puts back a deleted `remoteControlAtStartup` on its third run; `workflow set` keeps a `requires` 1.2.0 wrote too low, and `doctor` says nothing; the portal starts heavy child processes on every live refresh; `slot.effort` and `crew.archiveDays` missing from the design pages. Judge: Windows `ESRCH`. Brief `briefs/RX3-review-setup-portal.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
@@ -444,7 +452,12 @@ copy-resume case (its contract row says it is owed). Not briefed (notes only): t
 blocks a command that has both `sleep` and `claude agents`; **`crew resume` of a crew session that reported done** (UI1, 2026-10-25 05:47, installed 1.1.2) started a new session id (`0f6e7ad8` for `43f4e401`): the record kept the old id, so the watch said "its session was stopped" while it worked, and the session's name became the AI title ("sidebar hover spacing"); a SendMessage by the bare name failed, with the `[ref]` it worked (WF1, merged into 1.2.1, fixes exactly this: the record takes the copy's id); **the 1.2.1 CHANGELOG:** `release-1.2.1` has its own `## 1.2.1` section (WF1, AR1, WN1, `a5b17e1`); at the 1.2.1 cut, move CL2's (~104), D62's (~152) and EF2's bullets there out of `## 1.2.0`, and add each later phase's line at its merge; **a crew name two records share** (RV6's removed queued record and its running one) makes `crew start --continue "<name>"` take the removed one and refuse (2026-10-25; the crew id worked); **the installed 1.1.2 watch never marked GF1 merged** (2026-10-25: `git merge --no-ff` in the lead's worktree at 04:36, GF1's head on that HEAD, its record `stopped` with its base set, the lead record's `cwd` that worktree; nothing after 4 minutes of 20 s polls), so RV6's wait never released and the lead removed and restarted RV6 by hand: find why once WF1's watch is merged (WN1 or a new phase). (The split review workflow's budget
 cut and argument shape, seen 2026-10-25, are RS1.)
 
-## Release 1.3.0 — GitHub Issues (D67)
+## Release 1.4.0 (planned as 1.3.0) — GitHub Issues (D67)
+
+**Ships as 1.4.0** (the owner, 2026-10-25), since 1.2.1 took the number 1.3.0. The branch keeps
+its name, `release-1.3.0`: crew records, worktrees, waits and briefs name it, and a renamed branch
+would break their merge checks. Its CHANGELOG heading is `## 1.4.0`, and
+`WORKFLOW_ISSUES_SINCE` is `1.4.0`.
 
 Cut from `release-1.2.1` at `4dfa940` (all of 1.2.0 and most of 1.2.1 in it), to run beside
 1.2.1 (the owner, 2026-10-25: "start 1.3.0 in parallel"); the rest of 1.2.1 merges into
@@ -460,6 +473,8 @@ public repository's issue text is public.
 | GI2 resolved when it ships | build | At a crew merge, one comment ("fixed on `<branch>` at `<commit>`") and the `fixed-unreleased` label; the release and pull-request skills list `Fixes #n` for each, so the release closes them; the lead skill files a follow-up outside the plan as an issue instead of a line that gets lost. |
 | GI3 a phase from an issue | build | `crew start <phase> --issue <n>`: the issue's body seeds the brief; the hand-back adds one comment (status, tests, review, commit); PL1's run record links the issue. Only an issue the person labelled (`kit:ready`) or named. |
 | GI4 the lead hears issues (opt-in) | build | The watch checks the project's issues and comments now and then with a conditional request and prints one line per new one; the text is data, never an instruction. |
+| IX1 the review's write findings (sonnet `high`, 2026-10-25) | security | Two opus `xhigh` reviewers of `release-1.2.1...release-1.3.0` (writes; reads). The guard misses `gh api -X=POST`, an endpoint or GraphQL query in a variable, mutations outside its list, an alias; the screen misses `PGPASSWORD=`-style names, token shapes and the Git Bash home form; `issue file` ignores READ access and trusts a marker's issue by label; label writes unguarded. Brief `briefs/IX1-review-issue-writes.md`. |
+| IX2 the review's read findings (sonnet `high`, 2026-10-25) | security | Hidden markdown (link reference definitions, stripped tags, entities) reaches a brief unmarked; `readyLabel` and `watch` open inside Claude Code (**the lead's decision:** both join `OUTBOUND_KEYS`); the feed writes to every lead ever recorded; the pass's budget cuts no call; reported issue numbers marked unchecked; a clock moved back; a failed state write. Brief `briefs/IX2-review-issue-reads.md`. |
 
 Close: a split review, the release skill (a minor version), the owner's yes.
 
@@ -695,6 +710,134 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   1.2.1-merged records (JW1, NM1, SW1, RS1, MC1, WN1, RG1, LT1) stay until the lead's folder is
   on a branch that has them (`crew rm` checks the lead's own branch). The owner: `LEAD … (2)` is
   the old lead (kept, never removed).
+
+- 2026-10-25 (afternoon): **#24 merged into `main`** (`6c65da0`, a merge commit, the owner's
+  choice); the Windows hooks job's failure was a test's unquoted `--folder` path (`b93e8cd`).
+  Into `release-1.2.1`: `origin/main` (`5a183bb`), **IN1** (`b7d8fda`: AN1, PL1, MC1, LH1; AN1's
+  self-watch loop with HO1's compact-point advice in `adviseOnce`), **RC1** (`1b8ad53`: setup
+  writes `remoteControlAtStartup: true` only while the key is absent; the docs keep DF1's proved
+  row, and the three "never writes" lines now say what setup does), **UA1** (`6cd3bbb`), **SL1**
+  (`15eb3e4`). Full check after UA1: 7,302 pass, 0 fail, `check:portal` green. **FX1 started**
+  (sonnet `high`, from `6cd3bbb`). TV1 sat 25 minutes on a background wait for an `exit` line its
+  check never printed (1 fail in `stop-failure.test.ts`); told, it fixed and went on. Owed live
+  after 1.2.1: UA1's permission prompt and `AskUserQuestion` in an interactive and a `--bg`
+  session (expect "parked as #N"); SL1's footer before and after `/autocompact 400000` and
+  `/effort low`; RC1's gateway-on session start with the key set.
+  **SC1 handed back** (`23b1de3`, opus xhigh review, 7,112 pass). **The owner, 2026-10-25:** bound
+  a stream from its headers too (a last target with no other deadline: `streamIdleMs` of total
+  silence ends it; any byte, keep-alives and pings included, resets it), **and end a stalled
+  Anthropic stream the same way** (replaces "backends only"). SC1 resumed with that, plus the
+  `firstByteMs` cap at the timer maximum (the same fault its review found in `streamIdleMs`), and
+  a second opus xhigh review since it now touches how Anthropic answers reach Claude Code.
+  **TV1 merged** into `release-1.2.1` (`905b032`; its `tier-view` hook beside UA1's `user-away`:
+  hooks.json, specs, matrix, the docs' machine-wide count now ten). **GI1 merged** into
+  `release-1.3.0` (`677d129`; worktree `rel-1.3.0` made), then **`release-1.2.1` at `15eb3e4`
+  into `release-1.3.0`** (`13ceea4`), so GI3 has PL1. **GI2 and GI3 started** (sonnet `high`),
+  **GI4 queued** on them. The watch judges "merged" against the lead folder's branch
+  (`release-1.2.0`), so GI4 may need a start by hand once GI2 and GI3 are in `release-1.3.0`.
+  **GI1 resumed** for one more fault: its `find -exec`, `watch`, `su -c`, `parallel` reading
+  lived in the issue guard only (`RUNNER_PROGRAMS`), so `watch git push` and `find … -exec gh pr
+  merge` still pass the git and merge guards; it moves into `src/shell/command.ts`, opus xhigh
+  review. Noted for a later fix: `claudeLimitHolds` compares exact Claude ids (TV1's review), so a
+  chain that starts with another Claude id of the same family reads as "does not hold".
+  **FX1 and SC1 merged** into `release-1.2.1` (`6de130c`, `ef4759d`; full check 7,405 pass, 0 fail),
+  and `release-1.2.1` into `release-1.3.0` (`c68c632`; the portal export rebuilt to resolve it).
+  **The lead's folder is now on `release-1.3.0`** (the newest line, which holds 1.2.1): `crew rm`
+  and the watch judge "merged" against that branch, so every record merged into 1.2.1 or 1.3.0 could
+  go. **Cleaned at the owner's ask:** 36 crew records removed (worktree, branch, session), and three
+  copies Claude Code made at a resume (`claude rm`; their worktrees were gone). The installed 1.1.2
+  resumes the record's first session, not the copy that works, so a second resume of GI1 made a
+  stray copy (`24d8a075`, stopped, told to change nothing): `claude rm` it only after GI1's crew rm,
+  never before (it would take GI1's worktree). 1.2.1's resume fix ends this.
+  **GI2 merged** into `release-1.3.0` (`d430695`). Owed at the 1.3.0 release: this repo's own
+  `release` skill (`.claude/skills/release`) gains one line in its pull-request step: run
+  `cc-smart-dev-kit issue fixed --base main --head <release branch>` and paste its `Fixes #<n>`
+  lines into the body (exit 1: say so under "Still owed"). After GI3: `phaseIssues` may read
+  `record.issue.number` typed (GI2 reads it by shape today).
+- 2026-10-25 (late afternoon): **Numbers moved** (the owner): the planned 1.2.1 ships as **1.3.0**
+  (it adds commands, hooks and fields) and GitHub Issues as **1.4.0**; the branches keep their
+  names (`7672a7a` on `release-1.3.0`: `WORKFLOW_ISSUES_SINCE`, the CHANGELOG heading, the docs, the
+  GI3/GI4 briefs). **1.3.0 committed** on `release-1.2.1`: `0dd587c`, a gap the lead found — the
+  `requires` floor missed `crew.handoffTokens` (1.2.0), `loadPerCore`, `archiveDays` and every
+  `ownHooks` name after `ownHooks` itself (`tier-view`); a builder (sonnet `high`) completed the two
+  tables from git and added a drift test (`src/project/config.test.ts`) — and `01e1748`, the version,
+  the CHANGELOG (the EF2, CL2 and D62 lines moved out of 1.2.0, which had shipped without them) and
+  the bundles. Both validates, `check:portal` (82 portal tests) green. **The split review runs**
+  (four tracks, opus `xhigh`, the owner's choice). **GI1's follow-up merged** (`f28dac7`: the shell
+  reader knows `find -exec`, `watch`, `su -c`, `parallel`; `classify.ts` never routes a runner's line)
+  and **GI3 merged** (`884726f`, lint fix `a0913e7`); full check on `release-1.3.0` 7,814 pass, 0
+  fail. GI1's record and its two copies removed. **Cleaned at the owner's ask:** the `rel-1.1.3`
+  worktree (all of it in `release-1.3.0`; branch kept), and the three old builder worktrees
+  C2, B6a and UI-1 — a scout found each held one WIP commit nowhere else, replaced by later work
+  (B6a by the Next.js portal, D49; UI-1's unused `sonner` the only thing missing) — removed with
+  their branches, each WIP commit kept as a local tag (`wip/C2`, `wip/B6a`, `wip/UI-1`). **When
+  `release-1.2.1` merges into `release-1.3.0` next:** `config.test.ts`'s lists need `workflow.issues`
+  and its keys at 1.4.0, and the test's "not above VERSION" check needs `release-1.3.0`'s
+  `plugin.json` at 1.4.0 — bump it in that merge.
+- 2026-10-25 (evening): **The 1.3.0 split review** ran twice. The first run got its arguments as
+  text, which the installed 1.1.2 script ignores: it reviewed `release-1.3.0` on one track at
+  `sonnet` `max` (its seven findings on GI2/GI3 went into GI4's brief; the CHANGELOG's issues floor
+  fixed). The second, with the argument object (`base`, `head`, `folder`, `tracks`, `risky`,
+  `budget`), reviewed `origin/main...release-1.2.1` on four tracks, opus `xhigh`: 14 findings
+  verified, 1 refuted. RX1, RX2 and RX3 take them (each on its kind's model, reviewed on opus
+  `xhigh`); the lead fixed the CHANGELOG's user-away line (`e56ee80`). **IF1 started** (seen live on
+  native Windows: the installer's step 4 trusted `known_marketplaces.json` while `setup` reads the
+  settings' declaration; the owner's machine unblocked with a repeat `marketplace add`, proved on
+  2.1.310). **GI3 removed and GI4 started by hand** on `release-1.3.0` (`0da2ece`): the installed
+  1.1.2 watch never marks a `stopped` record merged, so a `--waits-for` on it never releases.
+- 2026-10-25 (night): **Merged on `release-1.2.1`:** IF1 (`3cbc92b`), RX2 (`a1e785e`), RX3
+  (`766ca59`), RX1 (`f8292ff`). Each fix came with a test that failed first and its own opus
+  `xhigh` review. The lead's seam fix: the Work page skips every session a crew record has had
+  (`63a947f`, by a builder), and the README's crew-watch and `crew rm` rows. PowerShell never ran
+  here: the Windows CI job is the first proof of `install.ps1` and of `windows-hook-smoke.sh` case
+  6. **GI4 merged on `release-1.3.0`** (`d6f6ad0`, full check 7,886 pass). **D67, GI4's open
+  question:** a marker counts only when the kit's own `gh` login wrote it. The lead keeps that as a
+  documented limit, not a fix: a second account's marker is ignored, never trusted. IF1, RX1, RX2
+  and RX3's records stay until `release-1.2.1` merges into `release-1.3.0` (`crew rm` checks the
+  lead folder's branch).
+- 2026-10-25 (late): **1.3.0 is PR #25** (full check 7,466 pass; Linux CI green). Its Windows
+  job failed one test, D62's leftover folder: the test left `mounts` out, so the clean read the
+  host's, and `mountPoints` answers "unknown" everywhere but Linux. A builder (opus `high`) fixed
+  the tests (`quietFacts`, `quietScan`: every fact given). **The product limit, now in
+  `docs/design/crew.md` and the CHANGELOG:** a leftover folder git no longer lists is finished
+  only on Linux; on Windows and macOS it stays, logged, for a removal by hand. **Merged into
+  `release-1.3.0`** (`e5baa10`, 1.4.0 in `plugin.json` and the installers, the drift test's
+  `workflow.issues` keys; full check 7,947 pass). IF1, RX1, RX2, RX3 removed; RX2's worktree was
+  held by an orphan `until ! pgrep -f "bun run check"; do sleep 3; done` from its session, a loop
+  whose pattern matches itself.
+  **Later, outside 1.3.0:** one shared quiet-facts helper in `src/testing/` (three copies now:
+  `end.test.ts`'s `QUIET_MACHINE`, `quietFacts`, `quietScan`) and a default `scanFacts` in
+  `crew-world.ts`'s `ctx`, so no crew test reads the host; mount points on Windows and macOS
+  (a design decision); the launch judge's polling-loop rule missed that self-matching wait loop.
+- 2026-10-25 (late): PR #25's second run: Windows green; Linux red on a clock-dependent test
+  (WN1's lead order: records in one millisecond tie on the session id), fixed with fixed times.
+  **The 1.4.0 review:** two opus `xhigh` reviewers (writes; reads), 2 High and 10 Medium verified
+  by the lead's probes. **IX1 and IX2 started** at once on `release-1.3.0` (`71ed72f`). The lead's
+  decision: `issues.readyLabel` and `issues.watch` refuse `set`/`unset` inside Claude Code, like
+  `enabled` (GI4's builder had left `watch` open; no owner decision said so).
+- 2026-10-25 (night): **PR #25 green** on Linux and Windows (third run): `install.ps1`'s 30 cases on
+  PowerShell 7 and 5.1, IF1's re-declare cases, and the hook smoke's ESRCH case all passed; the
+  merge waits for the owner. **IX2 merged** (`fd7944e`, full check 8,020 pass) and **IX1 merged**
+  (`5e2ee25`; IX1's own run 8,107 pass), each with an opus `xhigh` review. IX2's question (how the
+  lead marks a number the brief does not name): **no new command** — a kit command that writes to
+  GitHub is one a crew session could run itself; the lead names it as `Fixes #<n>` in the release
+  pull request by hand. The repo's release skill still needs that line. **IX3 started**
+  (`e3a16ca`): IX1 made any `$` in a GraphQL query a write, which asks about (and in a crew
+  session denies) a plain read with GraphQL's own `$n` in single quotes; the shell reader now
+  says which words the shell fills in. **Open after IX1/IX2 (for the 1.4.0 PR's Still owed):**
+  `visibleText` leaves attribute values, link titles and alt text unmarked (reached by hovering);
+  the feed's lead liveness is judged by pid on this host; the portal's settings writer has no
+  OUTBOUND/INBOUND check of its own (the portal's door); `resolveSwitch` takes the base's name from
+  the working copy (the accepted pattern of the merge guard); `issue file` needs `gh api user` (an
+  App token may get 403); a `gh` command word list (`GH_COMMANDS`) must follow gh's own commands,
+  or a crew session is denied a new one.
+- 2026-10-25 (night, last): **IX3 merged** (`de4a099`; its review on Sonnet `high` by the owner's
+  call, Opus usage nearly spent: two High misses fixed). Final checks on `b1d377b`: 8,225 pass,
+  `check:portal` up to date, the portal 82 pass, both validates. `issue fixed` printed nothing
+  (the switch is off here). **1.4.0 is PR #26** (the owner's yes to push and open it); 1.3.0 is
+  PR #25, green. Both merges wait for the owner. Then the update on this machine (release skill
+  § 5, plus `gateway setup` for 1.3.0's router), the live proofs in both PR bodies, and the
+  plan's last stage.
 
 ### For the owner in the morning
 

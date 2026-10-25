@@ -122,10 +122,13 @@ export function gitFailureCause(detail: string): GitFailureCause {
 
 /**
  * `<owner>/<repo>` for a GitHub git URL — the scp-like form (`git@github.com:o/r.git`) or an
- * `ssh://` / `https://` one. Null for any other URL, and then a fix cannot name the repository.
+ * `ssh://` / `https://` one, with or without user info before the host. Null for any other URL, and then a fix cannot name the repository.
  */
 export function githubRepoInUrl(url: string): string | null {
-  const match = /^(?:git@|ssh:\/\/|https?:\/\/)(?:git@)?github\.com[:/](.+?)\/*$/i.exec(url);
+  // The user info before the host (`https://user@…`, `https://x-access-token:<token>@…`) is
+  // skipped and never returned: it may hold a credential.
+  const match =
+    /^(?:git@github\.com[:/]|(?:ssh|https?):\/\/(?:[^/\s]+@)?github\.com[:/])(.+?)\/*$/i.exec(url);
   if (!match?.[1]) return null;
   const repo = match[1].replace(/\.git$/, "");
   return /^[^/]+\/[^/]+$/.test(repo) ? repo : null;
@@ -154,7 +157,7 @@ export function marketplaceAccessAdvice(cause: GitFailureCause, repo: string | n
 }
 
 /** Schemes whose user part may be a token (`https://<token>@host/…`), so all of it is hidden. */
-const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+export const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 /**
  * A URL that is safe to print: no password or token, no query string, no fragment.

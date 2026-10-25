@@ -12,7 +12,7 @@
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
- * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
+ * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges or opens a pull request, or writes to GitHub's issues (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
  * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
@@ -82,6 +82,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
+import { requestsIssueWrite } from "./issue-writes";
 import {
   jobRoute,
   jobRouteConfigAnswer,
@@ -220,8 +221,13 @@ export const mergeGuardHook: HookSpec = {
     // new file gives a crew session silence, never a question nobody answers.
     if (crewIdOf(context.env) !== null) return SILENT;
     const command = stringField(toolInput(input).command);
-    return command !== null && requestsPullRequestChange(command)
-      ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message))
+    if (command === null) return SILENT;
+    if (requestsPullRequestChange(command)) {
+      return toolDecision("ask", cannotCheck("whether this merge may happen by itself", message));
+    }
+    // The domain also holds a raw write to GitHub's issues (D67): it asks like the rest.
+    return requestsIssueWrite(command)
+      ? toolDecision("ask", cannotCheck("whether this issue write may happen by itself", message))
       : SILENT;
   },
   // For the hook log: the programs of the command line, read the way the guard reads it, so
@@ -234,7 +240,7 @@ export const mergeGuardHook: HookSpec = {
   // judge.
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
     const command = commandOf(input);
-    return command !== "" && requestsPullRequestChange(command);
+    return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
   }),
   // A crew session opens no pull request and merges none, whatever the project's file says, and
   // with no file (`crewPullRequestAnswer`: the same reader as `run`, aliases included).

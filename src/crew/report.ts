@@ -22,6 +22,9 @@
  * the person.
  */
 import { z } from "zod";
+import { commentHandBack } from "../issues/handback";
+import { MAX_PHASE_ISSUES, phaseIssues } from "../issues/phase-issues";
+import { runGh } from "../workflow/merge-check";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -53,6 +56,9 @@ export type ReportStatusName = (typeof REPORT_STATUS_NAMES)[number];
 export function isReportStatus(value: string): value is ReportStatusName {
   return (REPORT_STATUS_NAMES as readonly string[]).includes(value);
 }
+
+/** One GitHub issue's number: a whole number above 0. */
+const issueNumber = z.number().int().positive();
 
 /** One test run a crew reports. */
 const testRunFields = z.looseObject({
@@ -96,6 +102,11 @@ const ownReviewFields = z.looseObject({
  * request — the command fills.
  */
 export const modelReportSchema = z.looseObject({
+  /** The numbers of the GitHub issues the phase fixes (D67); `crew report --issue` adds to them. */
+  issues: z
+    .array(issueNumber)
+    .max(MAX_PHASE_ISSUES, `a phase fixes at most ${MAX_PHASE_ISSUES} issues: split it`)
+    .default([]),
   tests: z
     .looseObject({
       targeted: z.array(testRunFields).default([]),
@@ -173,6 +184,8 @@ export interface ReportArgs {
   options: string[];
   /** The option the crew session recommends (counted from 1); null when it recommends none. */
   recommend: null | number;
+  /** The issues `--issue` names, for a report (the JSON part's `issues` add to them). */
+  issues: number[];
 }
 
 /** A refusal with its line and the exit code. */
@@ -380,6 +393,7 @@ export function buildReport(
   record: CrewRecord,
   summary: null | string = null,
   extra: Record<string, unknown> = {},
+  issues: readonly number[] = [],
 ): HandBackReport {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal(
@@ -388,12 +402,21 @@ export function buildReport(
     );
   }
   const review = model.review === null ? null : { ...model.review, sha: facts.reviewSha ?? "" };
+  const issueList = phaseIssues(record, { issues: [...model.issues, ...issues] });
+  if (issueList.length > MAX_PHASE_ISSUES) {
+    throw refusal(
+      `the phase names ${issueList.length} issues it fixes (the JSON part, --issue and the issue it started from together), and a phase fixes at most ${MAX_PHASE_ISSUES}`,
+      "report the ones this phase fixes; the lead files the rest for another phase",
+    );
+  }
   return {
     base: facts.base,
     branch: facts.branch,
     changed: facts.changed,
     checks: model.checks,
     docs: model.docs,
+    // The model's list, `--issue`, and the issue `crew start --issue` stored on the record.
+    issues: issueList,
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
@@ -473,6 +496,37 @@ async function readPart(
   return { raw: await file.text() };
 }
 
+/**
+ * A phase that started from an issue says how it ended once, as a comment on that issue (GI3,
+ * `src/issues/handback.ts`). GitHub being out of reach is never a failed hand-back: one line says
+ * so, and the report keeps it under `open` for the lead, who can say it on the issue by hand.
+ * Returns the report, with that line added when the comment was not posted.
+ */
+async function sayOnIssue(
+  report: HandBackReport,
+  record: CrewRecord,
+  repo: string,
+  ctx: CrewContext,
+): Promise<HandBackReport> {
+  if (record.issue === undefined) return report;
+  const { number } = record.issue;
+  const outcome = await commentHandBack(
+    { cwd: repo, env: ctx.env, gh: ctx.gh ?? runGh, home: ctx.paths.home, paths: ctx.paths },
+    record.issue,
+    report,
+    record.id,
+  );
+  if (outcome.kind !== "failed") return report;
+  ctx.print(`note: the hand-back comment on issue #${number} was not posted: ${outcome.why}`);
+  return {
+    ...report,
+    open: [
+      ...report.open,
+      `the hand-back comment was not posted on issue #${number}: ${outcome.why}`,
+    ],
+  };
+}
+
 /** `crew report`; the exit code. */
 export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise<number> {
   const self = readCrewSelf(ctx, "crew report");
@@ -521,11 +575,20 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
   let report: HandBackReport;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
+    report = buildReport(
+      model.part,
+      facts,
+      args.status,
+      record,
+      model.summary,
+      model.extra,
+      args.issues,
+    );
   } catch (error) {
     if (!(error instanceof ReportRefusal)) throw error;
     return say(ctx, error);
   }
+  report = await sayOnIssue(report, record, repo, ctx);
   try {
     // The context its last reply used, for the run record (PL1): the transcript's tail, read once.
     const context =

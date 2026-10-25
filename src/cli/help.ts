@@ -24,6 +24,7 @@ import { CREW_USAGE } from "../crew/command";
 import { BOARD_COMMANDS, LEAD_TELL_USAGE, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
+import { ISSUE_USAGE } from "../issues/command";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
@@ -330,6 +331,9 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
     listed: "start",
     help: PROJECT_INIT_USAGE,
   },
+  { name: "issue", listed: "more", help: ISSUE_USAGE },
+  { name: "issue file", help: ISSUE_USAGE },
+  { name: "issue fixed", help: ISSUE_USAGE },
   { name: "workflow", listed: "more", help: WORKFLOW_USAGE },
   // The lead's hand-back gate (D22): `help workflow merge-check` prints the workflow's own
   // usage, which carries merge-check's lines — one text, not a second copy.

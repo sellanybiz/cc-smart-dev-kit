@@ -506,6 +506,35 @@ describe("a shell keyword or a wrapper before the command is stepped over", () =
     ["xargs git push -f"],
     ["xargs -0 -n 1 git push -f"],
     ["xargs -I{} git push -f"],
+    // The finding of the GI1 review: runners the shell reader did not know.
+    ["watch git push -f"],
+    ["watch -n 5 'git push -f'"],
+    ["find . -exec git push -f \\;"],
+    ["find . -maxdepth 0 -execdir git push -f {} +"],
+    ["find . -exec true \\; -exec git push -f \\;"],
+    ["su -c 'git push -f' me"],
+    ["su - me -c 'git push -f'"],
+    ["parallel git push -f ::: a b"],
+    ["parallel -j2 'git push -f {}' ::: a b"],
+    ["sudo watch git push -f"],
+    // The review of the follow-up: the spellings that still hid the inner program.
+    ["watch -q 3 git push -f"],
+    // The second review: a -d with an attached value, arguments after `:::`, a third unknown option.
+    ["watch -dq git push -f"],
+    ["watch -dn git push -f"],
+    ["parallel git push ::: -f"],
+    ["parallel bash -c ::: 'git push -f'"],
+    ["parallel eval ::: 'git push -f'"],
+    ["parallel --tmpdir /tmp --wd . --ssh ssh git push -f ::: a"],
+    ["watch --equexit 3 git push -f"],
+    ["watch --int 5 git push -f"],
+    ["parallel -u git push -f ::: a"],
+    ["parallel -C , 'git push -f' ::: a"],
+    ["parallel --delay 1 git push -f ::: a"],
+    ["parallel ::: 'git push -f'"],
+    ["find . -maxdepth 0 -exec flock + git push -f \\;"],
+    ["su -- me -c 'git push -f'"],
+    ["su --session-command 'git push -f' me"],
   ])("asks about %j", (command) => {
     expect(guard(command)).toContain("force-push");
   });
@@ -518,6 +547,10 @@ describe("a shell keyword or a wrapper before the command is stepped over", () =
     ["sudo -u me git log"],
     ["env -i git fetch"],
     ["xargs echo git"],
+    ["watch git status"],
+    ["find . -name x -exec echo git push \\;"],
+    ["su -c 'git status' me"],
+    ["parallel echo git push ::: a"],
     ['bash -c "echo timeout 60 git push -f"'],
   ])("lets %j through", (command) => {
     expect(guard(command)).toBeUndefined();

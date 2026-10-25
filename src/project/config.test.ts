@@ -100,6 +100,14 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.crew.handoffTokens": "1.2.0",
   "workflow.crew.loadPerCore": "1.3.0",
   "workflow.crew.archiveDays": "1.3.0",
+  "workflow.issues": "1.4.0",
+  "workflow.issues.enabled": "1.4.0",
+  "workflow.issues.allowPublic": "1.4.0",
+  "workflow.issues.watch": "1.4.0",
+  "workflow.issues.watchMinutes": "1.4.0",
+  "workflow.issues.foundLabel": "1.4.0",
+  "workflow.issues.fixedLabel": "1.4.0",
+  "workflow.issues.readyLabel": "1.4.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */

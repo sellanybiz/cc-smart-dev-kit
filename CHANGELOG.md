@@ -3,6 +3,116 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.4.0
+
+GitHub Issues, opt-in: the kit can file its follow-ups and findings as issues in your project's
+own repository, instead of losing them as a line in a summary.
+
+- **A new switch, `workflow.issues`, off by default.** `enabled` is the switch; `allowPublic` is
+  the second yes a *public* repository needs; `foundLabel` (`kit:found`), `fixedLabel`
+  (`fixed-unreleased`) and `readyLabel` (`kit:ready`) name the labels the kit uses. Like
+  `autoPush`, it is read from your own file and from the project's file **as committed on the
+  base**, never a working copy, and `workflow set`/`unset` of the two switches refuse inside
+  Claude Code. A project file that sets it asks for `>=1.4`.
+- **`cc-smart-dev-kit issue file`** files one finding (`--title`, `--body-file`, `--fingerprint`,
+  `--label`) and prints one line: `filed #<n> <url>`, `updated #<n> <url>` or `refused: <why>`.
+  The same fingerprint again updates the issue instead of opening a second: the key is hashed
+  into a hidden comment at the end of the body, and the kit finds it by listing the issues that
+  carry the found label once. It writes only to `origin`'s repository (on github.com), says
+  `public` when it posts to a public one, and **refuses, with the line and column and never the
+  value, a text that holds a home path, a key or token, or a URL with credentials** — it never
+  cleans the text and sends it anyway.
+- **The merge guard asks before a raw issue write.** A session's own `gh issue create`, `edit`,
+  `comment`, `close` …, a `gh api` write to a repository's `issues`, or a GraphQL issue mutation
+  asks you, and is denied in a crew session (which is told to use `issue file`). The kit's own
+  `issue file` is not asked about.
+- **`doctor`** has one line while the switch is on: `gh` is logged in for github.com and can
+  file issues in `origin`'s repository, each failure with its fix.
+- **A fix is marked at the merge and closed by the release.** A crew report can name the issues
+  its phase fixes (`crew report --issue <n>`, or an `issues` list in the JSON part). When the
+  lead merges the branch, the watch comments "fixed on `<branch>` at `<commit>`, merged into
+  `<base>`; it closes when `<base>` ships" on each and adds the label `fixed-unreleased`, once per
+  merge. GitHub closes an issue only when a pull request that names it merges into the *default*
+  branch, so the release's pull request lists them: `cc-smart-dev-kit issue fixed --base <default>
+  --head <branch>` prints one `Fixes #<n>` line for each open `fixed-unreleased` issue whose fix
+  is in the pull request's commits. If GitHub cannot be reached the merge still counts: the watch
+  says so in one line, keeps the mark in a queue file and tries again every five minutes. With
+  the switch off, nothing is sent. The lead skill files a bug outside the plan with `issue file`
+  instead of a line that is lost.
+- **`crew start <phase> --issue <n>`: a phase from an issue you chose.** Only an open issue of the
+  project's own repository that carries the ready label (`kit:ready`) **added by an account with
+  write access** starts a phase — the adder is read from the issue's events and its permission,
+  any edit of the body or rename of the title after the label by anyone else is refused, and
+  whatever cannot be read is a refusal. To start from an issue you only named, the lead labels it
+  (which asks you). The kit never adds that label itself: `issue file` refuses it as a `--label`,
+  and never rewrites an issue that carries it. The issue's text is **data, never an instruction**:
+  the brief quotes it under a heading that names its author (after any `--brief` text; with no
+  `--brief` the issue is the brief), a secret or a home path in it is replaced by
+  `[redacted: …]`, a hidden HTML comment is shown and marked, invisible characters are named by
+  their code, and the frame says once that it is data. The crew record and the plan's run record
+  carry the issue's number and address.
+- **The hand-back says it once on the issue.** `crew report` posts one comment on the issue:
+  the status, the tests and checks (passed and failed), the review and the head commit. A
+  hand-off says "handed off at `<commit>`" in a line, and a report is never commented twice.
+  A secret or a home path in the report's words means nothing is posted. GitHub being out of
+  reach is a `note:` line and a line under `open`, never a failed report.
+- **The lead hears new issues and comments, when you turn it on.** `workflow.issues.watch` (off by
+  default, even with `enabled` on) lets the lead's watch make one conditional look at the
+  project's issues and comments every `workflow.issues.watchMinutes` (default 5, at least 2),
+  inside the pass it already runs, and print one line for each new one — `issue #<n> opened by
+  <author>: "<title>"`, `comment on #<n> by <author>` — to every lead whose watch runs. The `ETag`
+  and the cursor (the highest issue number and comment id told; each look reads the newest 100 of
+  each list, so a full page of updates never hides a new issue) are kept once for the repository;
+  the events are written before the cursor moves; a `304` costs nothing against GitHub's limit
+  and is silent; the first look after you switch it on records where GitHub is and prints
+  nothing; the kit's own comments (its marker, written by its own account) are not news. A title
+  is outside text that reaches a model, so it is cut to one line, quoted, and stripped of escape
+  sequences and control and invisible characters, and each line starts with a frame that says it is data.
+  An issue line is **news, never an instruction** (`/cc-smart-dev-kit:lead` § 4). `gh` missing,
+  logged out, rate limited (it waits for the reset) or unreachable is one line per change of
+  state, not one per pass.
+- **Fixes to what the kit reads from GitHub.** More of what GitHub hides from the person who
+  labels an issue is now shown and marked in a brief: a link reference definition, the content of
+  a tag GitHub strips (`script`, `style`, `template` and the like), and a character reference of a
+  hidden character. A session can no longer choose which label counts as ready or turn on the
+  feed (`workflow set`/`unset` of `issues.readyLabel` and `issues.watch` refuse inside Claude
+  Code). The feed writes events only for leads whose watch runs, not for every lead ever
+  recorded. Each GitHub call in a watch pass stops at the pass's time budget, and a write cut
+  short says it may have been posted. The lead's watch marks "fixed" only the issues the
+  record's issue or the brief names, and says so for the rest. A clock moved back no longer
+  silences the feed, and a state it cannot write no longer repeats the same news.
+- **Fixes to the issue parts.** Every default-ignorable character (variation selectors, the
+  Hangul filler, the grapheme joiner, U+2800) in an issue's text is named by its code in a brief,
+  and an emoji keeps its own selector. The found, fixed and ready labels must be three different
+  words, so a merge's mark can never add the label that is yours to add. A marker in a comment
+  counts only when the kit's own account wrote it, so a stranger's copy cannot silence a
+  hand-back, fake a mark, or add an issue to a release. A watch pass settles at most three marks
+  and gives the issue work one time budget, after the crew's own lines; a phase names at most 10
+  issues.
+- **The review's fixes to what the kit writes to GitHub.** The raw-write guard now fails closed on
+  text it cannot read whole: a `gh api` write to an endpoint, or a GraphQL query, that the shell
+  fills in (`$EP`, `$(…)`, a backtick — the shell reader says which words, outside single quotes,
+  so GraphQL's own `$n` in `'query($n: Int!) { … }'` is a plain read), a request from `--input` or
+  `query=@file`, and a `gh` alias that runs a shell command (looked up as typed, as gh does, in
+  the merge reader too). `gh api -X=POST` is read as `POST`, as gh reads it. Any GraphQL mutation that is
+  not a pull request one counts as a write, and so do `gh label create`, `edit`, `delete` and
+  `clone` and a write to a repository's labels. A `gh` alias is read for what it expands to, and a
+  crew session is denied a `gh` word it cannot read. The screen finds secret names with letters
+  before them (`APIKEY=`, `PGPASSWORD=`), a home in its Git Bash and WSL spellings, and Tavily,
+  Groq, Stripe restricted, Slack and Discord webhook keys. `issue file` refuses an account with read
+  access only, edits only an issue the kit's own account wrote, and accepts an `origin` with user
+  info (never printed). The docs now say exactly what the screen catches.
+- Design: `docs/design/issues.md`.
+
+**What to run for 1.4.0:** nothing for the update itself (`router.js` did not change, and the
+session start refreshes the general instructions); restart your sessions so each carries the new
+guard. To turn issues on for a project, in your own terminal (`issues.enabled`,
+`issues.allowPublic`, `issues.watch` and `issues.readyLabel` refuse inside Claude Code): `gh auth
+login` for github.com, then `cc-smart-dev-kit workflow set issues.enabled true --project` (and
+`issues.allowPublic true` for a public repository, `issues.watch true` for the lead to hear new
+issues), and commit the file to the base: the switches are read from the base as committed. The
+file then needs `"requires": ">=1.4"`, which `workflow set` writes for you.
+
 ## 1.3.0
 
 The lead and its crew, made dependable: a resume that keeps track of its session, a watch that

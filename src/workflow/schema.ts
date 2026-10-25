@@ -46,6 +46,16 @@ const AT_LEAST_ONE: NumberRule = { kind: "whole", min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
 const ABOVE_ZERO: NumberRule = { kind: "positive" };
 
+/**
+ * The fewest minutes between two looks at GitHub (`issues.watchMinutes`). One look is two
+ * requests, so 2 minutes is at most 60 requests an hour for a repository, against the 5 000 an
+ * authenticated account has; a look that finds nothing new is a `304`, which is free against that
+ * limit (`.claude/research/2026-10-25-gi4-conditional.md`). A lower floor would only raise the
+ * chance of a secondary limit. At most a day, so a typo cannot silence the watch for good.
+ */
+export const WATCH_MINUTES_FLOOR = 2;
+const WATCH_MINUTES: NumberRule = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
+
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
   if (rule.kind === "positive") return z.number().positive();
@@ -70,6 +80,7 @@ const NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -80,6 +91,61 @@ type NumberKey = keyof typeof NUMBER_RULES;
 /** The optional schema of one number setting. */
 function numberField(key: NumberKey) {
   return numberSchema(NUMBER_RULES[key]).optional();
+}
+
+/**
+ * What a GitHub label name takes here: 1-50 characters (GitHub's own limit), one line, no
+ * comma (`gh issue create --label` splits on it). One home: the schema checks a file with it,
+ * and `parseWorkflowValue` a value a person types, in the same words.
+ */
+export const LABEL_RULE =
+  "a label name of 1-50 characters on one line, with no comma, not starting with -";
+
+/**
+ * True when `name` is a label name the kit may ask GitHub for (`LABEL_RULE`). A leading `-`
+ * is refused: a command line could read the name as an option.
+ */
+export function isLabelName(name: string): boolean {
+  return (
+    name.length >= 1 &&
+    name.length <= 50 &&
+    !name.startsWith("-") &&
+    !/[\p{Cc}\p{Cf},]/u.test(name) &&
+    name.trim() === name
+  );
+}
+
+const labelSchema = z.string().refine(isLabelName, LABEL_RULE);
+
+/** The three labels GitHub Issues uses, by the name each has in `workflow.issues`. */
+export interface IssueLabels {
+  fixedLabel: string;
+  foundLabel: string;
+  readyLabel: string;
+}
+
+/**
+ * Why the three labels cannot work together, or null when they differ (compared lower-cased:
+ * GitHub treats a label name that way). The ready label is a person's choice — a phase starts
+ * from an issue that carries it, added by someone with write access — so neither of the kit's
+ * own labels may be the same word: the kit adds `foundLabel` to every issue it files and
+ * `fixedLabel` at a merge, through the person's own `gh` login, and would then make an issue
+ * ready by itself. The found and fixed labels differ too, or "fixed" could not be told from
+ * "found". One home: the schema checks a file with it, and `issue file` and the fixed mark check
+ * the resolved values (the person's file and the project's can each hold one of a pair).
+ */
+export function labelsClash(labels: IssueLabels): string | null {
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
 }
 
 /** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
@@ -159,6 +225,45 @@ export const workflowSchema = z.strictObject({
     .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
+  /**
+   * GitHub Issues, opt-in (decision D67): the kit files follow-ups and findings as issues in the
+   * project's own repository (`cc-smart-dev-kit issue file`, `src/issues/`). Off by default, like
+   * `autoPush` and `openPr`: an issue leaves the machine. Read as the other outward switches are,
+   * from the person's file and the project's file **as committed on `origin/<base>`**
+   * (`resolveGate`), never a working copy a session can edit.
+   */
+  issues: z
+    .strictObject({
+      /** The kit may file issues here. Default: false. */
+      enabled: z.boolean().optional(),
+      /** It may file them in a public repository, where everyone reads them. Default: false. */
+      allowPublic: z.boolean().optional(),
+      /**
+       * The lead's watch looks at the project's issues and comments now and then and prints a
+       * line for each new one (1.4.0, `src/issues/feed.ts`). A second switch, off by default even
+       * with `enabled` on: it needs `enabled`, and reads only. Default: false.
+       */
+      watch: z.boolean().optional(),
+      /** Minutes between two looks, 2 or more (`WATCH_MINUTES_FLOOR`). Default: 5. */
+      watchMinutes: numberField("issues.watchMinutes"),
+      /** The label on every issue the kit files. Default: kit:found. */
+      foundLabel: labelSchema.optional(),
+      /** The label of an issue whose fix is merged and not yet released. Default: fixed-unreleased. */
+      fixedLabel: labelSchema.optional(),
+      /** The label of an issue the kit may pick up and build. Default: kit:ready. */
+      readyLabel: labelSchema.optional(),
+    })
+    .superRefine((issues, context) => {
+      // A label this object does not set stands as its default, so a file cannot name the
+      // default of another label (`labelsClash`).
+      const clash = labelsClash({
+        fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+        foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+        readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel,
+      });
+      if (clash !== null) context.addIssue({ code: "custom", message: clash });
+    })
+    .optional(),
   alerts: z
     .strictObject({
       /** Which moments alert. Default: all four. */
@@ -264,6 +369,16 @@ export const workflowDefaults = {
     percent: 20,
   },
   clearWorktreeAfterMerge: false,
+  // Off by default (D67): an issue is public text in a repository, so each switch is the person's.
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready",
+  },
   alerts: {
     events: [...ALERT_EVENTS] as AlertEvent[],
     sound: false,
@@ -322,6 +437,13 @@ export type WorkflowKey =
   | "fixesAfterReview.files"
   | "fixesAfterReview.percent"
   | "clearWorktreeAfterMerge"
+  | "issues.enabled"
+  | "issues.allowPublic"
+  | "issues.watch"
+  | "issues.watchMinutes"
+  | "issues.foundLabel"
+  | "issues.fixedLabel"
+  | "issues.readyLabel"
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
@@ -358,6 +480,13 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -394,6 +523,24 @@ export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
 ];
+
+/**
+ * The settings that let text leave the machine for GitHub (`issues.enabled`, `issues.allowPublic`).
+ * `workflow set` and `unset` refuse them inside Claude Code (`commands.ts`), as they do a
+ * review-gate key: a session must not turn on its own way out. `propose` stays open: its pull
+ * request is reviewed and merged by a person.
+ */
+export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.allowPublic"];
+
+/**
+ * The settings that decide what text from GitHub reaches a session (`issues.readyLabel`: which
+ * issues count as chosen, D67; `issues.watch`: the feed that puts new issues into the lead's
+ * context). `workflow set` and `unset` refuse them inside Claude Code, like `OUTBOUND_KEYS`: a
+ * session must never pick which issues are ready, nor open the channel for outside text. Both
+ * are read from the person's file and the project's file as committed on the base, never from a
+ * working copy. `propose` stays open: a person reviews its pull request.
+ */
+export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel", "issues.watch"];
 
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
@@ -507,6 +654,9 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       : { ok: false, why: `${key} is one of ${words.join(", ")}` };
   }
   if (isNumberKey(key)) return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }

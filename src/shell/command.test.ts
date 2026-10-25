@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import {
   dialectOfTool,
   invocationOf,
+  invocationsOf,
   nestedCommand,
   nestedDialect,
   programsOf,
@@ -16,8 +17,10 @@ import {
   redirectionTargets,
   shellSegments,
   shellSteps,
+  shortFlags,
   withoutRedirections,
   wordsOf,
+  wordsWithFill,
 } from "./command";
 
 const ps = { dialect: "powershell" } as const;
@@ -264,9 +267,9 @@ describe("shellSegments — a line that goes on", () => {
 describe("shellSteps — the command piped into each one", () => {
   test("names the text of the command before a pipe", () => {
     expect(shellSteps("echo hi | sh; ls")).toEqual([
-      { text: "echo hi ", pipedFrom: null },
-      { text: " sh", pipedFrom: "echo hi " },
-      { text: " ls", pipedFrom: null },
+      { text: "echo hi ", pipedFrom: null, expanded: false },
+      { text: " sh", pipedFrom: "echo hi ", expanded: false },
+      { text: " ls", pipedFrom: null, expanded: false },
     ]);
   });
 });
@@ -486,6 +489,212 @@ describe("invocationOf", () => {
   });
 });
 
+describe("the runners: find -exec, watch, su -c and parallel run the command they name", () => {
+  // The finding of the GI1 review: only the issue-write guard knew these four, so
+  // `watch git push` and `find . -exec git push \;` got past the git guard. The reader knows
+  // them once, beside `bash -c`, and every guard that walks the nesting sees the inner program.
+  test("find: every -exec, -execdir, -ok and -okdir up to its `;` or `+`", () => {
+    expect(nestedCommand("find", [".", "-exec", "git", "push", ";"])).toBe("'git' 'push'");
+    expect(nestedCommand("find", [".", "-exec", "git", "push", "{}", "+"])).toBe(
+      "'git' 'push' '{}'",
+    );
+    expect(nestedCommand("find", [".", "-execdir", "a", ";", "-ok", "b", "c", ";"])).toBe(
+      "'a' ; 'b' 'c'",
+    );
+    expect(nestedCommand("find", [".", "-maxdepth", "0", "-okdir", "gh", "pr", "merge", ";"])).toBe(
+      "'gh' 'pr' 'merge'",
+    );
+    // A second -exec after a harmless first one is still read.
+    expect(nestedCommand("find", [".", "-exec", "true", ";", "-exec", "git", "push", ";"])).toBe(
+      "'true' ; 'git' 'push'",
+    );
+    expect(nestedCommand("find", [".", "-name", "x", "-print"])).toBeUndefined();
+    // No terminator: find itself refuses it, but what follows is still what would run.
+    expect(nestedCommand("find", [".", "-exec", "git", "push"])).toBe("'git' 'push'");
+  });
+
+  test("watch: the command after its options, as the shell it runs it in reads it", () => {
+    expect(nestedCommand("watch", ["git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n", "5", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n5", "--color", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--interval=2", "-d", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-x", "git", "push"])).toBe("'git' 'push'");
+    expect(nestedCommand("watch", ["--", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n", "5"])).toBeUndefined();
+  });
+
+  test("su: the -c or --command string, wherever the user stands", () => {
+    expect(nestedCommand("su", ["-c", "git push", "user"])).toBe("git push");
+    expect(nestedCommand("su", ["-", "user", "-c", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--command=git push", "user"])).toBe("git push");
+    expect(nestedCommand("su", ["--command", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["-lc", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["-s", "/bin/sh", "-c", "git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["user"])).toBeUndefined();
+    expect(nestedCommand("su", ["-"])).toBeUndefined();
+  });
+
+  test("parallel: the command before its `:::` arguments, after its own options", () => {
+    expect(nestedCommand("parallel", ["git push {}", ":::", "a", "b"])).toStartWith("git push {}");
+    expect(nestedCommand("parallel", ["git", "push", "{}", ":::", "a"])).toStartWith("git push {}");
+    expect(nestedCommand("parallel", ["-j", "4", "git", "push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--jobs=4", "-k", "git push", "::::", "list"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["-j4", "--bar", "git push"])).toBe("git push");
+    // No command and no `:::` arguments: parallel reads its commands from standard input, which
+    // cannot be read. (With `:::` arguments and no command, they are the commands: see below.)
+    expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
+  });
+
+  // The review of the follow-up: each spelling below hid the inner program from a guard.
+  test("review: watch's -q/--equexit take a value, and a unique long prefix is the option", () => {
+    expect(nestedCommand("watch", ["-q", "3", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--equexit", "3", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--int", "5", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--inter=5", "git", "push"])).toBe("git push");
+  });
+
+  test("review: find's `+` ends -exec only after {}; an escaped `\\;` word is an argument", () => {
+    expect(nestedCommand("find", [".", "-exec", "echo", "+", "hi", ";"])).toBe("'echo' '+' 'hi'");
+    expect(nestedCommand("find", [".", "-exec", "flock", "+", "git", "push", ";"])).toBe(
+      "'flock' '+' 'git' 'push'",
+    );
+    expect(nestedCommand("find", [".", "-exec", "echo", "\\;", "hi", ";"])).toBe(
+      "'echo' '\\;' 'hi'",
+    );
+    expect(nestedCommand("find", [".", "-exec", "a", "{}", "+", "-exec", "b", ";"])).toBe(
+      "'a' '{}' ; 'b'",
+    );
+  });
+
+  test("review: su after `--`, --session-command, and a long prefix", () => {
+    expect(nestedCommand("su", ["--", "me", "-c", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--session-command", "git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["--session-command=git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["--comm", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--", "me"])).toBeUndefined();
+  });
+
+  test("review: parallel's boolean -u, its valued -C -s -J, and its long options", () => {
+    expect(nestedCommand("parallel", ["-u", "git", "push", ":::", "a"])).toStartWith("git push");
+    expect(nestedCommand("parallel", ["-C", ",", "git push", ":::", "a"])).toStartWith("git push");
+    expect(nestedCommand("parallel", ["-s", "100", "git push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["-J", "prof", "git push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--delay", "1", "git", "push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--tagstring", "x", "git push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--arg-sep", ",,", "git push", ",,", "a"])).toStartWith(
+      "git push",
+    );
+  });
+
+  test("review: parallel with no command runs its arguments; an unknown option is read both ways", () => {
+    expect(nestedCommand("parallel", [":::", "git push -f"])).toBe("git push -f");
+    expect(nestedCommand("parallel", [":::", "a", "b"])).toBe("a ; b");
+    expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
+    // An option this reader does not know may take the next word or not: both readings are
+    // returned, so the command is in the line either way.
+    const readings = (
+      nestedCommand("parallel", ["--surprise", "git", "push", ":::", "a"]) ?? ""
+    ).split(" ; ");
+    expect(readings).toContain("git push");
+    expect(readings).toContain("push");
+  });
+
+  // The second review of the follow-up.
+  test("review 2: watch's -d takes its value only attached, so the next word is the command", () => {
+    expect(nestedCommand("watch", ["-dq", "git", "push", "-f"])).toBe("git push -f");
+    expect(nestedCommand("watch", ["-dn", "git", "push", "-f"])).toBe("git push -f");
+    expect(nestedCommand("watch", ["-d", "git", "push"])).toBe("git push");
+    // -n before d still takes the next word (`-nd 1` is `-n` with the value `d`, then `1`).
+    expect(nestedCommand("watch", ["-n", "5", "-d", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-xd", "git", "push"])).toBe("'git' 'push'");
+  });
+
+  test("review 2: parallel adds its `:::` arguments to the command, quoted, or puts them at {}", () => {
+    const lines = (args: string[]) => (nestedCommand("parallel", args) ?? "").split(" ; ");
+    expect(lines(["git", "push", ":::", "-f"])).toContain("git push '-f'");
+    expect(lines(["gh", "issue", ":::", "create"])).toContain("gh issue 'create'");
+    expect(lines(["bash", "-c", ":::", "git push -f"])).toContain("bash -c 'git push -f'");
+    expect(lines(["git push {}", ":::", "a", "b"])).toContain("git push 'a' 'b'");
+    // A shell as the command runs each later argument as a script of its own.
+    expect(lines(["sh", "-c", "{}", ":::", "git push -f"])).toContain("git push -f");
+    // A command that is no shell does not turn its arguments into commands.
+    expect(lines(["echo", ":::", "git push -f"])).not.toContain("git push -f");
+  });
+
+  test("review 2: parallel's unknown valued options never hide the command, however many", () => {
+    const said = nestedCommand("parallel", [
+      "--tmpdir",
+      "/tmp",
+      "--wd",
+      ".",
+      "--ssh",
+      "ssh",
+      "--foo",
+      "x",
+      "git",
+      "push",
+      "-f",
+      ":::",
+      "a",
+    ]);
+    expect(said?.split(" ; ")).toContain("git push -f");
+  });
+
+  test("review 2: find's valued tests (-name -exec) do not start a command", () => {
+    expect(nestedCommand("find", [".", "-name", "-exec", "-exec", "git", "push", ";"])).toBe(
+      "'git' 'push'",
+    );
+    expect(nestedCommand("find", [".", "-name", "-exec"])).toBeUndefined();
+  });
+
+  test("review: `{}` as the program is a program worked out when the line runs", () => {
+    expect(invocationOf(["{}", "push", "-f"])?.computed).toBe(true);
+    expect(invocationOf(["git", "push"])?.computed).toBe(false);
+  });
+
+  test("programsOf sees the inner program, behind a wrapper too", () => {
+    expect(programsOf("find . -exec git push \\;")).toEqual(["find", "git"]);
+    // In Bash. PowerShell reads `\;` as a separator, so a line with no dialect named also holds
+    // the words it leaves behind (`-exec`) as a program.
+    expect(programsOf("find . -exec true \\; -exec git push \\;", "bash")).toEqual([
+      "find",
+      "true",
+      "git",
+    ]);
+    expect(programsOf("watch -n 5 git push")).toEqual(["watch", "git"]);
+    expect(programsOf("watch 'git push'")).toEqual(["watch", "git"]);
+    expect(programsOf('su -c "git push" user')).toEqual(["su", "git"]);
+    // The command, and again with its `:::` arguments added to it (parallel does): `git` twice.
+    expect(programsOf("parallel git push ::: a b")).toEqual(["parallel", "git", "git"]);
+    expect(programsOf("parallel git push")).toEqual(["parallel", "git"]);
+    expect(programsOf("sudo watch git push")).toEqual(["watch", "git"]);
+    expect(programsOf("timeout 9 find . -exec git push {} +", "bash")).toEqual(["find", "git"]);
+    expect(programsOf("find . -name x")).toEqual(["find"]);
+    expect(programsOf("watch ls")).toEqual(["watch", "ls"]);
+  });
+
+  test("a runner inside a shell inside a runner is read three levels deep", () => {
+    expect(programsOf("watch \"bash -c 'git push'\"")).toEqual(["watch", "bash", "git"]);
+    expect(programsOf("bash -c 'find . -exec git push \\;'", "bash")).toEqual([
+      "bash",
+      "find",
+      "git",
+    ]);
+  });
+});
+
 describe("nestedCommand and nestedDialect", () => {
   test("reads the inner command of a wrapper", () => {
     expect(nestedCommand("bash", ["-lc", "ls; pwd"])).toBe("ls; pwd");
@@ -549,5 +758,157 @@ describe("the dialect of a tool, and the programs of a line", () => {
     expect(programsOf(paths, "bash")).toEqual(["cd"]);
     expect(programsOf(paths, "powershell")).toEqual(["cd", "git", "cd"]);
     expect(programsOf(paths)).toEqual(["cd", "git", "cd"]);
+  });
+});
+
+describe("shortFlags — the value attached to a short option (IX1)", () => {
+  test("IX1-2: one leading `=` is dropped, as gh's flag library reads `-X=POST`", () => {
+    expect(shortFlags("-X=POST", "X")).toEqual({ flags: "X", value: "POST", wantsNext: false });
+    expect(shortFlags("-XPOST", "X")).toEqual({ flags: "X", value: "POST", wantsNext: false });
+    expect(shortFlags("-X==POST", "X")).toEqual({ flags: "X", value: "=POST", wantsNext: false });
+    expect(shortFlags("-iX=PUT", "X")).toEqual({ flags: "iX", value: "PUT", wantsNext: false });
+  });
+
+  test("IX1-2: a letter with nothing attached takes the next word, and has no value here", () => {
+    expect(shortFlags("-X", "X")).toEqual({ flags: "X", value: "", wantsNext: true });
+    expect(shortFlags("-ab", "X")).toEqual({ flags: "ab", value: "", wantsNext: false });
+  });
+});
+
+describe("wordsWithFill — which words the shell fills in (IX3)", () => {
+  const filledOf = (segment: string, dialect: "bash" | "powershell" = "bash") =>
+    wordsWithFill(segment, dialect).map((one) => one.filled);
+
+  test("gives the same texts as wordsOf, each with its flag", () => {
+    expect(wordsWithFill("gh api 'a b' \"$x\"")).toEqual([
+      { text: "gh", filled: false },
+      { text: "api", filled: false },
+      { text: "a b", filled: false },
+      { text: "$x", filled: true },
+    ]);
+    for (const line of [
+      "git commit -m \"a b\" 'c d' main>log",
+      'g\\it $\'\\x67it\' "a\\$b" $"t"',
+    ]) {
+      expect(wordsWithFill(line).map((one) => one.text)).toEqual(wordsOf(line));
+    }
+  });
+
+  test("bash: an expansion outside single quotes is filled, in every spelling", () => {
+    // `$(cat q)` and a backtick pair split on their space: each piece is a word of its own.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf("a $x ${x} $(cat q) $((1+2)) `cat q` $1 $? x$y")).toEqual([
+      false, // a
+      true, // $x
+      true, // ${x}
+      true, // $(cat
+      false, // q)
+      true, // $((1+2))
+      true, // `cat
+      true, // q`
+      true, // $1
+      true, // $?
+      true, // x$y
+    ]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf('a "$x" "q=$(cat q)" "`cat q`" "pre${x}post"')).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(filledOf('a $"x $y"')).toEqual([false, true]);
+  });
+
+  test("bash: single quotes, $'…' and an escaped $ fill nothing", () => {
+    expect(filledOf("a 'q($n)' '$x' '`x`' $'a$b' \\$x \"a\\$b\" \"a\\`b\"")).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    // A `$` before a character that makes it text (`$.`, `$~`) is text.
+    expect(filledOf("a $. $~ 'x'$.")).toEqual([false, false, false, false]);
+    expect(filledOf("a $-")).toEqual([false, true]);
+  });
+
+  test("a `$` the line reader cut off from what follows is filled: it may expand into anything", () => {
+    // The line reader joins `$\<newline>P` into `$ P` and cuts PowerShell's `${env:P}` at its
+    // brace, so the word ends in a lone `$`. A lone `$` is never a word to trust as text.
+    expect(filledOf("a repos/o/r/$ P")).toEqual([false, true, false]);
+    expect(filledOf('a "repos/o/r/$" b')).toEqual([false, true, false]);
+    expect(filledOf("a repos/o/r/$\\\nP")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$", "powershell")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$`\nP", "powershell")).toEqual([false, true]);
+    // Single quotes and an escaped `$` still fill nothing.
+    expect(filledOf("a 'repos/o/r/$' \\$")).toEqual([false, false, false]);
+  });
+
+  test("bash: one filled piece makes the whole word filled", () => {
+    expect(filledOf("'a$b'$c")).toEqual([true]);
+    expect(filledOf("'a$b'c")).toEqual([false]);
+    expect(filledOf("query='query($n: Int!) { x }'\"$S\"")).toEqual([true]);
+  });
+
+  test("PowerShell: bare and double-quoted $ is filled, single quotes and `$ are not", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf('a $x $(Get-Q) ${x} "$n" "q=$($x)"', "powershell")).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(filledOf("a '$n' 'it''s $n' \"`$n\" `$n", "powershell")).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    // The backtick is PowerShell's escape, never an expansion.
+    expect(filledOf('a `x "`x"', "powershell")).toEqual([false, false, false]);
+  });
+});
+
+describe("invocationsOf — the filled words of each command (IX3)", () => {
+  const gh = (line: string, dialect?: "bash" | "powershell") =>
+    invocationsOf(line, dialect).filter((one) => one.program === "gh");
+
+  test("a command lists the texts of its words the shell fills", () => {
+    const [run] = gh("gh api graphql -f query='query($n: Int!) { x }' -F n=\"$N\"");
+    expect(run?.filled).toEqual(["n=$N"]);
+    expect(run?.args).toContain("query=query($n: Int!) { x }");
+  });
+
+  test("bash -c '…' reads its string again: its own quotes decide", () => {
+    const [literal] = gh(`bash -c "gh api graphql -f query='query(\\$n: Int!) { x }'"`);
+    expect(literal?.filled).toEqual([]);
+    const [inner] = gh(`bash -c 'gh api graphql -f query="$Q"'`);
+    expect(inner?.filled).toEqual(["query=$Q"]);
+  });
+
+  test("a string the outer shell filled in is filled all through, whatever its inner quotes", () => {
+    const [run] = gh(`bash -c "gh api -X POST 'repos/o/r/$K/5/comments'"`);
+    expect(run?.filled).toContain("repos/o/r/$K/5/comments");
+    const [piped] = gh(`echo "gh api -X POST 'repos/o/r/$K/5/comments'" | bash`);
+    expect(piped?.filled).toContain("repos/o/r/$K/5/comments");
+    const [evaled] = gh(`eval "gh api 'repos/o/r/$K/x'"`);
+    expect(evaled?.filled).toContain("repos/o/r/$K/x");
+  });
+
+  test("a here-doc script: quoted is read as written, unquoted is filled in first", () => {
+    const [quoted] = gh("bash <<'EOF'\ngh api 'repos/o/r/$K/x'\nEOF");
+    expect(quoted?.filled).toEqual([]);
+    const [open] = gh("bash <<EOF\ngh api 'repos/o/r/$K/x'\nEOF");
+    expect(open?.filled).toContain("repos/o/r/$K/x");
+    const [plain] = gh("bash <<EOF\ngh api 'repos/o/r/x'\nEOF");
+    expect(plain?.filled).toEqual([]);
   });
 });

@@ -56,6 +56,7 @@ import { runNotifyEntry } from "../hooks/notify-entry";
 import { recordSessionName, SessionNameRefused } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
+import { runIssue } from "../issues/command";
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
@@ -535,6 +536,15 @@ async function main(argv: string[]): Promise<number> {
         error: (line) => console.error(line),
       });
     }
+    case "issue":
+      return runIssue(rest, {
+        cwd: process.cwd(),
+        env: process.env,
+        error: (line) => console.error(line),
+        paths,
+        print: (line) => console.log(line),
+        readStdin: () => Bun.stdin.text(),
+      });
     case "workflow":
       return runWorkflow(rest, {
         paths,

@@ -71,6 +71,17 @@ export interface ResolvedWorkflow {
     percent: ResolvedValue<number>;
   };
   clearWorktreeAfterMerge: ResolvedValue<boolean>;
+  /** GitHub Issues (D67): the two switches and the three labels the kit uses. */
+  issues: {
+    enabled: ResolvedValue<boolean>;
+    allowPublic: ResolvedValue<boolean>;
+    /** The lead hears new issues and comments (1.4.0): the watch looks at GitHub now and then. */
+    watch: ResolvedValue<boolean>;
+    watchMinutes: ResolvedValue<number>;
+    foundLabel: ResolvedValue<string>;
+    fixedLabel: ResolvedValue<string>;
+    readyLabel: ResolvedValue<string>;
+  };
   alerts: {
     events: ResolvedValue<AlertEvent[]>;
     sound: ResolvedValue<boolean>;
@@ -167,6 +178,8 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined) merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined) merged.issues = issues;
   return merged;
 }
 
@@ -350,6 +363,13 @@ const RESOLVED: {
   "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
   "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+  "issues.enabled": (r) => r.issues.enabled,
+  "issues.allowPublic": (r) => r.issues.allowPublic,
+  "issues.watch": (r) => r.issues.watch,
+  "issues.watchMinutes": (r) => r.issues.watchMinutes,
+  "issues.foundLabel": (r) => r.issues.foundLabel,
+  "issues.fixedLabel": (r) => r.issues.fixedLabel,
+  "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.events": (r) => r.alerts.events,
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
@@ -404,6 +424,7 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -428,6 +449,21 @@ export function resolveWorkflow(
       "clearWorktreeAfterMerge",
       merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge,
     ),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of(
+        "issues.allowPublic",
+        issues.allowPublic ?? workflowDefaults.issues.allowPublic,
+      ),
+      watch: of("issues.watch", issues.watch ?? workflowDefaults.issues.watch),
+      watchMinutes: of(
+        "issues.watchMinutes",
+        issues.watchMinutes ?? workflowDefaults.issues.watchMinutes,
+      ),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel),
+    },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
     crew: {
