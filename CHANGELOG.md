@@ -13,7 +13,7 @@ own repository, instead of losing them as a line in a summary.
   (`fixed-unreleased`) and `readyLabel` (`kit:ready`) name the labels the kit uses. Like
   `autoPush`, it is read from your own file and from the project's file **as committed on the
   base**, never a working copy, and `workflow set`/`unset` of the two switches refuse inside
-  Claude Code. A project file that sets it asks for `>=1.3`.
+  Claude Code. A project file that sets it asks for `>=1.4`.
 - **`cc-smart-dev-kit issue file`** files one finding (`--title`, `--body-file`, `--fingerprint`,
   `--label`) and prints one line: `filed #<n> <url>`, `updated #<n> <url>` or `refused: <why>`.
   The same fingerprint again updates the issue instead of opening a second: the key is hashed
