@@ -831,6 +831,13 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   the working copy (the accepted pattern of the merge guard); `issue file` needs `gh api user` (an
   App token may get 403); a `gh` command word list (`GH_COMMANDS`) must follow gh's own commands,
   or a crew session is denied a new one.
+- 2026-10-25 (night, last): **IX3 merged** (`de4a099`; its review on Sonnet `high` by the owner's
+  call, Opus usage nearly spent: two High misses fixed). Final checks on `b1d377b`: 8,225 pass,
+  `check:portal` up to date, the portal 82 pass, both validates. `issue fixed` printed nothing
+  (the switch is off here). **1.4.0 is PR #26** (the owner's yes to push and open it); 1.3.0 is
+  PR #25, green. Both merges wait for the owner. Then the update on this machine (release skill
+  § 5, plus `gateway setup` for 1.3.0's router), the live proofs in both PR bodies, and the
+  plan's last stage.
 
 ### For the owner in the morning
 
