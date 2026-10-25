@@ -753,7 +753,18 @@ describe("the hook", () => {
   /** The merging session's id, as `ran` gives every input. */
   const MERGING_SESSION = "11111111-2222-3333-4444-555555555555";
 
-  /** A lead recorded in the store the hook's env points at. */
+  /**
+   * The time of the next lead record: a fixed start, one second more each call. The store lists
+   * leads by `createdAt` and breaks a tie by session id, so a record's time is never the clock's.
+   */
+  const LEAD_CLOCK_START = Date.UTC(2026, 0, 1);
+  let leadClockTicks = 0;
+  function nextLeadTime(): number {
+    leadClockTicks += 1;
+    return LEAD_CLOCK_START + leadClockTicks * 1000;
+  }
+
+  /** A lead recorded in the store the hook's env points at, one second after the one before. */
   async function recordLead(
     env: Record<string, string>,
     repo: string,
@@ -764,7 +775,7 @@ describe("the hook", () => {
     await writeLead(
       cliPaths(env).stateDir,
       { cwd: repo, name, plan, repo, sessionId, tag: "my-app" },
-      Date.now(),
+      nextLeadTime(),
     );
   }
 
@@ -852,11 +863,11 @@ describe("the hook", () => {
   test("WN1: two other leads are both named, once each", async () => {
     const { repo, worktree } = project();
     const env = fakeGh(merged);
+    // The docs lead restarted: its earlier record is the same lead, so its name is said once.
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OLD_MERGING_SESSION);
     await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
     await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
     await recordLead(env, repo, "LEAD my-app beta-plan", "beta-plan", THIRD_SESSION);
-    // The docs lead restarted: its earlier record is the same lead, so its name is said once.
-    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OLD_MERGING_SESSION);
     const note = await noteAfterMerge(join(worktree, "src"), env);
     expect(note).toContain("The other leads here: LEAD my-app docs-plan, LEAD my-app beta-plan.");
   });
@@ -875,7 +886,7 @@ describe("the hook", () => {
         sessionId: OTHER_SESSION,
         tag: "my-app",
       },
-      Date.now(),
+      nextLeadTime(),
     );
     const note = await noteAfterMerge(join(worktree, "src"), env);
     expect(note).toContain("The other leads here: LEAD my-app master-plan.");
