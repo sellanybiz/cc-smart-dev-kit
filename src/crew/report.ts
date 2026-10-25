@@ -22,6 +22,8 @@
  * the person.
  */
 import { z } from "zod";
+import { commentHandBack } from "../issues/handback";
+import { runGh } from "../workflow/merge-check";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -473,6 +475,37 @@ async function readPart(
   return { raw: await file.text() };
 }
 
+/**
+ * A phase that started from an issue says how it ended once, as a comment on that issue (GI3,
+ * `src/issues/handback.ts`). GitHub being out of reach is never a failed hand-back: one line says
+ * so, and the report keeps it under `open` for the lead, who can say it on the issue by hand.
+ * Returns the report, with that line added when the comment was not posted.
+ */
+async function sayOnIssue(
+  report: HandBackReport,
+  record: CrewRecord,
+  repo: string,
+  ctx: CrewContext,
+): Promise<HandBackReport> {
+  if (record.issue === undefined) return report;
+  const { number } = record.issue;
+  const outcome = await commentHandBack(
+    { cwd: repo, env: ctx.env, gh: ctx.gh ?? runGh, home: ctx.paths.home, paths: ctx.paths },
+    record.issue,
+    report,
+    record.id,
+  );
+  if (outcome.kind !== "failed") return report;
+  ctx.print(`note: the hand-back comment on issue #${number} was not posted: ${outcome.why}`);
+  return {
+    ...report,
+    open: [
+      ...report.open,
+      `the hand-back comment was not posted on issue #${number}: ${outcome.why}`,
+    ],
+  };
+}
+
 /** `crew report`; the exit code. */
 export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise<number> {
   const self = readCrewSelf(ctx, "crew report");
@@ -526,6 +559,7 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
     if (!(error instanceof ReportRefusal)) throw error;
     return say(ctx, error);
   }
+  report = await sayOnIssue(report, record, repo, ctx);
   try {
     // The context its last reply used, for the run record (PL1): the transcript's tail, read once.
     const context =

@@ -12,7 +12,7 @@ import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { commitConfig } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
-import { type CrewRecord, crewBriefFile, listCrew, writeLead } from "./store";
+import { type CrewRecord, crewBriefFile, listCrew, updateCrew, writeLead } from "./store";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -289,5 +289,29 @@ describe("the command line", () => {
     const world = await issueWorld();
     await runCrew(["--help"], world.issueCtx());
     expect(world.out.join("\n")).toContain("[--issue <n>]");
+  });
+});
+
+describe("a hand-off carries the issue", () => {
+  test("the next session has the same issue on its record, its text in the brief, and the frame line once", async () => {
+    const world = await issueWorld();
+    expect(await runCrew([...START, "--issue", "12"], world.issueCtx())).toBe(0);
+    const first = onlyCrew(world);
+    await updateCrew(world.paths.stateDir, world.repo, first.id, { state: "handoff" }, T0);
+    const callsBefore = world.github.calls.length;
+    const code = await runCrew(
+      ["start", "B6b", "--continue", first.name],
+      world.ctx({ gh: world.github.exec, randomSuffix: () => "d4e5f6" }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    const { records } = listCrew(world.paths.stateDir, world.repo);
+    const next = records.find((one) => one.id !== first.id) as CrewRecord;
+    expect(next.issue).toEqual(first.issue);
+    const brief = readFileSync(crewBriefFile(world.paths.stateDir, world.repo, next.id), "utf8");
+    expect(brief).toContain("> Hook is silent");
+    expect(brief.split(FRAME_LINE)).toHaveLength(2);
+    // The hand-off asks GitHub nothing: the person's choice was read once, at the first start.
+    expect(world.github.calls).toHaveLength(callsBefore);
   });
 });

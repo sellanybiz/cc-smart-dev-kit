@@ -890,11 +890,14 @@ ${MARKER("done")}
   });
 
   test("a failed test and a failed check are said, not hidden", async () => {
-    const part = JSON.parse(modelPart()) as Record<string, any>;
-    part.tests.targeted[0].failed = 2;
-    part.tests.targeted[0].ok = false;
-    part.checks = [{ name: "lint", note: "3 errors", ok: false }];
-    const { fake } = await issueReport("failed", {}, JSON.stringify(part));
+    const part = modelPart({
+      checks: [{ name: "lint", note: "3 errors", ok: false }],
+      tests: {
+        full: null,
+        targeted: [{ command: "bun test src/crew", failed: 2, ok: false, passed: 12 }],
+      },
+    });
+    const { fake } = await issueReport("failed", {}, part);
     const body = fake.posted[0]?.body ?? "";
     expect(body).toContain("reported `failed`");
     expect(body).toContain("`bun test src/crew` 12 passed, 2 failed");
@@ -978,9 +981,16 @@ ${MARKER("handoff")}
   });
 
   test("a secret in a finding and an @mention are not posted as written", async () => {
-    const part = JSON.parse(modelPart()) as Record<string, any>;
-    part.review.findings = [{ finding: `key ghp_${"a".repeat(36)} @octocat`, fix: "removed" }];
-    const { fake } = await issueReport("done", {}, JSON.stringify(part));
+    const part = modelPart({
+      review: {
+        agent: "cc-smart-dev-kit:reviewer",
+        effort: "xhigh",
+        findings: [{ finding: `key ghp_${"a".repeat(36)} @octocat`, fix: "removed" }],
+        model: "opus",
+        sha: "b".repeat(40),
+      },
+    });
+    const { fake } = await issueReport("done", {}, part);
     const body = fake.posted[0]?.body ?? "";
     expect(body).not.toContain("ghp_");
     expect(body).toContain("[redacted: a key or token]");

@@ -9439,6 +9439,7 @@ var runRecordSchema = looseObject({
   baseRef: text,
   base: looseObject({ ref: text, sha: text }).nullable(),
   brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
+  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
   lead: actor,
   continues: string2().nullable(),
   continuedBy: string2().nullable(),
@@ -9631,6 +9632,7 @@ function startOf(after, at) {
     effort: after.effort,
     events: [],
     id: after.id,
+    ...after.issue === undefined ? {} : { issue: { number: after.issue.number, url: after.issue.url } },
     kind: after.kind,
     lead: leadOf(after),
     model: { named: after.model.named, resolved: after.model.resolved, slot: after.model.slot },
@@ -9897,6 +9899,7 @@ var crewFields = object({
   }).optional(),
   planFile: text2.nullable().optional(),
   briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
+  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
   createdAt: text2,
   updatedAt: text2
 });
@@ -18150,238 +18153,33 @@ function crewRecordsOf(paths, repo) {
   }
 }
 
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
-// src/setup/retry-watchdog.ts
-var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
-var RETRY_WATCHDOG_VALUE = "1";
-var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
-var RETRY_WATCHDOG_RECHECK_MS = 300000;
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
-var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
-var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
-  "env",
-  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
-];
-var RETRY_WATCHDOG_SETTINGS = [
-  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
-  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
-];
-var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
-var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
-var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
-var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
-
-// src/crew/start.ts
-var CLASH_STATES = [...RUNNING_STATES, "queued"];
-
-// src/crew/watch.ts
-var WORKTREE_CONFIRM_MS = 3 * 60000;
-var PARKED_PASS_MS = 5 * 60000;
-var CLIP_CHARS = 120;
-function clip(text) {
-  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
-  return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
+// src/workflow/pr-switches.ts
+function turnOn(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
 }
-function reportDetail(record) {
-  if (record === null || record.reportPath === null)
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
     return null;
-  let report;
-  try {
-    report = readReport(record.reportPath);
-  } catch {
-    return null;
-  }
-  if (report === null)
-    return null;
-  if (report.status === "blocked" && report.question !== null) {
-    return `waits on: ${clip(report.question)}`;
-  }
-  if (report.status === "failed") {
-    const why = report.summary ?? report.open[0] ?? null;
-    return why === null ? null : `why: ${clip(why)}`;
-  }
-  return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
 }
-function eventLine(event, record, waits, reviewed) {
-  const name = event.name;
-  switch (event.type) {
-    case "state": {
-      if (event.state === "starting" && (event.text === null || event.text === ""))
-        return null;
-      const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
-      return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;
-    }
-    case "step": {
-      const parts = [`${name}: ${event.text ?? "step"}`];
-      if (typeof event.sha === "string")
-        parts.push(event.sha.slice(0, 7));
-      if (typeof event.note === "string" && event.note !== "")
-        parts.push(clip(event.note));
-      return parts.join(" \xB7 ");
-    }
-    case "report": {
-      const status = event.text ?? "reported";
-      const parts = [`${name}: ${status}`];
-      const detail = reportDetail(record);
-      if (detail !== null)
-        parts.push(detail);
-      if (status === "done" || status === "handoff")
-        parts.push(reviewed ? "review \u2713" : "review \u2717");
-      if (status === "done" && waits.length > 0)
-        parts.push(`unblocks ${waits.join(", ")}`);
-      if (typeof record?.reportPath === "string")
-        parts.push(`report ${record.reportPath}`);
-      return parts.join(" \xB7 ");
-    }
-    case "question":
-      return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
-    case "person":
-      return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
-    case "tell": {
-      const told = event.tell?.to ?? [];
-      const kind = event.tell?.kind ?? "note";
-      return `${name}: told ${told.join(", ")} \xB7 ${kind} \xB7 ${clip(event.text ?? "")}`;
-    }
-    case "lead-tell": {
-      const kind = event.tell?.kind ?? "note";
-      return `${name}: ${kind} from another lead \xB7 ${clip(event.text ?? "")}`;
-    }
-    case "clash":
-    case "merge":
-      return event.text === null || event.text === "" ? null : event.text;
-    default:
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
       return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
   }
-}
-function phasesWaitingFor(record, records) {
-  const phases = new Set;
-  for (const one of records) {
-    if (one.id === record.id)
-      continue;
-    if (one.waitsFor.includes(record.phase))
-      phases.add(one.phase);
-  }
-  return [...phases].sort();
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
 }
 
-// src/hooks/lead-notes.ts
-function notesLine(lines) {
-  const newest = lines.at(-1);
-  if (newest === undefined)
-    return null;
-  const more = lines.length - 1;
-  return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
-}
-function leadTitle(input, event, env, sessionId, name) {
-  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
-}
-function leadStartNote() {
-  return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
-}
-function taskListReminder() {
-  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
-}
-function reminderFor(paths, env, sessionId, event) {
-  if (event !== "UserPromptSubmit")
-    return null;
-  const listId = taskListId(env, sessionId);
-  if (listId === "")
-    return null;
-  const read = readSessionTasks(paths.claudeConfigDir, listId);
-  if (read.state === "unreadable")
-    return null;
-  return read.state === "read" && read.files > 0 ? null : taskListReminder();
-}
-function answered(event, lines, name) {
-  const text = lines.length === 0 ? null : lines.join(`
-`);
-  const { problem, title } = name;
-  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
-  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
-}
-function leadNotesAnswer(input, event, paths, repo, env) {
-  const sessionId = input.session_id;
-  if (repo === null || !isSessionId(sessionId))
-    return SILENT;
-  const lead = readLead(paths.stateDir, repo, sessionId);
-  if (lead === null)
-    return SILENT;
-  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
-  const reminder = reminderFor(paths, env, sessionId, event);
-  const cursor = readNotesState(paths.stateDir, repo, sessionId);
-  if (cursor === null) {
-    writeNotesState(paths.stateDir, repo, sessionId, {
-      offset: eventsEndOffset(paths.stateDir, repo)
-    });
-    return answered(event, [...startNote, ...reminder === null ? [] : [reminder]], leadTitle(input, event, env, sessionId, lead.name));
-  }
-  const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
-  const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
-  const reviewFile = reviewsFile(paths.stateDir, repo);
-  const lines = [];
-  for (const crewEvent of read.events) {
-    if (crewEvent.lead !== sessionId)
-      continue;
-    const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
-    const reviewed = record !== null && reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
-    const line = eventLine(crewEvent, record, record === null ? [] : phasesWaitingFor(record, mine), reviewed);
-    if (line !== null)
-      lines.push(line);
-  }
-  writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  const note = notesLine(lines);
-  return answered(event, [...startNote, ...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
-}
-
-// src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
-function editedFile(input, cwd) {
-  const fields = toolInput(input);
-  const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
-  if (path === null)
-    return null;
-  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
-}
-function editsMainFolder(file, mainCheckout, worktrees) {
-  if (!isInside(file, mainCheckout))
-    return false;
-  return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
-}
-function mainFolderRefusal(mainCheckout) {
-  return [
-    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
-    "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
-  ].join(`
-`);
-}
-function mainFolderGuard(context) {
-  const { project, input, cwd, env } = context;
-  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
-    return SILENT;
-  }
-  const file = editedFile(input, cwd);
-  if (file === null)
-    return SILENT;
-  const main = realPath(project.mainCheckout);
-  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
-  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
-    return SILENT;
-  }
-  return toolDecision("deny", mainFolderRefusal(main));
-}
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/workflow/auto-merge.ts
 function autoMergeOff(resolved, base) {
@@ -18718,29 +18516,240 @@ async function checkPullRequest(world, target, defaultBranches = new Map) {
   };
 }
 
-// src/workflow/pr-switches.ts
-function turnOn(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  const literal = value === "true" ? "true" : `"${value}"`;
-  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/setup/retry-watchdog.ts
+var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
+var RETRY_WATCHDOG_VALUE = "1";
+var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
+var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
+var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
+  "env",
+  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
+];
+var RETRY_WATCHDOG_SETTINGS = [
+  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
+  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
+];
+var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
+var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
+var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
+
+// src/crew/start.ts
+var CLASH_STATES = [...RUNNING_STATES, "queued"];
+
+// src/crew/watch.ts
+var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
+var CLIP_CHARS = 120;
+function clip(text) {
+  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+  return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
+function reportDetail(record) {
+  if (record === null || record.reportPath === null)
     return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
+  let report;
+  try {
+    report = readReport(record.reportPath);
+  } catch {
     return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
   }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
+  if (report === null)
+    return null;
+  if (report.status === "blocked" && report.question !== null) {
+    return `waits on: ${clip(report.question)}`;
+  }
+  if (report.status === "failed") {
+    const why = report.summary ?? report.open[0] ?? null;
+    return why === null ? null : `why: ${clip(why)}`;
+  }
+  return null;
+}
+function eventLine(event, record, waits, reviewed) {
+  const name = event.name;
+  switch (event.type) {
+    case "state": {
+      if (event.state === "starting" && (event.text === null || event.text === ""))
+        return null;
+      const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
+      return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;
+    }
+    case "step": {
+      const parts = [`${name}: ${event.text ?? "step"}`];
+      if (typeof event.sha === "string")
+        parts.push(event.sha.slice(0, 7));
+      if (typeof event.note === "string" && event.note !== "")
+        parts.push(clip(event.note));
+      return parts.join(" \xB7 ");
+    }
+    case "report": {
+      const status = event.text ?? "reported";
+      const parts = [`${name}: ${status}`];
+      const detail = reportDetail(record);
+      if (detail !== null)
+        parts.push(detail);
+      if (status === "done" || status === "handoff")
+        parts.push(reviewed ? "review \u2713" : "review \u2717");
+      if (status === "done" && waits.length > 0)
+        parts.push(`unblocks ${waits.join(", ")}`);
+      if (typeof record?.reportPath === "string")
+        parts.push(`report ${record.reportPath}`);
+      return parts.join(" \xB7 ");
+    }
+    case "question":
+      return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
+    case "person":
+      return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
+    case "tell": {
+      const told = event.tell?.to ?? [];
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: told ${told.join(", ")} \xB7 ${kind} \xB7 ${clip(event.text ?? "")}`;
+    }
+    case "lead-tell": {
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: ${kind} from another lead \xB7 ${clip(event.text ?? "")}`;
+    }
+    case "clash":
+    case "merge":
+      return event.text === null || event.text === "" ? null : event.text;
+    default:
+      return null;
+  }
+}
+function phasesWaitingFor(record, records) {
+  const phases = new Set;
+  for (const one of records) {
+    if (one.id === record.id)
+      continue;
+    if (one.waitsFor.includes(record.phase))
+      phases.add(one.phase);
+  }
+  return [...phases].sort();
+}
+
+// src/hooks/lead-notes.ts
+function notesLine(lines) {
+  const newest = lines.at(-1);
+  if (newest === undefined)
+    return null;
+  const more = lines.length - 1;
+  return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
+}
+function leadTitle(input, event, env, sessionId, name) {
+  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
+}
+function leadStartNote() {
+  return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
+}
+function taskListReminder() {
+  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+}
+function reminderFor(paths, env, sessionId, event) {
+  if (event !== "UserPromptSubmit")
+    return null;
+  const listId = taskListId(env, sessionId);
+  if (listId === "")
+    return null;
+  const read = readSessionTasks(paths.claudeConfigDir, listId);
+  if (read.state === "unreadable")
+    return null;
+  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+}
+function answered(event, lines, name) {
+  const text = lines.length === 0 ? null : lines.join(`
+`);
+  const { problem, title } = name;
+  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
+  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
+}
+function leadNotesAnswer(input, event, paths, repo, env) {
+  const sessionId = input.session_id;
+  if (repo === null || !isSessionId(sessionId))
+    return SILENT;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null)
+    return SILENT;
+  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
+  const reminder = reminderFor(paths, env, sessionId, event);
+  const cursor = readNotesState(paths.stateDir, repo, sessionId);
+  if (cursor === null) {
+    writeNotesState(paths.stateDir, repo, sessionId, {
+      offset: eventsEndOffset(paths.stateDir, repo)
+    });
+    return answered(event, [...startNote, ...reminder === null ? [] : [reminder]], leadTitle(input, event, env, sessionId, lead.name));
+  }
+  const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
+  const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
+  const reviewFile = reviewsFile(paths.stateDir, repo);
+  const lines = [];
+  for (const crewEvent of read.events) {
+    if (crewEvent.lead !== sessionId)
+      continue;
+    const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
+    const reviewed = record !== null && reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
+    const line = eventLine(crewEvent, record, record === null ? [] : phasesWaitingFor(record, mine), reviewed);
+    if (line !== null)
+      lines.push(line);
+  }
+  writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
+  const note = notesLine(lines);
+  return answered(event, [...startNote, ...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
+}
+
+// src/hooks/main-folder-guard.ts
+import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
+function editedFile(input, cwd) {
+  const fields = toolInput(input);
+  const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
+  if (path === null)
+    return null;
+  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
+}
+function editsMainFolder(file, mainCheckout, worktrees) {
+  if (!isInside(file, mainCheckout))
+    return false;
+  return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
+}
+function mainFolderRefusal(mainCheckout) {
+  return [
+    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    "Already working in a worktree? Edit the same file under that worktree's folder.",
+    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
+  ].join(`
+`);
+}
+function mainFolderGuard(context) {
+  const { project, input, cwd, env } = context;
+  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
+    return SILENT;
+  }
+  const file = editedFile(input, cwd);
+  if (file === null)
+    return SILENT;
+  const main = realPath(project.mainCheckout);
+  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
+  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
+    return SILENT;
+  }
+  return toolDecision("deny", mainFolderRefusal(main));
 }
 
 // src/hooks/merge-guard.ts
@@ -18791,7 +18800,7 @@ function adminRefusal(ref) {
 function adminMerge(calls) {
   return calls.find((one) => one.admin && !one.disarms);
 }
-function ownRepository(project, env, timeoutMs) {
+function ownRepository2(project, env, timeoutMs) {
   const folder = project.mainCheckout ?? project.root;
   const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
   return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
@@ -18963,7 +18972,7 @@ async function pullRequestGuard(context) {
       const left = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (left <= 0)
         return { late: true, reason: null };
-      own = ownRepository(project, env, left);
+      own = ownRepository2(project, env, left);
       ownRead = true;
     }
     return { late: false, reason: foreignRepository(repo, own) };

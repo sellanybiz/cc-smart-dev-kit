@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { issuesWorld, TEST_HOME } from "../testing/issues-world";
 import { type FakeIssueGhOptions, type FakeRestIssue, fakeIssueGh } from "./fake-github";
-import { parseIssueRef, type PickOutcome, pickIssue } from "./pickup";
+import { type PickOutcome, parseIssueRef, pickIssue } from "./pickup";
 
 const LABELED = "2026-10-25T08:00:00Z";
 

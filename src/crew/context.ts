@@ -7,8 +7,8 @@
 import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
-import type { GhExec } from "../workflow/merge-check";
 import { type LoadReading, machineLoad, realLoadFacts } from "../machine/load";
+import type { GhExec } from "../workflow/merge-check";
 import type { CleanLock } from "../worktrees/clean";
 import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
