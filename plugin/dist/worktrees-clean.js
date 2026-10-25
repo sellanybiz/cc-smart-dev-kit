@@ -7819,7 +7819,6 @@ var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
 var feedCursor = object({
   etag: string2().nullable(),
-  since: string2(),
   top: count
 });
 var issueFeedFields = object({
@@ -11976,6 +11975,11 @@ var pendingSchema = object({
   })),
   version: literal(1)
 });
+
+// src/issues/feed.ts
+var PAGE = 100;
+var ISSUES_QUERY = `state=all&sort=created&direction=desc&per_page=${PAGE}`;
+var COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [

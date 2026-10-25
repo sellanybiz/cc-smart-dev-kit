@@ -9,7 +9,7 @@ import { FAKE_LOGIN } from "../testing/fake-gh";
 import { commitConfig } from "../testing/hooks";
 import { issuesWorld } from "../testing/issues-world";
 import { type FakeFeed, FEED_REPO, fakeFeed } from "./fake-feed";
-import { pollIssueFeed } from "./feed";
+import { type FeedResult, pollIssueFeed } from "./feed";
 import { passBudget } from "./pending";
 
 const T0 = Date.parse("2026-10-25T10:00:00Z");
@@ -22,9 +22,14 @@ function feedWorld(issues: Record<string, unknown> = { enabled: true, watch: tru
   });
   const feed: FakeFeed = fakeFeed(made.gh.exec);
   const world = { ...made.world, gh: feed.exec };
-  const poll = (now: number, slow?: () => Promise<void>) =>
+  const poll = (
+    now: number,
+    slow?: () => Promise<void>,
+    deliver?: (result: FeedResult) => Promise<void>,
+  ) =>
     pollIssueFeed({
       budget: passBudget(() => now),
+      ...(deliver === undefined ? {} : { deliver }),
       now,
       repo: made.repo,
       stateDir: made.paths.stateDir,
@@ -106,8 +111,8 @@ describe("the first look", () => {
     ]);
     expect(feed.requests.map((one) => one.ifNoneMatch)).toEqual([null, null]);
     const kept = state();
-    expect(kept?.issues).toEqual({ etag: null, since: "2026-10-25T08:00:00Z", top: 1 });
-    expect(kept?.comments).toEqual({ etag: null, since: "2026-10-25T08:30:00Z", top: 100 });
+    expect(kept?.issues).toEqual({ etag: null, top: 1 });
+    expect(kept?.comments).toEqual({ etag: null, top: 100 });
     expect(kept?.nextAt).toBe(T0 + 5 * MINUTE);
   });
 
@@ -158,14 +163,17 @@ describe("a look after the first", () => {
     await poll(T0);
     feed.requests.length = 0;
     await poll(T0 + 5 * MINUTE);
-    expect(feed.requests.map((one) => one.path)).toEqual([
-      `repos/${FEED_REPO}/issues?state=all&sort=updated&direction=asc&per_page=100&since=2026-10-25T08:00:00Z`,
-      `repos/${FEED_REPO}/issues/comments?sort=updated&direction=asc&per_page=100&since=2026-10-25T08:30:00Z`,
-    ]);
+    // The same two URLs every look: newest first, a whole page, no `since`.
+    const urls = [
+      `repos/${FEED_REPO}/issues?state=all&sort=created&direction=desc&per_page=100`,
+      `repos/${FEED_REPO}/issues/comments?sort=created&direction=desc&per_page=100`,
+    ];
+    expect(feed.requests.map((one) => one.path)).toEqual(urls);
     // The first conditional look has no tag yet; its answer gives one.
     expect(feed.requests.map((one) => one.ifNoneMatch)).toEqual([null, null]);
     feed.requests.length = 0;
     await poll(T0 + 10 * MINUTE);
+    expect(feed.requests.map((one) => one.path)).toEqual(urls);
     expect(feed.requests.every((one) => one.ifNoneMatch !== null)).toBe(true);
   });
 
@@ -231,6 +239,103 @@ describe("a look after the first", () => {
     expect((await poll(T0 + 5 * MINUTE)).news).toHaveLength(1);
     feed.issues.push({ author: "b", createdAt: "2026-10-25T10:01:00Z", number: 3, title: "Two" });
     expect((await poll(T0 + 10 * MINUTE)).news).toEqual(['issue #3 opened by b: "Two"']);
+  });
+
+  test("a full page of updates to old issues does not hide a new one (the reviewer's trace)", async () => {
+    const { feed, poll } = feedWorld();
+    // 99 old issues, then the first look.
+    for (let n = 1; n <= 99; n += 1) {
+      feed.issues.push({
+        author: "old-timer",
+        createdAt: `2026-10-25T08:${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}Z`,
+        number: n,
+        title: `Old ${n}`,
+      });
+    }
+    await poll(T0);
+    // Between the looks: #100 opens, #101 opens, and a label touches every old issue after both.
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 100,
+      title: "Hidden one",
+      updatedAt: "2026-10-25T10:04:00Z",
+    });
+    feed.issues.push({
+      author: "bob",
+      createdAt: "2026-10-25T10:01:30Z",
+      number: 101,
+      title: "Second",
+    });
+    for (const old of feed.issues.slice(0, 99)) old.updatedAt = "2026-10-25T10:02:30Z";
+    const told = [
+      ...(await poll(T0 + 5 * MINUTE)).news,
+      ...(await poll(T0 + 10 * MINUTE)).news,
+      ...(await poll(T0 + 15 * MINUTE)).news,
+    ];
+    expect(told.sort()).toEqual([
+      'issue #100 opened by alice: "Hidden one"',
+      'issue #101 opened by bob: "Second"',
+    ]);
+  });
+
+  test("a full page of new issues: ten lines and a floor for the rest, nothing lost after", async () => {
+    const { feed, poll, state } = feedWorld();
+    history(feed);
+    await poll(T0);
+    // 120 new issues between two looks: the newest page holds 100 of them.
+    for (let n = 2; n <= 121; n += 1) {
+      feed.issues.push({
+        author: "bulk",
+        createdAt: `2026-10-25T10:${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}Z`,
+        number: n,
+        title: `Issue ${n}`,
+      });
+    }
+    const out = await poll(T0 + 5 * MINUTE);
+    expect(out.news).toHaveLength(11);
+    expect(out.news[10]).toBe("and at least 90 more new on GitHub");
+    expect(state()?.issues?.top).toBe(121);
+    expect(await poll(T0 + 10 * MINUTE)).toEqual({ news: [], notices: [] });
+  });
+
+  test("the cursor moves only after the news is delivered: a failed delivery is found again", async () => {
+    const { feed, poll, state } = feedWorld();
+    history(feed);
+    await poll(T0);
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 2,
+      title: "New",
+    });
+    const before = state();
+    const failing = async () => {
+      throw new Error("the store is busy");
+    };
+    await expect(poll(T0 + 5 * MINUTE, undefined, failing)).rejects.toThrow("the store is busy");
+    // Nothing moved: not the cursor, not the time of the next look.
+    expect(state()).toEqual(before);
+    const seen: FeedResult[] = [];
+    const out = await poll(T0 + 5 * MINUTE, undefined, async (result) => {
+      seen.push(result);
+    });
+    expect(out.news).toEqual(['issue #2 opened by alice: "New"']);
+    expect(seen).toEqual([out]);
+    expect(state()?.issues?.top).toBe(2);
+  });
+
+  test("a title is cut by whole characters: an emoji at the cut is not split", async () => {
+    const { feed, poll } = feedWorld();
+    await poll(T0);
+    feed.issues.push({
+      author: "alice",
+      createdAt: "2026-10-25T10:01:00Z",
+      number: 1,
+      title: `${"a".repeat(98)}😀😀😀`,
+    });
+    const line = (await poll(T0 + 5 * MINUTE)).news[0] ?? "";
+    expect(line).toBe(`issue #1 opened by alice: "${"a".repeat(98)}😀…"`);
   });
 
   test("more than ten new in one look: ten lines and one that counts the rest", async () => {

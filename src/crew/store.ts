@@ -2089,12 +2089,10 @@ export function issueFeedDir(stateDir: string, repo: string): string {
   return join(crewStoreDir(stateDir, repo), "issue-feed");
 }
 
-/** Where one list is up to: the newest number or id told, the cursor, and the tag of the last answer. */
+/** Where one list is up to: the newest number or id told, and the tag of the last answer. */
 const feedCursor = z.object({
-  /** The tag GitHub sent with the answer for the cursor's own URL; null when it sent none, or the cursor moved. */
+  /** The tag GitHub sent with the answer for the list's own URL; null when it sent none yet. */
   etag: z.string().nullable(),
-  /** The newest `updated_at` seen (`since` of the next read). */
-  since: z.string(),
   /** The highest issue number (or comment id) already told or passed over. */
   top: count,
 });

@@ -627,6 +627,13 @@ describe("crew report", () => {
       expect(stored(world)).toBeNull();
     });
 
+    test("GI4: the cap counts different issues: one number repeated is still one", async () => {
+      const world = await crewWorld1();
+      const same = Array.from({ length: MAX_PHASE_ISSUES + 1 }, () => ["--issue", "5"]).flat();
+      expect(await runCrew([...doneArgs(), ...same], ctxOf(world))).toBe(0);
+      expect(stored(world)?.issues).toEqual([5]);
+    });
+
     test("GI4: the JSON part's list, and the two together, stay within the cap", async () => {
       const world = await crewWorld1();
       const many = (count: number) => Array.from({ length: count }, (_, at) => at + 1);

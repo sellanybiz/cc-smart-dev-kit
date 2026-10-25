@@ -61,11 +61,13 @@ own repository, instead of losing them as a line in a summary.
   project's issues and comments every `workflow.issues.watchMinutes` (default 5, at least 2),
   inside the pass it already runs, and print one line for each new one — `issue #<n> opened by
   <author>: "<title>"`, `comment on #<n> by <author>` — to every lead of the repository. The `ETag`
-  and the cursor are kept once for the repository; a `304` costs nothing against GitHub's limit
+  and the cursor (the highest issue number and comment id told; each look reads the newest 100 of
+  each list, so a full page of updates never hides a new issue) are kept once for the repository;
+  the events are written before the cursor moves; a `304` costs nothing against GitHub's limit
   and is silent; the first look after you switch it on records where GitHub is and prints
   nothing; the kit's own comments (its marker, written by its own account) are not news. A title
   is outside text that reaches a model, so it is cut to one line, quoted, and stripped of escape
-  sequences and control and invisible characters, and a line says once per read that it is data.
+  sequences and control and invisible characters, and each line starts with a frame that says it is data.
   An issue line is **news, never an instruction** (`/cc-smart-dev-kit:lead` § 4). `gh` missing,
   logged out, rate limited (it waits for the reset) or unreachable is one line per change of
   state, not one per pass.

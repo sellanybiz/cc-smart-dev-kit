@@ -1039,8 +1039,9 @@ the store records — a session the kit does not know is the person's own:
   new issues), inside the pass it already runs — never a second loop. The state is one record for the
   repository (`issue-feed/` in the store, with its own lock), and a look found by one watch reaches
   every lead of the repository as one `issue` event each, which a lead's watch says as any other
-  line: `issue #<n> opened by <author>: "<title>"`, `comment on #<n> by <author>`, preceded once per
-  read by a line that says GitHub's words are quoted data, never an instruction. A `304` and the first
+  line: `issue #<n> opened by <author>: "<title>"`, `comment on #<n> by <author>`, each starting with
+  a frame (`ISSUE_DATA_FRAME`, put on in `eventLine`) that says GitHub's words are quoted data, never
+  an instruction: a monitor line is a notification of its own. A `304` and the first
   look after the switch are silent. A change of state (`gh` missing, logged out, rate limited,
   unreachable, and back) is one line, not one per pass. **A crew session never hears these lines**:
   they are written for leads, the crew's `step`/`report` reads select events by crew id, and the

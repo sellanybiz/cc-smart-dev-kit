@@ -183,3 +183,25 @@ fails for it: not verified, but the lead normally runs with a person's `gh auth`
    nothing about page 2. A 304 carries no `Link`.
 9. Requests go one after another, never at the same time (secondary limits).
 10. The lead's login comes from `gh api user --jq .login`.
+
+## 6. Update, 2026-10-25, after the review: no `since`
+
+The shape in § 3 (`sort=updated&direction=asc&since=<cursor>`, cursor advanced to the newest
+`updated_at`) was wrong for a lead that must not lose an item. Three docs facts above show why:
+
+- A page holds 100 at most and the reads follow no `Link rel="next"` (row 8 above). With more than
+  100 updates since the cursor, the new item can sit on page 2 while the cursor already moved past
+  the highest number of page 1, so it is skipped for good.
+- 100 or more items with the same `updated_at` second keep `since` where it is, so the saved
+  `ETag` stays valid and every later read is a `304`: the feed stalls.
+- Both are easy to reach: a laptop that slept overnight, a rate-limit wait, or a bulk label.
+
+What the code does now (`src/issues/feed.ts`): one fixed URL per list, newest first —
+`state=all&sort=created&direction=desc&per_page=100` for the issues and
+`sort=created&direction=desc&per_page=100` for the comments — with no `since`. A number and an id
+only grow, so an item is new when it is above the highest told, and the newest page holds every new
+one unless more than 100 came in between two looks (the line then says "at least"). The URL never
+changes, so its `ETag` stays valid between looks. The cost: a `200` carries up to 100 items when
+anything in the list changes (an edit, a new comment count), where a `since` read would carry fewer.
+Not verified against real GitHub: that the repo-wide comments list accepts `sort=created` and
+`direction=desc` (the docs list `sort` and `direction` for it, § 3).

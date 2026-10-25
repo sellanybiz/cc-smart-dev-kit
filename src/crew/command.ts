@@ -658,7 +658,8 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
     if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
       return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
     }
-    issues.push(Number(raw));
+    // The cap counts different issues: the same number repeated is one.
+    if (!issues.includes(Number(raw))) issues.push(Number(raw));
   }
   if (issues.length > MAX_PHASE_ISSUES) {
     return {

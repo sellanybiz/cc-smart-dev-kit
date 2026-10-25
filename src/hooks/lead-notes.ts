@@ -46,7 +46,7 @@ import {
   writeNotesState,
 } from "../crew/store";
 import { readSessionTasks, taskListId } from "../crew/tasks";
-import { eventLine, ISSUE_DATA_FRAME, phasesWaitingFor, quotesGitHub } from "../crew/watch";
+import { eventLine, phasesWaitingFor } from "../crew/watch";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -191,8 +191,7 @@ export function leadNotesAnswer(
       record === null ? [] : phasesWaitingFor(record, mine),
       reviewed,
     );
-    // Only the newest line reaches the lead, so each line of GitHub's words carries its own frame.
-    if (line !== null) lines.push(quotesGitHub(crewEvent) ? `${ISSUE_DATA_FRAME} — ${line}` : line);
+    if (line !== null) lines.push(line);
   }
   // Past every event read, spoken or not: the next turn says only what is newer.
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });

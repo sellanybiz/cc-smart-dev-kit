@@ -8012,7 +8012,6 @@ var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
 var feedCursor = object({
   etag: string2().nullable(),
-  since: string2(),
   top: count
 });
 var issueFeedFields = object({

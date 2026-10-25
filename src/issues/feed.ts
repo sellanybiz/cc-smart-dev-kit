@@ -8,18 +8,20 @@
  * restarted monitor) share one look, held by a lock of its own (`underIssueFeedLock`), and what it
  * finds reaches every lead (`announceIssueFeed` in `watch.ts` writes one event for each).
  *
- * **Two reads, each conditional.** The newest issues (`state=all&sort=updated&direction=asc&since=`)
+ * **Two reads, each conditional.** The newest issues (`state=all&sort=created&direction=desc`)
  * and the newest comments of the whole repository, called as `gh api -i` with the `If-None-Match`
  * tag GitHub gave for that exact URL. A `304` costs nothing against the rate limit, and `gh` exits
  * 1 on it, so the status is read from the first line of stdout, never from the exit code
- * (`.claude/research/2026-10-25-gi4-conditional.md`). The tag fits one URL, so it is kept only
- * while the cursor (`since`) stays where it is.
+ * (`.claude/research/2026-10-25-gi4-conditional.md`). The URL never changes, so its tag stays
+ * valid between looks. There is no `since`: a list sorted by update has new items on any page, and
+ * a cursor that moved past a full page lost the ones on the next.
  *
- * **The cursor** is the highest issue number and comment id already told, plus the newest
- * `updated_at` seen. `since` may be inclusive, so an item is new only when its number or id is
- * above the highest told: a boundary item is never told twice, and an old issue that was edited or
- * commented on is not "opened". **The first look records where GitHub is and says nothing**, so
- * switching the watch on never floods the lead with the past; turning it off forgets the cursor.
+ * **The cursor** is the highest issue number and comment id already told. A number and an id only
+ * grow, so an item is new when it is above the cursor, and the newest page holds every new one
+ * unless more than a page came in between two looks (then the line says "at least"). An old issue
+ * that was edited or commented on is not "opened". **The first look records where GitHub is and
+ * says nothing**, so switching the watch on never floods the lead with the past; a pass that finds
+ * the switch off forgets the cursor.
  *
  * **What it says.** `issue #<n> opened by <author>: "<title>"` and `comment on #<n> by <author>`,
  * at most `MAX_NEWS` a look. A title is outside text that reaches a model: cut to one short line,
@@ -31,7 +33,13 @@
  * It only reads. It never acts on what it reads: the lead hears a line as news, and works only
  * from an issue a person labelled (`pickup.ts`).
  */
-import { clearIssueFeed, readIssueFeed, underIssueFeedLock, writeIssueFeed } from "../crew/store";
+import {
+  clearIssueFeed,
+  type IssueFeedState,
+  readIssueFeed,
+  underIssueFeedLock,
+  writeIssueFeed,
+} from "../crew/store";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { issuesOff } from "../workflow/pr-switches";
 import {
@@ -57,6 +65,11 @@ export interface FeedResult {
 export interface FeedInput {
   /** The pass's budget for GitHub work: the look takes none of it past its time. */
   budget: PassBudget;
+  /**
+   * Hands what a look found to the leads, before the cursor moves. If it throws, the cursor stays
+   * and the next look finds the same items again (a line twice beats a line lost).
+   */
+  deliver?: (result: FeedResult) => Promise<void>;
   now: number;
   /** The store's key for the repository (the main checkout's path). */
   repo: string;
@@ -111,7 +124,9 @@ export function oneLine(text: string, max: number): string {
     .replace(HIDDEN, "")
     .replace(/\s+/g, " ")
     .trim();
-  return plain.length <= max ? plain : `${plain.slice(0, max - 1)}…`;
+  // By whole characters: a cut inside an emoji's surrogate pair would print as an escape.
+  const chars = Array.from(plain);
+  return chars.length <= max ? plain : `${chars.slice(0, max - 1).join("")}…`;
 }
 
 /** A login as a line carries it: only the characters a login (or an app's `[bot]`) has. */
@@ -122,9 +137,6 @@ function authorOf(value: unknown): string {
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** A time as GitHub prints it, to the second. */
-const stamp = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /** One answer of `gh api -i`: the status, the headers (lower-cased names) and the body. */
 interface Reply {
@@ -192,7 +204,8 @@ function problemOf(
         : reply.status === 401 || why.startsWith("gh is not logged in")
           ? "logged-out"
           : "failed";
-  return { kind: "problem", line: why, problem, waitUntil: null };
+  // `why` carries the last line of `gh`'s own stderr: cleaned like any text from outside.
+  return { kind: "problem", line: oneLine(why, 300), problem, waitUntil: null };
 }
 
 /** The look itself, for one repository, while it holds the lock. */
@@ -264,40 +277,44 @@ const issuesPath = (name: string, query: string): string => `repos/${name}/issue
 const commentsPath = (name: string, query: string): string =>
   `repos/${name}/issues/comments?${query}`;
 
+/** The most items one read holds: GitHub's largest page. */
+const PAGE = 100;
+
+/** The newest-first query of each list, the same URL every look (so its tag stays valid). */
+const ISSUES_QUERY = `state=all&sort=created&direction=desc&per_page=${PAGE}`;
+const COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
+
 interface Cursor {
   etag: null | string;
-  since: string;
   top: number;
 }
 
-/** The number or id and the times of the first item of a newest-first read; none for an empty list. */
-function newest(items: unknown[], key: "id" | "number"): { at: string; top: number } | null {
-  const first = items[0];
-  if (!isObject(first)) return null;
-  const top = first[key];
-  const at = first.created_at;
-  return typeof top === "number" && Number.isInteger(top) && typeof at === "string"
-    ? { at, top }
-    : null;
+/** The number or id of an item; null when it is not a whole number. */
+function markOf(item: unknown, key: "id" | "number"): null | number {
+  if (!isObject(item)) return null;
+  const mark = item[key];
+  return typeof mark === "number" && Number.isInteger(mark) ? mark : null;
 }
 
-/** A cursor moved over `items`: the highest number or id, the newest update, and a tag only while `since` stays. */
-function advance(
-  cursor: Cursor,
-  items: unknown[],
-  key: "id" | "number",
-  etag: null | string,
-): Cursor {
-  let top = cursor.top;
-  let since = cursor.since;
+/** The highest number or id among `items`, or `from` when none is higher. */
+function highest(items: unknown[], key: "id" | "number", from: number): number {
+  let top = from;
   for (const item of items) {
-    if (!isObject(item)) continue;
-    const mark = item[key];
-    if (typeof mark === "number" && Number.isInteger(mark) && mark > top) top = mark;
-    const updated = item.updated_at;
-    if (typeof updated === "string" && updated > since) since = updated;
+    const mark = markOf(item, key);
+    if (mark !== null && mark > top) top = mark;
   }
-  return { etag: since === cursor.since ? etag : null, since, top };
+  return top;
+}
+
+/**
+ * True when the read is a full page whose oldest item is still new: more than a page came in
+ * between two looks, and the older ones are out of reach.
+ */
+function overflowed(items: unknown[], key: "id" | "number", top: number): boolean {
+  return (
+    items.length >= PAGE &&
+    items.every((item) => (markOf(item, key) ?? Number.NEGATIVE_INFINITY) > top)
+  );
 }
 
 /** The number at the end of an `issue_url`; null for anything else. */
@@ -356,35 +373,31 @@ async function look(
   intervalMs: number,
 ): Promise<FeedResult> {
   const { now, repo, stateDir } = input;
-  const fail = (problem: Extract<Read, { kind: "problem" }>): FeedResult => {
-    writeIssueFeed(stateDir, repo, {
-      comments: state?.comments ?? null,
-      issues: state?.issues ?? null,
-      nextAt: problem.waitUntil ?? now + intervalMs,
-      problem: problem.problem,
-      source: name,
-      version: 1,
-    });
-    // One line when the kind of problem changes; the same kind again is silent.
-    return {
-      news: [],
-      notices: state?.problem === problem.problem ? [] : [problem.line],
-    };
+  // What the look found goes to the leads first (`deliver`), and the cursor moves only after: a
+  // delivery that fails leaves the cursor where it was, so the next look finds it all again.
+  const finish = async (result: FeedResult, next: IssueFeedState): Promise<FeedResult> => {
+    await input.deliver?.(result);
+    writeIssueFeed(stateDir, repo, next);
+    return result;
   };
-  const done = (issues: Cursor, comments: Cursor, news: string[]): FeedResult => {
-    writeIssueFeed(stateDir, repo, {
-      comments,
-      issues,
-      nextAt: now + intervalMs,
-      problem: null,
-      source: name,
-      version: 1,
-    });
-    return {
-      news,
-      notices: state?.problem !== null && state?.problem !== undefined ? [AGAIN] : [],
-    };
-  };
+  const fail = (problem: Extract<Read, { kind: "problem" }>): Promise<FeedResult> =>
+    finish(
+      // One line when the kind of problem changes; the same kind again is silent.
+      { news: [], notices: state?.problem === problem.problem ? [] : [problem.line] },
+      {
+        comments: state?.comments ?? null,
+        issues: state?.issues ?? null,
+        nextAt: problem.waitUntil ?? now + intervalMs,
+        problem: problem.problem,
+        source: name,
+        version: 1,
+      },
+    );
+  const done = (issues: Cursor, comments: Cursor, news: string[]): Promise<FeedResult> =>
+    finish(
+      { news, notices: state?.problem !== null && state?.problem !== undefined ? [AGAIN] : [] },
+      { comments, issues, nextAt: now + intervalMs, problem: null, source: name, version: 1 },
+    );
 
   if (state === null || state.issues === null || state.comments === null) {
     // The first look: where GitHub is, and nothing said about what is already there.
@@ -392,40 +405,30 @@ async function look(
       issuesPath(name, "state=all&sort=created&direction=desc&per_page=1"),
       null,
     );
-    if (issues.kind === "problem") return fail(issues);
+    if (issues.kind === "problem") return await fail(issues);
     const comments = await reader.read(
       commentsPath(name, "sort=created&direction=desc&per_page=1"),
       null,
     );
-    if (comments.kind === "problem") return fail(comments);
+    if (comments.kind === "problem") return await fail(comments);
     if (issues.kind !== "fresh" || comments.kind !== "fresh") return NOTHING;
-    const fallback = stamp(now);
-    const top = newest(issues.items, "number");
-    const last = newest(comments.items, "id");
-    return done(
-      { etag: null, since: top?.at ?? fallback, top: top?.top ?? 0 },
-      { etag: null, since: last?.at ?? fallback, top: last?.top ?? 0 },
+    return await done(
+      { etag: null, top: highest(issues.items, "number", 0) },
+      { etag: null, top: highest(comments.items, "id", 0) },
       [],
     );
   }
 
-  const issues = await reader.read(
-    issuesPath(
-      name,
-      `state=all&sort=updated&direction=asc&per_page=100&since=${state.issues.since}`,
-    ),
-    state.issues.etag,
-  );
-  if (issues.kind === "problem") return fail(issues);
-  const comments = await reader.read(
-    commentsPath(name, `sort=updated&direction=asc&per_page=100&since=${state.comments.since}`),
-    state.comments.etag,
-  );
-  if (comments.kind === "problem") return fail(comments);
+  const issues = await reader.read(issuesPath(name, ISSUES_QUERY), state.issues.etag);
+  if (issues.kind === "problem") return await fail(issues);
+  const comments = await reader.read(commentsPath(name, COMMENTS_QUERY), state.comments.etag);
+  if (comments.kind === "problem") return await fail(comments);
   // The time ran out between the reads: nothing is applied, and the next pass looks again.
   if (issues.kind === "late" || comments.kind === "late") return NOTHING;
 
   const said: Said[] = [];
+  // True when a read was a full page of new items: the count of the rest is then a floor.
+  let cut = false;
   let issueCursor: Cursor = state.issues;
   if (issues.kind === "fresh") {
     for (const item of issues.items) {
@@ -443,7 +446,8 @@ async function look(
         line: `issue #${number} opened by ${authorOf(author)}: ${JSON.stringify(oneLine(title, TITLE_CHARS))}`,
       });
     }
-    issueCursor = advance(state.issues, issues.items, "number", issues.etag);
+    issueCursor = { etag: issues.etag, top: highest(issues.items, "number", state.issues.top) };
+    cut = overflowed(issues.items, "number", state.issues.top);
   }
   let commentCursor: Cursor = state.comments;
   if (comments.kind === "fresh") {
@@ -466,7 +470,8 @@ async function look(
         line: `comment on #${on} by ${authorOf(author)}`,
       });
     }
-    commentCursor = advance(state.comments, comments.items, "id", comments.etag);
+    commentCursor = { etag: comments.etag, top: highest(comments.items, "id", state.comments.top) };
+    cut = cut || overflowed(comments.items, "id", state.comments.top);
   }
   // In the order it happened; an issue before the comment of the same second.
   const ordered = said
@@ -474,7 +479,10 @@ async function look(
     .map((one) => one.line);
   const news =
     ordered.length > MAX_NEWS
-      ? [...ordered.slice(0, MAX_NEWS), `and ${ordered.length - MAX_NEWS} more new on GitHub`]
+      ? [
+          ...ordered.slice(0, MAX_NEWS),
+          `and ${cut ? "at least " : ""}${ordered.length - MAX_NEWS} more new on GitHub`,
+        ]
       : ordered;
-  return done(issueCursor, commentCursor, news);
+  return await done(issueCursor, commentCursor, news);
 }

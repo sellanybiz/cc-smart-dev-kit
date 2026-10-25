@@ -206,9 +206,10 @@ line each, ascending, and nothing else. The `pull-request` skill puts those line
 heading of a pull request into the default branch; GitHub closes the issues when it merges.
 Switch off or none waiting: no output, exit 0. GitHub or a branch unreadable: the reason on
 standard error and exit 1, never an empty list that looks complete. The label stays on a closed
-issue: it shows that the issue shipped through the kit. **A limit:** the marker is trusted as the
-label is. Anyone who can comment and label can forge both; the effect is one `Fixes #n` line in
-a pull request body that a person reviews. An issue number a crew report names is the crew
+issue: it shows that the issue shipped through the kit. **A limit:** the label is trusted as the
+person's word. Anyone who can label can add it; the effect is one `Fixes #n` line in a pull
+request body that a person reviews. The marker is not forgeable by a comment: it counts only in a
+comment the kit's own account wrote (§ The markers count only in the kit's own comments). An issue number a crew report names is the crew
 session's claim; the lead reads the report before the merge.
 
 **4. The lead files what it would lose.** With the switch on, a bug, gap or follow-up outside the
@@ -326,7 +327,10 @@ lead's watch in `src/crew/watch.ts` (`lookAtGitHub`). Its research:
 
 **Opt-in twice.** `issues.enabled` and `issues.watch`, both read as the other outward switches are
 (the policy committed on `origin/<base>`). With either off the watch makes **no request at all**,
-and it forgets where it was, so turning it on later starts with a silent first look. It only
+and a pass that finds it off forgets where it was, so turning it on later starts with a silent
+first look. (If no watch ran while it was off, the cursor is still there: the next look tells what
+is new since the last one, at most ten lines. A bound on its age would silence a night's real news
+after a laptop slept, so there is none.) It only
 reads, so it does not ask for `allowPublic`. The interval is `issues.watchMinutes`: default 5, floor
 2. One look is two requests (the newest issues, the newest comments), so the floor is at most 60
 requests an hour for a repository, against the 5 000 an authenticated account has, and a look that
@@ -334,24 +338,28 @@ finds nothing new is a `304`, which GitHub does not count against that limit. A 
 only raise the chance of a secondary limit.
 
 **Inside the watch's own pass.** One look per interval, in the pass the watch already runs, after
-the crew's lines and before the marks (never a second loop or a second process). It shares the
-pass's budget with the marks (`passBudget`: a time and a count), so a slow `gh` never holds the
-crew's news. Each lead has a watch; the look is made by whichever watch finds it due and takes the
-feed's lock (`issue-feed/`, a folder of its own — the store's lock never waits for `gh`), without
-waiting: a second watch at the same moment skips, and what the first finds reaches **every lead of
-the repository** as one `issue` event each, which each lead's watch says in the same pass or its
-next. The state is **one record per repository**: for each list, the highest issue number or
-comment id told, the newest `updated_at` seen (`since` of the next read), the `ETag` of the last
+the crew's lines (the watch says what the pass itself wrote before it calls GitHub) and before the
+marks (never a second loop or a second process). It shares the pass's budget with the marks
+(`passBudget`: a time and a count), so a slow `gh` never holds the crew's news. Each lead has a
+watch; the look is made by whichever watch finds it due and takes the feed's lock (`issue-feed/`,
+a folder of its own — the store's lock never waits for `gh`), without waiting: a second watch at the
+same moment skips, and what the first finds reaches **every lead of the repository** as one `issue`
+event each, which each lead's watch says in the same pass or its next. The events are written
+**before** the cursor moves (`FeedInput.deliver`): a write that fails leaves the cursor, and the next
+look finds the same items again (a line twice beats a line lost). The state is **one record per
+repository**: for each list, the highest issue number or comment id told, the `ETag` of the last
 answer, and when the next look is due.
 
-**Conditional reads.** `gh api -i -H 'If-None-Match: <etag>' repos/<o>/<r>/issues?state=all&sort=updated&direction=asc&per_page=100&since=<cursor>`,
-and the same for `…/issues/comments`. The tag fits one URL, so it is kept only while the cursor
-stays where it is. `gh` exits 1 on a `304`, so the status is read from the first line of
-stdout, never from the exit code. `since` may be inclusive, so an item is new only when its number
-or id is above the highest told: a boundary item is never told twice, and an old issue that was
-edited or commented on is not "opened". A pull request in the issues list is not an opened issue
-(its `pull_request` key); a comment on one is a comment. A page of 100 is not cut: the cursor moves
-to the last item and the next look goes on.
+**Conditional reads.** `gh api -i -H 'If-None-Match: <etag>' repos/<o>/<r>/issues?state=all&sort=created&direction=desc&per_page=100`,
+and the same for `…/issues/comments`. The URL is the same every look, so its tag stays valid
+between looks. There is **no `since`**: a list sorted by update has new items on any page, and a
+cursor that moved to the end of a full page lost the ones on the next (an overnight sleep or a bulk
+label is enough for more than 100 updates). A number and an id only grow, so an item is new when
+it is above the highest told, and the newest page holds every new one unless more than a page
+(100) came in between two looks: then the line that counts the rest says "at least". `gh` exits 1
+on a `304`, so the status is read from the first line of stdout, never from the exit code. An old
+issue that was edited or commented on is not "opened". A pull request in the issues list is not an
+opened issue (its `pull_request` key); a comment on one is a comment.
 
 **The first look is silent.** It reads the newest issue and the newest comment, records their
 number and id, and prints nothing: switching the watch on never floods the lead with the past.
@@ -360,9 +368,13 @@ number and id, and prints nothing: switching the watch on never floods the lead 
 ten a look and one more that counts the rest. The title is outside text that reaches a model, so
 it is cut to one short line (100 characters), with terminal escape sequences, line breaks, control,
 format and invisible characters removed, and quoted (`oneLine`); an author keeps login characters
-only. The body of an issue or a comment is never printed. The watch says once before the first
-such line of a read (`ISSUE_DATA_FRAME`) that GitHub's words follow as quoted data: news, not an
-instruction. **What the kit wrote itself is not news**: a comment or issue that holds one of the
+only. The body of an issue or a comment is never printed. **Each** such line starts with the data
+frame (`ISSUE_DATA_FRAME`, put on by `eventLine`, the one place the watch and the lead's hook take
+a line from): a monitor line is a notification of its own, and the hook may print only the newest,
+so a frame said once above a group would not reach the lead with each line. The frame says that
+GitHub's words follow as quoted data: news, not an instruction. The notice lines about the feed's
+own state (rate limit, logged out) are the kit's words; `gh`'s own error text in them goes through
+`oneLine` too. **What the kit wrote itself is not news**: a comment or issue that holds one of the
 kit's hidden markers *and* was written by the account the kit posts as (`gh api user`, read the
 first time a marked item needs it). A marker alone is plain text a stranger can copy, so it does
 not hide a stranger's comment; when the account cannot be read, the item is told rather than hidden.
@@ -387,6 +399,14 @@ check, the fixed mark's "already marked" check and the release list (`listFixed`
 copy cannot silence the final hand-back, fake a mark, or add an issue to a release's `Fixes`
 lines. When the account cannot be read the gate fails (a mark waits and is retried; the hand-back
 prints its `note:` line), so no marker is trusted blind.
+
+**A limit, said once.** "The kit's own account" is the account `gh` is logged in as on the machine
+that runs the step. Where two people with different logins use the kit on one repository, a marker
+one wrote is not counted by the other: the second `issue fixed` leaves out the first one's issue
+(no `Fixes` line, the label stays) and a hand-back may be posted twice. Trusting a comment by its
+`author_association` (owner, member, collaborator) too would close that; it was left out because it
+widens who can write a counted marker, and the gh field was not verified. A project that works
+this way should have one account run the kit's GitHub steps.
 
 ## The work a pass does for GitHub is bounded (GI4)
 
