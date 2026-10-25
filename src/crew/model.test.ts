@@ -134,6 +134,43 @@ describe("crew model: a running crew session", () => {
   });
 });
 
+describe("crew model: a running session that cannot be moved keeps the truth", () => {
+  test("an agent view that cannot be read changes nothing, and the record stays as it was", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const code = await runCrew(
+      ["model", NAME, "--effort", "xhigh"],
+      world.ctx({}, { FAKE_AGENTS_JSON: "not json" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err[0]).toContain("agent view could not be read");
+    expect(world.err[0]).toEndWith("nothing changed");
+    expect(world.claudeVerbs()).toEqual(["agents"]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      effort: "high",
+      state: "working",
+    });
+  });
+
+  test("a stop that fails changes nothing: the process runs on, so the record goes back", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ effort: "xhigh", model: OPUS });
+    const code = await runCrew(
+      ["model", NAME, "--model", "sonnet"],
+      world.ctx({}, { FAKE_AGENTS_JSON: liveView(world), FAKE_STOP: "fail" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err[0]).toContain("claude stop a1b2c3d4 failed");
+    expect(world.err[0]).toEndWith("nothing changed");
+    expect(world.claudeVerbs()).toEqual(["agents", "stop", "agents"]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      effort: "xhigh",
+      model: OPUS,
+      state: "working",
+    });
+  });
+});
+
 describe("crew model: a session with no process to move", () => {
   test("a stopped one keeps its state and takes the new values at its next resume", async () => {
     const world = await boardWorld();
@@ -218,7 +255,8 @@ describe("crew model: the caps", () => {
     await world.addCrew({ model: OPUS, phase: "B2", slug: "other", suffix: "2b2b2b" });
     const record = await world.addCrew();
     expect(await runCrew(["model", NAME, "--model", "opus"], world.ctx())).toBe(0);
-    expect(world.claudeCalls()).toEqual([]);
+    // Agent view is read; the session is neither stopped nor resumed.
+    expect(world.claudeCalls()).toEqual([["agents", "--json", "--all"]]);
     expect(world.out).toEqual([
       `${NAME}: sonnet high → opus high · queued (its lead has 1 of 1 opus crew sessions running; it starts when one of them finishes)`,
     ]);

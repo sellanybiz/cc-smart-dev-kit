@@ -23694,7 +23694,17 @@ function opusHold(all, record, to, crew, ctx) {
 async function changeModel(record, to, effort, ctx, crew, retry) {
   const from = runsOn(record.model.named, record.effort);
   const head = `${record.name}: ${from} \u2192 ${runsOn(to.named, effort)}`;
+  const running = LIVE_STATES.includes(record.state);
+  const liveness = running ? sessionLiveness(ctx, record) : "dead";
+  if (liveness === "unknown") {
+    return { line: `${head} \xB7 ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
+  }
   const decided = await withPlacesLock(ctx.paths.stateDir, async () => {
+    if (retry) {
+      const fresh = readCrew(ctx.paths.stateDir, record.repo, record.id);
+      if (fresh?.pendingLaunch?.at !== record.pendingLaunch?.at)
+        return "stale";
+    }
     const why = record.state === "queued" ? null : opusHold(listAllCrew(ctx.paths.stateDir).records, record, to, crew, ctx);
     if (why !== null) {
       if (!retry) {
@@ -23707,27 +23717,26 @@ async function changeModel(record, to, effort, ctx, crew, retry) {
     await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort, model: to, pendingLaunch: undefined }, ctx.now());
     return null;
   });
+  if (decided === "stale")
+    return null;
   if (decided !== null) {
     return retry ? null : { line: `${head} \xB7 queued (${decided})`, ok: true };
   }
   if (record.state === "queued")
     return { line: `${head} \xB7 stored for its start`, ok: true };
-  if (!LIVE_STATES.includes(record.state)) {
+  if (!running)
     return { line: `${head} \xB7 stored for the next resume`, ok: true };
-  }
-  return await moveSession(record, to, effort, head, ctx);
+  return await moveSession(record, to, effort, head, liveness === "live", ctx);
 }
-async function moveSession(record, to, effort, head, ctx) {
+async function moveSession(record, to, effort, head, live, ctx) {
   const kept = `the new values are kept for the next resume (${COMMAND} crew resume "${record.name}")`;
-  const liveness = sessionLiveness(ctx, record);
-  if (liveness === "unknown") {
-    return { line: `${head} \xB7 ${UNREADABLE_VIEW_WHY}; ${kept}`, ok: false };
-  }
   let state = record.state;
-  if (liveness === "live") {
+  if (live) {
     const stopped = await stopSession(record, ctx);
-    if (!stopped.ok)
-      return { line: `${head} \xB7 ${stopped.why}; ${kept}`, ok: false };
+    if (!stopped.ok) {
+      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort: record.effort, model: record.model }, ctx.now());
+      return { line: `${head} \xB7 ${stopped.why}; nothing changed`, ok: false };
+    }
     state = stopped.state;
   }
   const resumed = await resumeSession(ctx, { ...record, effort, model: to, state }, changePrompt({ effort: record.effort, model: record.model.named }, { effort, model: to.named }));

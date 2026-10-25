@@ -40,7 +40,7 @@ import { pendingDiscardWhy } from "./discard";
 import { stopSession } from "./end";
 import { OPUS_TIER, placeFor, placeInputOf, RUNNING_STATES, withPlacesLock } from "./places";
 import { changedLaunch, chooseLaunch } from "./start";
-import { type CrewRecord, listAllCrew, listCrew, updateCrew } from "./store";
+import { type CrewRecord, listAllCrew, listCrew, readCrew, updateCrew } from "./store";
 import { usageFacts } from "./usage-guard";
 
 /** What `crew model` was asked, already checked to be well formed. */
@@ -128,7 +128,20 @@ async function changeModel(
 ): Promise<Changed | null> {
   const from = runsOn(record.model.named, record.effort);
   const head = `${record.name}: ${from} → ${runsOn(to.named, effort)}`;
+  // A running session is read before anything is written: a view that cannot be read says
+  // nothing about its process, and the record must not name values the session does not run on.
+  const running = (LIVE_STATES as readonly string[]).includes(record.state);
+  const liveness = running ? sessionLiveness(ctx, record) : "dead";
+  if (liveness === "unknown") {
+    return { line: `${head} · ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
+  }
   const decided = await withPlacesLock(ctx.paths.stateDir, async () => {
+    // The watch's retry acts on a record it read a pass ago: a change asked for or dropped since
+    // is the lead's newer word.
+    if (retry) {
+      const fresh = readCrew(ctx.paths.stateDir, record.repo, record.id);
+      if (fresh?.pendingLaunch?.at !== record.pendingLaunch?.at) return "stale";
+    }
     // A queued crew session is judged by its start, which reads the record.
     const why =
       record.state === "queued"
@@ -157,14 +170,13 @@ async function changeModel(
     );
     return null;
   });
+  if (decided === "stale") return null;
   if (decided !== null) {
     return retry ? null : { line: `${head} · queued (${decided})`, ok: true };
   }
   if (record.state === "queued") return { line: `${head} · stored for its start`, ok: true };
-  if (!(LIVE_STATES as readonly string[]).includes(record.state)) {
-    return { line: `${head} · stored for the next resume`, ok: true };
-  }
-  return await moveSession(record, to, effort, head, ctx);
+  if (!running) return { line: `${head} · stored for the next resume`, ok: true };
+  return await moveSession(record, to, effort, head, liveness === "live", ctx);
 }
 
 /** Stops a running session (when its process lives) and resumes it on the values just stored. */
@@ -173,17 +185,24 @@ async function moveSession(
   to: RecordedModel,
   effort: string,
   head: string,
+  live: boolean,
   ctx: CrewContext,
 ): Promise<Changed> {
   const kept = `the new values are kept for the next resume (${COMMAND} crew resume "${record.name}")`;
-  const liveness = sessionLiveness(ctx, record);
-  if (liveness === "unknown") {
-    return { line: `${head} · ${UNREADABLE_VIEW_WHY}; ${kept}`, ok: false };
-  }
   let state = record.state;
-  if (liveness === "live") {
+  if (live) {
     const stopped = await stopSession(record, ctx);
-    if (!stopped.ok) return { line: `${head} · ${stopped.why}; ${kept}`, ok: false };
+    if (!stopped.ok) {
+      // Its process runs on as it was, so the record goes back to what it runs on.
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { effort: record.effort, model: record.model },
+        ctx.now(),
+      );
+      return { line: `${head} · ${stopped.why}; nothing changed`, ok: false };
+    }
     state = stopped.state;
   }
   const resumed = await resumeSession(
