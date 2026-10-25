@@ -14,7 +14,7 @@
  * a command in a list is printed on a line of its own, never wrapped, so it copies whole.
  */
 
-import { COMMAND, PLUGIN } from "../build-info/names";
+import { COMMAND } from "../build-info/names";
 import { usageError } from "../cli/help";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
@@ -35,36 +35,7 @@ import {
   setAvailable,
   setUnavailable,
 } from "./state";
-
-/** The skill a session reads while the person cannot answer, and the one that goes through the list. */
-export const UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
-export const AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
-
-/** The longest words and command a park keeps: a question, not a transcript. */
-export const TEXT_MAX = 4_000;
-export const COMMAND_MAX = 16_000;
-
-export const USAGE = `Usage: ${COMMAND} user <command>
-
-The person's availability. While they cannot answer, a session parks what needs them instead
-of asking, and the hooks hold the line (${UNAVAILABLE_SKILL}).
-
-Commands:
-  unavailable [--until <time>]
-                 The person cannot answer now. --until says when they are expected back
-                 (8h, 90m, 07:30 or an ISO time): a note only, it never switches back.
-  available      They can answer again. What was parked stays on the list for them.
-  status [--json]
-                 Whether they can answer, and how many items wait.
-  park --kind <question|action|decision> "<text>" [--command "<command>"]
-       [--option "<option>"]... [--recommend <n>]
-                 Put one item on the list. An action names its exact command, a question its
-                 options and the recommended one (counted from 1).
-  list [--json]  The items, each with its exact command.
-  clear <n>... | --all
-                 Take answered items off the list.
-
-Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
+import { AVAILABLE_SKILL, COMMAND_MAX, TEXT_MAX, USER_USAGE } from "./words";
 
 /** What a `user` command reads and prints through: the tests hand in their own. */
 export interface UserContext {
@@ -394,7 +365,7 @@ async function runClear(args: string[], ctx: UserContext): Promise<number> {
 export async function runUser(args: string[], ctx: UserContext): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined) {
-    ctx.say(USAGE);
+    ctx.say(USER_USAGE);
     return 2;
   }
   try {

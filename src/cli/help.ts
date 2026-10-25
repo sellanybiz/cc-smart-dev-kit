@@ -33,7 +33,7 @@ import {
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
-import { USAGE as USER_USAGE } from "../user-away/command";
+import { USER_USAGE } from "../user-away/words";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { LAUNCH_USAGE } from "./launch";

@@ -158,14 +158,14 @@ export async function setUnavailable(
 
 /**
  * The person can answer again. The list stays: they go through it after the state is back, so
- * a question can be asked of them at all. What sessions last heard is forgotten.
+ * a question can be asked of them at all. What sessions last heard stays too: each session that
+ * heard "unavailable" is told once that it is over (`forgetSaid`).
  */
 export async function setAvailable(stateDir: string): Promise<AwayState> {
   const { state } = await change(stateDir, (current) => {
     current.unavailable = false;
     current.since = null;
     current.until = null;
-    current.said = {};
   });
   return state;
 }
@@ -230,6 +230,20 @@ export async function sayOnce(stateDir: string, session: string, key: string): P
     delete state.said[session];
     state.said[session] = key;
     for (const old of Object.keys(state.said).slice(0, -MAX_SAID)) delete state.said[old];
+    return true;
+  });
+  return result;
+}
+
+/**
+ * True when `session` had a recorded note, and forgets it: the session is told once that the
+ * person is available again, and never again until the next time. The cheap path takes no lock.
+ */
+export async function forgetSaid(stateDir: string, session: string): Promise<boolean> {
+  if (readAway(stateDir).said[session] === undefined) return false;
+  const { result } = await change(stateDir, (state) => {
+    if (state.said[session] === undefined) return false;
+    delete state.said[session];
     return true;
   });
   return result;

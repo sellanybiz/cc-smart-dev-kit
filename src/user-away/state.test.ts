@@ -6,6 +6,7 @@ import {
   AwayStateError,
   awayStateFile,
   clearItems,
+  forgetSaid,
   type ParkDraft,
   parkItem,
   readAway,
@@ -213,14 +214,24 @@ describe("saying a note once", () => {
     expect(await sayOnce(stateDir, "s2", "a|1")).toBe(true);
   });
 
-  test("the record keeps the newest sessions only, and available clears it", async () => {
+  test("the record keeps the newest sessions only", async () => {
     const stateDir = tempDir("away");
     for (let index = 0; index < 120; index += 1) await sayOnce(stateDir, `s${index}`, "k");
     const kept = Object.keys(readAway(stateDir).said);
     expect(kept).toHaveLength(100);
     expect(kept).not.toContain("s0");
     expect(kept).toContain("s119");
+  });
+
+  test("available keeps what was said, so each session can be told once that it is over", async () => {
+    const stateDir = tempDir("away");
+    await setUnavailable(stateDir, T0, null);
+    await sayOnce(stateDir, "s1", "k");
     await setAvailable(stateDir);
+    expect(readAway(stateDir).said).toEqual({ s1: "k" });
+    expect(await forgetSaid(stateDir, "s1")).toBe(true);
+    expect(await forgetSaid(stateDir, "s1")).toBe(false);
+    expect(await forgetSaid(stateDir, "never")).toBe(false);
     expect(readAway(stateDir).said).toEqual({});
   });
 });
