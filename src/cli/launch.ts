@@ -347,6 +347,19 @@ async function launchTarget(
 }
 
 /**
+ * True when Claude Code's own arguments name a model (`--model <id>` or `--model=<id>`): that
+ * argument overrides the `model` key of every settings file (proved on 2.1.310). The scan stops
+ * at a bare `--`, after which `claude` reads a prompt, not options.
+ */
+function claudeArgsSetModel(claudeArgs: readonly string[]): boolean {
+  for (const arg of claudeArgs) {
+    if (arg === "--") return false;
+    if (arg === "--model" || arg.startsWith("--model=")) return true;
+  }
+  return false;
+}
+
+/**
  * One line per key the settings chain still gives a session this launch starts (facts only,
  * never a model suggested). The launch file names only the address, and Claude Code merges `env`
  * one variable at a time (`docs/claude-code-contract.md`, P3), so:
@@ -357,13 +370,21 @@ async function launchTarget(
  *   asks Anthropic for a model that does not exist — only in `--no-gateway`, the path that
  *   reaches Anthropic; on the gateway a slot name is what the router reads. `state.files` is
  *   in the order Claude Code applies them, and the first file that sets a key decides it, so a
- *   key a file before it sets again is not named: the session never asks for that value.
+ *   key a file before it sets again is not named: the session never asks for that value. An
+ *   empty text decides a key too (it blanks the lower file's value, proved on 2.1.310). A
+ *   `--model` argument overrides the files' `model` key, so that key is not named when the
+ *   launch passes one (`claudeArgsSetModel`); the env keys it does not touch.
  * No mode: no file, the settings decide as for `claude`, nothing to say. A file that cannot be
  * read holds no facts and says nothing here (`doctor` and `gateway project status` name it); a
  * file whose address alone is malformed still holds its other keys, and they are named.
  */
-function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
+function settingsNotes(
+  mode: LaunchMode,
+  ctx: LaunchContext,
+  claudeArgs: readonly string[],
+): string[] {
   if (mode.kind === "default") return [];
+  const modelFromArgs = claudeArgsSetModel(claudeArgs);
   const state = projectGatewayState(ctx.cwd, {
     configPath: ctx.configPath,
     settingsFile: ctx.settingsFile,
@@ -381,6 +402,7 @@ function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
     for (const fact of file.modelKeys) {
       if (decided.has(fact.key)) continue;
       decided.add(fact.key);
+      if (fact.key === "model" && modelFromArgs) continue;
       if (!isSlotKey(fact.value.trim())) continue;
       lines.push(
         `launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`,
@@ -448,7 +470,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     }
   }
   ctx.print(target.line);
-  for (const line of settingsNotes(parsed.mode, ctx)) ctx.error(line);
+  for (const line of settingsNotes(parsed.mode, ctx, parsed.claudeArgs)) ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
