@@ -506,6 +506,19 @@ describe("IX3: only text the shell fills in cannot be read whole", () => {
     ).toBe(false);
   });
 
+  test("words a wrapper splits out of a string of its own are read by their text", () => {
+    // `env -S` expands `${K}` itself, and `script -c` hands its string to a shell: no quote of
+    // this line says what those words become, so a `$` in them fails closed.
+    for (const command of [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "env -S 'gh api -X POST repos/o/r/${K}/5/comments -f body=hi'",
+      "script -c 'gh api -X POST repos/o/r/$K/5/comments -f body=hi' /dev/null",
+    ]) {
+      expect(requestsIssueWrite(command, "bash")).toBe(true);
+    }
+    expect(requestsIssueWrite("env -S 'gh api repos/o/r/issues/5'", "bash")).toBe(false);
+  });
+
   test.each([
     "gh api graphql -f query=@change.graphql",
     "gh api graphql --input body.json",

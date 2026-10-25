@@ -8124,7 +8124,7 @@ function wordsOf(segment, dialect = "bash") {
   return wordsWithFill(segment, dialect).map((one) => one.text);
 }
 var EXPANDS = {
-  bash: /[A-Za-z_0-9{(@*#?$!-]/,
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
   powershell: /[A-Za-z_0-9{(?$^:]/
 };
 function wordsWithFill(segment, dialect = "bash") {
@@ -9086,6 +9086,10 @@ function fillTest(filled) {
   const set = new Set(filled);
   return (word) => set.has(word);
 }
+function derivedFill(words, args) {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
 function fillOfStep(step, words, dialect, inherited) {
   const all = inherited || step.expanded;
   const own = words.some((word) => word.filled);
@@ -9105,7 +9109,7 @@ function invocationsOf(command, dialect) {
       into.push({
         args: invocation.args,
         computed: invocation.computed,
-        filled: fill.filled,
+        filled: [...fill.filled, ...derivedFill(words, invocation.args)],
         program: invocation.program,
         words
       });
@@ -11642,7 +11646,6 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore, fi
     const read = wordsWithFill(step.text, dialect);
     const words = read.map((word) => word.text);
     const fill = fillOfStep(step, read, dialect, filledIn);
-    const isFilled = fillTest(fill.filled);
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
@@ -11654,6 +11657,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore, fi
       continue;
     }
     const { program } = invocation;
+    const isFilled = fillTest([...fill.filled, ...derivedFill(words, invocation.args)]);
     const args = withoutRedirections(invocation.args);
     if (program === "git")
       moved ??= gitMoved(args);

@@ -43,6 +43,7 @@ import {
   anyFill,
   CHANGE_DIR,
   type Dialect,
+  derivedFill,
   dialectOfTool,
   type FillTest,
   fillOfStep,
@@ -317,7 +318,6 @@ function readMerges(
     const read = wordsWithFill(step.text, dialect);
     const words = read.map((word) => word.text);
     const fill = fillOfStep(step, read, dialect, filledIn);
-    const isFilled = fillTest(fill.filled);
     // Any mention of `GH_REPO` / `GH_HOST` in a step points the gh calls after it somewhere
     // else — in every spelling (`export GH_REPO=…`, `$env:GH_REPO='…'`, `set GH_REPO=…`),
     // including a step that is nothing but the assignment.
@@ -335,6 +335,7 @@ function readMerges(
       continue;
     }
     const { program } = invocation;
+    const isFilled = fillTest([...fill.filled, ...derivedFill(words, invocation.args)]);
     // A redirection (`>log`, `2>&1`) is the shell's: gh never sees it as an argument.
     const args = withoutRedirections(invocation.args);
     // A later merge acts on whatever the steps before it left: a folder a `cd` / `git -C`

@@ -704,7 +704,7 @@ export interface ShellWord {
 
 /** The character after a `$` that starts an expansion; a lone `$` is text. */
 const EXPANDS: Record<Dialect, RegExp> = {
-  bash: /[A-Za-z_0-9{(@*#?$!-]/,
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
   powershell: /[A-Za-z_0-9{(?$^:]/,
 };
 
@@ -1957,6 +1957,17 @@ export function fillTest(filled: readonly string[]): FillTest {
   return (word) => set.has(word);
 }
 
+/**
+ * The arguments of a command that are no word of its step: a wrapper cut them out of a string of
+ * its own (`env -S '…'`, `script -c '…'`, `Start-Process -ArgumentList '…'`), and that string is
+ * filled in by the wrapper, not by this line's quotes. They are read by their text: a `$` or a
+ * backtick counts as filled.
+ */
+export function derivedFill(words: readonly string[], args: readonly string[]): string[] {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
+
 /** What the shell fills in for one step of a line (`fillOfStep`). */
 export interface StepFill {
   /** The texts of the step's words the shell fills in; all of them when the line was filled in. */
@@ -2029,7 +2040,7 @@ export function invocationsOf(command: string, dialect?: Dialect): RunInvocation
       into.push({
         args: invocation.args,
         computed: invocation.computed,
-        filled: fill.filled,
+        filled: [...fill.filled, ...derivedFill(words, invocation.args)],
         program: invocation.program,
         words,
       });

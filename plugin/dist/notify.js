@@ -9230,7 +9230,7 @@ function wordsOf(segment, dialect = "bash") {
   return wordsWithFill(segment, dialect).map((one) => one.text);
 }
 var EXPANDS = {
-  bash: /[A-Za-z_0-9{(@*#?$!-]/,
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
   powershell: /[A-Za-z_0-9{(?$^:]/
 };
 function wordsWithFill(segment, dialect = "bash") {
