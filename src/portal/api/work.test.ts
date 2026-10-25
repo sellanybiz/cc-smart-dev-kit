@@ -7,7 +7,7 @@
  * schema would refuse cannot slip in. No portal is started.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import {
@@ -23,6 +23,7 @@ import {
 } from "../../crew/store";
 import { localDay } from "../../gateway/safety-checks";
 import type { OpenWait } from "../../sessions/flow";
+import { projectFolderName } from "../../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
@@ -423,6 +424,46 @@ describe("cleanup data for the portal", () => {
     const page = await crewAnswerFor(w.deps, "crew-old");
     if ("error" in page) throw new Error(page.error);
     expect(page.crew.leadGone).toBe(true);
+  });
+});
+
+/** One saved, titled Claude Code session that last worked in `folder`, written at `atMs`. */
+function savedSession(paths: CliPaths, folder: string, id: string, atMs: number): void {
+  const dir = join(paths.claudeConfigDir, "projects", projectFolderName(folder));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${id}.jsonl`);
+  writeFileSync(
+    file,
+    `${JSON.stringify({ cwd: folder, type: "user" })}\n${JSON.stringify({ aiTitle: `title ${id}`, type: "ai-title" })}\n`,
+  );
+  utimesSync(file, atMs / 1000, atMs / 1000);
+}
+
+describe("the other sessions on the Work page", () => {
+  test("a crew session's earlier copies are not another session", async () => {
+    const w = world();
+    const first = "aaaa1111-0000-4000-8000-000000000000";
+    const resumed = "bbbb2222-0000-4000-8000-000000000000";
+    const stranger = "cccc3333-0000-4000-8000-000000000000";
+    await createCrew(
+      w.paths.stateDir,
+      { ...newCrew(w.repoA, "crew-A-1", "lead-a"), sessionId: first, shortId: "aaaa1111" },
+      NOW - 5_000,
+    );
+    // A resume is a copy with a new id: the record moves on and keeps the first one.
+    await updateCrew(
+      w.paths.stateDir,
+      w.repoA,
+      "crew-A-1",
+      { sessionId: resumed, shortId: "bbbb2222" },
+      NOW - 4_000,
+    );
+    // A crew session that has no session yet adds no id to the set.
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-2", "lead-a"), NOW - 3_000);
+    for (const id of [first, resumed, stranger]) savedSession(w.paths, w.repoA, id, NOW - 1_000);
+    const deps = { ...w.deps, action: { ...w.deps.action, cwd: w.repoA } };
+    const answer = await workAnswer(deps);
+    expect(answer.sessions.map((session) => session.id)).toEqual([stranger]);
   });
 });
 

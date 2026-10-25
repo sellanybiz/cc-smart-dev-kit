@@ -19,6 +19,7 @@ import {
   type CrewEvent,
   type CrewRecord,
   crewBriefFile,
+  crewSessions,
   type LeadRecord,
   listAllCrew,
   listAllLeads,
@@ -286,9 +287,13 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   if (found.kind === "repo") {
     const { repo } = found;
     // The crew sessions' and leads' own sessions, by their full ids: a saved session that is
-    // one of them is not "another session" on the Work page.
+    // one of them is not "another session" on the Work page. A crew session counts every
+    // session it has had (`crewSessions`): a resume is a copy with a new id, and the earlier one
+    // stays saved.
     const crewSessionIds = new Set<string>(
-      records.flatMap((record) => (record.sessionId === null ? [] : [record.sessionId])),
+      records.flatMap((record) =>
+        crewSessions(record).flatMap((one) => (one.sessionId === null ? [] : [one.sessionId])),
+      ),
     );
     const leadIds = new Set<string>(leadRecords.map((one) => one.sessionId));
     const others = savedSessions(

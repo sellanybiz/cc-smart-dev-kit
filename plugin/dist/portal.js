@@ -40581,7 +40581,7 @@ async function workAnswer(deps) {
   let waitsError = null;
   if (found.kind === "repo") {
     const { repo } = found;
-    const crewSessionIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
+    const crewSessionIds = new Set(records.flatMap((record) => crewSessions(record).flatMap((one) => one.sessionId === null ? [] : [one.sessionId])));
     const leadIds = new Set(leadRecords.map((one) => one.sessionId));
     const others = savedSessions(join71(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
