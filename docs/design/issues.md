@@ -202,7 +202,10 @@ line each, ascending, and nothing else. The `pull-request` skill puts those line
 heading of a pull request into the default branch; GitHub closes the issues when it merges.
 Switch off or none waiting: no output, exit 0. GitHub or a branch unreadable: the reason on
 standard error and exit 1, never an empty list that looks complete. The label stays on a closed
-issue: it shows that the issue shipped through the kit.
+issue: it shows that the issue shipped through the kit. **A limit:** the marker is trusted as the
+label is. Anyone who can comment and label can forge both; the effect is one `Fixes #n` line in
+a pull request body that a person reviews. An issue number a crew report names is the crew
+session's claim; the lead reads the report before the merge.
 
 **4. The lead files what it would lose.** With the switch on, a bug, gap or follow-up outside the
 plan goes to `issue file` (the lead skill, § 6) where it used to be one line of a summary.
