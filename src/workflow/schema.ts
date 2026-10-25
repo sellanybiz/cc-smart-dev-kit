@@ -81,6 +81,30 @@ function numberField(key: NumberKey) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 
+/**
+ * What a GitHub label name takes here: 1-50 characters (GitHub's own limit), one line, no
+ * comma (`gh issue create --label` splits on it). One home: the schema checks a file with it,
+ * and `parseWorkflowValue` a value a person types, in the same words.
+ */
+export const LABEL_RULE =
+  "a label name of 1-50 characters on one line, with no comma, not starting with -";
+
+/**
+ * True when `name` is a label name the kit may ask GitHub for (`LABEL_RULE`). A leading `-`
+ * is refused: a command line could read the name as an option.
+ */
+export function isLabelName(name: string): boolean {
+  return (
+    name.length >= 1 &&
+    name.length <= 50 &&
+    !name.startsWith("-") &&
+    !/[\p{Cc}\p{Cf},]/u.test(name) &&
+    name.trim() === name
+  );
+}
+
+const labelSchema = z.string().refine(isLabelName, LABEL_RULE);
+
 /** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
 const tagSchema = z.string().refine(isNameTag, TAG_RULE);
 
@@ -158,6 +182,27 @@ export const workflowSchema = z.strictObject({
     .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
+  /**
+   * GitHub Issues, opt-in (decision D67): the kit files follow-ups and findings as issues in the
+   * project's own repository (`cc-smart-dev-kit issue file`, `src/issues/`). Off by default, like
+   * `autoPush` and `openPr`: an issue leaves the machine. Read as the other outward switches are,
+   * from the person's file and the project's file **as committed on `origin/<base>`**
+   * (`resolveGate`), never a working copy a session can edit.
+   */
+  issues: z
+    .strictObject({
+      /** The kit may file issues here. Default: false. */
+      enabled: z.boolean().optional(),
+      /** It may file them in a public repository, where everyone reads them. Default: false. */
+      allowPublic: z.boolean().optional(),
+      /** The label on every issue the kit files. Default: kit:found. */
+      foundLabel: labelSchema.optional(),
+      /** The label of an issue whose fix is merged and not yet released. Default: fixed-unreleased. */
+      fixedLabel: labelSchema.optional(),
+      /** The label of an issue the kit may pick up and build. Default: kit:ready. */
+      readyLabel: labelSchema.optional(),
+    })
+    .optional(),
   alerts: z
     .strictObject({
       /** Which moments alert. Default: all four. */
@@ -257,6 +302,14 @@ export const workflowDefaults = {
     percent: 20,
   },
   clearWorktreeAfterMerge: false,
+  // Off by default (D67): an issue is public text in a repository, so each switch is the person's.
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready",
+  },
   alerts: {
     events: [...ALERT_EVENTS] as AlertEvent[],
     sound: false,
@@ -313,6 +366,11 @@ export type WorkflowKey =
   | "fixesAfterReview.files"
   | "fixesAfterReview.percent"
   | "clearWorktreeAfterMerge"
+  | "issues.enabled"
+  | "issues.allowPublic"
+  | "issues.foundLabel"
+  | "issues.fixedLabel"
+  | "issues.readyLabel"
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
@@ -348,6 +406,11 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -383,6 +446,14 @@ export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
 ];
+
+/**
+ * The settings that let text leave the machine for GitHub (`issues.enabled`, `issues.allowPublic`).
+ * `workflow set` and `unset` refuse them inside Claude Code (`commands.ts`), as they do a
+ * review-gate key: a session must not turn on its own way out. `propose` stays open: its pull
+ * request is reviewed and merged by a person.
+ */
+export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.allowPublic"];
 
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
@@ -496,6 +567,9 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       : { ok: false, why: `${key} is one of ${words.join(", ")}` };
   }
   if (isNumberKey(key)) return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }

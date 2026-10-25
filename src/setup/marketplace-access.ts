@@ -154,7 +154,7 @@ export function marketplaceAccessAdvice(cause: GitFailureCause, repo: string | n
 }
 
 /** Schemes whose user part may be a token (`https://<token>@host/…`), so all of it is hidden. */
-const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+export const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 /**
  * A URL that is safe to print: no password or token, no query string, no fragment.

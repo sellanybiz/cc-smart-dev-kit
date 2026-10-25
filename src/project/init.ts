@@ -43,6 +43,7 @@ import {
   retiredFieldsOf,
   WORKFLOW_CREW_KEYS_SINCE,
   WORKFLOW_CREW_SINCE,
+  WORKFLOW_ISSUES_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
@@ -242,6 +243,7 @@ export function requiresFloor(file: Record<string, unknown>): {
   const crew = isObject(workflow.crew) ? workflow.crew : {};
   const needs: string[] = [];
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
+  if (Object.hasOwn(workflow, "issues")) needs.push(WORKFLOW_ISSUES_SINCE);
   for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
     if (Object.hasOwn(crew, key)) needs.push(since);
   }

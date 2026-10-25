@@ -7733,6 +7733,11 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -7762,6 +7767,13 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  issues: strictObject({
+    enabled: boolean2().optional(),
+    allowPublic: boolean2().optional(),
+    foundLabel: labelSchema.optional(),
+    fixedLabel: labelSchema.optional(),
+    readyLabel: labelSchema.optional()
+  }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
@@ -7801,6 +7813,13 @@ var workflowDefaults = {
     percent: 20
   },
   clearWorktreeAfterMerge: false,
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready"
+  },
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
@@ -7839,6 +7858,11 @@ var POLICY_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -8987,6 +9011,9 @@ function mergeWorkflows(personal, project) {
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined)
     merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -9034,6 +9061,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -9049,6 +9077,13 @@ function resolveWorkflow(paths, projectConfig) {
       percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
     },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
+    },
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),

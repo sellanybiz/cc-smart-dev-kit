@@ -6926,6 +6926,11 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -6955,6 +6960,13 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  issues: strictObject({
+    enabled: boolean2().optional(),
+    allowPublic: boolean2().optional(),
+    foundLabel: labelSchema.optional(),
+    fixedLabel: labelSchema.optional(),
+    readyLabel: labelSchema.optional()
+  }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
@@ -6994,6 +7006,13 @@ var workflowDefaults = {
     percent: 20
   },
   clearWorktreeAfterMerge: false,
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready"
+  },
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
@@ -7032,6 +7051,11 @@ var POLICY_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -7444,6 +7468,9 @@ function mergeWorkflows(personal, project) {
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined)
     merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
   return merged;
 }
 function sourceOf(personal, project, key) {

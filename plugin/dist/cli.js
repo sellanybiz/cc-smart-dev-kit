@@ -30,7 +30,7 @@ __export(exports_iso, {
 // src/entries/cli.ts
 import { existsSync as existsSync82, statSync as statSync30 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join96, resolve as resolve18 } from "path";
+import { join as join96, resolve as resolve19 } from "path";
 
 // src/browser/check.ts
 import { existsSync as existsSync4, mkdtempSync, readdirSync as readdirSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -12672,6 +12672,11 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -12701,6 +12706,13 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  issues: strictObject({
+    enabled: boolean2().optional(),
+    allowPublic: boolean2().optional(),
+    foundLabel: labelSchema.optional(),
+    fixedLabel: labelSchema.optional(),
+    readyLabel: labelSchema.optional()
+  }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
@@ -12740,6 +12752,13 @@ var workflowDefaults = {
     percent: 20
   },
   clearWorktreeAfterMerge: false,
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready"
+  },
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
@@ -12780,6 +12799,11 @@ var POLICY_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -12808,6 +12832,7 @@ var REVIEW_GATE_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent"
 ];
+var OUTBOUND_KEYS = ["issues.enabled", "issues.allowPublic"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
 function isSwitchKey(key) {
@@ -12852,6 +12877,9 @@ function parseWorkflowValue(key, text) {
   }
   if (isNumberKey(key))
     return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
@@ -13414,6 +13442,7 @@ var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var CHECKS_SINCE = "1.1.0";
+var WORKFLOW_ISSUES_SINCE = "1.3.0";
 var WORKFLOW_CREW_KEYS_SINCE = {
   perLead: "1.1.0",
   perLeadOpus: "1.1.0",
@@ -14146,6 +14175,9 @@ function mergeWorkflows(personal, project) {
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined)
     merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
   return merged;
 }
 function sourceOf2(personal, project, key) {
@@ -14240,6 +14272,11 @@ var RESOLVED = {
   "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
   "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+  "issues.enabled": (r) => r.issues.enabled,
+  "issues.allowPublic": (r) => r.issues.allowPublic,
+  "issues.foundLabel": (r) => r.issues.foundLabel,
+  "issues.fixedLabel": (r) => r.issues.fixedLabel,
+  "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.events": (r) => r.alerts.events,
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
@@ -14277,6 +14314,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -14292,6 +14330,13 @@ function resolveWorkflow(paths, projectConfig) {
       percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
     },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
+    },
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
@@ -35393,6 +35438,867 @@ function runAlert(alert, platform, run) {
   return "shown";
 }
 
+// src/issues/command.ts
+import { readFileSync as readFileSync55 } from "fs";
+import { resolve as resolve10 } from "path";
+
+// src/workflow/auto-merge.ts
+function autoMergeOff(resolved, base) {
+  if (resolved.autoMerge.value)
+    return null;
+  const where = base ?? "the integration base (worktrees.base)";
+  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
+}
+function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
+  const off = autoMergeOff(resolved, prBase);
+  if (off !== null)
+    return off;
+  const integration = projectConfig?.worktrees?.base;
+  if (integration === undefined) {
+    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
+  }
+  if (prBase !== integration) {
+    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
+  }
+  if (integration === defaultBranch) {
+    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
+  }
+  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
+  if (targets.includes(integration)) {
+    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
+  }
+  return null;
+}
+
+// src/workflow/merge-check.ts
+var GH_TIMEOUT_MS2 = 1e4;
+var GH_WRITE_TIMEOUT_MS = 30000;
+var runGh = async (args, { folder, env, input, timeoutMs }) => {
+  try {
+    const child = Bun.spawn(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: input === undefined ? "ignore" : new Blob([input]),
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [out, err] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    if (child.signalCode !== null) {
+      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
+      return { code: null, err: err.trim(), kind, out };
+    }
+    return {
+      code: child.exitCode,
+      err: err.trim(),
+      kind: child.exitCode === 0 ? "ok" : "failed",
+      out
+    };
+  } catch (error) {
+    return {
+      code: null,
+      err: error instanceof Error ? error.message : String(error),
+      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
+      out: ""
+    };
+  }
+};
+var spawnGh = async (args, call) => {
+  const { kind, out } = await runGh(args, call);
+  if (kind === "missing" || kind === "timeout")
+    return null;
+  return out.trim() === "" ? null : out;
+};
+var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
+function parsePullRequestFacts(json) {
+  try {
+    const view = JSON.parse(json);
+    const { baseRefName, headRefName, headRefOid, number } = view;
+    if (typeof number !== "number" || typeof baseRefName !== "string")
+      return null;
+    if (typeof headRefName !== "string" || headRefName === "")
+      return null;
+    if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
+      return null;
+    return { number, base: baseRefName, headRef: headRefName, headOid: headRefOid };
+  } catch {
+    return null;
+  }
+}
+function parseDefaultBranch(json) {
+  try {
+    const view = JSON.parse(json);
+    const ref = view.defaultBranchRef;
+    if (typeof ref !== "object" || ref === null)
+      return null;
+    const name = ref.name;
+    return typeof name === "string" && name !== "" ? name : null;
+  } catch {
+    return null;
+  }
+}
+function parseRequiredChecks(json) {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed))
+      return null;
+    const checks = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null)
+        return null;
+      const { bucket, name } = entry;
+      if (typeof bucket !== "string" || typeof name !== "string")
+        return null;
+      checks.push({ bucket, name });
+    }
+    return checks;
+  } catch {
+    return null;
+  }
+}
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+function reviewGateOf(paths, checkout, resolved) {
+  const repository = checkout.mainCheckout ?? checkout.root;
+  return {
+    reviewBeforePush: resolved.reviewBeforePush.value,
+    agents: resolved.reviewAgents.value,
+    limits: {
+      lines: resolved.fixesAfterReview.lines.value,
+      files: resolved.fixesAfterReview.files.value,
+      percent: resolved.fixesAfterReview.percent.value
+    },
+    file: reviewsFile(paths.stateDir, repository)
+  };
+}
+async function coverOf(world, review, target) {
+  if (!review.reviewBeforePush)
+    return null;
+  return await readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
+    env: world.env,
+    timeFor: world.timeFor
+  });
+}
+function reviewRefusal(cover) {
+  if (cover === null || cover.covered)
+    return null;
+  if (cover.review !== null)
+    return cover.why;
+  return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
+}
+function counted2(change) {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+function countsOf(change) {
+  return change === null || change === undefined ? null : counted2(change);
+}
+function detailOf(cover, limits) {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed)
+  };
+}
+function short2(sha) {
+  return sha.slice(0, 7);
+}
+function pullRequestAllowed(cover) {
+  if (cover === null)
+    return "its required checks are green, and reviewBeforePush is off";
+  return `the review of ${short2(cover.review)} covers its head, and its required checks are green`;
+}
+function branchAllowed(branch, head, cover) {
+  if (cover === null)
+    return `reviewBeforePush is off, so no review is required for ${branch}`;
+  if (cover.delta === null)
+    return `the review of ${short2(cover.review)} is of ${short2(head)} itself`;
+  return `the review of ${short2(cover.review)} covers ${short2(head)}, with the fixes after it within the limits`;
+}
+function mergeRefusal(facts) {
+  if (facts.branchRefusal !== null)
+    return facts.branchRefusal;
+  if (facts.checks === null)
+    return null;
+  if (facts.checks.length === 0) {
+    return "gh reports no required checks for it, so there is nothing green to trust";
+  }
+  const failing = facts.checks.filter((check) => !PASSING_BUCKETS.has(check.bucket));
+  if (failing.length > 0) {
+    const list = failing.map((check) => `${check.name} (${check.bucket})`).join(", ");
+    return `its required checks are not all green: ${list}`;
+  }
+  return facts.reviewRefusal;
+}
+function policyUnread(branch, why, policy = "merge policy") {
+  const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
+  return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
+}
+function workflowUnread(error) {
+  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
+}
+function notByItself(reason, number = null) {
+  const which = number === null ? "this pull request" : `#${number}`;
+  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
+}
+function notChecked(what, env) {
+  const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
+  return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
+}
+function notInTime(what) {
+  return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
+}
+function ghMissing(env) {
+  try {
+    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
+  } catch {
+    return false;
+  }
+}
+async function ghStdout(args, folder, env, timeoutMs, run) {
+  return await run(args, { env, folder, timeoutMs });
+}
+async function viewPullRequest(target, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout([
+    "pr",
+    "view",
+    ...target.ref === null ? [] : [target.ref],
+    ...target.repo === null ? [] : ["--repo", target.repo],
+    "--json",
+    PULL_REQUEST_FACTS
+  ], folder, env, timeoutMs, run);
+  return out === null ? null : parsePullRequestFacts(out);
+}
+async function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout([
+    "pr",
+    "checks",
+    String(number),
+    "--required",
+    ...repo === null ? [] : ["--repo", repo],
+    "--json",
+    "name,bucket"
+  ], folder, env, timeoutMs, run);
+  return out === null ? null : parseRequiredChecks(out);
+}
+async function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs, run);
+  return out === null ? null : parseDefaultBranch(out);
+}
+async function gateFor(world, branch) {
+  if (world.gateOf !== undefined)
+    return await world.gateOf(branch);
+  const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (left <= 0)
+    return "late";
+  return await resolveGateAsync(world.paths, world.checkout, branch, {
+    env: world.env,
+    timeoutMs: left
+  });
+}
+async function checkPullRequest(world, target, defaultBranches = new Map) {
+  const viewLeft = world.timeFor(GH_TIMEOUT_MS2);
+  if (viewLeft <= 0) {
+    return { kind: "late", number: null, what: "the pull request this command names" };
+  }
+  const view = await viewPullRequest(target, world.folder, world.env, viewLeft, world.gh ?? spawnGh);
+  if (view === null) {
+    return { kind: "unread", number: null, what: "the pull request this command names" };
+  }
+  let read;
+  try {
+    read = await gateFor(world, view.base);
+  } catch (error) {
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
+  }
+  if (read === "late") {
+    return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
+  }
+  if (!read.ok) {
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why)
+    };
+  }
+  const { resolved, config: committed } = read.gate;
+  if (committed?.ownHooks?.includes("merge-guard") === true)
+    return { kind: "silent" };
+  const where = target.repo ?? "";
+  if (!defaultBranches.has(where)) {
+    const branchLeft = world.timeFor(GH_TIMEOUT_MS2);
+    if (branchLeft <= 0) {
+      return { kind: "late", number: view.number, what: "this repository's default branch" };
+    }
+    defaultBranches.set(where, await defaultBranchOf(world.folder, world.env, target.repo, branchLeft, world.gh ?? spawnGh));
+  }
+  const defaultBranch = defaultBranches.get(where) ?? null;
+  if (defaultBranch === null) {
+    return { kind: "unread", number: view.number, what: "this repository's default branch" };
+  }
+  const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  let checks = null;
+  if (branchRefusal === null) {
+    const checksLeft = world.timeFor(GH_TIMEOUT_MS2);
+    if (checksLeft <= 0) {
+      return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
+    }
+    checks = await requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft, world.gh ?? spawnGh);
+    if (checks === null) {
+      return {
+        kind: "unread",
+        number: view.number,
+        what: `the required checks of #${view.number}`
+      };
+    }
+  }
+  const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
+  const review = reviewGateOf(world.paths, world.checkout, resolved);
+  const cover = await coverOf(world, review, {
+    head: view.headOid,
+    branch: view.headRef,
+    base: view.base
+  });
+  const refused = reviewRefusal(cover);
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused
+    };
+  }
+  return {
+    detail: detailOf(cover, review.limits),
+    kind: "allowed",
+    reason: pullRequestAllowed(cover?.covered === true ? cover : null)
+  };
+}
+async function commitOf2(world, rev) {
+  const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (left <= 0)
+    return null;
+  const run = await runGitAsync(world.checkout.root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], world.env, left);
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+}
+async function checkBranch(world, target) {
+  const firstLeft = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (firstLeft <= 0) {
+    return { kind: "late", number: null, what: `branch ${target.branch}` };
+  }
+  const head = await commitOf2(world, target.branch) ?? await commitOf2(world, `origin/${target.branch}`);
+  if (head === null) {
+    if (world.timeFor(GUARD_GIT_TIMEOUT_MS) <= 0) {
+      return { kind: "late", number: null, what: `branch ${target.branch}` };
+    }
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: `branch ${target.branch} is not in this checkout`
+    };
+  }
+  let read;
+  try {
+    read = await gateFor(world, target.base);
+  } catch (error) {
+    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
+  }
+  if (read === "late") {
+    return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
+  }
+  if (!read.ok) {
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: policyUnread(target.base, read.why)
+    };
+  }
+  const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
+  const cover = await coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const detail = detailOf(cover, review.limits);
+  const refused = reviewRefusal(cover);
+  if (refused !== null)
+    return { detail, kind: "refused", number: null, reason: refused };
+  return {
+    detail,
+    kind: "allowed",
+    reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null)
+  };
+}
+
+// src/workflow/pr-switches.ts
+function turnOn2(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
+}
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
+    return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
+}
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
+      return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
+  }
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
+}
+function issuesOff(resolved, base) {
+  if (resolved.issues.enabled.value)
+    return null;
+  return `issues.enabled is off (${sourceLabel(resolved.issues.enabled, base)}), so the kit files no GitHub issue: ${turnOn2("issues.enabled", "true", base)}`;
+}
+function publicIssuesOff(resolved, base) {
+  if (resolved.issues.allowPublic.value)
+    return null;
+  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
+}
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+var HASH_HEX_LENGTH = 32;
+function fingerprintHash(key) {
+  return new Bun.CryptoHasher("sha256").update(key).digest("hex").slice(0, HASH_HEX_LENGTH);
+}
+function markerLine(hash) {
+  return `${MARKER_PREFIX}${hash} -->`;
+}
+function holdsMarker(body) {
+  return body.includes(MARKER_PREFIX);
+}
+function hasMarker(body, hash) {
+  const wanted = markerLine(hash);
+  return body.split(/\r?\n/).some((line) => line.trim() === wanted);
+}
+function bodyWithMarker(body, hash) {
+  return `${body.trimEnd()}
+
+${markerLine(hash)}
+`;
+}
+
+// src/issues/screen.ts
+var TOKEN_SHAPES = [
+  /\bsk[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,256}/g,
+  /\bnpm_[A-Za-z0-9]{30,256}/g,
+  /\bglpat-[A-Za-z0-9_-]{16,256}/g,
+  /\bhf_[A-Za-z0-9]{30,256}/g,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,256}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,256}/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bxox[abeprs]-[A-Za-z0-9-]{10,256}/g,
+  /\bAIza[0-9A-Za-z_-]{30,256}/g,
+  /\beyJ[A-Za-z0-9_-]{8,512}\.eyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}/g,
+  /-----BEGIN [A-Z ]{0,32}PRIVATE KEY(?: BLOCK)?-----/g,
+  /\b(?:Bearer|Basic)[ \t]{1,4}[A-Za-z0-9._~+/=-]{16,512}/g
+];
+var ASSIGNED_SECRET = /(?<![A-Za-z])(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
+var CAMEL_ASSIGNED_SECRET = /(?<=[a-z])(?:Key|Token|Secret|Passw(?:or)?d)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/g;
+function isPlaceholder(value) {
+  return /^[$*%{]/.test(value) || /^(?:x{4,}|\.{3,}|-{3,})$/i.test(value);
+}
+var URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,31}):\/\/([^/?#\s'"<>@]{1,256})@/gi;
+function homePattern(home) {
+  if (home === null)
+    return null;
+  const trimmed = home.replace(/[\\/]+$/, "");
+  if (trimmed.length < 2)
+    return null;
+  const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+  const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
+  const flags = /^[A-Za-z]:/.test(trimmed) ? "gi" : "g";
+  return new RegExp(`${lead}${escaped.join("[\\\\/]+")}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, flags);
+}
+function position(text, index) {
+  const before = text.slice(0, index);
+  const lines = before.split(`
+`);
+  const last = lines.at(-1) ?? "";
+  return { column: [...last].length + 1, line: lines.length };
+}
+function starts(text, pattern, accept) {
+  const found = [];
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text);match !== null; match = pattern.exec(text)) {
+    if (accept === undefined || accept(match))
+      found.push(match.index);
+    if (match[0] === "")
+      pattern.lastIndex += 1;
+  }
+  return found;
+}
+function screenText(text, home) {
+  const hits = [];
+  const add = (kind, indexes) => {
+    for (const index of indexes)
+      hits.push({ ...position(text, index), kind });
+  };
+  const homeRule = homePattern(home);
+  if (homeRule !== null)
+    add("a home path", starts(text, homeRule));
+  for (const shape of TOKEN_SHAPES)
+    add("a key or token", starts(text, shape));
+  for (const assigned of [ASSIGNED_SECRET, CAMEL_ASSIGNED_SECRET]) {
+    add("a key or token", starts(text, assigned, (match) => !isPlaceholder(match[1] ?? "")));
+  }
+  add("a URL with credentials", starts(text, URL_USERINFO, (match) => {
+    const scheme = (match[1] ?? "").toLowerCase();
+    return TOKEN_SCHEMES.has(scheme) || (match[2] ?? "").includes(":");
+  }));
+  return hits.sort((a, b) => a.line - b.line || a.column - b.column);
+}
+
+// src/issues/file.ts
+function issueLine(outcome) {
+  if (outcome.kind === "refused")
+    return `refused: ${outcome.why}`;
+  const closed = outcome.closed === true ? " (closed issue)" : "";
+  const where = outcome.public ? " (public repository)" : "";
+  return `${outcome.kind} #${outcome.number} ${outcome.url}${closed}${where}`;
+}
+var LIST_LIMIT = 1000;
+var GIT_TIMEOUT_MS7 = 5000;
+var refuse3 = (why) => ({ kind: "refused", why });
+function textProblem(request, home) {
+  if (request.title.trim() === "")
+    return "the title is empty";
+  if (request.fingerprint.trim() === "")
+    return "the fingerprint is empty";
+  for (const label of request.labels) {
+    if (!isLabelName(label))
+      return `a label must be ${LABEL_RULE}`;
+  }
+  if (holdsMarker(request.body) || holdsMarker(request.title)) {
+    return "the text already holds a cc-smart-dev-kit issue marker, which belongs to the issue it names; remove that line";
+  }
+  for (const [part, text] of [
+    ["the title", request.title],
+    ["the body", request.body],
+    ...request.labels.map((label) => ["a label", label])
+  ]) {
+    const hit = screenText(text, home)[0];
+    if (hit !== undefined) {
+      return `${part}, line ${hit.line}, column ${hit.column}, holds ${hit.kind}; nothing was sent. Take it out of the text and file it again`;
+    }
+  }
+  return null;
+}
+function ghProblem(what, result) {
+  if (result.kind === "missing") {
+    return "gh is not installed, so no issue can be filed: install GitHub's CLI from https://cli.github.com, then run `gh auth login`";
+  }
+  if (result.kind === "timeout") {
+    return `gh timed out while it ${what}; nothing is known to be filed. Try again`;
+  }
+  if (/auth login|not logged in|authentication|HTTP 401|bad credentials/i.test(result.err)) {
+    return `gh is not logged in for github.com, so no issue can be filed: run \`gh auth login\``;
+  }
+  const last = result.err.split(`
+`).filter((line) => line.trim() !== "").at(-1) ?? "no message";
+  return `gh failed while it ${what} (${last.slice(0, 200)})`;
+}
+var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
+function parseRepoFacts(out) {
+  try {
+    const view = JSON.parse(out);
+    if (typeof view.visibility !== "string" || typeof view.hasIssuesEnabled !== "boolean") {
+      return { why: "gh answered something this command cannot read about the repository" };
+    }
+    return {
+      hasIssues: view.hasIssuesEnabled,
+      isPublic: view.visibility.toUpperCase() === "PUBLIC",
+      permission: typeof view.viewerPermission === "string" ? view.viewerPermission.toUpperCase() : null
+    };
+  } catch {
+    return { why: "gh answered something this command cannot read about the repository" };
+  }
+}
+function ownRepository(cwd, env) {
+  const origin = runGit(cwd, ["remote", "get-url", "origin"], env, GIT_TIMEOUT_MS7);
+  if (!origin.ok || origin.out === "") {
+    return {
+      why: "this project has no `origin` remote, so it has no repository of its own to file in"
+    };
+  }
+  const named = githubRepoInUrl(origin.out);
+  return named === null ? { why: "this project's origin is not on github.com, and issues are filed on github.com only" } : { repo: `github.com/${named}` };
+}
+function resolveSwitch(world) {
+  try {
+    const checkout = locateCheckout(world.cwd, { env: world.env });
+    if (checkout === null)
+      return { why: "this folder is not in a git project" };
+    const { config } = loadProjectConfig(checkout);
+    if (config === null) {
+      return {
+        why: `this project has no ${CONFIG_PATH}, so it has not opted in to the kit; the kit files issues only in a project that has (${COMMAND} project init)`
+      };
+    }
+    const base = config.worktrees?.base ?? null;
+    const read = resolveGate(world.paths, checkout, base, {
+      env: world.env,
+      timeoutMs: GIT_TIMEOUT_MS7
+    });
+    if (!read.ok) {
+      return {
+        why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
+      };
+    }
+    return { base, resolved: read.gate.resolved };
+  } catch (error) {
+    return { why: error instanceof Error ? error.message : String(error) };
+  }
+}
+function parseListed(out) {
+  try {
+    const rows = JSON.parse(out);
+    if (!Array.isArray(rows))
+      return { why: "gh answered something this command cannot read" };
+    const issues = [];
+    for (const row of rows) {
+      if (typeof row.number !== "number" || typeof row.url !== "string") {
+        return { why: "gh answered something this command cannot read" };
+      }
+      issues.push({
+        body: typeof row.body === "string" ? row.body : "",
+        closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
+        number: row.number,
+        url: row.url
+      });
+    }
+    return { issues };
+  } catch {
+    return { why: "gh answered something this command cannot read" };
+  }
+}
+function createdIssue(out) {
+  const url = out.trim().split(`
+`).at(-1)?.trim() ?? "";
+  const match = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/(\d+)$/.exec(url);
+  return match === null ? null : { number: Number(match[1]), url };
+}
+async function fileIssue(world, request) {
+  const text = textProblem(request, world.home);
+  if (text !== null)
+    return refuse3(text);
+  const policy = resolveSwitch(world);
+  if ("why" in policy)
+    return refuse3(`the issue switch cannot be read: ${policy.why}`);
+  const off = issuesOff(policy.resolved, policy.base);
+  if (off !== null)
+    return refuse3(off);
+  const own = ownRepository(world.cwd, world.env);
+  if ("why" in own)
+    return refuse3(own.why);
+  const { repo } = own;
+  const read = (args) => world.gh(args, { env: world.env, folder: world.cwd, timeoutMs: GH_TIMEOUT_MS2 });
+  const write = (args, input) => world.gh(args, {
+    env: world.env,
+    folder: world.cwd,
+    timeoutMs: GH_WRITE_TIMEOUT_MS,
+    ...input === undefined ? {} : { input }
+  });
+  const view = await read(["repo", "view", repo, "--json", REPO_FIELDS]);
+  if (view.kind !== "ok")
+    return refuse3(ghProblem("read the repository", view));
+  const facts = parseRepoFacts(view.out);
+  if ("why" in facts)
+    return refuse3(facts.why);
+  if (!facts.hasIssues) {
+    return refuse3(`${repo} has issues turned off; turn them on in the repository's settings first`);
+  }
+  if (facts.isPublic) {
+    const publicOff = publicIssuesOff(policy.resolved, policy.base);
+    if (publicOff !== null)
+      return refuse3(publicOff);
+  }
+  const found = policy.resolved.issues.foundLabel.value;
+  const labels = [...new Set([found, ...request.labels])];
+  const have = await read(["label", "list", "--repo", repo, "--json", "name", "--limit", "1000"]);
+  if (have.kind !== "ok")
+    return refuse3(ghProblem("listed the labels", have));
+  let existing;
+  try {
+    existing = JSON.parse(have.out).map((row) => row.name.toLowerCase());
+  } catch {
+    return refuse3("gh answered something this command cannot read about the labels");
+  }
+  const hash = fingerprintHash(request.fingerprint);
+  const listed = await write([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--label",
+    found,
+    "--state",
+    "all",
+    "--limit",
+    String(LIST_LIMIT),
+    "--json",
+    "number,url,body,state"
+  ]);
+  if (listed.kind !== "ok")
+    return refuse3(ghProblem("listed the issues", listed));
+  const all = parseListed(listed.out);
+  if ("why" in all)
+    return refuse3(all.why);
+  const double = all.issues.find((issue) => hasMarker(issue.body, hash));
+  if (double === undefined && all.issues.length >= LIST_LIMIT) {
+    return refuse3(`${LIST_LIMIT} issues carry the label ${found}, as many as one list returns, so the kit cannot tell whether this finding is filed; close the settled ones first`);
+  }
+  const body = bodyWithMarker(request.body, hash);
+  if (double !== undefined) {
+    if (double.body !== body) {
+      const edit = await write(["issue", "edit", String(double.number), "--repo", repo, "--body-file", "-"], body);
+      if (edit.kind !== "ok")
+        return refuse3(ghProblem("updated the issue", edit));
+    }
+    return {
+      ...double.closed ? { closed: true } : {},
+      kind: "updated",
+      number: double.number,
+      public: facts.isPublic,
+      url: double.url
+    };
+  }
+  for (const label of labels) {
+    if (existing.includes(label.toLowerCase()))
+      continue;
+    const made = await write([
+      "label",
+      "create",
+      "--repo",
+      repo,
+      "--description",
+      `Filed by ${COMMAND}`,
+      "--",
+      label
+    ]);
+    if (made.kind !== "ok")
+      return refuse3(ghProblem(`created the label ${label}`, made));
+  }
+  const create = await write([
+    "issue",
+    "create",
+    "--repo",
+    repo,
+    "--title",
+    request.title,
+    "--body-file",
+    "-",
+    ...labels.flatMap((label) => ["--label", label])
+  ], body);
+  if (create.kind !== "ok")
+    return refuse3(ghProblem("created the issue", create));
+  const made = createdIssue(create.out);
+  if (made === null) {
+    return refuse3("gh created the issue but printed no address this command can read; look for it in the repository");
+  }
+  return { kind: "filed", number: made.number, public: facts.isPublic, url: made.url };
+}
+
+// src/issues/command.ts
+var ISSUE_USAGE = `Usage: ${COMMAND} issue file --title <title> --body-file <file|-> --fingerprint <key> [--label <label>\u2026]
+
+Files one finding as a GitHub issue in this project's own repository (the one \`origin\` names,
+on github.com), and prints one line: filed #<n> <url>, updated #<n> <url>, or refused: <why>.
+The same --fingerprint again updates the issue it filed (its body) and opens no second one: the
+key is hashed into a hidden comment at the end of the body. --body-file - reads the body from
+standard input. --label adds a label beside the found label; a label the repository lacks is
+created.
+
+It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
+and the project's file as committed on the base), and a public repository needs issues.allowPublic
+too. A title or body that holds a home path, a key or token, or a URL with credentials is refused
+with its line and column, and nothing is sent.`;
+var VALUED2 = ["--title", "--body-file", "--fingerprint", "--label"];
+function parse4(argv) {
+  const given = {};
+  for (let index = 0;index < argv.length; index += 1) {
+    const arg = argv[index] ?? "";
+    const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
+    const name = at === -1 ? arg : arg.slice(0, at);
+    if (!VALUED2.includes(name)) {
+      return { ok: false, why: `Unknown option: ${arg}` };
+    }
+    const value = at === -1 ? argv[index + 1] : arg.slice(at + 1);
+    if (value === undefined || at === -1 && value.startsWith("--")) {
+      return { ok: false, why: `${name} needs a value` };
+    }
+    if (at === -1)
+      index += 1;
+    given[name] = [...given[name] ?? [], value];
+  }
+  for (const name of ["--title", "--body-file", "--fingerprint"]) {
+    if ((given[name]?.length ?? 0) !== 1)
+      return { ok: false, why: `${name} is needed, once` };
+  }
+  return {
+    bodyFile: given["--body-file"]?.[0] ?? "",
+    ok: true,
+    request: {
+      fingerprint: given["--fingerprint"]?.[0] ?? "",
+      labels: given["--label"] ?? [],
+      title: given["--title"]?.[0] ?? ""
+    }
+  };
+}
+async function runIssue(argv, context) {
+  const [sub, ...rest] = argv;
+  if (sub !== "file") {
+    context.error(sub === undefined ? `issue needs a command
+
+${ISSUE_USAGE}` : `Unknown issue command: ${sub}
+
+${ISSUE_USAGE}`);
+    return 2;
+  }
+  const parsed = parse4(rest);
+  if (!parsed.ok) {
+    context.error(`${parsed.why}
+
+${ISSUE_USAGE}`);
+    return 2;
+  }
+  let body;
+  try {
+    body = parsed.bodyFile === "-" ? await context.readStdin() : readFileSync55(resolve10(context.cwd, parsed.bodyFile), "utf8");
+  } catch (error) {
+    context.error(`Cannot read the body: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const outcome = await fileIssue({
+    cwd: context.cwd,
+    env: context.env,
+    gh: context.gh ?? runGh,
+    home: context.paths.home,
+    paths: context.paths
+  }, { ...parsed.request, body });
+  context.print(issueLine(outcome));
+  return outcome.kind === "refused" ? 1 : 0;
+}
+
 // src/jobs/commands.ts
 import { readdirSync as readdirSync22, statSync as statSync21 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
@@ -36463,6 +37369,38 @@ function programsIn(command, dialect) {
   };
   walk(command, dialect, 0);
   return found;
+}
+function invocationsOf(command, dialect) {
+  const walk = (line, one, depth, into) => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const words = wordsOf(step.text, one);
+      const invocation = invocationOf(words);
+      if (invocation === undefined)
+        continue;
+      into.push({
+        args: invocation.args,
+        computed: invocation.computed,
+        program: invocation.program,
+        words
+      });
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1, into);
+      }
+    }
+  };
+  const found = [];
+  for (const one of dialect === undefined ? ["bash", "powershell"] : [dialect]) {
+    walk(command, one, 0, found);
+  }
+  const seen = new Set;
+  return found.filter((one) => {
+    const key = JSON.stringify(one);
+    if (seen.has(key))
+      return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // src/jobs/classify.ts
@@ -37631,7 +38569,7 @@ ${USAGE2}`);
 }
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync48, readFileSync as readFileSync56 } from "fs";
+import { existsSync as existsSync48, readFileSync as readFileSync57 } from "fs";
 
 // src/omniroute/install.ts
 import {
@@ -37639,7 +38577,7 @@ import {
   constants as constants2,
   existsSync as existsSync47,
   readdirSync as readdirSync23,
-  readFileSync as readFileSync55,
+  readFileSync as readFileSync56,
   realpathSync as realpathSync6
 } from "fs";
 import { dirname as dirname17, join as join59 } from "path";
@@ -37717,7 +38655,7 @@ function userUnits(dir) {
     const file = join59(dir, name);
     let argv;
     try {
-      argv = unitExecStart(readFileSync55(file, "utf8"));
+      argv = unitExecStart(readFileSync56(file, "utf8"));
     } catch {
       continue;
     }
@@ -37728,7 +38666,7 @@ function userUnits(dir) {
 }
 function versionOf(folder, name) {
   try {
-    const manifest = JSON.parse(readFileSync55(join59(folder, "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync56(join59(folder, "package.json"), "utf8"));
     const wanted = manifest;
     if (wanted.name !== name || typeof wanted.version !== "string")
       return null;
@@ -37972,7 +38910,7 @@ function parseState(text) {
 }
 function readState2(file) {
   try {
-    return parseState(readFileSync56(file, "utf8")) ?? emptyState();
+    return parseState(readFileSync57(file, "utf8")) ?? emptyState();
   } catch {
     return emptyState();
   }
@@ -37986,7 +38924,7 @@ function stateFile(paths) {
 }
 function readOrNull(path) {
   try {
-    return readFileSync56(path, "utf8");
+    return readFileSync57(path, "utf8");
   } catch {
     return null;
   }
@@ -38432,7 +39370,7 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync50, readFileSync as readFileSync58, rmSync as rmSync14 } from "fs";
+import { existsSync as existsSync50, readFileSync as readFileSync59, rmSync as rmSync14 } from "fs";
 import { join as join61 } from "path";
 
 // src/setup/managed-folder.ts
@@ -38441,7 +39379,7 @@ import {
   existsSync as existsSync49,
   mkdirSync as mkdirSync22,
   readdirSync as readdirSync24,
-  readFileSync as readFileSync57,
+  readFileSync as readFileSync58,
   renameSync as renameSync6,
   rmSync as rmSync13,
   writeFileSync as writeFileSync9
@@ -38459,7 +39397,7 @@ function listFiles(folder) {
   return readdirSync24(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative4(folder, join60(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
 }
 function hashFile(file) {
-  return createHash7("sha256").update(readFileSync57(file)).digest("base64");
+  return createHash7("sha256").update(readFileSync58(file)).digest("base64");
 }
 function sameFolder(target, source, files) {
   if (!existsSync49(target) || !markedOwned(target))
@@ -38477,7 +39415,7 @@ function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
   if (!existsSync49(file))
     return [];
-  const parsed = JSON.parse(readFileSync57(file, "utf8"));
+  const parsed = JSON.parse(readFileSync58(file, "utf8"));
   const folders = parsed?.folders;
   if (!Array.isArray(folders) || !folders.every((one) => typeof one === "string")) {
     throw new Error(`Invalid ${file}: expected { "folders": [<path>, \u2026] }`);
@@ -38506,7 +39444,7 @@ function copyFolder(source, into, files) {
   for (const file of files) {
     const to = join60(into, ...file.split("/"));
     mkdirSync22(dirname18(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync9(to, readFileSync57(join60(source, ...file.split("/"))), { mode: FILE_MODE2 });
+    writeFileSync9(to, readFileSync58(join60(source, ...file.split("/"))), { mode: FILE_MODE2 });
     setFileMode(to, FILE_MODE2);
   }
   mkdirSync22(into, { recursive: true, mode: DIR_MODE });
@@ -38581,7 +39519,7 @@ function refreshPortalCopy(paths, pluginFolder) {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync58(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync59(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
@@ -38717,7 +39655,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync58(paths.portalHeldFile, "utf8");
+    const text = readFileSync59(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -38885,7 +39823,7 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/setup/managed-hook.ts
-import { existsSync as existsSync51, readFileSync as readFileSync59 } from "fs";
+import { existsSync as existsSync51, readFileSync as readFileSync60 } from "fs";
 import { join as join62 } from "path";
 var OWNED_HOOKS_FILE = "owned-hooks.json";
 function isHookHandler(value) {
@@ -38916,7 +39854,7 @@ function readOwnedHooks(stateDir) {
   const file = join62(stateDir, OWNED_HOOKS_FILE);
   if (!existsSync51(file))
     return {};
-  const parsed = JSON.parse(readFileSync59(file, "utf8"));
+  const parsed = JSON.parse(readFileSync60(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((events) => isObject(events) && Object.values(events).every(isOwnedHookRecord));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <event>: { entry, created } } }`);
@@ -39148,7 +40086,7 @@ function userNotifyHookState(file) {
 }
 
 // src/workflow/commands.ts
-import { resolve as resolve10 } from "path";
+import { resolve as resolve11 } from "path";
 
 // src/workflow/clashes.ts
 function workflowClashes(input) {
@@ -39191,381 +40129,6 @@ function clashLines(clashes) {
   return clashes.map((one) => `! ${clashNote(one)}`);
 }
 
-// src/workflow/auto-merge.ts
-function autoMergeOff(resolved, base) {
-  if (resolved.autoMerge.value)
-    return null;
-  const where = base ?? "the integration base (worktrees.base)";
-  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
-}
-function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
-  const off = autoMergeOff(resolved, prBase);
-  if (off !== null)
-    return off;
-  const integration = projectConfig?.worktrees?.base;
-  if (integration === undefined) {
-    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
-  }
-  if (prBase !== integration) {
-    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
-  }
-  if (integration === defaultBranch) {
-    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
-  }
-  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
-  if (targets.includes(integration)) {
-    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
-  }
-  return null;
-}
-
-// src/workflow/merge-check.ts
-var GH_TIMEOUT_MS2 = 1e4;
-var spawnGh = async (args, { folder, env, timeoutMs }) => {
-  try {
-    const child = Bun.spawn(["gh", ...args], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const [out] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    return out.trim() === "" ? null : out;
-  } catch {
-    return null;
-  }
-};
-var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
-function parsePullRequestFacts(json) {
-  try {
-    const view = JSON.parse(json);
-    const { baseRefName, headRefName, headRefOid, number } = view;
-    if (typeof number !== "number" || typeof baseRefName !== "string")
-      return null;
-    if (typeof headRefName !== "string" || headRefName === "")
-      return null;
-    if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
-      return null;
-    return { number, base: baseRefName, headRef: headRefName, headOid: headRefOid };
-  } catch {
-    return null;
-  }
-}
-function parseDefaultBranch(json) {
-  try {
-    const view = JSON.parse(json);
-    const ref = view.defaultBranchRef;
-    if (typeof ref !== "object" || ref === null)
-      return null;
-    const name = ref.name;
-    return typeof name === "string" && name !== "" ? name : null;
-  } catch {
-    return null;
-  }
-}
-function parseRequiredChecks(json) {
-  try {
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed))
-      return null;
-    const checks = [];
-    for (const entry of parsed) {
-      if (typeof entry !== "object" || entry === null)
-        return null;
-      const { bucket, name } = entry;
-      if (typeof bucket !== "string" || typeof name !== "string")
-        return null;
-      checks.push({ bucket, name });
-    }
-    return checks;
-  } catch {
-    return null;
-  }
-}
-var PASSING_BUCKETS = new Set(["pass", "skipping"]);
-function reviewGateOf(paths, checkout, resolved) {
-  const repository = checkout.mainCheckout ?? checkout.root;
-  return {
-    reviewBeforePush: resolved.reviewBeforePush.value,
-    agents: resolved.reviewAgents.value,
-    limits: {
-      lines: resolved.fixesAfterReview.lines.value,
-      files: resolved.fixesAfterReview.files.value,
-      percent: resolved.fixesAfterReview.percent.value
-    },
-    file: reviewsFile(paths.stateDir, repository)
-  };
-}
-async function coverOf(world, review, target) {
-  if (!review.reviewBeforePush)
-    return null;
-  return await readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
-    env: world.env,
-    timeFor: world.timeFor
-  });
-}
-function reviewRefusal(cover) {
-  if (cover === null || cover.covered)
-    return null;
-  if (cover.review !== null)
-    return cover.why;
-  return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
-}
-function counted2(change) {
-  return { binary: change.binary.length, files: change.files, lines: change.lines };
-}
-function countsOf(change) {
-  return change === null || change === undefined ? null : counted2(change);
-}
-function detailOf(cover, limits) {
-  const reviewed = cover?.reviewed;
-  return {
-    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
-    delta: countsOf(cover?.delta),
-    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
-    review: cover?.review ?? null,
-    reviewed: countsOf(reviewed)
-  };
-}
-function short2(sha) {
-  return sha.slice(0, 7);
-}
-function pullRequestAllowed(cover) {
-  if (cover === null)
-    return "its required checks are green, and reviewBeforePush is off";
-  return `the review of ${short2(cover.review)} covers its head, and its required checks are green`;
-}
-function branchAllowed(branch, head, cover) {
-  if (cover === null)
-    return `reviewBeforePush is off, so no review is required for ${branch}`;
-  if (cover.delta === null)
-    return `the review of ${short2(cover.review)} is of ${short2(head)} itself`;
-  return `the review of ${short2(cover.review)} covers ${short2(head)}, with the fixes after it within the limits`;
-}
-function mergeRefusal(facts) {
-  if (facts.branchRefusal !== null)
-    return facts.branchRefusal;
-  if (facts.checks === null)
-    return null;
-  if (facts.checks.length === 0) {
-    return "gh reports no required checks for it, so there is nothing green to trust";
-  }
-  const failing = facts.checks.filter((check) => !PASSING_BUCKETS.has(check.bucket));
-  if (failing.length > 0) {
-    const list = failing.map((check) => `${check.name} (${check.bucket})`).join(", ");
-    return `its required checks are not all green: ${list}`;
-  }
-  return facts.reviewRefusal;
-}
-function policyUnread(branch, why, policy = "merge policy") {
-  const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
-  return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
-}
-function workflowUnread(error) {
-  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
-}
-function notByItself(reason, number = null) {
-  const which = number === null ? "this pull request" : `#${number}`;
-  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
-}
-function notChecked(what, env) {
-  const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
-  return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
-}
-function notInTime(what) {
-  return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
-}
-function ghMissing(env) {
-  try {
-    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
-  } catch {
-    return false;
-  }
-}
-async function ghStdout(args, folder, env, timeoutMs, run) {
-  return await run(args, { env, folder, timeoutMs });
-}
-async function viewPullRequest(target, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
-  const out = await ghStdout([
-    "pr",
-    "view",
-    ...target.ref === null ? [] : [target.ref],
-    ...target.repo === null ? [] : ["--repo", target.repo],
-    "--json",
-    PULL_REQUEST_FACTS
-  ], folder, env, timeoutMs, run);
-  return out === null ? null : parsePullRequestFacts(out);
-}
-async function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
-  const out = await ghStdout([
-    "pr",
-    "checks",
-    String(number),
-    "--required",
-    ...repo === null ? [] : ["--repo", repo],
-    "--json",
-    "name,bucket"
-  ], folder, env, timeoutMs, run);
-  return out === null ? null : parseRequiredChecks(out);
-}
-async function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
-  const out = await ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs, run);
-  return out === null ? null : parseDefaultBranch(out);
-}
-async function gateFor(world, branch) {
-  if (world.gateOf !== undefined)
-    return await world.gateOf(branch);
-  const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
-  if (left <= 0)
-    return "late";
-  return await resolveGateAsync(world.paths, world.checkout, branch, {
-    env: world.env,
-    timeoutMs: left
-  });
-}
-async function checkPullRequest(world, target, defaultBranches = new Map) {
-  const viewLeft = world.timeFor(GH_TIMEOUT_MS2);
-  if (viewLeft <= 0) {
-    return { kind: "late", number: null, what: "the pull request this command names" };
-  }
-  const view = await viewPullRequest(target, world.folder, world.env, viewLeft, world.gh ?? spawnGh);
-  if (view === null) {
-    return { kind: "unread", number: null, what: "the pull request this command names" };
-  }
-  let read;
-  try {
-    read = await gateFor(world, view.base);
-  } catch (error) {
-    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
-  }
-  if (read === "late") {
-    return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
-  }
-  if (!read.ok) {
-    return {
-      detail: null,
-      kind: "refused",
-      number: view.number,
-      reason: policyUnread(view.base, read.why)
-    };
-  }
-  const { resolved, config: committed } = read.gate;
-  if (committed?.ownHooks?.includes("merge-guard") === true)
-    return { kind: "silent" };
-  const where = target.repo ?? "";
-  if (!defaultBranches.has(where)) {
-    const branchLeft = world.timeFor(GH_TIMEOUT_MS2);
-    if (branchLeft <= 0) {
-      return { kind: "late", number: view.number, what: "this repository's default branch" };
-    }
-    defaultBranches.set(where, await defaultBranchOf(world.folder, world.env, target.repo, branchLeft, world.gh ?? spawnGh));
-  }
-  const defaultBranch = defaultBranches.get(where) ?? null;
-  if (defaultBranch === null) {
-    return { kind: "unread", number: view.number, what: "this repository's default branch" };
-  }
-  const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
-  let checks = null;
-  if (branchRefusal === null) {
-    const checksLeft = world.timeFor(GH_TIMEOUT_MS2);
-    if (checksLeft <= 0) {
-      return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
-    }
-    checks = await requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft, world.gh ?? spawnGh);
-    if (checks === null) {
-      return {
-        kind: "unread",
-        number: view.number,
-        what: `the required checks of #${view.number}`
-      };
-    }
-  }
-  const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null) {
-    return { detail: null, kind: "refused", number: view.number, reason: before };
-  }
-  const review = reviewGateOf(world.paths, world.checkout, resolved);
-  const cover = await coverOf(world, review, {
-    head: view.headOid,
-    branch: view.headRef,
-    base: view.base
-  });
-  const refused = reviewRefusal(cover);
-  if (refused !== null) {
-    return {
-      detail: detailOf(cover, review.limits),
-      kind: "refused",
-      number: view.number,
-      reason: refused
-    };
-  }
-  return {
-    detail: detailOf(cover, review.limits),
-    kind: "allowed",
-    reason: pullRequestAllowed(cover?.covered === true ? cover : null)
-  };
-}
-async function commitOf2(world, rev) {
-  const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
-  if (left <= 0)
-    return null;
-  const run = await runGitAsync(world.checkout.root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], world.env, left);
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
-}
-async function checkBranch(world, target) {
-  const firstLeft = world.timeFor(GUARD_GIT_TIMEOUT_MS);
-  if (firstLeft <= 0) {
-    return { kind: "late", number: null, what: `branch ${target.branch}` };
-  }
-  const head = await commitOf2(world, target.branch) ?? await commitOf2(world, `origin/${target.branch}`);
-  if (head === null) {
-    if (world.timeFor(GUARD_GIT_TIMEOUT_MS) <= 0) {
-      return { kind: "late", number: null, what: `branch ${target.branch}` };
-    }
-    return {
-      detail: null,
-      kind: "refused",
-      number: null,
-      reason: `branch ${target.branch} is not in this checkout`
-    };
-  }
-  let read;
-  try {
-    read = await gateFor(world, target.base);
-  } catch (error) {
-    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
-  }
-  if (read === "late") {
-    return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
-  }
-  if (!read.ok) {
-    return {
-      detail: null,
-      kind: "refused",
-      number: null,
-      reason: policyUnread(target.base, read.why)
-    };
-  }
-  const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
-  const cover = await coverOf(world, review, { head, branch: target.branch, base: target.base });
-  const detail = detailOf(cover, review.limits);
-  const refused = reviewRefusal(cover);
-  if (refused !== null)
-    return { detail, kind: "refused", number: null, reason: refused };
-  return {
-    detail,
-    kind: "allowed",
-    reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null)
-  };
-}
-
 // src/workflow/propose.ts
 import { existsSync as existsSync55 } from "fs";
 import { join as join65, relative as relative5 } from "path";
@@ -39579,7 +40142,7 @@ import { existsSync as existsSync54 } from "fs";
 import { join as join64 } from "path";
 
 // src/hooks/settings-hooks.ts
-import { existsSync as existsSync53, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync53, readFileSync as readFileSync61 } from "fs";
 import { join as join63 } from "path";
 var RETIRED_ENGINE_HOOKS = [
   "worktree-create",
@@ -39610,7 +40173,7 @@ function hooksOf(file) {
   if (!existsSync53(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync60(file, "utf8"));
+    const parsed = JSON.parse(readFileSync61(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const hooks = parsed.hooks;
@@ -39956,6 +40519,8 @@ function requiresFloor(file) {
   const needs = [];
   if (Object.hasOwn(file, "checks"))
     needs.push(CHECKS_SINCE);
+  if (Object.hasOwn(workflow, "issues"))
+    needs.push(WORKFLOW_ISSUES_SINCE);
   for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
     if (Object.hasOwn(crew, key))
       needs.push(since);
@@ -40672,6 +41237,8 @@ project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>
 show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
 Code, set, unset and propose of those refuse: run them in your own terminal (propose, and the
 pull request's review, are the gate).
+${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file): set and
+unset refuse them inside Claude Code too; propose does not, since a person reviews its pull request.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -40800,6 +41367,9 @@ function insideClaudeCode(env) {
 function gateKeyRefusal(sub, key) {
   const fix = sub === "propose" ? `Run it in your own terminal (\`${COMMAND} workflow propose ${key} <value>\`): the pull request is the gate.` : `Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the merge guard reads only the committed file.`;
   return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is part of the merge guard's review gate, which only you change. ${fix}`;
+}
+function outboundKeyRefusal(sub, key) {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} lets text leave this machine for GitHub, which only you switch. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
 }
 async function reviewDone(context, argv) {
   if (insideClaudeCode(context.env)) {
@@ -40962,6 +41532,10 @@ ${WORKFLOW_USAGE}` : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS
     context.error(gateKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
+  if (OUTBOUND_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
+    context.error(outboundKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+    return 1;
+  }
   let value;
   if (sub === "set") {
     const text = words[0];
@@ -41061,7 +41635,7 @@ ${WORKFLOW_USAGE}`);
   }
   return await proposeWorkflow({
     env: context.env,
-    folder: parsed.folder === null ? context.cwd : resolve10(context.cwd, parsed.folder),
+    folder: parsed.folder === null ? context.cwd : resolve11(context.cwd, parsed.folder),
     paths: context.paths,
     print: context.print,
     error: context.error,
@@ -41346,10 +41920,10 @@ See: ${COMMAND} launch --help`);
 }
 
 // src/cli/project-init.ts
-import { existsSync as existsSync56, readFileSync as readFileSync61 } from "fs";
+import { existsSync as existsSync56, readFileSync as readFileSync62 } from "fs";
 import { join as join67, relative as relative6 } from "path";
 var RUN_TIMEOUT_MS = 1e4;
-async function runGh(ghPath, args, env) {
+async function runGh2(ghPath, args, env) {
   try {
     const child = Bun.spawn([ghPath, ...args], {
       env,
@@ -41393,7 +41967,7 @@ function realRunnerAsync(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS),
-    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env)
+    gh: ghPath === null ? null : (args) => runGh2(ghPath, args, env)
   };
 }
 async function currentBranchOf(runner, root) {
@@ -41478,7 +42052,7 @@ function defaultFastCheck(root) {
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync61(file, "utf8"));
+    const parsed = parseUserJson(readFileSync62(file, "utf8"));
     scripts = isObject(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -41773,7 +42347,7 @@ function printPlan(plan, context) {
   return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText2(file) {
-  return existsSync56(file) ? readFileSync61(file, "utf8") : null;
+  return existsSync56(file) ? readFileSync62(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText2(file);
@@ -41914,28 +42488,28 @@ ${PROJECT_INIT_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync11, mkdirSync as mkdirSync25, openSync as openSync11, readFileSync as readFileSync65, readSync as readSync6, statSync as statSync23 } from "fs";
+import { closeSync as closeSync11, mkdirSync as mkdirSync25, openSync as openSync11, readFileSync as readFileSync66, readSync as readSync6, statSync as statSync23 } from "fs";
 import { dirname as dirname21, join as join69 } from "path";
 
 // src/cli/usage.ts
-import { basename as basename14, resolve as resolve11 } from "path";
+import { basename as basename14, resolve as resolve12 } from "path";
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync62 } from "fs";
+import { readFileSync as readFileSync63 } from "fs";
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync62(file, "utf8"));
+    return parseSafetyCheckState(readFileSync63(file, "utf8"));
   } catch {
     return null;
   }
 }
 
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync64 } from "fs";
+import { readFileSync as readFileSync65 } from "fs";
 import { join as join68 } from "path";
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync24, readFileSync as readFileSync63, statSync as statSync22 } from "fs";
+import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync24, readFileSync as readFileSync64, statSync as statSync22 } from "fs";
 import { dirname as dirname20 } from "path";
 function cutBack(file) {
   let size;
@@ -41946,7 +42520,7 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync63(file, "utf8");
+  const text = readFileSync64(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
@@ -42107,7 +42681,7 @@ function agentKey2(one) {
 function readAgentUsage(file, sinceMs) {
   let text;
   try {
-    text = readFileSync64(file, "utf8");
+    text = readFileSync65(file, "utf8");
   } catch {
     return [];
   }
@@ -42137,7 +42711,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync64(transcript, "utf8");
+    text = readFileSync65(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -42205,7 +42779,7 @@ function matches(project, folder, cwd) {
     return true;
   if (cwd === null)
     return false;
-  return cwd === resolve11(project) || basename14(cwd) === project;
+  return cwd === resolve12(project) || basename14(cwd) === project;
 }
 function count3(into, replies) {
   for (const model of replies.values())
@@ -42730,7 +43304,7 @@ function readAskLog(file) {
   let skipped = 0;
   let text;
   try {
-    text = readFileSync65(file, "utf8");
+    text = readFileSync66(file, "utf8");
   } catch {
     return { asks, skipped };
   }
@@ -43445,7 +44019,7 @@ function readFlow(paths, options) {
     const cacheFile = join69(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
-      cache = parseCache(readFileSync65(cacheFile, "utf8"), project);
+      cache = parseCache(readFileSync66(cacheFile, "utf8"), project);
     } catch {}
     let dirty = false;
     for (const [id, found] of ids) {
@@ -43757,7 +44331,7 @@ ${REPORT_USAGE}`);
 }
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync58, readFileSync as readFileSync68 } from "fs";
+import { existsSync as existsSync58, readFileSync as readFileSync69 } from "fs";
 import { join as join72, relative as relative7 } from "path";
 
 // src/sessions/command.ts
@@ -43767,17 +44341,17 @@ import {
   mkdirSync as mkdirSync26,
   openSync as openSync12,
   readdirSync as readdirSync25,
-  readFileSync as readFileSync67,
+  readFileSync as readFileSync68,
   readSync as readSync7,
   rmSync as rmSync16,
   statSync as statSync25,
   writeFileSync as writeFileSync10
 } from "fs";
 import { platform as platform2 } from "os";
-import { dirname as dirname22, join as join71, resolve as resolve12 } from "path";
+import { dirname as dirname22, join as join71, resolve as resolve13 } from "path";
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync66, statSync as statSync24 } from "fs";
+import { readFileSync as readFileSync67, statSync as statSync24 } from "fs";
 import { join as join70 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -43836,7 +44410,7 @@ function sessionTerminalAt(paths, row) {
   if (!/^[0-9a-f]{8}$/.test(row.id))
     return null;
   try {
-    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync66(join70(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
+    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync67(join70(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
     if (!parsed.success || parsed.data.sessionId !== row.sessionId || parsed.data.state !== row.state)
       return null;
     return Math.max(Date.parse(parsed.data.lastTerminalAt), Date.parse(parsed.data.updatedAt));
@@ -44076,7 +44650,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
     const path = join71(dir, name);
     let text;
     try {
-      text = readFileSync67(path, "utf8");
+      text = readFileSync68(path, "utf8");
     } catch {
       continue;
     }
@@ -44113,7 +44687,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
     return false;
   let text;
   try {
-    text = readFileSync67(file, "utf8").trim();
+    text = readFileSync68(file, "utf8").trim();
   } catch {
     return false;
   }
@@ -44343,8 +44917,8 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
     return 2;
   }
   if (options.finished)
-    return runFinishedSessions(paths, options, deps, resolve12(cwd));
-  let mainCheckout = resolve12(cwd);
+    return runFinishedSessions(paths, options, deps, resolve13(cwd));
+  let mainCheckout = resolve13(cwd);
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
     if (checkout !== null)
@@ -44490,7 +45064,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
   let error = null;
   if (existsSync58(config)) {
     try {
-      fields = retiredFieldsOf(parseUserJson(readFileSync68(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync69(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
       error = messageOf4(cause);
     }
@@ -44936,6 +45510,8 @@ var COMMAND_HELP = [
     listed: "start",
     help: PROJECT_INIT_USAGE
   },
+  { name: "issue", listed: "more", help: ISSUE_USAGE },
+  { name: "issue file", help: ISSUE_USAGE },
   { name: "workflow", listed: "more", help: WORKFLOW_USAGE },
   { name: "workflow merge-check", help: WORKFLOW_USAGE },
   { name: "workflow propose", help: WORKFLOW_USAGE },
@@ -45302,11 +45878,11 @@ async function runClaudeMem(argv, deps) {
 }
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync74, readFileSync as readFileSync83 } from "fs";
+import { accessSync as accessSync2, constants as constants3, existsSync as existsSync74, readFileSync as readFileSync84 } from "fs";
 import { dirname as dirname29, join as join85 } from "path";
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync61, readFileSync as readFileSync69 } from "fs";
+import { existsSync as existsSync61, readFileSync as readFileSync70 } from "fs";
 
 // src/gateway/claude-defaults.ts
 import { existsSync as existsSync60 } from "fs";
@@ -45530,7 +46106,7 @@ async function gatewayChecks(options) {
   }
   if (!existsSync61(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync61(options.bundle) && readFileSync69(paths.routerCopy, "utf8") !== readFileSync69(options.bundle, "utf8")) {
+  } else if (existsSync61(options.bundle) && readFileSync70(paths.routerCopy, "utf8") !== readFileSync70(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -45830,7 +46406,7 @@ async function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (readFileSync69(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+  if (readFileSync70(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
       check: {
         ok: false,
@@ -45869,7 +46445,7 @@ async function socketCheck(options, port) {
 }
 
 // src/machine/warp.ts
-import { chmodSync as chmodSync3, existsSync as existsSync62, mkdirSync as mkdirSync27, readFileSync as readFileSync70, rmSync as rmSync17, writeFileSync as writeFileSync11 } from "fs";
+import { chmodSync as chmodSync3, existsSync as existsSync62, mkdirSync as mkdirSync27, readFileSync as readFileSync71, rmSync as rmSync17, writeFileSync as writeFileSync11 } from "fs";
 import { join as join74 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
@@ -46175,7 +46751,7 @@ function warpPluginSteps(paths) {
 }
 function otherPluginFrom(paths, marketplace, except) {
   try {
-    const parsed = JSON.parse(readFileSync70(paths.installedPluginsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync71(paths.installedPluginsFile, "utf8"));
     return Object.keys(parsed.plugins ?? {}).some((id) => id !== except && id.endsWith(`@${marketplace}`));
   } catch {
     return false;
@@ -46248,7 +46824,7 @@ function clearWarpStage(paths) {
 }
 
 // src/mcp/records.ts
-import { existsSync as existsSync63, readFileSync as readFileSync71 } from "fs";
+import { existsSync as existsSync63, readFileSync as readFileSync72 } from "fs";
 import { join as join75 } from "path";
 var RECORD_FILE2 = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
@@ -46263,7 +46839,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync63(file))
     return {};
-  const parsed = JSON.parse(readFileSync71(file, "utf8"));
+  const parsed = JSON.parse(readFileSync72(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -46306,12 +46882,12 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 }
 
 // src/mcp/register.ts
-import { existsSync as existsSync64, readFileSync as readFileSync72 } from "fs";
-import { dirname as dirname24, join as join76, resolve as resolve13 } from "path";
+import { existsSync as existsSync64, readFileSync as readFileSync73 } from "fs";
+import { dirname as dirname24, join as join76, resolve as resolve14 } from "path";
 function readUserServers(file) {
   let text;
   try {
-    text = readFileSync72(file, "utf8");
+    text = readFileSync73(file, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? {} : null;
   }
@@ -46594,7 +47170,7 @@ function readProjectServers(file) {
 }
 function projectMcpFiles(cwd) {
   const files = [];
-  let folder = resolve13(cwd);
+  let folder = resolve14(cwd);
   for (let depth = 0;depth < 40; depth += 1) {
     files.push(join76(folder, ".mcp.json"));
     const parent = dirname24(folder);
@@ -46610,7 +47186,7 @@ import {
   existsSync as existsSync65,
   lstatSync as lstatSync6,
   readdirSync as readdirSync26,
-  readFileSync as readFileSync73,
+  readFileSync as readFileSync74,
   rmdirSync as rmdirSync2,
   rmSync as rmSync18,
   statSync as statSync26
@@ -46748,7 +47324,7 @@ function mentions2(value, text) {
 function registrationsNaming(userConfigFile, file, takenBack) {
   let text;
   try {
-    text = readFileSync73(userConfigFile, "utf8");
+    text = readFileSync74(userConfigFile, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? [] : null;
   }
@@ -47031,11 +47607,11 @@ function autoUpdateState(paths) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync69, readdirSync as readdirSync28, readFileSync as readFileSync77, rmSync as rmSync19 } from "fs";
+import { existsSync as existsSync69, readdirSync as readdirSync28, readFileSync as readFileSync78, rmSync as rmSync19 } from "fs";
 import { join as join79, relative as relative8, sep as sep4 } from "path";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync66, readFileSync as readFileSync74 } from "fs";
+import { existsSync as existsSync66, readFileSync as readFileSync75 } from "fs";
 var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
 var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
@@ -47097,7 +47673,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync66(file) ? readFileSync74(file, "utf8") : null;
+    const text = existsSync66(file) ? readFileSync75(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -47119,11 +47695,11 @@ function removeManagedMarkdown(options) {
 }
 
 // src/setup/restore.ts
-import { existsSync as existsSync68, readdirSync as readdirSync27, readFileSync as readFileSync76, rmdirSync as rmdirSync3 } from "fs";
+import { existsSync as existsSync68, readdirSync as readdirSync27, readFileSync as readFileSync77, rmdirSync as rmdirSync3 } from "fs";
 import { dirname as dirname25 } from "path";
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync67, readFileSync as readFileSync75 } from "fs";
+import { existsSync as existsSync67, readFileSync as readFileSync76 } from "fs";
 import { join as join78 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -47137,7 +47713,7 @@ function readOwnedEntries(stateDir) {
   const file = join78(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync67(file))
     return {};
-  const parsed = JSON.parse(readFileSync75(file, "utf8"));
+  const parsed = JSON.parse(readFileSync76(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((lists) => isObject(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -47332,7 +47908,7 @@ function restoreWholeFile(file, entry, stateDir) {
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync76(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync77(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -47349,7 +47925,7 @@ function restoreWholeFile(file, entry, stateDir) {
 function isEmpty(file) {
   if (!existsSync68(file))
     return false;
-  const text = readFileSync76(file, "utf8").trim();
+  const text = readFileSync77(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir, options) {
@@ -47477,7 +48053,7 @@ function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
   if (!existsSync69(file))
     return null;
-  const version = readFileSync77(file, "utf8").trim();
+  const version = readFileSync78(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
@@ -47557,7 +48133,7 @@ function copyDifferences(paths) {
     const copy = join79(paths.target, name);
     if (!existsSync69(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync77(copy, "utf8") !== readFileSync77(join79(paths.source, name), "utf8")) {
+    else if (readFileSync78(copy, "utf8") !== readFileSync78(join79(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
@@ -47613,7 +48189,7 @@ function installCopy(paths, dryRun, version) {
   for (const name of files) {
     const file = join79(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync77(join79(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync78(join79(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -47640,7 +48216,7 @@ function installCopy(paths, dryRun, version) {
 }
 function installInstructions(paths, dryRun, version) {
   const lines = installCopy(paths, dryRun, version);
-  const before = existsSync69(paths.claudeMd) ? readFileSync77(paths.claudeMd, "utf8") : null;
+  const before = existsSync69(paths.claudeMd) ? readFileSync78(paths.claudeMd, "utf8") : null;
   const block = applyManagedMarkdown({
     file: paths.claudeMd,
     stateDir: paths.stateDir,
@@ -47666,7 +48242,7 @@ function installInstructions(paths, dryRun, version) {
 function removeInstructions(paths, dryRun) {
   const lines = [];
   const claudeMd = realTarget(paths.claudeMd);
-  const text = existsSync69(claudeMd) ? readFileSync77(claudeMd, "utf8") : null;
+  const text = existsSync69(claudeMd) ? readFileSync78(claudeMd, "utf8") : null;
   const entry = readChanged(paths.stateDir)[claudeMd];
   if (text?.includes(BLOCK_BEGIN)) {
     if (dryRun) {
@@ -47690,13 +48266,13 @@ function removeInstructions(paths, dryRun) {
 }
 
 // src/setup/tmux.ts
-import { readFileSync as readFileSync78 } from "fs";
+import { readFileSync as readFileSync79 } from "fs";
 var TMUX_LINE = "set -g allow-passthrough all";
 var TMUX_NOW_COMMAND = "tmux set -g allow-passthrough all";
 var TMUX_MIN_VERSION = "3.3";
 function tmuxLineIn(file) {
   try {
-    return readFileSync78(file, "utf8").split(`
+    return readFileSync79(file, "utf8").split(`
 `).includes(TMUX_LINE);
   } catch {
     return false;
@@ -47807,7 +48383,7 @@ import {
   existsSync as existsSync70,
   mkdirSync as mkdirSync28,
   mkdtempSync as mkdtempSync7,
-  readFileSync as readFileSync79,
+  readFileSync as readFileSync80,
   realpathSync as realpathSync7,
   rmSync as rmSync20,
   writeFileSync as writeFileSync12
@@ -47832,7 +48408,7 @@ function liveRecordFile(stateDir) {
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync79(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync80(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -47845,7 +48421,7 @@ var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then ru
 function readLog(file) {
   if (!existsSync70(file))
     return [];
-  return readFileSync79(file, "utf8").split(`
+  return readFileSync80(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -47964,7 +48540,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync73, readFileSync as readFileSync82 } from "fs";
+import { existsSync as existsSync73, readFileSync as readFileSync83 } from "fs";
 import { join as join84 } from "path";
 
 // src/hooks/after-merge.ts
@@ -47988,7 +48564,7 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
 }
 
 // src/hooks/git-guard.ts
-import { isAbsolute as isAbsolute5, resolve as resolve14 } from "path";
+import { isAbsolute as isAbsolute5, resolve as resolve15 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 function pushRulesFor(env, autoPushAsk) {
   return { crew: crewIdOf(env) !== null, autoPushAsk };
@@ -48039,8 +48615,8 @@ function movedTo(program, folder, args) {
     return null;
   const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
   if (isAbsolute5(path))
-    return resolve14(path);
-  return folder === null ? null : resolve14(folder, path);
+    return resolve15(path);
+  return folder === null ? null : resolve15(folder, path);
 }
 function currentBranch(where, run) {
   if (!run.branches.has(where)) {
@@ -48374,7 +48950,7 @@ function callQuestions(call, folder, run) {
   const { rest, sub } = call;
   const alias = pushAlias(call);
   if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve14(folder, ...call.dirs);
+    const where = folder === null ? null : resolve15(folder, ...call.dirs);
     const place = {
       branch: () => where === null ? undefined : currentBranch(where, run),
       bare: (remote) => {
@@ -49885,13 +50461,162 @@ function fableSession(input, env, paths) {
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
+// src/hooks/issue-writes.ts
+var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
+var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
+var ISSUE_MUTATION = /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
+function apiPath(endpoint) {
+  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+}
+function isGraphql(endpoint) {
+  const path = apiPath(endpoint).toLowerCase();
+  return path === "graphql" || path.endsWith("/graphql");
+}
+function apiIssueWrite(rest) {
+  const fields = [];
+  let endpoint = null;
+  let body = false;
+  let method = null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      endpoint ??= rest[index + 1] ?? null;
+      break;
+    }
+    if (word === "-h" || word === "--help")
+      return null;
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name))
+        return null;
+      if (name === "--input")
+        body = true;
+      if (name === "--method")
+        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
+      if (name === "--field" || name === "--raw-field") {
+        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+      }
+      if (at === -1 && API_VALUE_FLAGS.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const letter = flags.slice(-1);
+      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
+        continue;
+      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      if (wantsNext)
+        index += 1;
+      if (letter === "f" || letter === "F")
+        fields.push(value);
+      if (letter === "X")
+        method = value;
+      continue;
+    }
+    endpoint ??= word;
+  }
+  if (endpoint === null)
+    return null;
+  if (isGraphql(endpoint)) {
+    for (const field of fields) {
+      if (!field.startsWith("query="))
+        continue;
+      const mutation = ISSUE_MUTATION.exec(field)?.[0];
+      if (mutation !== undefined)
+        return `a gh api graphql mutation (${mutation})`;
+    }
+    return null;
+  }
+  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  const path = apiPath(endpoint);
+  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
+}
+function isHelpAt(words, index) {
+  const word = words[index] ?? "";
+  if (word !== "-h" && word !== "--help")
+    return false;
+  const before = words[index - 1] ?? "";
+  return !(before.startsWith("-") && !before.includes("="));
+}
+function ghIssueWrite(args) {
+  const dashes = args.indexOf("--");
+  const words = dashes === -1 ? args : args.slice(0, dashes);
+  if (words.some((_, index) => isHelpAt(words, index)))
+    return null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word.startsWith("-")) {
+      if (!word.includes("=") && word !== "-h" && word !== "--help")
+        index += 1;
+      continue;
+    }
+    positional.push(word);
+    if (positional[0] === "api")
+      return apiIssueWrite(args.slice(index + 1));
+    if (positional.length === 2)
+      break;
+  }
+  const [group, sub] = positional;
+  if (group !== "issue" || sub === undefined)
+    return null;
+  const name = sub.toLowerCase();
+  if (ISSUE_READS.has(name))
+    return null;
+  if (name === "develop" && args.some((word) => word === "-l" || word === "--list"))
+    return null;
+  return `gh issue ${name}`;
+}
+function issueWrites(command, dialect) {
+  const found = [];
+  const note = (write) => {
+    if (write !== null && !found.includes(write))
+      found.push(write);
+  };
+  for (const run of invocationsOf(command, dialect)) {
+    if (run.computed)
+      continue;
+    if (run.program === "gh")
+      note(ghIssueWrite(run.args));
+    else if (RUNNER_PROGRAMS.has(run.program)) {
+      for (const args of runnerGhArgs(run.words))
+        note(ghIssueWrite(args));
+    }
+  }
+  return found;
+}
+var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch", "xargs"]);
+function runnerGhArgs(words) {
+  const found = [];
+  words.forEach((word, index) => {
+    if (programName2(word) === "gh") {
+      found.push(words.slice(index + 1));
+    } else if (/\s/.test(word)) {
+      const inner = wordsOf(word, "bash");
+      const at = inner.findIndex((one) => programName2(one) === "gh");
+      if (at !== -1)
+        found.push(inner.slice(at + 1));
+    }
+  });
+  return found;
+}
+function computedIssueRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)));
+}
+function requestsIssueWrite(command, dialect) {
+  return issueWrites(command, dialect).length > 0 || computedIssueRisk(command, dialect);
+}
+
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync80 } from "fs";
+import { readFileSync as readFileSync81 } from "fs";
 import { join as join83 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync80(join83(folder, "package.json"), "utf8");
+    text = readFileSync81(join83(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -49912,7 +50637,7 @@ function packageScripts(folder) {
 }
 
 // src/hooks/bash-judge.ts
-import { isAbsolute as isAbsolute6, resolve as resolve15 } from "path";
+import { isAbsolute as isAbsolute6, resolve as resolve16 } from "path";
 
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
@@ -50367,7 +51092,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve15(cwd, proposal.folder), context, timeFor);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve16(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -50714,13 +51439,13 @@ function leadNotesAnswer(input, event, paths, repo, env) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute7, resolve as resolve16 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve17 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute7(path) ? resolve16(path) : resolve16(cwd, path));
+  return realPath(isAbsolute7(path) ? resolve17(path) : resolve17(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -50751,32 +51476,10 @@ function mainFolderGuard(context) {
   return toolDecision("deny", mainFolderRefusal(main));
 }
 
-// src/workflow/pr-switches.ts
-function turnOn2(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": {"${key}": ${value === "true" ? "true" : `"${value}"`}}), committed to ${where} and pushed`;
-}
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
-    return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
-    return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
-  }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
-}
-
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
+var CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
 var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
 function crewPullRequestAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
@@ -50785,6 +51488,8 @@ function crewPullRequestAnswer(input, env, cwd) {
   if (command === null)
     return SILENT;
   const dialect = dialectOfTool(input.tool_name);
+  if (requestsIssueWrite(command, dialect))
+    return toolDecision("deny", CREW_ISSUE_REFUSAL);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
   if (computedMergeRisk(command, dialect))
@@ -50819,7 +51524,7 @@ function adminRefusal(ref) {
 function adminMerge(calls) {
   return calls.find((one) => one.admin && !one.disarms);
 }
-function ownRepository(project, env, timeoutMs) {
+function ownRepository2(project, env, timeoutMs) {
   const folder = project.mainCheckout ?? project.root;
   const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
   return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
@@ -50843,6 +51548,30 @@ function askFor(verdict, env) {
   return notInTime(verdict.what);
 }
 async function mergeGuard(context) {
+  const answer = await pullRequestGuard(context);
+  if (answer.stdout !== undefined)
+    return answer;
+  return issueWriteAnswer(context);
+}
+function issueWriteQuestion(context) {
+  const { project, input } = context;
+  const command = stringField(toolInput(input).command);
+  if (command === null || project.config === null)
+    return null;
+  const dialect = dialectOfTool(input.tool_name);
+  const writes = issueWrites(command, dialect);
+  if (writes.length === 0 && !computedIssueRisk(command, dialect))
+    return null;
+  const what = writes.length > 0 ? `writes to GitHub's issues (${writes.join(", ")})` : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
+  return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+}
+function issueWriteAnswer(context) {
+  const question = issueWriteQuestion(context);
+  if (question === null)
+    return SILENT;
+  return crewIdOf(context.env) !== null ? toolDecision("deny", CREW_ISSUE_REFUSAL) : toolDecision("ask", question);
+}
+async function pullRequestGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   const dialect = dialectOfTool(input.tool_name);
@@ -50967,7 +51696,7 @@ async function mergeGuard(context) {
       const left = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (left <= 0)
         return { late: true, reason: null };
-      own = ownRepository(project, env, left);
+      own = ownRepository2(project, env, left);
       ownRead = true;
     }
     return { late: false, reason: foreignRepository(repo, own) };
@@ -51228,7 +51957,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname28, isAbsolute as isAbsolute8, posix as posix3, relative as relative9, resolve as resolve17, win32 as win324 } from "path";
+import { dirname as dirname28, isAbsolute as isAbsolute8, posix as posix3, relative as relative9, resolve as resolve18, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -51620,7 +52349,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute8(path) ? resolve17(path) : resolve17(cwd ?? "/", path);
+  const written = isAbsolute8(path) ? resolve18(path) : resolve18(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths, crew) {
@@ -51649,7 +52378,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync81 } from "fs";
+import { readFileSync as readFileSync82 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -51747,7 +52476,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync81(transcript, "utf8");
+    text = readFileSync82(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -51997,7 +52726,12 @@ var mergeGuardHook = {
     if (crewIdOf(context.env) !== null)
       return SILENT;
     const command = stringField(toolInput(input).command);
-    return command !== null && requestsPullRequestChange(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
+    if (command === null)
+      return SILENT;
+    if (requestsPullRequestChange(command)) {
+      return toolDecision("ask", cannotCheck("whether this merge may happen by itself", message));
+    }
+    return requestsIssueWrite(command) ? toolDecision("ask", cannotCheck("whether this issue write may happen by itself", message)) : SILENT;
   },
   logFacts: (input) => {
     const command = stringField(toolInput(input).command);
@@ -52005,7 +52739,7 @@ var mergeGuardHook = {
   },
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
     const command = commandOf3(input);
-    return command !== "" && requestsPullRequestChange(command);
+    return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
   }),
   crewLimits: (input, _checkout, { env }) => crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard
@@ -52182,6 +52916,124 @@ var MACHINE_WIDE_HOOKS = [
   "agent-usage"
 ];
 
+// src/issues/doctor.ts
+var HOST = "github.com";
+var READ_ONLY = "READ";
+var TRIAGE = "TRIAGE";
+var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+async function issuesChecks(world) {
+  const policy = resolveSwitch({ ...world, home: null });
+  if ("why" in policy || !policy.resolved.issues.enabled.value)
+    return [];
+  const own = ownRepository(world.cwd, world.env);
+  if ("why" in own) {
+    return [
+      {
+        fix: `point origin at the project's GitHub repository (git remote set-url origin <url>), ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: ${own.why.replace(/^this project's origin is not on github\.com/, "origin is not on github.com")}`
+      }
+    ];
+  }
+  const named = own.repo.slice(`${HOST}/`.length);
+  const call = { env: world.env, folder: world.cwd, timeoutMs: GH_TIMEOUT_MS2 };
+  const auth = await world.gh(["auth", "status", "--hostname", HOST, "--active"], call);
+  if (auth.kind === "missing") {
+    return [
+      {
+        fix: "install GitHub's CLI from https://cli.github.com, then run: gh auth login",
+        ok: false,
+        text: "issues: gh is not installed, so the kit cannot file issues"
+      }
+    ];
+  }
+  if (auth.kind === "timeout") {
+    return [
+      {
+        fix: `check the network, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: gh timed out while it checked the login for ${HOST}`
+      }
+    ];
+  }
+  if (auth.kind === "failed") {
+    return [
+      {
+        fix: `gh auth login --hostname ${HOST}`,
+        ok: false,
+        text: `issues: gh is not logged in for ${HOST}`
+      }
+    ];
+  }
+  const view = await world.gh(["repo", "view", own.repo, "--json", REPO_FIELDS], call);
+  if (view.kind !== "ok") {
+    return [
+      {
+        fix: `check that your GitHub account can see ${named}, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: gh could not read ${named} (${view.kind === "timeout" ? "timed out" : "it was refused"})`
+      }
+    ];
+  }
+  const facts = parseRepoFacts(view.out);
+  if ("why" in facts) {
+    return [
+      {
+        fix: `update gh, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: ${facts.why}`
+      }
+    ];
+  }
+  if (!facts.hasIssues) {
+    return [
+      {
+        fix: `turn Issues on in ${named}'s Settings (General, Features), ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: ${named} has issues turned off`
+      }
+    ];
+  }
+  if (facts.permission === READ_ONLY) {
+    return [
+      {
+        fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`
+      }
+    ];
+  }
+  if (facts.permission === TRIAGE) {
+    return [
+      {
+        fix: `create the label ${policy.resolved.issues.foundLabel.value} in ${named} yourself, or ask for write access`,
+        ok: true,
+        text: `issues: gh has ${TRIAGE} access to ${named}, which can apply labels but not create them, so the kit files there only while its labels exist`,
+        warn: true
+      }
+    ];
+  }
+  if (facts.isPublic) {
+    const off = publicIssuesOff(policy.resolved, policy.base);
+    if (off !== null) {
+      return [
+        {
+          fix: off.slice(off.indexOf("turn it on")),
+          ok: true,
+          text: `issues: ${named} is public, so the kit files nothing there until issues.allowPublic is on`,
+          warn: true
+        }
+      ];
+    }
+  }
+  return [
+    {
+      ok: true,
+      text: `issues: gh is logged in for ${HOST} and can file issues in ${named}${facts.isPublic ? " (public repository)" : ""}`
+    }
+  ];
+}
+
 // src/cli/project-checks.ts
 var GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
 function message(error) {
@@ -52272,7 +53124,7 @@ function baseRefOf(sources) {
     if (!existsSync73(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync82(file, "utf8"));
+      const parsed = JSON.parse(readFileSync83(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -52286,7 +53138,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync82(file, "utf8"));
+  const parsed = JSON.parse(readFileSync83(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -52378,7 +53230,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-async function projectChecks2(cwd, env, paths, pluginHooksFile) {
+async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
@@ -52417,6 +53269,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
     lines.push(...await coverGitLines(checkout, env));
   }
+  lines.push(...await issuesChecks({ cwd: checkout.root, env, gh, paths }));
   return lines;
 }
 async function coverGitLines(checkout, env) {
@@ -52509,7 +53362,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync83(launcher, "utf8");
+  const script = readFileSync84(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -52545,7 +53398,7 @@ async function checkLauncherCmd(paths, shLauncher, read) {
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync83(cmd, "utf8");
+  const script = readFileSync84(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -52904,7 +53757,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync74(where.claudeMd) ? readFileSync83(where.claudeMd, "utf8") : "";
+  const text = existsSync74(where.claudeMd) ? readFileSync84(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -52966,7 +53819,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync83(from, "utf8");
+        text = readFileSync84(from, "utf8");
       } catch {
         continue;
       }
@@ -53402,7 +54255,7 @@ async function runDoctor(paths, env, options, out, print = { json: false, verbos
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync75, readdirSync as readdirSync29, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync21, statSync as statSync27 } from "fs";
+import { existsSync as existsSync75, readdirSync as readdirSync29, readFileSync as readFileSync85, renameSync as renameSync7, rmSync as rmSync21, statSync as statSync27 } from "fs";
 import { basename as basename16, dirname as dirname30, join as join86 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -53538,7 +54391,7 @@ function progressFile(stateDir) {
 }
 function readProgress(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync84(progressFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync85(progressFile(stateDir), "utf8"));
     if (!isObject(parsed) || !Array.isArray(parsed.steps))
       return null;
     const steps = parsed.steps.filter((step) => MIGRATE_STEPS.includes(String(step)));
@@ -53591,7 +54444,7 @@ function oldStateFolder(old) {
 }
 function readText3(file) {
   try {
-    return readFileSync84(file, "utf8");
+    return readFileSync85(file, "utf8");
   } catch {
     return null;
   }
@@ -53692,7 +54545,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     const file = join86(stateDir, name);
     if (!existsSync75(file))
       return;
-    const text = readFileSync84(file, "utf8");
+    const text = readFileSync85(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
 `;
     if (next === text)
@@ -53757,7 +54610,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const kept = [];
   if (!existsSync75(settingsFile))
     return { set, remove, kept };
-  const parsed = JSON.parse(readFileSync84(settingsFile, "utf8"));
+  const parsed = JSON.parse(readFileSync85(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -53787,7 +54640,7 @@ function readOldConfig(file, platform = hostPlatform()) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
   try {
-    const parsed = JSON.parse(readFileSync84(file, "utf8"));
+    const parsed = JSON.parse(readFileSync85(file, "utf8"));
     if (!isObject(parsed))
       throw new Error("not an object");
     return parsed;
@@ -53833,7 +54686,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
     return 0;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync84(file, "utf8"));
+    parsed = JSON.parse(readFileSync85(file, "utf8"));
   } catch {
     return 0;
   }
@@ -53868,7 +54721,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync75(claudeMd) ? readFileSync84(claudeMd, "utf8") : null;
+  const text = existsSync75(claudeMd) ? readFileSync85(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -53934,7 +54787,7 @@ ${parsed.error}` };
   const stateDir = oldStateFolder(old);
   if (existsSync75(paths.settingsFile)) {
     try {
-      const parsed = JSON.parse(readFileSync84(paths.settingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync85(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`
@@ -55300,7 +56153,7 @@ function setupVerdict(counts, run) {
 }
 
 // src/cli/statusline.ts
-import { readFileSync as readFileSync85 } from "fs";
+import { readFileSync as readFileSync86 } from "fs";
 function isJsonObject20(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -55371,7 +56224,7 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync85(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync86(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -55473,7 +56326,7 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync78, readFileSync as readFileSync86, rmSync as rmSync24, statSync as statSync28, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync78, readFileSync as readFileSync87, rmSync as rmSync24, statSync as statSync28, writeFileSync as writeFileSync15 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
 import { basename as basename19, join as join91 } from "path";
 
@@ -55575,7 +56428,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync86(join91(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync87(join91(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject21(settings) || !isJsonObject21(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -55584,7 +56437,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync86(join91(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync87(join91(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject21(installed) || !isJsonObject21(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -55752,7 +56605,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync86(file, "utf8").trim();
+    const text = readFileSync87(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -55804,7 +56657,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync86(file, "utf8"));
+    parsed = JSON.parse(readFileSync87(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -56069,14 +56922,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync80, readFileSync as readFileSync87 } from "fs";
+import { existsSync as existsSync80, readFileSync as readFileSync88 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
     exists: (path) => existsSync80(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync80("/etc/os-release") ? readFileSync87("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync80("/etc/os-release") ? readFileSync88("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -56157,7 +57010,7 @@ function realMachine(env, confirm) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync81, mkdirSync as mkdirSync32, readFileSync as readFileSync88 } from "fs";
+import { existsSync as existsSync81, mkdirSync as mkdirSync32, readFileSync as readFileSync89 } from "fs";
 import { basename as basename21, dirname as dirname33, join as join95, relative as relative11 } from "path";
 
 // src/portal/facts.ts
@@ -56279,7 +57132,7 @@ async function mapLimit(items, atOnce, read) {
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync88(paths.portalProjectsFile, "utf8");
+    text = readFileSync89(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -56576,7 +57429,7 @@ async function main(argv) {
             console.error(usageError2("--project needs a folder", "setup"));
             return 2;
           }
-          project = resolve18(dir);
+          project = resolve19(dir);
           index += 1;
         } else if (!flags.includes(arg)) {
           unknown.push(arg);
@@ -56746,6 +57599,15 @@ Fix: run it in the project's folder, or run git init here first`);
         error: (line) => console.error(line)
       });
     }
+    case "issue":
+      return runIssue(rest, {
+        cwd: process.cwd(),
+        env: process.env,
+        error: (line) => console.error(line),
+        paths,
+        print: (line) => console.log(line),
+        readStdin: () => Bun.stdin.text()
+      });
     case "workflow":
       return runWorkflow(rest, {
         paths,

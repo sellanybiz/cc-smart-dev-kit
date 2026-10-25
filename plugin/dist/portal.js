@@ -14154,6 +14154,11 @@ var NUMBER_RULES = {
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
+var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+var labelSchema = string2().refine(isLabelName, LABEL_RULE);
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -14183,6 +14188,13 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  issues: strictObject({
+    enabled: boolean2().optional(),
+    allowPublic: boolean2().optional(),
+    foundLabel: labelSchema.optional(),
+    fixedLabel: labelSchema.optional(),
+    readyLabel: labelSchema.optional()
+  }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
@@ -14222,6 +14234,13 @@ var workflowDefaults = {
     percent: 20
   },
   clearWorktreeAfterMerge: false,
+  issues: {
+    enabled: false,
+    allowPublic: false,
+    foundLabel: "kit:found",
+    fixedLabel: "fixed-unreleased",
+    readyLabel: "kit:ready"
+  },
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
@@ -14262,6 +14281,11 @@ var POLICY_KEYS = [
   "fixesAfterReview.files",
   "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
+  "issues.enabled",
+  "issues.allowPublic",
+  "issues.foundLabel",
+  "issues.fixedLabel",
+  "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
@@ -14326,6 +14350,9 @@ function parseWorkflowValue(key, text) {
   }
   if (isNumberKey(key))
     return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
   if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
@@ -14429,6 +14456,7 @@ var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var CHECKS_SINCE = "1.1.0";
+var WORKFLOW_ISSUES_SINCE = "1.3.0";
 var WORKFLOW_CREW_KEYS_SINCE = {
   perLead: "1.1.0",
   perLeadOpus: "1.1.0",
@@ -15412,6 +15440,9 @@ function mergeWorkflows(personal, project) {
   const crew = mergedGroup(personal.crew, project.crew);
   if (crew !== undefined)
     merged.crew = crew;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -15495,6 +15526,11 @@ var RESOLVED = {
   "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
   "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+  "issues.enabled": (r) => r.issues.enabled,
+  "issues.allowPublic": (r) => r.issues.allowPublic,
+  "issues.foundLabel": (r) => r.issues.foundLabel,
+  "issues.fixedLabel": (r) => r.issues.fixedLabel,
+  "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.events": (r) => r.alerts.events,
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
@@ -15532,6 +15568,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -15547,6 +15584,13 @@ function resolveWorkflow(paths, projectConfig) {
       percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
     },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
+    },
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
@@ -16348,26 +16392,46 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
 
 // src/workflow/merge-check.ts
 var GH_TIMEOUT_MS = 1e4;
-var spawnGh = async (args, { folder, env, timeoutMs }) => {
+var runGh = async (args, { folder, env, input, timeoutMs }) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
       cwd: folder,
       env,
-      stdin: "ignore",
+      stdin: input === undefined ? "ignore" : new Blob([input]),
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
       windowsHide: true
     });
-    const [out] = await Promise.all([
+    const [out, err] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited
     ]);
-    return out.trim() === "" ? null : out;
-  } catch {
-    return null;
+    if (child.signalCode !== null) {
+      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
+      return { code: null, err: err.trim(), kind, out };
+    }
+    return {
+      code: child.exitCode,
+      err: err.trim(),
+      kind: child.exitCode === 0 ? "ok" : "failed",
+      out
+    };
+  } catch (error) {
+    return {
+      code: null,
+      err: error instanceof Error ? error.message : String(error),
+      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
+      out: ""
+    };
   }
+};
+var spawnGh = async (args, call) => {
+  const { kind, out } = await runGh(args, call);
+  if (kind === "missing" || kind === "timeout")
+    return null;
+  return out.trim() === "" ? null : out;
 };
 var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
 function parsePullRequestFacts(json) {
@@ -17084,6 +17148,8 @@ function requiresFloor(file) {
   const needs = [];
   if (Object.hasOwn(file, "checks"))
     needs.push(CHECKS_SINCE);
+  if (Object.hasOwn(workflow, "issues"))
+    needs.push(WORKFLOW_ISSUES_SINCE);
   for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
     if (Object.hasOwn(crew, key))
       needs.push(since);
@@ -23958,7 +24024,7 @@ import { join as join40 } from "path";
 import { existsSync as existsSync37, readFileSync as readFileSync42 } from "fs";
 import { join as join39, relative as relative2 } from "path";
 var RUN_TIMEOUT_MS2 = 1e4;
-async function runGh(ghPath, args, env) {
+async function runGh2(ghPath, args, env) {
   try {
     const child = Bun.spawn([ghPath, ...args], {
       env,
@@ -23981,7 +24047,7 @@ function realRunnerAsync(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS2),
-    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env)
+    gh: ghPath === null ? null : (args) => runGh2(ghPath, args, env)
   };
 }
 async function currentBranchOf(runner, root) {
@@ -31068,6 +31134,38 @@ function programsIn(command, dialect) {
   walk(command, dialect, 0);
   return found;
 }
+function invocationsOf(command, dialect) {
+  const walk = (line, one, depth, into) => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const words = wordsOf(step.text, one);
+      const invocation = invocationOf(words);
+      if (invocation === undefined)
+        continue;
+      into.push({
+        args: invocation.args,
+        computed: invocation.computed,
+        program: invocation.program,
+        words
+      });
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1, into);
+      }
+    }
+  };
+  const found = [];
+  for (const one of dialect === undefined ? ["bash", "powershell"] : [dialect]) {
+    walk(command, one, 0, found);
+  }
+  const seen = new Set;
+  return found.filter((one) => {
+    const key = JSON.stringify(one);
+    if (seen.has(key))
+      return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 // src/hooks/after-merge.ts
 import { createHash as createHash8 } from "crypto";
@@ -33070,6 +33168,155 @@ function fableSession(input, env, paths) {
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
+// src/hooks/issue-writes.ts
+var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
+var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
+var ISSUE_MUTATION = /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
+function apiPath(endpoint) {
+  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+}
+function isGraphql(endpoint) {
+  const path = apiPath(endpoint).toLowerCase();
+  return path === "graphql" || path.endsWith("/graphql");
+}
+function apiIssueWrite(rest) {
+  const fields = [];
+  let endpoint = null;
+  let body = false;
+  let method = null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      endpoint ??= rest[index + 1] ?? null;
+      break;
+    }
+    if (word === "-h" || word === "--help")
+      return null;
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name))
+        return null;
+      if (name === "--input")
+        body = true;
+      if (name === "--method")
+        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
+      if (name === "--field" || name === "--raw-field") {
+        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+      }
+      if (at === -1 && API_VALUE_FLAGS.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const letter = flags.slice(-1);
+      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
+        continue;
+      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      if (wantsNext)
+        index += 1;
+      if (letter === "f" || letter === "F")
+        fields.push(value);
+      if (letter === "X")
+        method = value;
+      continue;
+    }
+    endpoint ??= word;
+  }
+  if (endpoint === null)
+    return null;
+  if (isGraphql(endpoint)) {
+    for (const field of fields) {
+      if (!field.startsWith("query="))
+        continue;
+      const mutation = ISSUE_MUTATION.exec(field)?.[0];
+      if (mutation !== undefined)
+        return `a gh api graphql mutation (${mutation})`;
+    }
+    return null;
+  }
+  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  const path = apiPath(endpoint);
+  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
+}
+function isHelpAt(words, index) {
+  const word = words[index] ?? "";
+  if (word !== "-h" && word !== "--help")
+    return false;
+  const before = words[index - 1] ?? "";
+  return !(before.startsWith("-") && !before.includes("="));
+}
+function ghIssueWrite(args) {
+  const dashes = args.indexOf("--");
+  const words = dashes === -1 ? args : args.slice(0, dashes);
+  if (words.some((_, index) => isHelpAt(words, index)))
+    return null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word.startsWith("-")) {
+      if (!word.includes("=") && word !== "-h" && word !== "--help")
+        index += 1;
+      continue;
+    }
+    positional.push(word);
+    if (positional[0] === "api")
+      return apiIssueWrite(args.slice(index + 1));
+    if (positional.length === 2)
+      break;
+  }
+  const [group, sub] = positional;
+  if (group !== "issue" || sub === undefined)
+    return null;
+  const name = sub.toLowerCase();
+  if (ISSUE_READS.has(name))
+    return null;
+  if (name === "develop" && args.some((word) => word === "-l" || word === "--list"))
+    return null;
+  return `gh issue ${name}`;
+}
+function issueWrites(command, dialect) {
+  const found = [];
+  const note = (write) => {
+    if (write !== null && !found.includes(write))
+      found.push(write);
+  };
+  for (const run of invocationsOf(command, dialect)) {
+    if (run.computed)
+      continue;
+    if (run.program === "gh")
+      note(ghIssueWrite(run.args));
+    else if (RUNNER_PROGRAMS.has(run.program)) {
+      for (const args of runnerGhArgs(run.words))
+        note(ghIssueWrite(args));
+    }
+  }
+  return found;
+}
+var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch", "xargs"]);
+function runnerGhArgs(words) {
+  const found = [];
+  words.forEach((word, index) => {
+    if (programName2(word) === "gh") {
+      found.push(words.slice(index + 1));
+    } else if (/\s/.test(word)) {
+      const inner = wordsOf(word, "bash");
+      const at = inner.findIndex((one) => programName2(one) === "gh");
+      if (at !== -1)
+        found.push(inner.slice(at + 1));
+    }
+  });
+  return found;
+}
+function computedIssueRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)));
+}
+function requestsIssueWrite(command, dialect) {
+  return issueWrites(command, dialect).length > 0 || computedIssueRisk(command, dialect);
+}
+
 // src/jobs/classify.ts
 import { isAbsolute as isAbsolute5, join as join61, normalize } from "path";
 function runOf(source) {
@@ -34269,7 +34516,9 @@ function mainFolderGuard(context) {
 // src/workflow/pr-switches.ts
 function turnOn2(key, value, base) {
   const where = base ?? "the integration base (worktrees.base)";
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": {"${key}": ${value === "true" ? "true" : `"${value}"`}}), committed to ${where} and pushed`;
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
 }
 function autoPushOff(resolved, base) {
   if (resolved.autoPush.value)
@@ -34288,10 +34537,16 @@ function openPrRefusal(resolved, base, opening) {
   }
   return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
 }
+function publicIssuesOff(resolved, base) {
+  if (resolved.issues.allowPublic.value)
+    return null;
+  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
+}
 
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
+var CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
 var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
 function crewPullRequestAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
@@ -34300,6 +34555,8 @@ function crewPullRequestAnswer(input, env, cwd) {
   if (command === null)
     return SILENT;
   const dialect = dialectOfTool(input.tool_name);
+  if (requestsIssueWrite(command, dialect))
+    return toolDecision("deny", CREW_ISSUE_REFUSAL);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
   if (computedMergeRisk(command, dialect))
@@ -34358,6 +34615,30 @@ function askFor(verdict, env) {
   return notInTime(verdict.what);
 }
 async function mergeGuard(context) {
+  const answer = await pullRequestGuard(context);
+  if (answer.stdout !== undefined)
+    return answer;
+  return issueWriteAnswer(context);
+}
+function issueWriteQuestion(context) {
+  const { project, input } = context;
+  const command = stringField(toolInput(input).command);
+  if (command === null || project.config === null)
+    return null;
+  const dialect = dialectOfTool(input.tool_name);
+  const writes = issueWrites(command, dialect);
+  if (writes.length === 0 && !computedIssueRisk(command, dialect))
+    return null;
+  const what = writes.length > 0 ? `writes to GitHub's issues (${writes.join(", ")})` : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
+  return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+}
+function issueWriteAnswer(context) {
+  const question = issueWriteQuestion(context);
+  if (question === null)
+    return SILENT;
+  return crewIdOf(context.env) !== null ? toolDecision("deny", CREW_ISSUE_REFUSAL) : toolDecision("ask", question);
+}
+async function pullRequestGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   const dialect = dialectOfTool(input.tool_name);
@@ -35512,7 +35793,12 @@ var mergeGuardHook = {
     if (crewIdOf(context.env) !== null)
       return SILENT;
     const command = stringField(toolInput(input).command);
-    return command !== null && requestsPullRequestChange(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
+    if (command === null)
+      return SILENT;
+    if (requestsPullRequestChange(command)) {
+      return toolDecision("ask", cannotCheck("whether this merge may happen by itself", message));
+    }
+    return requestsIssueWrite(command) ? toolDecision("ask", cannotCheck("whether this issue write may happen by itself", message)) : SILENT;
   },
   logFacts: (input) => {
     const command = stringField(toolInput(input).command);
@@ -35520,7 +35806,7 @@ var mergeGuardHook = {
   },
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
     const command = commandOf3(input);
-    return command !== "" && requestsPullRequestChange(command);
+    return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
   }),
   crewLimits: (input, _checkout, { env }) => crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard
@@ -35696,6 +35982,182 @@ var MACHINE_WIDE_HOOKS = [
   "lead-notes",
   "agent-usage"
 ];
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/file.ts
+var GIT_TIMEOUT_MS4 = 5000;
+var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
+function parseRepoFacts(out) {
+  try {
+    const view = JSON.parse(out);
+    if (typeof view.visibility !== "string" || typeof view.hasIssuesEnabled !== "boolean") {
+      return { why: "gh answered something this command cannot read about the repository" };
+    }
+    return {
+      hasIssues: view.hasIssuesEnabled,
+      isPublic: view.visibility.toUpperCase() === "PUBLIC",
+      permission: typeof view.viewerPermission === "string" ? view.viewerPermission.toUpperCase() : null
+    };
+  } catch {
+    return { why: "gh answered something this command cannot read about the repository" };
+  }
+}
+function ownRepository2(cwd, env) {
+  const origin = runGit(cwd, ["remote", "get-url", "origin"], env, GIT_TIMEOUT_MS4);
+  if (!origin.ok || origin.out === "") {
+    return {
+      why: "this project has no `origin` remote, so it has no repository of its own to file in"
+    };
+  }
+  const named = githubRepoInUrl(origin.out);
+  return named === null ? { why: "this project's origin is not on github.com, and issues are filed on github.com only" } : { repo: `github.com/${named}` };
+}
+function resolveSwitch(world) {
+  try {
+    const checkout = locateCheckout(world.cwd, { env: world.env });
+    if (checkout === null)
+      return { why: "this folder is not in a git project" };
+    const { config } = loadProjectConfig(checkout);
+    if (config === null) {
+      return {
+        why: `this project has no ${CONFIG_PATH}, so it has not opted in to the kit; the kit files issues only in a project that has (${COMMAND} project init)`
+      };
+    }
+    const base = config.worktrees?.base ?? null;
+    const read = resolveGate(world.paths, checkout, base, {
+      env: world.env,
+      timeoutMs: GIT_TIMEOUT_MS4
+    });
+    if (!read.ok) {
+      return {
+        why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
+      };
+    }
+    return { base, resolved: read.gate.resolved };
+  } catch (error) {
+    return { why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// src/issues/doctor.ts
+var HOST = "github.com";
+var READ_ONLY = "READ";
+var TRIAGE = "TRIAGE";
+var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+async function issuesChecks(world) {
+  const policy = resolveSwitch({ ...world, home: null });
+  if ("why" in policy || !policy.resolved.issues.enabled.value)
+    return [];
+  const own = ownRepository2(world.cwd, world.env);
+  if ("why" in own) {
+    return [
+      {
+        fix: `point origin at the project's GitHub repository (git remote set-url origin <url>), ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: ${own.why.replace(/^this project's origin is not on github\.com/, "origin is not on github.com")}`
+      }
+    ];
+  }
+  const named = own.repo.slice(`${HOST}/`.length);
+  const call = { env: world.env, folder: world.cwd, timeoutMs: GH_TIMEOUT_MS };
+  const auth = await world.gh(["auth", "status", "--hostname", HOST, "--active"], call);
+  if (auth.kind === "missing") {
+    return [
+      {
+        fix: "install GitHub's CLI from https://cli.github.com, then run: gh auth login",
+        ok: false,
+        text: "issues: gh is not installed, so the kit cannot file issues"
+      }
+    ];
+  }
+  if (auth.kind === "timeout") {
+    return [
+      {
+        fix: `check the network, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: gh timed out while it checked the login for ${HOST}`
+      }
+    ];
+  }
+  if (auth.kind === "failed") {
+    return [
+      {
+        fix: `gh auth login --hostname ${HOST}`,
+        ok: false,
+        text: `issues: gh is not logged in for ${HOST}`
+      }
+    ];
+  }
+  const view = await world.gh(["repo", "view", own.repo, "--json", REPO_FIELDS], call);
+  if (view.kind !== "ok") {
+    return [
+      {
+        fix: `check that your GitHub account can see ${named}, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: gh could not read ${named} (${view.kind === "timeout" ? "timed out" : "it was refused"})`
+      }
+    ];
+  }
+  const facts = parseRepoFacts(view.out);
+  if ("why" in facts) {
+    return [
+      {
+        fix: `update gh, then run: ${COMMAND} doctor`,
+        ok: false,
+        text: `issues: ${facts.why}`
+      }
+    ];
+  }
+  if (!facts.hasIssues) {
+    return [
+      {
+        fix: `turn Issues on in ${named}'s Settings (General, Features), ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: ${named} has issues turned off`
+      }
+    ];
+  }
+  if (facts.permission === READ_ONLY) {
+    return [
+      {
+        fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
+        ok: false,
+        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`
+      }
+    ];
+  }
+  if (facts.permission === TRIAGE) {
+    return [
+      {
+        fix: `create the label ${policy.resolved.issues.foundLabel.value} in ${named} yourself, or ask for write access`,
+        ok: true,
+        text: `issues: gh has ${TRIAGE} access to ${named}, which can apply labels but not create them, so the kit files there only while its labels exist`,
+        warn: true
+      }
+    ];
+  }
+  if (facts.isPublic) {
+    const off = publicIssuesOff(policy.resolved, policy.base);
+    if (off !== null) {
+      return [
+        {
+          fix: off.slice(off.indexOf("turn it on")),
+          ok: true,
+          text: `issues: ${named} is public, so the kit files nothing there until issues.allowPublic is on`,
+          warn: true
+        }
+      ];
+    }
+  }
+  return [
+    {
+      ok: true,
+      text: `issues: gh is logged in for ${HOST} and can file issues in ${named}${facts.isPublic ? " (public repository)" : ""}`
+    }
+  ];
+}
 
 // src/cli/project-checks.ts
 var GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
@@ -35893,7 +36355,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-async function projectChecks2(cwd, env, paths, pluginHooksFile) {
+async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
@@ -35932,6 +36394,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
     lines.push(...await coverGitLines(checkout, env));
   }
+  lines.push(...await issuesChecks({ cwd: checkout.root, env, gh, paths }));
   return lines;
 }
 async function coverGitLines(checkout, env) {

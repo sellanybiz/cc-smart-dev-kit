@@ -61,7 +61,13 @@ import {
   reviewsFile,
 } from "./reviews";
 import type { WorkflowKey } from "./schema";
-import { parseWorkflowValue, REVIEW_GATE_KEYS, showValue, WORKFLOW_KEYS } from "./schema";
+import {
+  OUTBOUND_KEYS,
+  parseWorkflowValue,
+  REVIEW_GATE_KEYS,
+  showValue,
+  WORKFLOW_KEYS,
+} from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 type Env = Record<string, string | undefined>;
@@ -96,6 +102,8 @@ project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>
 show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
 Code, set, unset and propose of those refuse: run them in your own terminal (propose, and the
 pull request's review, are the gate).
+${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file): set and
+unset refuse them inside Claude Code too; propose does not, since a person reviews its pull request.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -292,6 +300,15 @@ function gateKeyRefusal(sub: "propose" | "set" | "unset", key: WorkflowKey): str
 }
 
 /**
+ * The refusal of an outbound key (`OUTBOUND_KEYS`) in `set` and `unset` inside a Claude Code
+ * session: the switch that lets text leave for GitHub is the person's. `propose` stays open,
+ * because its pull request is reviewed and merged by a person.
+ */
+function outboundKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} lets text leave this machine for GitHub, which only you switch. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it — the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
+}
+
+/**
  * `workflow review-done [--sha <commit>]`: one commit into the review record of this
  * repository. The command records; it never reviews anything itself.
  */
@@ -474,6 +491,10 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
   // is parsed or written. The project's part counts only once committed and pushed anyway.
   if (REVIEW_GATE_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
     context.error(gateKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+    return 1;
+  }
+  if (OUTBOUND_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
+    context.error(outboundKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
   let value: unknown;

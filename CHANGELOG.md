@@ -3,6 +3,33 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.3.0
+
+GitHub Issues, opt-in: the kit can file its follow-ups and findings as issues in your project's
+own repository, instead of losing them as a line in a summary.
+
+- **A new switch, `workflow.issues`, off by default.** `enabled` is the switch; `allowPublic` is
+  the second yes a *public* repository needs; `foundLabel` (`kit:found`), `fixedLabel`
+  (`fixed-unreleased`) and `readyLabel` (`kit:ready`) name the labels the kit uses. Like
+  `autoPush`, it is read from your own file and from the project's file **as committed on the
+  base**, never a working copy, and `workflow set`/`unset` of the two switches refuse inside
+  Claude Code. A project file that sets it asks for `>=1.3`.
+- **`cc-smart-dev-kit issue file`** files one finding (`--title`, `--body-file`, `--fingerprint`,
+  `--label`) and prints one line: `filed #<n> <url>`, `updated #<n> <url>` or `refused: <why>`.
+  The same fingerprint again updates the issue instead of opening a second: the key is hashed
+  into a hidden comment at the end of the body, and the kit finds it by listing the issues that
+  carry the found label once. It writes only to `origin`'s repository (on github.com), says
+  `public` when it posts to a public one, and **refuses, with the line and column and never the
+  value, a text that holds a home path, a key or token, or a URL with credentials** — it never
+  cleans the text and sends it anyway.
+- **The merge guard asks before a raw issue write.** A session's own `gh issue create`, `edit`,
+  `comment`, `close` …, a `gh api` write to a repository's `issues`, or a GraphQL issue mutation
+  asks you, and is denied in a crew session (which is told to use `issue file`). The kit's own
+  `issue file` is not asked about.
+- **`doctor`** has one line while the switch is on: `gh` is logged in for github.com and can
+  file issues in `origin`'s repository, each failure with its fix.
+- Design: `docs/design/issues.md`.
+
 ## 1.2.1
 
 The lead and its crew, made dependable: a resume that keeps track of its session, a watch that

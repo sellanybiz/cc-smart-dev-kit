@@ -34,6 +34,7 @@ import {
 import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
 import {
+  CREW_ISSUE_REFUSAL,
   CREW_MERGE_REFUSAL,
   CREW_PR_REFUSAL,
   mergeGuard,
@@ -2318,5 +2319,160 @@ describe("WA1: an opening outside the base asks", () => {
         "gh api repos/example-org/app/pulls -f title=x -f head=a -f base=release",
       ),
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D67: a raw write to GitHub's issues is the person's yes; a crew session is denied. The kit's
+// own `issue file` is no gh command and is never asked about.
+// ---------------------------------------------------------------------------------------
+
+describe("D67: a raw write to GitHub's issues", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+  const WRITES = [
+    "gh issue create --title x --body y",
+    "gh issue comment 5 --body hi",
+    "gh issue edit 5 --add-label x",
+    "gh issue close 5",
+    "gh api repos/example-org/app/issues -X POST -f title=x",
+    "gh api repos/example-org/app/issues/5/comments -f body=hi",
+    "cd app && gh issue create -t x",
+    "bash -c 'gh issue delete 5 --yes'",
+  ];
+
+  test("the person's session is asked, with the kit's own way named, and gh is never called", async () => {
+    const { env, gh, repo } = ready(CONFIG);
+    for (const command of WRITES) {
+      const answer = await decide(env, repo, command);
+      expect([command, answer?.decision]).toEqual([command, "ask"]);
+      expect(answer?.reason).toContain("writes to GitHub's issues");
+      expect(answer?.reason).toContain("`cc-smart-dev-kit issue file`");
+    }
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("a read, a pull request view and the kit's own issue file are not asked about", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of [
+      "gh issue list",
+      "gh issue view 5",
+      "gh api repos/example-org/app/issues",
+      "gh pr view 5",
+      "cc-smart-dev-kit issue file --title t --body-file - --fingerprint k",
+    ]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  test("a line that also merges is answered by the merge question, not a second one", async () => {
+    const { env, repo } = ready(CONFIG);
+    const answer = await decide(env, repo, "gh issue close 5 && gh pr merge 7");
+    expect(answer?.decision).toBe("ask");
+    expect(answer?.reason).not.toContain("writes to GitHub's issues");
+  });
+
+  test("a program worked out when the line runs, naming an issue, is asked about", async () => {
+    const { env, repo } = ready(CONFIG);
+    const answer = await decide(env, repo, "$GH issue create -t x");
+    expect(answer?.decision).toBe("ask");
+    expect(answer?.reason).toContain("works out when it runs");
+  });
+
+  test("a project that never opted in is not asked (every project hook is silent there)", async () => {
+    const repo = makeRepo();
+    expect(await decide(hookEnv(), repo, "gh issue create -t x")).toBeNull();
+  });
+
+  test("a crew session is denied, in a project with no file too, and told the kit's way", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of WRITES) {
+      expect([command, await decide({ ...env, ...CREW }, repo, command)]).toEqual([
+        command,
+        { decision: "deny", reason: CREW_ISSUE_REFUSAL },
+      ]);
+    }
+    const bare = makeRepo();
+    expect(await decide({ ...hookEnv(), ...CREW }, bare, "gh issue create -t x")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+    // Reads, and the kit's own command, pass for a crew session.
+    expect(await decide({ ...env, ...CREW }, repo, "gh issue list")).toBeNull();
+    expect(
+      await decide(
+        { ...env, ...CREW },
+        repo,
+        "cc-smart-dev-kit issue file --title t --body-file - --fingerprint k",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("D67: the review of GI1 - the issue write in every path of the guard", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  test("a crew session's write is denied even beside a gh word the guard cannot name", async () => {
+    const { env, repo } = ready(CONFIG);
+    for (const command of [
+      "gh xyz; gh issue create -t t -b b",
+      "gh dash && gh issue comment 5 -b hi",
+      "gh issue --title list create --body x",
+    ]) {
+      expect([command, await decide({ ...env, ...CREW }, repo, command)]).toEqual([
+        command,
+        { decision: "deny", reason: CREW_ISSUE_REFUSAL },
+      ]);
+    }
+    // In a project whose own copy of the guard silences the project part, the crew part holds.
+    const own = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    expect(await decide({ ...own.env, ...CREW }, own.repo, "gh xyz; gh issue close 5")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("the run's own belt denies a crew session too, and a person is asked", async () => {
+    const { env, repo } = ready(CONFIG);
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const project = loadProjectConfig(checkout);
+    const call = input(repo, "gh issue create -t t");
+    const run = (over: Record<string, string>) =>
+      mergeGuard({
+        cwd: repo,
+        env: { ...env, ...over },
+        event: "PreToolUse",
+        input: call,
+        nowMs: 0,
+        paths: cliPaths(env),
+        project,
+      } as Parameters<typeof mergeGuard>[0]);
+    const decision = (result: { stdout?: string }) =>
+      JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.permissionDecision;
+    expect(decision(await run(CREW))).toBe("deny");
+    expect(decision(await run({}))).toBe("ask");
+  });
+
+  test("a broken or too new file still asks about an issue write (the guard's domain grew)", async () => {
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const context = { env, nowMs: 0, paths: cliPaths(env) };
+    const asked = await mergeGuardHook.onConfigProblem?.(
+      "the project's file needs a newer plugin",
+      input(repo, "gh issue create -t t"),
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(JSON.parse(asked?.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    const read = await mergeGuardHook.onConfigProblem?.(
+      "x",
+      input(repo, "gh issue list"),
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(read).toEqual({});
   });
 });

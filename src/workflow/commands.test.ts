@@ -76,6 +76,11 @@ describe("workflow show", () => {
       "fixesAfterReview.files = 10 (default)",
       "fixesAfterReview.percent = 20 (default)",
       "clearWorktreeAfterMerge = false (default)",
+      "issues.enabled = false (default)",
+      "issues.allowPublic = false (default)",
+      "issues.foundLabel = kit:found (default)",
+      "issues.fixedLabel = fixed-unreleased (default)",
+      "issues.readyLabel = kit:ready (default)",
       "alerts.events = needs-you, question, finished, failed (default)",
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
@@ -694,6 +699,55 @@ describe("the review gate (CM-1)", () => {
       expect(readFileSync(file, "utf8")).toBe(before);
     },
   );
+
+  test.each([
+    ["set", "issues.enabled", ["true"]],
+    ["set", "issues.allowPublic", ["true"]],
+    ["unset", "issues.enabled", []],
+  ] as const)(
+    "D67: workflow %s %s refuses inside Claude Code, in both files: a session does not open its own way out",
+    async (sub, key, value) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([
+          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} lets text leave this machine for GitHub, which only you switch. Run it in your own terminal; for the project's policy, change .claude/cc-smart-dev-kit.json there, commit it to the base and push it — the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`,
+        ]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
+  test("D67: outside Claude Code the switch is set in the person's file and shown with its source", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "issues.enabled", "true"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      "+ ~/.config/cc-smart-dev-kit/workflow.json: issues.enabled = true",
+    ]);
+    const shown = context(repo, env);
+    await runWorkflow(["show"], shown.context);
+    expect(shown.lines).toContain("issues.enabled = true (personal)");
+    expect(shown.lines).toContain("issues.allowPublic = false (default)");
+  });
+
+  test("D67: a label is checked when it is typed", async () => {
+    const run = context(tempDir("not-git"));
+    expect(await runWorkflow(["set", "issues.readyLabel", "a,b"], run.context)).toBe(2);
+    expect(run.errors[0]).toContain(
+      "issues.readyLabel is a label name of 1-50 characters on one line, with no comma",
+    );
+    const ok = context(tempDir("not-git"));
+    expect(await runWorkflow(["set", "issues.readyLabel", "ready-to-build"], ok.context)).toBe(0);
+  });
 
   test("a setting outside the gate still works inside Claude Code", async () => {
     const env = hookEnv();
