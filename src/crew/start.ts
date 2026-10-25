@@ -560,7 +560,9 @@ async function planContinuation(
     );
   }
   return {
-    baseRef: old.branch,
+    // The commit, never the old branch's name: a queued continuation is cut from its `baseRef` when
+    // it starts, and `crew rm` of the old record deletes that branch (a branch reset moves it too).
+    baseRef: baseSha,
     baseSha,
     branch,
     briefGiven: continuationBrief(ctx, caller.repo, old),
