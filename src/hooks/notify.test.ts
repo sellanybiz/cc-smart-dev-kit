@@ -9,12 +9,21 @@
  * points at (`XDG_RUNTIME_DIR`), never the real one.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { awayStateFile, setAvailable, setUnavailable } from "../user-away/state";
 import type { AlertEvent } from "../workflow/schema";
 import { inBackgroundSession } from "./background-session";
 import {
@@ -447,6 +456,33 @@ describe("what is notified, and with which words", () => {
         again.deps,
       );
     }
+  });
+
+  test("a question the hooks deny while the person is away raises no alert; it does again once they are back, or when the state cannot be read", async () => {
+    const { env } = machine();
+    const question = {
+      cwd: join(env.HOME, "rel-ssh"),
+      hook_event_name: "PreToolUse",
+      session_id: "s-9",
+      tool_input: { questions: [{ question: "Which branch?", type: "text" }] },
+      tool_name: "AskUserQuestion",
+    };
+    const stateDir = cliPaths(env).stateDir;
+    await setUnavailable(stateDir, Date.now(), null);
+    const away = setup(env);
+    notifyHook(question, "PreToolUse", away.deps);
+    expect(away.runs).toEqual([]);
+
+    writeFileSync(awayStateFile(stateDir), "{ nope");
+    const unreadable = setup(env);
+    notifyHook(question, "PreToolUse", unreadable.deps);
+    expect(unreadable.runs.length).toBe(2);
+
+    rmSync(awayStateFile(stateDir));
+    await setAvailable(stateDir);
+    const back = setup(env);
+    notifyHook({ ...question, session_id: "s-10" }, "PreToolUse", back.deps);
+    expect(back.runs.length).toBe(2);
   });
 
   test("a mark older than ten minutes does not hide a later permission prompt", () => {

@@ -76,10 +76,10 @@ import {
 } from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
+import { findCrew } from "./board";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
 import { type Caller, readCaller, reasonOf, requireSession } from "./caller";
 import {
-  agentRow,
   CREW_PERMISSION_MODE,
   callClaude,
   dependencyIds,
@@ -88,25 +88,33 @@ import {
   launchArgs,
   leanLaunch,
   mcpConfigText,
-  parseAgents,
   parseBackgrounded,
   parsePluginList,
   refusedUntrusted,
+  startedRow,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
 import { filePattern, matchesFilePattern } from "./diff";
+import { pendingDiscardWhy } from "./discard";
 import { lastLine, modelText } from "./display";
+import { activeContinuationOf } from "./lifecycle";
 import { CREW_REF, crewName } from "./names";
 import {
   OPUS_TIER,
-  onOpusTier,
   placeFor,
+  placeInputOf,
   RUNNING_STATES,
-  runningCrew,
-  runningForLead,
   unmetWaits,
   withPlacesLock,
 } from "./places";
+import {
+  briefHash,
+  findPlanFile,
+  type PlanLookup,
+  planBriefFile,
+  planFileOfLead,
+  plansDirs,
+} from "./runs";
 import { CREW_ENV } from "./session";
 import {
   appendCrewEvent,
@@ -122,21 +130,28 @@ import {
   type LeadRecord,
   listAllCrew,
   listCrew,
+  listLeads,
+  readCrew,
+  readCrewEvents,
   readLead,
   readReport,
+  setLeadPlanFile,
   updateCrew,
   writeJsonFile,
   writeStoreFile,
 } from "./store";
-import { crewGatewayOf, usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewGatewayOf, crewSettingsFolder, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
   phase: string;
   slug: string;
   kind: CrewKind;
-  /** A file to read the brief from, or `-` for stdin. */
-  brief: string;
+  /**
+   * A file to read the brief from, or `-` for stdin. Null: the plan's own folder holds it,
+   * `<plan folder>/briefs/<PHASE>-<slug>.md` (PL1).
+   */
+  brief: null | string;
   base: null | string;
   files: string[];
   model: null | string;
@@ -256,6 +271,22 @@ export function chooseLaunch(
   return { effort, model, real, slot: answeringSlot(model, gateway, ctx.env) };
 }
 
+/**
+ * What `chooseLaunch` is asked for a crew session that runs on `current` and is asked for `asked`
+ * (`--model`, `--effort`): a continuation and `crew model` (`model.ts`) both read it. A model asked
+ * for alone brings the effort its kind runs it at; an effort alone keeps the model; neither keeps
+ * both.
+ */
+export function changedLaunch(
+  current: { effort: string; model: string },
+  asked: { effort: null | string; model: null | string },
+): { effort: null | string; model: string } {
+  return {
+    effort: asked.effort ?? (asked.model === null ? current.effort : null),
+    model: asked.model ?? current.model,
+  };
+}
+
 /** One git call's trimmed output, or null when it failed. */
 function gitOut(folder: string, args: string[], env: Env): null | string {
   const run = runGit(folder, args, env, GIT_TIMEOUT_MS);
@@ -292,20 +323,86 @@ function refusal(line: string, fix?: string, code: 1 | 2 = 1): Refusal {
   return new Refusal(lines, code);
 }
 
-/** The brief as given: the file, or stdin with `-`. Throws a refusal when it is missing or empty. */
-async function readBrief(args: StartArgs, ctx: CrewContext): Promise<string> {
+/** The brief a start read, and where it came from. */
+interface BriefRead {
+  /** The line that says which file was taken, when it was the plan's own (PL1); else null. */
+  line: null | string;
+  /** The file it came from (absolute); null for stdin. */
+  path: null | string;
+  text: string;
+}
+
+/**
+ * The brief as given: the file, or stdin with `-`; with no `--brief`, the plan's own folder holds
+ * it (`<plan folder>/briefs/<PHASE>-<slug>.md`, PL1). Throws a refusal when it is missing or
+ * empty, naming the path it looked for.
+ */
+async function readBrief(
+  args: StartArgs,
+  ctx: CrewContext,
+  planFile: null | string,
+): Promise<BriefRead> {
   let text: string;
+  let path: null | string = null;
+  let line: null | string = null;
   if (args.brief === "-") {
     text = await ctx.readStdin();
   } else {
+    let given = args.brief;
+    if (given === null) {
+      if (planFile === null) {
+        throw refusal(
+          "no --brief was given, and this lead has no plan file to find the brief in",
+          `pass --brief <file>, or run ${COMMAND} crew lead --plan-file <path> first`,
+        );
+      }
+      given = planBriefFile(planFile, args.phase, args.slug);
+      line = `brief: ${tildify(given, ctx.paths.home)} (the plan's folder)`;
+    }
+    path = resolve(ctx.cwd, given);
     try {
-      text = readFileSync(resolve(ctx.cwd, args.brief), "utf8");
+      text = readFileSync(path, "utf8");
     } catch (error) {
-      throw refusal(`the brief ${args.brief} cannot be read (${reasonOf(error)})`);
+      throw refusal(
+        `the brief ${tildify(path, ctx.paths.home)} cannot be read (${reasonOf(error)})`,
+        args.brief === null ? "write the brief at that path, or pass --brief <file>" : undefined,
+      );
     }
   }
   if (text.trim() === "") throw refusal("the brief is empty", undefined, 2);
-  return text;
+  return { line, path, text };
+}
+
+/**
+ * The plan file of a lead for a start: the one its record holds, else the earlier lead's of the
+ * same plan, else the one `<plans dir>/*-<plan>.md` (a plan written after `crew lead` ran is
+ * found now, and kept on the lead record). Null when none: the run is not recorded.
+ */
+async function leadPlanFile(
+  lead: LeadRecord,
+  caller: Caller,
+  ctx: CrewContext,
+): Promise<null | string> {
+  if (typeof lead.planFile === "string" && lead.planFile !== "") return lead.planFile;
+  let found: PlanLookup;
+  try {
+    found = planFileOfLead(
+      lead,
+      listLeads(ctx.paths.stateDir, caller.repo).records.filter(
+        (one) => one.sessionId !== lead.sessionId,
+      ),
+      () => findPlanFile(lead.plan, plansDirs(caller.repo, ctx.paths), { archived: false }),
+    );
+  } catch (error) {
+    throw refusal(reasonOf(error));
+  }
+  if (!found.ok) return null;
+  try {
+    await setLeadPlanFile(ctx.paths.stateDir, caller.repo, lead.sessionId, found.file, ctx.now());
+  } catch (error) {
+    ctx.error(`crew start: the plan file could not be kept on the lead: ${reasonOf(error)}`);
+  }
+  return found.file;
 }
 
 /** Everything known before the record is written. */
@@ -313,10 +410,22 @@ interface Plan {
   caller: Caller;
   lead: LeadRecord;
   briefGiven: string;
+  /** Where the brief came from, and a hash of it: kept on the record and in the run record. */
+  briefSource: { path: null | string; sha256: string };
+  /** The line that says the brief came from the plan's folder; null when `--brief` named it. */
+  briefLine: null | string;
+  /** The plan file of the lead: its folder holds the run record; null when none is known. */
+  planFile: null | string;
   chosen: Chosen;
   claude: string;
   baseRef: string;
   baseSha: string;
+  /**
+   * A continuation starts from this commit, never from the old branch's name: a queued one is cut
+   * when it starts, and `crew rm` of the old record deletes that branch (a branch reset moves it
+   * too). False for a start that is cut from `baseRef` when it starts.
+   */
+  pinned: boolean;
   /** The lean start: the plugins this session turns off, and the servers it keeps. */
   lean: LeanLaunch;
   name: string;
@@ -440,8 +549,10 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   if (args.continueFrom !== null) {
     return await planContinuation(args, ctx, caller, lead, claude);
   }
-  const briefGiven = await readBrief(args, ctx);
-  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
+  const planFile = await leadPlanFile(lead, caller, ctx);
+  const brief = await readBrief(args, ctx, planFile);
+  const briefGiven = brief.text;
+  const chosen = chooseLaunch(args.kind, args, ctx, crewSettingsFolder(caller.checkout));
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
@@ -469,12 +580,16 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   return {
     baseRef,
     baseSha,
+    pinned: false,
     branch,
     briefGiven,
+    briefLine: brief.line,
+    briefSource: { path: brief.path, sha256: briefHash(briefGiven) },
     caller,
     chosen,
     claude,
     continues: null,
+    planFile,
     files: args.files,
     kind: args.kind,
     lead,
@@ -503,30 +618,28 @@ async function planContinuation(
   claude: string,
 ): Promise<Plan> {
   const records = listCrew(ctx.paths.stateDir, caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
-  if (old === undefined) {
-    throw refusal(
-      `no crew session named "${args.continueFrom}" is recorded in this repository`,
-      `the crew here: ${records.map((one) => one.name).join(", ")}`,
-    );
-  }
+  // The one finder of every crew command (`findCrew`): a name shared with removed records means
+  // the live one, and two live ones ask for an id.
+  const found = findCrew(records, args.continueFrom as string, "start");
+  if ("refusal" in found) throw new Refusal(found.refusal.lines, found.refusal.code);
+  const old = found.record;
+  const pending = pendingDiscardWhy(old);
+  if (pending !== null) throw refusal(pending);
   if (old.phase !== args.phase) {
     throw refusal(
       `${old.name} works on phase ${old.phase}, and this one is ${args.phase}`,
       `crew start ${old.phase} --continue "${old.name}"`,
     );
   }
-  if (old.state !== "handoff") {
+  if (!["handoff", "stopped", "done", "failed"].includes(old.state)) {
     throw refusal(
-      `${old.name} is ${old.state}, and only a crew session that handed off can be continued`,
-      `the crew session hands off with \`${REPORT_COMMAND} --status handoff\``,
+      `${old.name} is ${old.state}, and only a crew session that handed off or stopped can be continued`,
+      `stop its work first, or let the crew session hand off with \`${REPORT_COMMAND} --status handoff\``,
     );
   }
   // One next crew session per hand-off: a second `--continue` of the same crew session would put two
   // crew sessions on one phase. A next crew session that failed or was removed leaves the way free.
-  const next = records.find(
-    (one) => one.continues === old.id && one.state !== "failed" && one.state !== "removed",
-  );
+  const next = activeContinuationOf(old, records);
   if (next !== undefined) {
     throw refusal(
       `${old.name} has its next crew session already: ${next.name}, ${next.state}`,
@@ -536,17 +649,22 @@ async function planContinuation(
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
+  // The old crew session's model and effort, unless the lead asks for others (`--model`, `--effort`).
   const chosen = chooseLaunch(
     old.kind,
-    { effort: old.effort, model: old.model.named },
+    changedLaunch({ effort: old.effort, model: old.model.named }, args),
     ctx,
-    caller.repo,
+    crewSettingsFolder(caller.checkout),
   );
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
-  const number =
-    records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
+  // The phase's real sessions: those that started. A record removed before it began never ran, and
+  // took no number. The old one handed off, so a next one is at least a second.
+  const started = records.filter(
+    (one) => one.phase === old.phase && one.slug === old.slug && one.base !== null,
+  ).length;
+  const number = Math.max(started, 1) + 1;
   let name: string;
   try {
     name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
@@ -564,15 +682,24 @@ async function planContinuation(
       "the old crew session's branch must still be in this repository",
     );
   }
+  const continuedText = continuationBrief(ctx, caller.repo, old);
   return {
     baseRef: old.branch,
     baseSha,
+    pinned: true,
     branch,
-    briefGiven: continuationBrief(ctx, caller.repo, old),
+    briefGiven: continuedText,
+    // The run continues the old one's brief; the hash is of the text the new session reads.
+    briefLine: null,
+    briefSource: {
+      path: old.briefSource?.path ?? null,
+      sha256: briefHash(continuedText),
+    },
     caller,
     chosen,
     claude,
     continues: old.id,
+    planFile: old.planFile ?? (await leadPlanFile(lead, caller, ctx)),
     files: old.files,
     kind: old.kind,
     lead,
@@ -638,7 +765,7 @@ function reportBlock(report: HandBackReport): string {
  * what it made was taken back) — the record stays as history, and a second try may start.
  */
 export function holdsName(record: CrewRecord): boolean {
-  if (record.state === "removed") return false;
+  if (["removed", "discarded"].includes(record.state)) return false;
   return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
 }
 
@@ -826,26 +953,18 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
     );
   }
   const { shortId } = backgrounded;
-  const listed = callClaude(deps, spec.claude, ["agents", "--json", "--all"], spec.repo);
-  const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
-  if (rows === null) {
+  const listed = startedRow(deps, spec.claude, shortId, spec.repo);
+  if (!listed.ok) {
     return await failed(
       record,
-      `session ${shortId} started, but claude agents --json could not be read`,
+      listed.why === "unreadable"
+        ? `session ${shortId} started, but claude agents --json could not be read`
+        : `session ${shortId} started, but claude agents does not list it`,
       ctx,
       { shortId },
     );
   }
-  const row = agentRow(rows, shortId);
-  if (row === null) {
-    return await failed(
-      record,
-      `session ${shortId} started, but claude agents does not list it`,
-      ctx,
-      { shortId },
-    );
-  }
-  const sessionId = row.sessionId;
+  const sessionId = listed.row.sessionId;
   // Where the session works is **not** judged from this read: `claude agents --json` reports the
   // folder a `--bg -w` session was launched in until it has entered its worktree (2.1.308,
   // `docs/claude-code-contract.md`), so one immediate read races the move — five crew sessions
@@ -886,7 +1005,7 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
   }
   const code = await startPlanned(planned, ctx);
   if (code === 0 && args.continueFrom !== null) {
-    await stopContinued(planned, args, ctx);
+    await stopContinued(planned, ctx);
   }
   return code;
 }
@@ -897,9 +1016,10 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
  * for "handed off to a next crew session, and ended" — and so do its branch and its worktree, so the
  * lead can read what it did and `crew rm` can clean it up once the lead has merged.
  */
-async function stopContinued(planned: Plan, args: StartArgs, ctx: CrewContext): Promise<void> {
+async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
   const records = listCrew(ctx.paths.stateDir, planned.caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
+  // By the id the plan recorded: a name may be shared with removed records.
+  const old = records.find((one) => one.id === planned.continues);
   if (old === undefined || old.shortId === null) return;
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) return;
@@ -1028,6 +1148,52 @@ function trackedFiles(repo: string, env: Env): string[] {
   return run.ok ? run.out.split("\0").filter((path) => path !== "") : [];
 }
 
+/**
+ * A `--files` glob that matches more than this share of the tracked files is warned about, once
+ * the repository has `BROAD_GLOB_MIN_FILES` of them. One phase rarely changes a quarter of a
+ * repository; a glob that wide (`docs/**`, in a repository that is mostly docs) makes every other
+ * lead's session clash with it, and each start says the clash again.
+ */
+const BROAD_GLOB_SHARE = 0.25;
+
+/** A small repository has no broad glob: a quarter of ten files is two. */
+const BROAD_GLOB_MIN_FILES = 20;
+
+/** One warning line for each `--files` pattern that matches far more than a phase can mean. */
+function broadGlobLines(files: readonly string[], repo: string, env: Env): string[] {
+  if (files.length === 0) return [];
+  const tracked = trackedFiles(repo, env);
+  if (tracked.length < BROAD_GLOB_MIN_FILES) return [];
+  const lines: string[] = [];
+  for (const entry of files) {
+    const { glob, pattern } = filePattern(entry);
+    const matched = tracked.filter((path) => matchesFilePattern(path, pattern, glob)).length;
+    if (matched <= tracked.length * BROAD_GLOB_SHARE) continue;
+    lines.push(
+      `warning: --files "${pattern}" matches ${matched} of ${tracked.length} tracked files (${Math.round((matched / tracked.length) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
+    );
+  }
+  return lines;
+}
+
+/** One side of a clash: the lead's session and the phase it builds. */
+export interface ClashSide {
+  lead: string;
+  phase: string;
+}
+
+/**
+ * The identity of a clash between two phases of two leads, the same whichever side asks. It is
+ * the phase, not the crew session's id, so a phase that starts again under a new slug (a
+ * removed or replaced session) is the same pair, and the lead hears it once (WN1).
+ */
+export function clashPairKey(one: ClashSide, two: ClashSide): string {
+  return [one, two]
+    .map((side) => `${side.lead}/${side.phase}`)
+    .sort()
+    .join(" ~ ");
+}
+
 /** The line one start prints, and records for the other lead (D55). */
 function clashLine(other: CrewRecord, shared: FileOverlap): string {
   const what =
@@ -1070,14 +1236,22 @@ export function fileClashSessions(
  * at most: the start goes on.
  */
 async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
+  // The glob warning needs no store: it is said even when the store cannot be read.
+  const warnings = broadGlobLines(record.files, record.repo, ctx.env);
   let records: CrewRecord[];
+  let said: Set<string>;
   try {
     records = listCrew(ctx.paths.stateDir, record.repo).records;
+    said = new Set(
+      readCrewEvents(ctx.paths.stateDir, record.repo)
+        .events.filter((event) => event.type === "clash")
+        .flatMap((event) => (typeof event.pair === "string" ? [event.pair] : [])),
+    );
   } catch {
-    // No store, no warning: a clash is never worth failing a start.
-    return [];
+    // No store, no clash line: a clash is never worth failing a start.
+    return warnings;
   }
-  const lines: string[] = [];
+  const lines = warnings;
   for (const { other, shared } of fileClashSessions(
     record.repo,
     ctx.env,
@@ -1085,6 +1259,13 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
     record.files,
     records,
   )) {
+    // Each pair is said once, whichever way round and however often a start meets it (WN1).
+    const pair = clashPairKey(
+      { lead: record.leadSessionId, phase: record.phase },
+      { lead: other.leadSessionId, phase: other.phase },
+    );
+    if (said.has(pair)) continue;
+    said.add(pair);
     const line = clashLine(other, shared);
     lines.push(line);
     try {
@@ -1095,6 +1276,7 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
           crew: other.id,
           lead: other.leadSessionId,
           name: other.name,
+          pair,
           state: other.state,
           text: line,
           type: "clash",
@@ -1140,7 +1322,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const crew = caller.resolved.crew;
   // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
   // nothing about who takes which place.
-  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
+  const usage = usageFacts(ctx.paths, ctx.now(), crewSettingsFolder(caller.checkout));
   let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -1152,34 +1334,23 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         planned.waitsFor,
         all.filter((one) => one.repo === caller.repo),
       );
-      const running = runningCrew(all);
-      const mine = runningForLead(all, lead.sessionId);
-      const input = {
-        freeGb: null,
-        leadRunning: mine.length,
-        leadRunningOpus: onOpusTier(mine).length,
-        max: crew.max.value,
-        maxOpus: crew.maxOpus.value,
-        needGb: crew.memoryGb.value,
+      const input = placeInputOf(all, lead.sessionId, crew, usage, {
         opus: chosen.real.tier === OPUS_TIER,
-        opusFallback: usage.opusFallback,
-        perLead: crew.perLead.value,
-        perLeadOpus: crew.perLeadOpus.value,
-        running: running.length,
-        runningOpus: onOpusTier(running).length,
         unmet,
-        usageHoldPercent: crew.usagePercent.value,
-        usagePercent: usage.percent,
-      };
+      });
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
-      const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+      const place = first.start
+        ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+        : first;
       const record = await createCrew(
         ctx.paths.stateDir,
         {
           base: place.start ? { ref: planned.baseRef, sha: planned.baseSha } : null,
           baseRef: planned.baseRef,
+          ...(planned.pinned ? { baseCommit: planned.baseSha } : {}),
           branch: planned.branch,
+          briefSource: planned.briefSource,
           continues: planned.continues,
           effort: chosen.effort,
           files: planned.files,
@@ -1199,6 +1370,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
           permissionMode: CREW_PERMISSION_MODE,
           phase: planned.phase,
           plan: lead.plan,
+          planFile: planned.planFile,
           pr: null,
           questions: [],
           repo: caller.repo,
@@ -1238,6 +1410,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);
   }
+  if (planned.briefLine !== null) ctx.print(planned.briefLine);
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
     if (already !== null) ctx.print(phaseLine(already));
@@ -1295,39 +1468,50 @@ function specOf(planned: Plan): LaunchSpec {
  * the crew session (the caps, the free memory, or a phase it waits for).
  */
 export async function startQueued(
-  record: CrewRecord,
+  listed: CrewRecord,
   ctx: CrewContext,
   resolved: ResolvedWorkflow,
+  /**
+   * The lead's own folder, where the session's worktree is cut from and whose settings it will
+   * run on (`crewSettingsFolder`); the watch gives its `mergeInto`. Default, and when that folder
+   * is gone (the lead's worktree was removed while its watch runs): the repository.
+   */
+  settingsFolder: string = listed.repo,
 ): Promise<void> {
+  // The record as it is now, not as the watch listed it a moment ago: the lead may have changed
+  // its model or effort since (`crew model`), or the crew session may have left the queue.
+  const early = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
+  if (early === null || early.state !== "queued") return;
+  // Read again under the places lock, where the start is decided: a change that lands while this
+  // start waits for it is the one the session starts on.
+  let record: CrewRecord = early;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+  const usage = usageFacts(
+    ctx.paths,
+    ctx.now(),
+    existsSync(settingsFolder) ? settingsFolder : record.repo,
+  );
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
+    // A compare-and-set: the copy the caller holds may be stale (a watch takeover leaves two
+    // starters of one record, WF1), so the store says whether it is still queued. Only the starter
+    // that finds it queued moves it to `starting`; the other leaves it alone.
+    const now = readCrew(ctx.paths.stateDir, early.repo, early.id);
+    if (now === null || now.state !== "queued") return null;
+    record = now;
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
-    const running = runningCrew(all);
-    const mine = runningForLead(all, record.leadSessionId);
-    const input = {
-      freeGb: null,
-      leadRunning: mine.length,
-      leadRunningOpus: onOpusTier(mine).length,
-      max: crew.max.value,
-      maxOpus: crew.maxOpus.value,
-      needGb: crew.memoryGb.value,
+    const input = placeInputOf(all, record.leadSessionId, crew, usage, {
       opus: record.model.tier === OPUS_TIER,
-      opusFallback: usage.opusFallback,
-      perLead: crew.perLead.value,
-      perLeadOpus: crew.perLeadOpus.value,
-      running: running.length,
-      runningOpus: onOpusTier(running).length,
       unmet: unmetWaits(record.waitsFor, here),
-      usageHoldPercent: crew.usagePercent.value,
-      usagePercent: usage.percent,
-    };
+    });
     const first = placeFor(input);
-    const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+    const place = first.start
+      ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+      : first;
     if (!place.start) return null;
-    const base = commitOf(record.repo, record.baseRef, ctx.env);
+    // A continuation's pinned commit first; a record from before it holds only the branch name.
+    const base = commitOf(record.repo, record.baseCommit ?? record.baseRef, ctx.env);
     if (base === null) {
       await failed(record, `the base ${record.baseRef} is no commit here`, quiet);
       return null;

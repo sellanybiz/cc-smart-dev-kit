@@ -19,7 +19,8 @@ import {
 import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
-import { filesOverlap, startQueued } from "./start";
+import { withPlacesLock } from "./places";
+import { clashPairKey, filesOverlap, startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -27,6 +28,7 @@ import {
   crewSettingsFile,
   listCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
 } from "./store";
 
@@ -224,6 +226,11 @@ describe("D25: crew start returns at once", () => {
       base: { ref: "main", sha: head },
       baseRef: "main",
       branch: "crew/B6b-portal-live",
+      // Where the brief came from and a hash of its text, kept for the run record (PL1).
+      briefSource: {
+        path: world.brief,
+        sha256: "50dad91b5a7732afbf56f2d1892b64a824006dabc5f976511d22c61808ceb917",
+      },
       // A first crew session for its phase continues no one: only `--continue` records the old id.
       continues: null,
       createdAt: "2026-10-21T10:00:00.000Z",
@@ -240,6 +247,8 @@ describe("D25: crew start returns at once", () => {
       permissionMode: "auto",
       phase: "B6b",
       plan: "master-plan",
+      // This lead has no plan file: its run is not recorded.
+      planFile: null,
       pr: null,
       questions: [],
       reportPath: null,
@@ -571,6 +580,120 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
     expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
   });
 
+  test("MC1: it starts on the model and effort the record has now, not the ones the watch listed", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    // `crew model` changed the record after the watch listed it.
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      listed.id,
+      { effort: "xhigh", model: { named: "opus", resolved: "opus", slot: null, tier: "opus" } },
+      T0,
+    );
+    await startQueued(listed, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    const launch = world.claudeCalls().find((call) => call[0] === "--bg") ?? [];
+    expect(launch.slice(launch.indexOf("--model"), launch.indexOf("--model") + 4)).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "xhigh",
+    ]);
+    expect(onlyCrew(world.paths.stateDir, world.repo)).toMatchObject({
+      effort: "xhigh",
+      model: { named: "opus" },
+    });
+  });
+
+  test("MC1: a crew session that left the queue since the watch listed it is not started", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    await updateCrew(world.paths.stateDir, world.repo, listed.id, { state: "failed" }, T0);
+    await startQueued(listed, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    expect(world.claudeCalls()).toEqual([]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("failed");
+  });
+
+  test("IN1: a model change that lands while the start waits for the places lock is the model it starts on", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    const ctx = world.ctx({}, { FAKE_PLUGINS: PLUGINS });
+    let started: Promise<void> = Promise.resolve();
+    await withPlacesLock(world.paths.stateDir, async () => {
+      // The start reads the record at once, then waits for the lock; `crew model` lands meanwhile.
+      started = startQueued(listed, ctx, defaultResolved());
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        listed.id,
+        { effort: "xhigh", model: { named: "opus", resolved: "opus", slot: null, tier: "opus" } },
+        T0,
+      );
+    });
+    await started;
+    const launch = world.claudeCalls().find((call) => call[0] === "--bg") ?? [];
+    expect(launch.slice(launch.indexOf("--model"), launch.indexOf("--model") + 4)).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "xhigh",
+    ]);
+  });
+
+  test("IN1: a crew session removed while the start waits for the places lock is not started", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    const ctx = world.ctx({}, { FAKE_PLUGINS: PLUGINS });
+    let started: Promise<void> = Promise.resolve();
+    await withPlacesLock(world.paths.stateDir, async () => {
+      started = startQueued(listed, ctx, defaultResolved());
+      await updateCrew(world.paths.stateDir, world.repo, listed.id, { state: "failed" }, T0);
+    });
+    await started;
+    expect(world.claudeCalls()).toEqual([]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("failed");
+  });
+
+  test("two starters of one queued record start it once, the second finding it no longer queued", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const ctx = world.ctx({}, { FAKE_PLUGINS: PLUGINS });
+    // Both hold the same stale copy, as a lead's watch and its successor do after a takeover.
+    await Promise.all([
+      startQueued(record, ctx, defaultResolved()),
+      startQueued(record, ctx, defaultResolved()),
+    ]);
+    const launches = world.claudeCalls().filter((call) => call.includes("--bg"));
+    expect(launches).toHaveLength(1);
+    // The second starter did not go on to a second worktree add that fails and marks the first's
+    // crew session failed.
+    const texts = readCrewEvents(world.paths.stateDir, world.repo).events.map((one) => one.text);
+    expect(texts.filter((text) => text === "started from the queue")).toHaveLength(1);
+    expect(texts.some((text) => text?.includes("worktree add failed"))).toBe(false);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("a record that is no longer queued is left alone", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "stopped" }, T0);
+    await startQueued(record, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("stopped");
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("the queue holds a queued crew session while the load is past the limit", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const busy = world.ctx(
+      { load: () => ({ cores: 4, oneMinute: 40 }) },
+      { FAKE_PLUGINS: PLUGINS },
+    );
+    await startQueued(record, busy, defaultResolved());
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("queued");
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
   test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {
     const world = await ledWorld();
     const record = await queuedHere(world);
@@ -692,10 +815,6 @@ describe("the refusals before anything is recorded", () => {
     [
       ["start", "B6b", "--slug", "x", "--kind", "magic", "--brief", "-"],
       "Unknown kind: magic (the kinds: build, docs, tests, security, money, permissions, schema, deploy, architecture, ui)",
-    ],
-    [
-      ["start", "B6b", "--slug", "x", "--kind", "build"],
-      "Give the crew session its brief: --brief <file>, or --brief - for stdin",
     ],
     [
       ["start", "B6b", "--slug", "x", "--kind", "build", "--brief", "-", "--effort", "low"],
@@ -1089,6 +1208,29 @@ describe("D25: the queue — still one line, at once", () => {
     expect(world.out).toEqual([
       "queued C my-app master-plan B6b portal-live: 2 GB free, a crew session needs 3 GB; it starts when memory frees",
     ]);
+  });
+
+  test("a load past workflow.crew.loadPerCore for each core: queued, with the load and the limit", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ loadPerCore: 2 });
+    const busy = world.ctx({ load: () => ({ cores: 16, oneMinute: 85 }) });
+    expect(await runCrew(startArgs(world.brief), busy)).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app master-plan B6b portal-live: the load is 85 on 16 cores, past 32 (2 for each core); it starts when the load falls",
+    ]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("queued");
+  });
+
+  test("a load under the limit starts, and no load average does not hold", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ loadPerCore: 2 });
+    const calm = world.ctx({ load: () => ({ cores: 16, oneMinute: 31 }) });
+    expect(await runCrew(startArgs(world.brief), calm)).toBe(0);
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");
+
+    const none = await ledWorld();
+    expect(await runCrew(startArgs(none.brief), none.ctx({ load: () => null }))).toBe(0);
+    expect(none.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");
   });
 
   test("--waits-for a phase not done: queued, and the record keeps what it waits for", async () => {
@@ -1562,5 +1704,106 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
     ).toBe(0);
     expect(world.out).toEqual([]);
+  });
+});
+
+describe("WN1: a clash pair is said once, and a glob that matches too much is warned", () => {
+  /** A start of B6b under `slug`, holding `files`. */
+  function startSlug(world: Awaited<ReturnType<typeof ledWorld>>, slug: string, files: string) {
+    return runCrew(
+      ["start", "B6b", "--slug", slug, "--kind", "build", "--brief", world.brief, "--files", files],
+      world.ctx(),
+    );
+  }
+
+  /** A start of `phase` holding `files`. */
+  function startPhase(world: Awaited<ReturnType<typeof ledWorld>>, phase: string, files: string) {
+    return runCrew(
+      ["start", phase, "--slug", "x", "--kind", "build", "--brief", world.brief, "--files", files],
+      world.ctx(),
+    );
+  }
+
+  /** 30 tracked files under `docs/`. */
+  function trackDocs(world: Awaited<ReturnType<typeof ledWorld>>): number {
+    mkdirSync(join(world.repo, "docs"), { recursive: true });
+    for (let i = 0; i < 30; i += 1) writeFileSync(join(world.repo, "docs", `p${i}.md`), "x\n");
+    git(world.repo, "add", "-A");
+    git(world.repo, "commit", "-m", "docs");
+    return git(world.repo, "ls-files").trim().split("\n").length;
+  }
+
+  test("three starts of one phase that clash with one session say the pair once", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await startSlug(world, "first", "README.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([CLASH_LINE]);
+    for (const slug of ["second", "third"]) {
+      world.out.length = 0;
+      expect(await startSlug(world, slug, "README.md")).toBe(0);
+      expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([]);
+    }
+    // One event for the other lead's watch, not three.
+    expect(clashEvents(world)).toHaveLength(1);
+  });
+
+  test("a new pair is said", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await startPhase(world, "B6b", "README.md")).toBe(0);
+    world.out.length = 0;
+    // Another phase of this lead against the same session is another pair.
+    expect(await startPhase(world, "B6d", "README.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([CLASH_LINE]);
+    expect(clashEvents(world)).toHaveLength(2);
+  });
+
+  test("the pair is the same from either lead", () => {
+    expect(clashPairKey({ lead: "s1", phase: "B6b" }, { lead: "s2", phase: "C5b" })).toBe(
+      clashPairKey({ lead: "s2", phase: "C5b" }, { lead: "s1", phase: "B6b" }),
+    );
+    expect(clashPairKey({ lead: "s1", phase: "B6b" }, { lead: "s2", phase: "C5b" })).not.toBe(
+      clashPairKey({ lead: "s1", phase: "B6c" }, { lead: "s2", phase: "C5b" }),
+    );
+  });
+
+  test("a glob that matches a large share of the tracked files is warned, never refused", async () => {
+    const world = await ledWorld();
+    const tracked = trackDocs(world);
+    expect(await startSlug(world, "wide", "docs/**/*.md")).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([
+      `warning: --files "docs/**/*.md" matches 30 of ${tracked} tracked files (${Math.round((30 / tracked) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
+    ]);
+  });
+
+  test("a repository under 20 tracked files has no broad glob", async () => {
+    const world = await ledWorld();
+    expect(await startSlug(world, "small", "**/*")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([]);
+  });
+
+  test("a bare folder that holds most of the repository is warned", async () => {
+    const world = await ledWorld();
+    trackDocs(world);
+    expect(await startSlug(world, "folder", "docs/")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toHaveLength(1);
+  });
+
+  test("a narrow glob and a path are not warned", async () => {
+    const world = await ledWorld();
+    trackDocs(world);
+    expect(await startSlug(world, "narrow", "docs/p3*.md, docs/p2.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([]);
   });
 });

@@ -54,6 +54,16 @@ The guarantees:
   and restore leaves it and gives up the ownership. A record from an older `owned.json`
   has no value: it stays owned as before, and gets its value at the next setup. A
   write that sets a secret leaves the file at mode 600.
+- **A default that is a managed key, written only while it is absent.** Setup writes
+  `remoteControlAtStartup: true` (Remote Control's auto-connect, D66) into the user's
+  settings with no question, through `applyManagedJson` (`src/setup/remote-control.ts` plans
+  it). A value of the person's own (`true` or `false`) is theirs: setup neither writes nor
+  names it. A key setup wrote and the person changed or deleted since is theirs too: setup
+  gives up its claim in the record (one quiet `·` line, once), so a `true` they write later is
+  never taken for setup's. The release is a lasting record too, `remote-control-released` in
+  the state folder (like the status line's "no"): an absent key is then left absent on every
+  later run, and `restore` leaves the record, as it leaves that "no". A second setup changes nothing, and `restore` removes the key only
+  while it still holds the `true` setup wrote.
 - **`--dry-run`** shows every change and writes nothing at all: no state folder, no
   lock. Every setup runs this read-only pass first, outside the lock.
 - **`restore`** removes what cc-smart-dev-kit added and keeps everything else: its own JSON

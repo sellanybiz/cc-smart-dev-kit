@@ -242,7 +242,8 @@ export type CrewState =
 /** `src/crew/store.ts` › `WaitingFor`. */
 export type WaitingFor =
   | { kind: "slot"; since: string; slot: string }
-  | { kind: "claude-limit"; model: string; resetsAt: null | string };
+  | { kind: "claude-limit"; model: string; resetsAt: null | string }
+  | { kind: "unknown"; since: string; slot?: string };
 
 /** `src/crew/store.ts` › `CrewRecord` (the fields a page reads). */
 export interface CrewRecord {

@@ -8,7 +8,7 @@
  *
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -51,6 +51,7 @@ import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
@@ -66,6 +67,11 @@ import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
+
+// The pages and reads run real git, doctor and CLI children (the key test alone takes about
+// 1.3 s, 0.7 s of it in them): past the 5 s default on a loaded machine. Its own speed limit
+// (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** Real SHA-256 values in base64 (of "", "foo"), written by hand: `csp.json` takes only hashes. */
 const ATTR_HASH = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
@@ -4197,10 +4203,13 @@ describe("the JSON API", () => {
     try {
       const body = JSON.parse((await world.call("/api/slots")).body) as {
         chains: Record<string, string[]>;
+        effortLevels: string[];
         models: { id: string }[];
         switches: { models: boolean };
       };
       expect(body.chains.scout).toEqual(["omniroute:glm-5.3-flash", "claude-sonnet-5-5"]);
+      // D64: the levels `gateway effort` takes, from its own list: the page never keeps a copy.
+      expect(body.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
       expect(body.models.map((one) => one.id)).toContain("omniroute:glm-5.3-flash");
       expect(body.switches.models).toBe(false);
     } finally {
@@ -5767,9 +5776,11 @@ describe("the new actions (D52)", () => {
       expect(answered.status).toBe(200);
       const body = JSON.parse(answered.body) as { lines: string[]; ok: boolean };
       expect(body.ok).toBe(true);
-      // The CLI's own line, with the message the lead sends the crew session.
+      // The CLI's own lines: the answer is recorded, and with no monitor running the person is told
+      // when the crew session hears it — never a SendMessage line they cannot send (AN1).
       expect(body.lines.join("\n")).toContain("answered C my-app K contracts");
-      expect(body.lines.join("\n")).toContain("SendMessage");
+      expect(body.lines.join("\n")).toContain("recorded, not delivered");
+      expect(body.lines.join("\n")).not.toContain("SendMessage");
       const after = readCrew(world.paths.stateDir, world.cwd, "crew-K-contracts");
       expect(after?.questions[0]?.answer).toBe("Use SQLite");
     } finally {

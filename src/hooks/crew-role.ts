@@ -71,13 +71,14 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { firstPrompt, REPORT_COMMAND } from "../crew/brief";
+import { firstPrompt, REPORT_COMMAND, REPORT_DONE_COMMAND } from "../crew/brief";
 import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
   appendCrewEvent,
   type CrewRecord,
   crewBriefFile,
+  isQuestionOpen,
   readCrew,
   readCrewEvents,
   readStopState,
@@ -105,6 +106,7 @@ import {
   stringField,
   toolDecision,
 } from "./io";
+import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
 import { isSessionId, titleToSetOrProblem } from "./session-name";
 
@@ -119,7 +121,7 @@ export const LAST_LINE_MAX = 120;
 
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
-  return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+  return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 
 /**
@@ -155,29 +157,6 @@ export function tellStep(): string {
 }
 
 /**
- * The wrappers and labels Claude Code puts around a turn that is not the person's own words.
- * Proved live on 2.1.309 (`docs/claude-code-contract.md`): the hook input carries no field that
- * says where a prompt came from, so these first characters are the one signal there is.
- *
- * - `<cross-session-message from=… from-name=… from-mode=…>`: another session's message, sent
- *   with `SendMessage` — a lead's note, `crew answer` to a running crew session, a peer's
- *   `crew tell`.
- * - `<task-notification>`: a monitor's line (the `crew-self` monitor), and any background task's
- *   event.
- * - `<agent-message from=…>`: a subagent's hand-back the crew session itself launched (its
- *   reviewer, a builder), delivered as a turn of its own (seen live on 2.1.309).
- * - `Stop hook feedback:`: a Stop hook's block continued the turn with its reason (the kit's own
- *   is `reportStep()`), and the same check catches the bare reason, should a transport drop the
- *   label.
- */
-export const NOT_PERSON_PREFIXES = [
-  "<cross-session-message",
-  "<task-notification",
-  "<agent-message",
-  "Stop hook feedback:",
-] as const;
-
-/**
  * The frame `resumeText` (`src/crew/wait.ts`) builds the prompt the watch resumes a paused crew
  * session with. It arrives bare, as a typed prompt would, so it is recognised by that frame and
  * the phase it names. `crew-role.test.ts` holds it to `resumeText`'s own output, so the two
@@ -207,7 +186,7 @@ export function isPersonPrompt(
   briefFile: string,
   nowMs: number,
 ): boolean {
-  if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix))) return false;
+  if (hasNotPersonWrapper(prompt)) return false;
   // The kit's own words are never the person's. A Stop block continues the turn with this line,
   // and a transport that turned that continuation into a prompt would otherwise read as theirs.
   if (prompt.startsWith(reportStep())) return false;
@@ -220,7 +199,7 @@ export function isPersonPrompt(
   // no answer, a prompt in a stopped record is that resume. A stopped record with no open
   // question takes no answer at all (`crew answer` refuses it), so a prompt there is a person
   // who attached to the kept conversation and typed.
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt)) return false;
@@ -291,8 +270,8 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
-    `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
     `Git: commit on your branch \`${record.branch}\`; never push, never open a pull request, never merge — the lead handles git.`,

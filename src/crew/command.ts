@@ -4,23 +4,28 @@
  * (`lead.ts`), `start` (`start.ts`), `step` (`step.ts`), `report` (`report.ts`), `answer`
  * (`answer.ts`), `tell` (`tell.ts`), `watch` (`watch.ts`), `self-watch` (`self-watch.ts`), the
  * board — `list`, `status`, `kinds`, `attach` (`board.ts`) — and the end of a crew session —
- * `stop`, `resume` (`end.ts`) and `rm` (`remove.ts`).
+ * `stop`, `resume` (`end.ts`), `model` (`model.ts`) and `rm` (`remove.ts`).
  *
  * Exit codes, as everywhere in the command: 0 done, 1 a refusal or an error, 2 a wrong command
  * or option — one line, then where the help is.
  */
 import { COMMAND } from "../build-info/names";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
 import { ALLOWED_EFFORTS, CREW_KIND_NAMES, CREW_KINDS, isCrewKind } from "../models/launch-policy";
 import { type AnswerArgs, runCrewAnswer } from "./answer";
 import { commaList, parseOptions } from "./args";
 import { runCrewAttach, runCrewKinds, runCrewList, runCrewStatus } from "./board";
+import { crewCleanupAnswer } from "./cleanup-read";
 import type { CrewContext } from "./context";
 import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
 import { runLeadTell } from "./lead-tell";
+import { type ModelArgs, runCrewModel } from "./model";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
 import { runCrewRm } from "./remove";
 import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } from "./report";
+import { type HistoryArgs, runCrewHistory } from "./runs-history";
 import { runCrewSelfWatch } from "./self-watch";
 import { runCrewStart, type StartArgs } from "./start";
 import { CREW_STEPS, isCrewStep, runCrewStep } from "./step";
@@ -83,15 +88,18 @@ const STEPS_LINE = wrapText(
 export const CREW_USAGE = `Usage: ${COMMAND} crew <command>
 
 Commands:
-  lead [--plan <slug>] [--tag <tag>]
+  lead [--plan <slug>] [--plan-file <path>] [--tag <tag>] [--end]
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads: the session takes that name at its next prompt.
+                 --plan-file is the plan's file: the folder beside it holds the
+                 plan's briefs and the record of each crew run (crew history).
+                 --end records its plan ended; crew work stays unless on the base.
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as
                  one line, and prints one SendMessage line per lead.
-  start <phase> --slug <slug> --kind <kind> --brief <file|-> [--base <ref>]
+  start <phase> --slug <slug> --kind <kind> [--brief <file|->] [--base <ref>]
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
                  Starts one crew session: a background Claude Code session named
@@ -99,6 +107,8 @@ Commands:
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
                  returns at once: started, queued (the caps, the free memory, or
                  the phases it waits for), or failed, with the reason.
+                 With no --brief it takes the plan's own brief, <plan folder>/briefs/
+                 <phase>-<slug>.md, and says which file; none there is refused.
                  --continue <crew session> starts the hand-off's next crew session: the
                  same phase, cut from the old crew session's head, with the old brief
                  and the old crew session's report, and the next number in its name.
@@ -119,8 +129,10 @@ Commands:
                  everything the question does not block.
   answer <crew session> "<the answer>"
                  The lead's answer to a crew session's question. A running crew session
-                 gets it as a message (the command prints the line the lead
-                 sends); a stopped one is resumed with it.
+                 gets it from its own monitor, even when idle (the command says
+                 delivered, or recorded and prints the line the lead sends by hand);
+                 a stopped one is resumed with it. A second answer to the same
+                 question is a correction that says it replaces the first.
   tell ${TELL_ARGS}
                  ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for your lead, and prints one SendMessage
@@ -136,15 +148,18 @@ Commands:
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
                  at the token cap or the context share, whichever comes first, and
-                 before Claude Code would compact; a note when the phase runs long. It says
-                 nothing else, and repeats its line every 15 minutes while it is
-                 ignored. --once checks once and exits.
+                 before Claude Code would compact; a note when the phase runs long. It
+                 repeats its line every 15 minutes while it is ignored. It also prints
+                 the lead's answer to the crew session's question, once, and writes the
+                 heartbeat crew answer reads. --once checks once and exits (no
+                 heartbeat).
 
 The board and the end of a crew session (a command's own help: crew <command> --help):
 ${OTHER_COMMANDS}
 
 The kind gives the model and the effort (--model and --effort override them, judged
-by the agent guard's rules; one the guard would ask you about is refused):
+by the agent guard's rules; one the guard would ask you about is refused; crew model
+changes them later, even for a running crew session):
 ${KIND_LINES}
 
 Crew sessions are off until workflow.crew.enabled is on: ${COMMAND} workflow set
@@ -167,6 +182,35 @@ const START_OPTIONS = [
   "--waits-for",
   "--continue",
 ] as const;
+
+/** The mistake in an `--effort` value (`crew start`, `crew model`); null when it is none. */
+function effortMistake(effort: null | string): null | string {
+  if (effort === null || (ALLOWED_EFFORTS as readonly string[]).includes(effort)) return null;
+  return `Unknown effort: ${effort} (a crew session runs at ${ALLOWED_EFFORTS.join(", ")})`;
+}
+
+/** `crew model`'s arguments, checked; or the mistake. */
+export function parseModelArgs(argv: readonly string[]): ModelArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--model", "--effort"]);
+  if ("error" in parsed) return parsed;
+  const [crew, ...extra] = parsed.positionals;
+  if (crew === undefined) {
+    return {
+      error: "Say which crew session: crew model <name|id> [--model <model>] [--effort <effort>]",
+    };
+  }
+  if (extra.length > 0) {
+    return { error: `Unknown argument: ${extra.join(" ")} (put a name with spaces in quotes)` };
+  }
+  const model = parsed.options.get("--model") ?? null;
+  const effort = parsed.options.get("--effort")?.toLowerCase() ?? null;
+  const badEffort = effortMistake(effort);
+  if (badEffort !== null) return { error: badEffort };
+  if (model === null && effort === null) {
+    return { error: "Say what changes: --model <model> or --effort <effort>, or both" };
+  }
+  return { crew, effort, model };
+}
 
 /** `crew start`'s arguments, checked; or the mistake. */
 export function parseStartArgs(argv: readonly string[]): StartArgs | { error: string } {
@@ -194,16 +238,9 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
   if (kindText !== undefined && kind === null) {
     return { error: `Unknown kind: ${kindText} (the kinds: ${CREW_KIND_NAMES.join(", ")})` };
   }
-  const brief = options.get("--brief");
-  if (brief === undefined && continueFrom === null) {
-    return { error: "Give the crew session its brief: --brief <file>, or --brief - for stdin" };
-  }
   const effort = options.get("--effort")?.toLowerCase() ?? null;
-  if (effort !== null && !(ALLOWED_EFFORTS as readonly string[]).includes(effort)) {
-    return {
-      error: `Unknown effort: ${effort} (a crew session runs at ${ALLOWED_EFFORTS.join(", ")})`,
-    };
-  }
+  const badEffort = effortMistake(effort);
+  if (badEffort !== null) return { error: badEffort };
   const waitsFor = commaList(options.get("--waits-for"));
   const badWait = waitsFor.find((one) => !isPhase(one));
   if (badWait !== undefined) {
@@ -212,7 +249,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
   if (waitsFor.includes(phase)) return { error: `The phase ${phase} cannot wait for itself` };
   return {
     base: options.get("--base") ?? null,
-    brief: brief ?? "",
+    brief: options.get("--brief") ?? null,
     continueFrom,
     effort,
     files: commaList(options.get("--files")),
@@ -226,7 +263,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
 
 /** `crew lead`'s arguments, checked; or the mistake. */
 export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: string } {
-  const parsed = parseOptions(argv, ["--plan", "--tag"]);
+  const parsed = parseOptions(argv, ["--plan", "--plan-file", "--tag"], ["--end"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
@@ -234,19 +271,49 @@ export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: stri
   const tag = parsed.options.get("--tag") ?? null;
   if (tag !== null && !isNameTag(tag))
     return { error: `The tag "${tag}" is not one: a tag is ${TAG_RULE}` };
-  return { plan: parsed.options.get("--plan") ?? null, tag };
+  return {
+    plan: parsed.options.get("--plan") ?? null,
+    planFile: parsed.options.get("--plan-file") ?? null,
+    tag,
+    ...(parsed.flags.has("--end") ? { end: true } : {}),
+  };
+}
+
+/** `crew history`'s arguments, checked; or the mistake. */
+export function parseHistoryArgs(argv: readonly string[]): HistoryArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--plan"], ["--json", "--backfill"]);
+  if ("error" in parsed) return parsed;
+  const [phase, ...extra] = parsed.positionals;
+  if (extra.length > 0) return { error: `Unknown argument: ${extra.join(" ")}` };
+  if (phase !== undefined && !isPhase(phase)) {
+    return { error: `The phase "${phase}" is not one: a phase is ${PHASE_RULE}` };
+  }
+  const plan = parsed.options.get("--plan") ?? null;
+  if (plan !== null && /[\\/]/.test(plan)) {
+    return { error: `--plan is a plan's file name without .md, not a path: "${plan}"` };
+  }
+  return {
+    backfill: parsed.flags.has("--backfill"),
+    json: parsed.flags.has("--json"),
+    phase: phase ?? null,
+    plan,
+  };
 }
 
 /** `crew list`'s arguments, checked; or the mistake. */
 export function parseListArgs(
   argv: readonly string[],
-): { all: boolean; json: boolean } | { error: string } {
-  const parsed = parseOptions(argv, [], ["--all", "--json"]);
+): { all: boolean; json: boolean; discarded?: boolean } | { error: string } {
+  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
   }
-  return { all: parsed.flags.has("--all"), json: parsed.flags.has("--json") };
+  return {
+    all: parsed.flags.has("--all"),
+    json: parsed.flags.has("--json"),
+    ...(parsed.flags.has("--discarded") ? { discarded: true } : {}),
+  };
 }
 
 /** The one crew session `crew <command>` names: its name, id or short id; or the mistake. */
@@ -346,6 +413,50 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     ctx.print(sub === "tell" ? TELL_USAGE : (boardCommand(sub)?.help ?? CREW_USAGE));
     return 0;
   }
+  if (sub === "cleanup") {
+    if (rest.length !== 1 || rest[0] !== "--json") {
+      ctx.error("crew cleanup takes only --json");
+      return 2;
+    }
+    return await guarded(sub, ctx, () => {
+      const answer = crewCleanupAnswer(ctx);
+      ctx.print(JSON.stringify(answer));
+      return answer.error === null ? 0 : 1;
+    });
+  }
+  if (sub === "rm") {
+    const parsed = parseOptions(rest, ["--discard-token"], ["--discard", "--yes"]);
+    if ("error" in parsed) {
+      ctx.error(usageError(parsed.error, sub));
+      return 2;
+    }
+    const args = parseTargetArgs(sub, parsed.positionals);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    if (
+      !parsed.flags.has("--discard") &&
+      (parsed.flags.has("--yes") || parsed.options.has("--discard-token"))
+    ) {
+      ctx.error("--yes and --discard-token require --discard");
+      return 2;
+    }
+    const token = parsed.options.get("--discard-token");
+    if (token !== undefined && !/^[a-f0-9]{64}$/.test(token)) {
+      ctx.error("--discard-token must be a preview token");
+      return 2;
+    }
+    return await guarded(sub, ctx, () =>
+      runCrewRm(args.ref, ctx, {
+        confirm: (question) =>
+          terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false,
+        discard: parsed.flags.has("--discard"),
+        yes: parsed.flags.has("--yes"),
+        ...(token === undefined ? {} : { expectedDiscardToken: token }),
+      }),
+    );
+  }
   if (sub === "list") {
     const args = parseListArgs(rest);
     if ("error" in args) {
@@ -353,6 +464,14 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       return 2;
     }
     return await guarded(sub, ctx, () => runCrewList(args, ctx));
+  }
+  if (sub === "history") {
+    const args = parseHistoryArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () => runCrewHistory(args, ctx));
   }
   if (sub === "kinds") {
     const mistake = parseKindsArgs(rest);
@@ -372,7 +491,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       "all" in args ? runCrewResumePaused(args.lead, ctx) : runCrewResume(args.ref, ctx),
     );
   }
-  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "rm") {
+  if (sub === "status" || sub === "attach" || sub === "stop") {
     const args = parseTargetArgs(sub, rest);
     if ("error" in args) {
       ctx.error(usageError(args.error, sub));
@@ -386,6 +505,14 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       stop: () => runCrewStop(ref, ctx),
     }[sub];
     return await guarded(sub, ctx, run);
+  }
+  if (sub === "model") {
+    const args = parseModelArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () => runCrewModel(args, ctx));
   }
   if (sub === "start") {
     const args = parseStartArgs(rest);

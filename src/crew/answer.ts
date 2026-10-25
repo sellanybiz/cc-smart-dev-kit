@@ -4,17 +4,29 @@
  *
  * **Two ways the answer reaches the crew session.**
  *
- * - A **running** crew session gets it as a message. The CLI cannot send one itself — Claude Code's
- *   `SendMessage` is a tool only a session holds — so the command prints the one line the lead
- *   sends it with (the crew session's name and the text), and records the answer, so the question is
- *   answered once and never asked again.
+ * - A **running** crew session gets it from its own monitor (AN1). The CLI cannot send a message
+ *   itself — Claude Code's `SendMessage` is a tool only a session holds — so the command records
+ *   the answer, and `crew self-watch`, the monitor every crew session runs, prints it into the
+ *   session as one line and marks it delivered (`deliveryLine`, `markAnswerDelivered`). A line
+ *   from a monitor wakes an idle session, so a blocked crew session needs no one to send it
+ *   anything (proved live, `docs/claude-code-contract.md`). The monitor writes a heartbeat; the
+ *   command waits a few seconds for the delivery and says which happened — delivered, or only
+ *   recorded. **When it can only record** (no heartbeat, an old one, or a monitor that did not
+ *   pass it on in time), it prints the one line the lead sends it with by hand (the crew
+ *   session's name and the text), so the lead is never left without a way.
+ * - **A second answer to the same question is a correction.** The first is kept in `superseded`,
+ *   the new one is delivered the same way, with words that say it replaces the earlier answer.
+ *   A question closed by the phase's end takes none.
  * - A **stopped** crew session (D35: the watch stops a blocked crew session that idles past
  *   `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
  *   `claude --bg --resume <session id> "<text>"` — the form `claude --help` gives in 2.1.306
  *   ("With --resume <session-id>, continues that session in the background under the same ID,
  *   or starts a copy and says so when the session is already running"). The conversation stays
  *   on disk, so the crew session picks up where it stopped. Because of that copy, agent view is read
- *   first: a stopped record whose session still has a process is sent the message instead.
+ *   first: a stopped record whose session still has a process is sent the message instead. On
+ *   2.1.310 every crew resume is a copy with a new id all the same — the flags it passes differ
+ *   from the session's saved ones — and the record takes that id with the answer (WF1,
+ *   `resumedSession`).
  *
  * **A resume runs in the crew session's own worktree, never in the main checkout** where the lead
  * happens to be: a session brought back in the main checkout is marked failed by its own
@@ -25,19 +37,40 @@
  * **A crew session the store does not know is never answered.** The store is what says a session is a
  * crew session (D35); a name alone is not enough.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
-import { callClaude, findClaude, sessionFlags } from "./claude";
-import type { CrewContext } from "./context";
 import {
+  type ClaudeDeps,
+  callClaude,
+  findClaude,
+  parseBackgrounded,
+  parseCopyNote,
+  sessionFlags,
+  startedRow,
+} from "./claude";
+import type { CrewContext } from "./context";
+import { pendingDiscardWhy } from "./discard";
+import { actorOfCaller } from "./runs-actor";
+import {
+  ANSWER_BEAT_STALE_MS,
   answerCrewQuestion,
   type CrewRecord,
+  claimResume,
   crewMcpFile,
   crewSettingsFile,
+  isQuestionOpen,
+  lastHeardAnswer,
   listCrew,
+  openQuestionIndex,
+  questionClosed,
+  RESUME_CLAIM_MS,
+  readAnswerWatchBeat,
+  readCrew,
   readReport,
+  releaseResume,
 } from "./store";
 
 /** What `crew answer` was asked, already checked to be well formed. */
@@ -65,15 +98,35 @@ function isReachable(state: string): boolean {
   return (REACHABLE_STATES as readonly string[]).includes(state);
 }
 
+/** How many times `crew answer` looks for the delivery, and how long it waits between looks. */
+const CONFIRM_LOOKS = 10;
+const CONFIRM_WAIT_MS = 1000;
+
 /**
- * The index of the question the answer goes to: the newest one that has no answer yet. Null
- * when every question has its answer.
+ * The words that open what a crew session hears: its lead's answer, or — for a correction — that
+ * the answer replaces the earlier one (`earlier`). Question and earlier answer go in as JSON
+ * strings, so the head is one line whatever they hold.
  */
-export function openQuestionIndex(record: CrewRecord): null | number {
-  for (let index = record.questions.length - 1; index >= 0; index -= 1) {
-    if (record.questions[index]?.answer === null) return index;
-  }
-  return null;
+function deliveryHead(question: string, earlier: null | string): string {
+  return earlier === null
+    ? `Your lead answers your question ${JSON.stringify(question)}:`
+    : `Your lead CORRECTS its earlier answer to your question ${JSON.stringify(question)}: this REPLACES the earlier answer (${JSON.stringify(earlier)}). Follow this one instead:`;
+}
+
+/**
+ * The one line the crew session's monitor prints for an answer (AN1): a monitor line is one
+ * notification, so the answer goes in as a JSON string and is never changed.
+ */
+export function deliveryLine(question: string, answer: string, earlier: null | string): string {
+  return `${deliveryHead(question, earlier)} ${JSON.stringify(answer)}`;
+}
+
+/**
+ * The text a message or a resume carries: the answer as the lead typed it, and for a correction
+ * the words that say it replaces the earlier one, then the answer on its own line.
+ */
+export function deliveryText(question: string, answer: string, earlier: null | string): string {
+  return earlier === null ? answer : `${deliveryHead(question, earlier)}\n${answer}`;
 }
 
 /**
@@ -125,8 +178,36 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 1;
   }
   const { record } = found;
-  const index = openQuestionIndex(record);
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null) {
+    ctx.error(`crew answer: ${pending}`);
+    return 1;
+  }
+  let index = openQuestionIndex(record);
+  // The answer to the newest question, given again, is a correction (AN1) — while the phase runs.
+  let correcting = false;
   if (index === null) {
+    const last = record.questions.length - 1;
+    if (last >= 0 && record.questions[last]?.answer !== null) {
+      if (questionClosed(record.state)) {
+        ctx.error(
+          `crew answer: ${record.name} is finished (${record.state}), so its answer cannot be corrected`,
+        );
+        return 1;
+      }
+      index = last;
+      correcting = true;
+    }
+  }
+  if (index === null) {
+    // A question left behind at the end of the phase needs no answer: the crew session is
+    // finished, and nothing would read one (one rule for every reader, `openQuestionIndex`).
+    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
+      ctx.error(
+        `crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`,
+      );
+      return 1;
+    }
     ctx.error(
       `crew answer: ${record.name} has no question waiting for an answer${
         record.questions.length === 0 ? " (it never asked one)" : ""
@@ -135,7 +216,12 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 1;
   }
 
-  const question = record.questions[index]?.question ?? "";
+  const asked = record.questions[index];
+  const question = asked?.question ?? "";
+  // What the answer replaces: the answer on record now.
+  // Only an answer the session heard is replaced: the monitor may not have printed the one on record.
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
+  const text = deliveryText(question, args.text, earlier);
   // How the answer reaches the crew session: a message, or a resume of a session that is gone.
   let way: "message" | "resume" = "message";
   if (record.state === "stopped") {
@@ -158,16 +244,20 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
     return 1;
   }
+  let session: null | ResumedSession = null;
   if (way === "resume") {
-    const resumed = await resumeSession(ctx, record, args.text);
+    const resumed = await resumeSession(ctx, record, text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
     }
+    session = resumed.session;
   }
   try {
     // A crew session that has its answer is working: a record that kept saying `blocked` or `stopped`
-    // would let the watch stop a crew session that is busy, and a stopped one holds no place.
+    // would let the watch stop a crew session that is busy, and a stopped one holds no place. A
+    // resume's session comes in the same write (WF1): a record that kept the old id would read
+    // that session's stopped row as its own.
     await answerCrewQuestion(
       ctx.paths.stateDir,
       repo,
@@ -176,22 +266,113 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       args.text,
       ctx.now(),
       "working",
+      session,
+      // A resume carries the answer as its prompt: that is its delivery.
+      { correction: correcting, delivered: session !== null },
+      actorOfCaller(ctx, repo),
     );
   } catch (error) {
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf(error)}`);
+    // A copy that runs while the record still names the old session: the line names the copy.
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    ctx.error(
+      `crew answer: the store could not record the answer: ${reasonOf(error)}${as === "" ? "" : `; it was resumed${as}`}`,
+    );
     return 1;
   }
-  if (way === "resume") {
-    ctx.print(`answered ${record.name}: resumed with your answer · ${question}`);
-  } else {
-    ctx.print(`answered ${record.name}: ${question}`);
-    ctx.print(sendMessageLine(record.name, args.text));
+  if (session !== null) {
+    ctx.print(
+      `answered ${record.name}: resumed with your ${correcting ? "correction" : "answer"}${resumedAs(record, session.shortId)} · ${question}`,
+    );
+    return 0;
+  }
+  ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
+    ctx.print(line);
   }
   return 0;
 }
 
-/** What a resume of a stopped crew session gave back. */
-export type ResumeResult = { ok: true } | { ok: false; why: string };
+/**
+ * What `crew answer` says about the delivery to a running crew session (AN1): the monitor's
+ * heartbeat decides. A live one is given a few seconds to pass the answer on, and the command says
+ * which happened; with no live monitor, or one that did not pass it on in time, the answer is
+ * only recorded, and the line says why and carries the `SendMessage` line the lead sends it with.
+ * The person's click (`asPerson`) gets no such line — they cannot send it — and is told when the
+ * session will hear it instead.
+ */
+async function deliveryReport(
+  ctx: CrewContext,
+  repo: string,
+  record: CrewRecord,
+  index: number,
+  how: { asPerson: boolean; replaces: boolean },
+  text: string,
+): Promise<string[]> {
+  const { stateDir } = ctx.paths;
+  const beat = readAnswerWatchBeat(stateDir, repo, record.id);
+  const age = beat === null ? null : Math.max(0, ctx.now() - beat);
+  if (age === null || age > ANSWER_BEAT_STALE_MS) {
+    const why =
+      age === null
+        ? "no heartbeat from its monitor"
+        : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
+    return how.asPerson
+      ? [
+          `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`,
+        ]
+      : [
+          `recorded, not delivered: ${why}, so send it yourself:`,
+          sendMessageLine(record.name, text),
+        ];
+  }
+  for (let look = 0; look < CONFIRM_LOOKS; look += 1) {
+    await ctx.sleep(CONFIRM_WAIT_MS);
+    const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
+    if (now !== null) {
+      return [
+        how.replaces
+          ? "delivered: its monitor gave the session your correction, which replaces your earlier answer"
+          : "delivered: its monitor gave it to the session",
+      ];
+    }
+  }
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${(CONFIRM_LOOKS * CONFIRM_WAIT_MS) / 1000} s;`;
+  return how.asPerson
+    ? [`${late} it still will`]
+    : [
+        `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+        sendMessageLine(record.name, text),
+      ];
+}
+
+/** The session a resume brought back: the same one, or the copy Claude Code started instead. */
+export interface ResumedSession {
+  sessionId: string;
+  shortId: string;
+}
+
+/**
+ * What a resume of a crew session gave back: the session that runs now, which the record takes in
+ * the write that makes it `working` (WF1); or why not. `unnamed` is true when a session may have
+ * started that the kit cannot name — `claude` said it started one but no id could be read, or two
+ * ids disagree: a second try could start a second one, so the watch does not try again by itself.
+ */
+export type ResumeResult =
+  | { ok: true; session: ResumedSession }
+  | { ok: false; unnamed: boolean; why: string };
+
+/**
+ * The words a line adds when a resume came back as another session: ` as session <new> (a copy of
+ * <old>)`; nothing when it is the same session.
+ */
+export function resumedAs(record: CrewRecord, shortId: string): string {
+  if (shortId === record.shortId) return "";
+  return ` as session ${shortId}${record.shortId === null ? "" : ` (a copy of ${record.shortId})`}`;
+}
+
+/** What a resume says before it is tried again, when it may have started a session it cannot name. */
+const UNNAMED_FIX = "see claude agents before you resume it again";
 
 /** Where a crew session comes back: its own worktree; or why it cannot be brought back. */
 export type ResumePlace = { folder: string; ok: true } | { ok: false; why: string };
@@ -205,6 +386,8 @@ export type ResumePlace = { folder: string; ok: true } | { ok: false; why: strin
  * to resume in.
  */
 export function resumePlace(record: CrewRecord): ResumePlace {
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null) return { ok: false, why: pending };
   if (!existsSync(record.worktree)) {
     return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
   }
@@ -280,6 +463,12 @@ export function resumeArgs(
  * no session id, whose settings file is gone, or a `claude` that refuses is reported with the
  * reason. `crew answer`, `crew resume`, `crew resume --paused` and the lead's watch (`watch.ts`)
  * all resume this way: one home for the transport (D42).
+ *
+ * **One resume of a record at a time** (WF1): before `claude` runs, the resume claims the record
+ * in the store, in the state its caller judged it in (`claimResume`). A second resume — the
+ * person's `crew resume --paused` beside the watch, or a watch that took over the lease from one
+ * resuming now — is refused, so two copies never start. A resume that started nothing gives the
+ * claim back at once; the rest end it when the record's state changes, or in `RESUME_CLAIM_MS`.
  */
 export async function resumeSession(
   ctx: CrewContext,
@@ -287,15 +476,16 @@ export async function resumeSession(
   text: null | string,
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
-    return { ok: false, why: `${record.name} has no session to resume` };
+    return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
   }
   const place = resumePlace(record);
-  if (!place.ok) return { ok: false, why: place.why };
+  if (!place.ok) return { ok: false, unnamed: false, why: place.why };
   // Its own settings: without them the session comes back as a plain one, not as this crew session.
   const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
   if (!existsSync(settingsFile)) {
     return {
       ok: false,
+      unnamed: false,
       why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`,
     };
   }
@@ -304,32 +494,143 @@ export async function resumeSession(
   if (claude === null) {
     return {
       ok: false,
+      unnamed: false,
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed",
     };
   }
+  const { stateDir } = ctx.paths;
+  const token = randomUUID();
+  let claimed: boolean;
+  try {
+    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the store could not claim its resume: ${reasonOf(error)}`,
+    };
+  }
+  if (!claimed) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`,
+    };
+  }
+  const result = launchResume(ctx, record, text, {
+    claude,
+    folder: place.folder,
+    mcpFile: existsSync(mcpFile) ? mcpFile : null,
+    sessionId: record.sessionId,
+    settingsFile,
+  });
+  if (result.ok || result.unnamed) return result;
+  try {
+    await releaseResume(stateDir, record.repo, record.id, token);
+  } catch (error) {
+    // The claim then ends by itself: a later resume waits that long, and the line says so.
+    return {
+      ...result,
+      why: `${result.why}; its claim could not be given back (${reasonOf(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60_000} minutes`,
+    };
+  }
+  return result;
+}
+
+/** Runs `claude --bg --resume` for a claimed resume, and reads the session it brought back. */
+function launchResume(
+  ctx: CrewContext,
+  record: CrewRecord,
+  text: null | string,
+  launch: {
+    claude: string;
+    folder: string;
+    mcpFile: null | string;
+    sessionId: string;
+    settingsFile: string;
+  },
+): ResumeResult {
   const deps = claudeDeps(ctx);
   const called = callClaude(
     deps,
-    claude,
+    launch.claude,
     resumeArgs(
       {
         effort: record.effort,
         model: record.model.named,
         permissionMode: record.permissionMode,
-        sessionId: record.sessionId,
+        sessionId: launch.sessionId,
       },
-      { mcpFile: existsSync(mcpFile) ? mcpFile : null, settingsFile },
+      { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile },
       text,
     ),
-    place.folder,
+    launch.folder,
   );
-  if (!called.ok) return { ok: false, why: called.why };
-  if (called.run.exitCode !== 0) {
-    const last = `${called.run.stdout}\n${called.run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
+  if (!called.ok) return { ok: false, unnamed: false, why: called.why };
+  const { run } = called;
+  const command = `claude --bg --resume ${launch.sessionId}`;
+  if (run.timedOut) {
+    return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
+  }
+  if (run.exitCode !== 0) {
+    const last = `${run.stdout}\n${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
     return {
       ok: false,
-      why: `claude --bg --resume ${record.sessionId} failed (exit ${called.run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`,
+      unnamed: false,
+      why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`,
     };
   }
-  return { ok: true };
+  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
+}
+
+/**
+ * The session a `claude --bg --resume` that exited 0 brought back (WF1). The id is read from the
+ * `backgrounded · <short id>` line on stdout, and checked against the copy note on stderr
+ * (`parseCopyNote`): the same short id and no note is the record's own session, going on; any
+ * other id is a copy (2.1.310 starts one for every crew resume, because the flags `resumeArgs`
+ * passes differ from the session's saved ones), and agent view gives its full session id, as a
+ * start reads it (`startedRow`). No line, two ids that disagree, or a copy agent view cannot show
+ * is said with the reason — never a guess.
+ */
+function resumedSession(
+  record: CrewRecord,
+  run: { stderr: string; stdout: string },
+  deps: ClaudeDeps,
+  claude: string,
+  folder: string,
+  command: string,
+): ResumeResult {
+  const line = parseBackgrounded(run.stdout);
+  if (line === null) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} printed no line backgrounded · <id>, so the session it started is not known; ${UNNAMED_FIX}`,
+    };
+  }
+  const { shortId } = line;
+  const copy = parseCopyNote(run.stderr);
+  if (copy !== null && copy !== shortId) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} said it started a copy as ${copy}, but printed backgrounded · ${shortId}; ${UNNAMED_FIX}`,
+    };
+  }
+  if (copy === null && shortId === record.shortId && record.sessionId !== null) {
+    return { ok: true, session: { sessionId: record.sessionId, shortId } };
+  }
+  const listed = startedRow(deps, claude, shortId, folder);
+  const sessionId = listed.ok ? listed.row.sessionId : null;
+  if (sessionId !== null) return { ok: true, session: { sessionId, shortId } };
+  const what = !listed.ok
+    ? listed.why === "unreadable"
+      ? "claude agents --json could not be read"
+      : "claude agents does not list it"
+    : "claude agents lists it with no session id";
+  return {
+    ok: false,
+    unnamed: true,
+    why: `session ${shortId} started, but ${what}; see claude agents, and stop it (claude stop ${shortId}) before you resume it again`,
+  };
 }

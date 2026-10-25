@@ -7,6 +7,8 @@
  *   <stateDir>/crew/<repo key>/files/<crew id>/         its brief and its settings file
  *   <stateDir>/crew/<repo key>/notes/<lead id>.json      where that lead's notes hook is in the log
  *   <stateDir>/crew/<repo key>/stop/<crew id>.json        where that crew session's Stop hook is in the log
+ *   <stateDir>/crew/<repo key>/watch/<lead id>.json       what that lead's watch has read and said
+ *   <stateDir>/crew/<repo key>/watch-lease/<lead id>.json which one watch acts for that lead (WF1)
  *   <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/crew/<repo key>/lock                       held for a moment by each write
  *
@@ -51,10 +53,12 @@ import {
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { CrewKind } from "../models/launch-policy";
-import { withLock } from "../setup/lock";
+import { samePath } from "../path-compare";
+import { FALLBACK_STALE_MS, holderIsGone, type ProcessHolder, withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
+import { type RunActor, type RunChange, recordRun, recordRunNote } from "./runs";
 
 /** The schema version this kit writes. A record may carry a higher one: read it all the same. */
 export const CREW_STORE_VERSION = 1;
@@ -74,10 +78,14 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  * - `paused` — it waits for a usage limit to reset, or for its gateway slot to answer again
  *   (`waitingFor` says which);
  * - `quiet` — agent view says working, but its transcript has not moved for a while (an alert);
- * - `done` / `failed` — its turn ended with that report;
- * - `stopped` — its session was stopped (`claude stop`); the conversation stays on disk;
+ * - `done` / `failed` — its turn ended with that report; **`done` stays `done`** when the
+ *   watch stops its session afterwards (D62: `stopped` means something else);
+ * - `stopped` — a crew session its phase was not over for was stopped (`claude stop`, by the
+ *   lead, or by the watch's idle stop); the conversation stays on disk, and **its removal is
+ *   the lead's call** — the watch marks it merged when the lead merged its branch, and never
+ *   removes it (D62);
  * - `handoff` — it handed off to a next crew session, and ended;
- * - `merged` — the lead merged its branch;
+ * - `merged` — the lead merged its branch; the watch then removes it, unless a refusal was said;
  * - `removed` — its session, worktree and branch are gone.
  */
 export const CREW_STATES = [
@@ -93,6 +101,7 @@ export const CREW_STATES = [
   "handoff",
   "merged",
   "removed",
+  "discarded",
 ] as const;
 
 export type CrewState = (typeof CREW_STATES)[number];
@@ -232,7 +241,18 @@ const word = <T extends string>() => text.transform((value): KnownOr<T> => value
  * answers it, or asks the person; the crew session goes on with whatever the question does not block.
  * `recommended` is the option the crew session recommends, counted from 1; `answer` and `answeredAt`
  * stay null until the lead answers.
+ *
+ * **Recorded is not delivered** (AN1). `deliveredAt` is when the answer reached the crew session —
+ * its monitor printed it, or a resume carried it as the prompt — and stays null until then; a
+ * record from before the field has none. A correction keeps each earlier answer in `superseded`,
+ * oldest first, and never drops one.
  */
+const supersededAnswer = z.looseObject({
+  answer: text,
+  answeredAt: text,
+  deliveredAt: text.nullable().optional(),
+});
+
 const crewQuestionFields = z.looseObject({
   question: text,
   options: z.array(text).min(2),
@@ -240,6 +260,14 @@ const crewQuestionFields = z.looseObject({
   askedAt: text,
   answeredAt: text.nullable(),
   answer: text.nullable(),
+  /**
+   * The index (in `questions`) of the newer question that closed this one: the crew session asked
+   * again while this one had no answer. Absent on a question nothing replaced, and on a record
+   * written before the field. A superseded question is closed, never deleted (RG1).
+   */
+  supersededBy: z.number().int().min(0).nullable().optional(),
+  deliveredAt: text.nullable().optional(),
+  superseded: z.array(supersededAnswer).optional(),
 });
 
 /** A question as recorded: its recommendation is one of its options, its answer has its time. */
@@ -265,6 +293,68 @@ export type CrewQuestion = z.infer<typeof crewQuestionFields>;
 
 /** What a crew session gives when it asks: the store adds when, and the answer comes later. */
 export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recommended">;
+
+/**
+ * The crew session a worktree belongs to: the record whose `worktree` is `path`, of any lead of
+ * the repository and in any state but `removed`, the newest when a phase was started again in the
+ * same folder. A `removed` record names nothing: its worktree, branch and session are gone, so a
+ * folder at its path is not its own, and `crew rm` refuses it. One home for the Worktrees list,
+ * the clean and the SessionStart note, so none of them names a crew session another does not.
+ */
+export function crewOfWorktree(records: readonly CrewRecord[], path: string): CrewRecord | null {
+  let found: CrewRecord | null = null;
+  for (const one of records) {
+    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path)) continue;
+    // `records` are oldest first: the last match is the newest.
+    found = one;
+  }
+  return found;
+}
+
+/**
+ * The states a crew session's phase is over in, so a question it left needs no answer: it handed
+ * back, the lead merged its work, it failed, or it was removed. **A `stopped` crew session is not
+ * one**: D35 stops a crew session that waits, and `crew answer` resumes it with the answer as its
+ * next prompt — its question still waits (`answer.ts`).
+ */
+export const QUESTION_CLOSED_STATES = [
+  "done",
+  "failed",
+  "handoff",
+  "merged",
+  "removed",
+  "discarded",
+] as const;
+
+/** True when `state` ends the crew session's phase, closing every question it left open. */
+export function questionClosed(state: string): boolean {
+  return (QUESTION_CLOSED_STATES as readonly string[]).includes(state);
+}
+
+/**
+ * True when `asked` still waits for the lead: no answer, and no newer question of the crew
+ * session's own replaced it. The one home for "is it open" (`openQuestionIndex`, `crew answer`,
+ * the report's blocked question, the crew-role hook): a reader that tests `answer === null` alone
+ * would count a superseded question as open.
+ */
+export function isQuestionOpen(asked: CrewQuestion): boolean {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
+}
+
+/**
+ * The index of the question the lead may still answer: the newest with no answer, while the crew
+ * session's phase is not over. Null when every question has its answer, or the phase is over: a
+ * question the crew session left behind at its end needs no answer, and every reader agrees
+ * (`crew answer`, `crew list`, `crew status`, the portal's Needs page and crew page).
+ */
+export function openQuestionIndex(record: CrewRecord): null | number {
+  if (questionClosed(record.state)) return null;
+  for (let index = record.questions.length - 1; index >= 0; index -= 1) {
+    const asked = record.questions[index];
+    if (asked !== undefined && isQuestionOpen(asked)) return index;
+  }
+  return null;
+}
 
 /**
  * What a crew session waits for while it is `paused` (D42): the slot whose every target is
@@ -305,6 +395,14 @@ const waitingForSchema = z.discriminatedUnion("kind", [
 /** What a paused crew session waits for (`waitingFor` on its record). */
 export type WaitingFor = z.output<typeof waitingForSchema>;
 
+/** A retained discard attempt, including its expiry marker. */
+const discardArchiveSchema = z.looseObject({
+  ref: text,
+  head: sha,
+  at: text,
+  prunedAt: text.optional(),
+});
+
 /** The fields of a crew record. */
 const crewFields = z.object({
   /** The schema version it was written with. */
@@ -317,6 +415,15 @@ const crewFields = z.object({
   sessionId: text.nullable(),
   /** The first 8 characters of the session id, as `claude agents` shows it; null until then. */
   shortId: text.nullable(),
+  /**
+   * The sessions this crew session had before the current one, oldest first. A resume is a copy
+   * with a new id (WF1), so the record's `sessionId` moves on and the original stays in Claude
+   * Code's `/resume` and agent view: `crew rm` removes, and the archive moves, every one of them
+   * (`crewSessions`). Kept by the store (`changeCrew`), from the session the record had, so no
+   * command can replace a session without keeping the one it replaces. Absent until the first
+   * replacement, and on a record an older kit wrote.
+   */
+  earlierSessions: z.array(z.looseObject({ sessionId: text, shortId: text })).optional(),
   /** The lead that started it: its session id and its name. */
   leadSessionId: text,
   leadName: text,
@@ -349,6 +456,13 @@ const crewFields = z.object({
   branch: text,
   /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
   baseRef: text,
+  /**
+   * A continuation's pinned start: the old crew session's head commit (NM1). A queued crew session
+   * is cut from `baseRef` when it starts, and a continuation's `baseRef` is the old branch, which
+   * `crew rm` deletes; this commit never moves. Absent on every other record, and on a
+   * continuation an older kit wrote (it starts from `baseRef`).
+   */
+  baseCommit: sha.optional(),
   /** The branch it started from and that branch's commit then; null until it starts. */
   base: z.looseObject({ ref: text, sha }).nullable(),
   /** The phases it waits for (`--waits-for`): it stays queued until each is merged (or removed). */
@@ -374,6 +488,34 @@ const crewFields = z.object({
    * Absent on a record an older kit wrote.
    */
   waitingFor: waitingForSchema.optional(),
+  /**
+   * The resume running now (WF1, `claimResume`): its token and when it began. A resume launches a
+   * Claude session, and two resumes of one record — the watch and the person's `crew resume
+   * --paused`, or a watch and the newer one that took its lease — would start two copies. The
+   * write that changes the record's state drops it; one older than `RESUME_CLAIM_MS` is over.
+   * Absent on a record an older kit wrote.
+   */
+  resumeClaim: z.looseObject({ at: text, token: text }).optional(),
+  /**
+   * A model or effort change the lead asked for (`crew model`) that a cap holds back (MC1): the
+   * model, the effort, the reason it waits and when it was asked. The session runs on its own
+   * values meanwhile; the lead's watch applies this once the caps allow (`applyPendingModels`),
+   * and any `crew model` that lands on a value clears or replaces it. Absent on a record an
+   * older kit wrote, and on every record with no change waiting.
+   */
+  pendingLaunch: z
+    .looseObject({
+      at: text,
+      effort: text,
+      model: z.looseObject({
+        named: text,
+        slot: text.nullable(),
+        resolved: text,
+        tier: text.nullable(),
+      }),
+      why: text,
+    })
+    .optional(),
   /**
    * The last pause of the crew session (D42), kept when it goes on: when the wait began, and
    * how long the watch had to hold off before resuming it (`backoffMs`, 0 on a first pause).
@@ -401,6 +543,45 @@ const crewFields = z.object({
    * store (`changeCrew`), so no command can set a state that disagrees with it.
    */
   mergedBeforeRemoval: z.boolean().optional(),
+  /**
+   * Set when the crew session became `merged` while it was `stopped` (D62): stopping a crew
+   * session was the lead's call, and so is removing it, so the watch marks it merged — what
+   * waits for its phase starts on the merge — and never removes it by itself. Kept by the store
+   * (`changeCrew`), from the state the record was in; absent on any other record.
+   */
+  mergedWhileStopped: z.boolean().optional(),
+  /**
+   * Set when the watch itself stopped the crew session, for idling blocked past `idleStopMinutes`
+   * (RX1): that stop is not the lead's call, so a merge of its branch removes it like any other
+   * (`mergedWhileStopped` is not set from it). Only a `stopped` record carries it: any write that
+   * leaves `stopped` drops it (`changeCrew`). Absent on every other record, and on one an older
+   * kit wrote.
+   */
+  stoppedByWatch: z.boolean().optional(),
+  /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
+  mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  /** Recovery is persisted before any removal; an unfinished active archive never expires. */
+  archive: discardArchiveSchema.optional(),
+  /** Failed attempts stay recoverable and expire independently after the normal retention. */
+  archiveHistory: z.array(discardArchiveSchema).optional(),
+  /** Durable rollback bytes stay until removal succeeds or the exact branch/index are restored. */
+  discardPending: z
+    .looseObject({
+      head: sha,
+      archivedHead: sha,
+      indexPath: text,
+      indexBackup: text,
+      indexArchived: text,
+    })
+    .optional(),
+  /**
+   * The plan file the phase belongs to (the lead record's `planFile`, copied when the run starts,
+   * PL1): its folder holds the run's record, which lasts after `crew rm`. Absent on a record an
+   * older kit wrote, and null when no plan file was known: that run is not recorded.
+   */
+  planFile: text.nullable().optional(),
+  /** The brief the run started from: its path (null for stdin) and the sha-256 of its text. */
+  briefSource: z.looseObject({ path: z.string().nullable(), sha256: text }).optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -409,6 +590,28 @@ const crewFields = z.object({
 /** A crew record, as written and read (a newer kit's fields kept). */
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
+
+/**
+ * One Claude session of a crew session: its id and the short id `claude agents` shows. A start
+ * that could not read agent view records the short id alone, so the id may be null.
+ */
+export interface CrewSession {
+  sessionId: null | string;
+  shortId: string;
+}
+
+/**
+ * Every Claude session the crew session has had: the current one first, then the earlier ones,
+ * newest first (`earlierSessions`). Empty while it has no session.
+ */
+export function crewSessions(record: CrewRecord): CrewSession[] {
+  const shortId = record.shortId ?? record.sessionId?.slice(0, 8) ?? null;
+  const current = shortId === null ? [] : [{ sessionId: record.sessionId, shortId }];
+  const earlier = [...(record.earlierSessions ?? [])].reverse();
+  return [...current, ...earlier.filter((one) => one.sessionId !== record.sessionId)].map(
+    (one) => ({ sessionId: one.sessionId, shortId: one.shortId }),
+  );
+}
 
 /** What a caller gives for a new crew session: the store adds the version and the times. */
 export type NewCrew = Omit<CrewRecord, "createdAt" | "updatedAt" | "version">;
@@ -431,6 +634,15 @@ const leadFields = z.object({
   tag: text,
   /** The folder the lead works in. */
   cwd: text,
+  /**
+   * The plan's file (`crew lead --plan-file`), absolute: its folder beside it holds the plan's
+   * briefs and the record of each crew run (PL1). Absent when none was known.
+   */
+  planFile: text.nullable().optional(),
+  /** The plan ended; absent on leads recorded before this field existed. */
+  endedAt: text.nullable().optional(),
+  /** First successful agent-view read that did not know this lead; cleared when it returns. */
+  sessionUnknownSince: text.nullable().optional(),
   /**
    * The lead's own subagents that stopped on an API error and wait to be woken again
    * (session ids, oldest first); absent on a record an older kit wrote. The lead's notes
@@ -474,6 +686,11 @@ const eventFields = z.object({
   note: z.string().nullable().optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
+  /**
+   * A `clash` event: the pair it was said for (`clashPairKey`), so a start says each pair once
+   * for its whole life; absent on an event an older kit wrote.
+   */
+  pair: text.optional(),
   /** A `tell` or `lead-tell` event: the kind of the note and the names told (crew sessions, or leads). */
   tell: z
     .looseObject({ kind: text, to: z.array(text) })
@@ -517,6 +734,17 @@ const reportFields = z.object({
       findings: z.array(z.looseObject({ finding: text, fix: text })),
     })
     .nullable(),
+  /**
+   * The crew session's own review, where its brief asked for no second opinion: why none was
+   * needed, and each finding with its fix. Null when there is none (older reports have no field).
+   */
+  ownReview: z
+    .looseObject({
+      reason: text,
+      findings: z.array(z.looseObject({ finding: text, fix: text })),
+    })
+    .nullable()
+    .optional(),
   /** The docs it changed. */
   docs: z.array(text),
   /** What only the lead may do: text for the lead's own files, a decision. */
@@ -525,8 +753,13 @@ const reportFields = z.object({
   open: z.array(text),
   /** The question it is blocked on; null unless it is blocked. */
   question: text.nullable(),
-  /** The crew session's own words about the phase, when it wrote prose instead of the fields. */
+  /** The crew session's own words about the phase: its `summary` field, or its prose report. */
   summary: text.nullable().optional(),
+  /**
+   * Fields the crew session wrote that this shape does not know, kept as written (RG1): a
+   * `measurements` list is data for the lead, a misspelt `tests` is a clue. Absent when none.
+   */
+  extra: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** A blocked report must say what it waits on: the lead cannot answer a question it never saw. */
@@ -638,6 +871,36 @@ function appendEvent(stateDir: string, repo: string, event: CrewEvent): void {
   appendFileSync(file, `${JSON.stringify(line)}\n`, { mode: 0o600 });
 }
 
+/**
+ * Says a run record could not be written (PL1): the change it follows is already in the store,
+ * so the write is not undone, and the person reads one line. A test hands in its own.
+ */
+let reportRunFailure: (line: string) => void = (line) => {
+  process.stderr.write(`${line}\n`);
+};
+
+/** Replaces the run-record failure line's writer; returns the one it replaced. */
+export function setRunFailureWriter(write: (line: string) => void): (line: string) => void {
+  const old = reportRunFailure;
+  reportRunFailure = write;
+  return old;
+}
+
+/**
+ * The run record of a change (`runs.ts`), written under the same hold of the store's lock as the
+ * change and its event. **A run record that cannot be written never undoes the change**: it is
+ * said in one line, and the store goes on (the events log still holds the change).
+ */
+function recordRunOf(change: RunChange): void {
+  try {
+    recordRun(change);
+  } catch (error) {
+    reportRunFailure(
+      `crew: the run record of ${change.after.name} was not written: ${reasonOf(error)}`,
+    );
+  }
+}
+
 /** Runs `write` holding the repository's store lock (its folder made 0700 first). */
 async function underStoreLock<T>(stateDir: string, repo: string, write: () => T): Promise<T> {
   const folder = crewStoreDir(stateDir, repo);
@@ -717,6 +980,7 @@ export async function createCrew(
     }
     writeJsonFile(file, record);
     appendEvent(stateDir, crew.repo, eventOf(record, at, "created", null));
+    recordRunOf({ after: record, at, before: null });
     return record;
   });
 }
@@ -738,12 +1002,20 @@ export async function updateCrew(
   atMs: number,
   text: null | string = null,
   memoryMb: null | number = null,
+  by: RunActor | null = null,
 ): Promise<CrewRecord> {
-  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
-    change,
-    event: (after) =>
-      after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
-  }));
+  const { record } = await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => ({
+      change,
+      event: (after) =>
+        after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
+    }),
+    by,
+  );
   return record;
 }
 
@@ -763,21 +1035,31 @@ export async function updateCrewIfState(
   change: CrewChange,
   atMs: number,
   text: null | string = null,
+  by: RunActor | null = null,
 ): Promise<{ changed: boolean; record: CrewRecord }> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
-    if (!(states as readonly string[]).includes(before.state)) return null;
-    return {
-      change,
-      event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
-    };
-  });
+  return await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => {
+      if (!(states as readonly string[]).includes(before.state)) return null;
+      return {
+        change,
+        event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+      };
+    },
+    by,
+  );
 }
 
 /**
  * Records a question crew session `id` asks its lead (D36), and its `question` event, under one hold:
  * the question goes at the end of its `questions`, with no answer yet, and the event's line is
- * the question. Throws when the crew session is not recorded, or the question breaks the schema (fewer
- * than two options, a recommendation that is not one of them): then nothing is written.
+ * the question. **A question of its own that is still open is superseded** (RG1): it points at the
+ * new one and is closed, so the lead and every reader see the newest open question alone. Throws
+ * when the crew session is not recorded, or the question breaks the schema (fewer than two
+ * options, a recommendation that is not one of them): then nothing is written.
  */
 export async function addCrewQuestion(
   stateDir: string,
@@ -788,22 +1070,43 @@ export async function addCrewQuestion(
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }],
+      questions: [
+        ...before.questions.map((one) =>
+          isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one,
+        ),
+        { ...asked, answer: null, answeredAt: null, askedAt: at },
+      ],
     },
     event: (after) => eventOf(after, at, "question", asked.question),
   }));
   return record;
 }
 
+/** How an answer is recorded (`answerCrewQuestion`). */
+export interface AnswerHow {
+  /**
+   * The answer replaces an earlier one (AN1): the question must have its answer, which is kept in
+   * `superseded`, and the new one is not delivered yet.
+   */
+  correction?: boolean;
+  /** The answer reached the crew session in this same write: a resume carried it as its prompt. */
+  delivered?: boolean;
+}
+
 /**
  * Records the lead's answer to question `index` (counted from 0, in `questions`) of crew session `id`.
- * Throws when there is no such question, or it has its answer already: an answer is given once.
+ * Throws when there is no such question, a newer question superseded it (RG1: the line names the
+ * newest, which takes the answer), or it has its answer already and this is no correction: an
+ * answer is given once, and a second one says it is a correction (`how.correction`, AN1).
  *
  * `resumes` is the state the answer brings the crew session back to, when it was waiting for it — a
  * `blocked` crew session the answer reaches, or a `stopped` one resumed with it, is `working` again —
  * written in the same hold, so the record never says `blocked` for a crew session that has its answer
  * (the watch stops a blocked crew session that idles). A crew session in any other state keeps its own. The
  * state change is one `state` event; the answer alone is none.
+ *
+ * `session` is the session a resume with the answer brought back (WF1: a resume can start a copy
+ * with a new id): the record takes it in the same write, so it never names a session that is gone.
  */
 export async function answerCrewQuestion(
   stateDir: string,
@@ -813,25 +1116,155 @@ export async function answerCrewQuestion(
   answer: string,
   atMs: number,
   resumes: null | CrewState = null,
+  session: null | { sessionId: string; shortId: string } = null,
+  how: AnswerHow = {},
+  by: RunActor | null = null,
 ): Promise<CrewRecord> {
-  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
-    const asked = before.questions[index];
-    if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
-    if (asked.answer !== null) {
-      throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
-    }
-    const questions = before.questions.map((one, which) =>
-      which === index ? { ...one, answer, answeredAt: at } : one,
-    );
-    const waiting = before.state === "blocked" || before.state === "stopped";
-    const state = resumes !== null && waiting ? resumes : null;
-    return {
-      change: { questions, ...(state === null ? {} : { state }) },
-      event: (after) =>
-        state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
-    };
-  });
+  const { record } = await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => {
+      const asked = before.questions[index];
+      if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
+      // A superseded question has no answer, so this comes first: a correction to it would
+      // otherwise say "no answer to correct", and the line that names the newest is the useful one.
+      if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
+        // Follow the pointers to the newest: a superseded question points at the one that replaced it.
+        let newest = asked.supersededBy;
+        for (
+          let next = before.questions[newest]?.supersededBy;
+          next !== undefined && next !== null;
+          next = before.questions[newest]?.supersededBy
+        ) {
+          newest = next;
+        }
+        throw new CrewStoreError(
+          `question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`,
+        );
+      }
+      if (how.correction === true) {
+        if (asked.answer === null || asked.answeredAt === null) {
+          throw new CrewStoreError(
+            `question ${index} of crew session "${id}" has no answer to correct`,
+          );
+        }
+      } else if (asked.answer !== null) {
+        throw new CrewStoreError(
+          `question ${index} of crew session "${id}" has its answer already`,
+        );
+      }
+      const questions = before.questions.map((one, which) => {
+        if (which !== index) return one;
+        const { deliveredAt: _earlier, ...rest } = one;
+        const kept =
+          how.correction === true && one.answer !== null && one.answeredAt !== null
+            ? [
+                ...(one.superseded ?? []),
+                {
+                  answer: one.answer,
+                  answeredAt: one.answeredAt,
+                  // A record from before the field has none, and its answer was heard.
+                  ...(one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }),
+                },
+              ]
+            : one.superseded;
+        return {
+          ...rest,
+          answer,
+          answeredAt: at,
+          deliveredAt: how.delivered === true ? at : null,
+          ...(kept === undefined ? {} : { superseded: kept }),
+        };
+      });
+      const waiting = before.state === "blocked" || before.state === "stopped";
+      const state = resumes !== null && waiting ? resumes : null;
+      return {
+        change: {
+          questions,
+          ...(state === null ? {} : { state }),
+          ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+        },
+        event: (after) =>
+          state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
+      };
+    },
+    by,
+  );
   return record;
+}
+
+/**
+ * Marks the answer of question `index` delivered (AN1), and gives back the question **this call**
+ * claimed, with the answer it claimed: the answer was there and waiting for its delivery. Null
+ * when it was delivered already (by another delivery, or by a resume), came from before the field,
+ * or the question has no answer. The check and the write are
+ * one hold of the store's lock, so two deliveries never both win: the one that wins prints the
+ * answer, the other says nothing.
+ */
+export async function markAnswerDelivered(
+  stateDir: string,
+  repo: string,
+  id: string,
+  index: number,
+  atMs: number,
+): Promise<CrewQuestion | null> {
+  const { changed, record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const asked = before.questions[index];
+    if (asked === undefined || asked.answer === null) return null;
+    if (!answerWaitsForDelivery(asked)) return null;
+    const questions = before.questions.map((one, which) =>
+      which === index ? { ...one, deliveredAt: at } : one,
+    );
+    return { change: { questions }, event: () => null };
+  });
+  return changed ? (record.questions[index] ?? null) : null;
+}
+
+/**
+ * The indexes of the answers the crew session's monitor still has to print (AN1), oldest first:
+ * every question with an answer whose `deliveredAt` is null. A crew session may have several
+ * questions open, and the lead answers the newest first (`openQuestionIndex`), so any of them can
+ * be waiting. A record from before the field has no `deliveredAt` at all (not null): its answers
+ * were sent by hand, so none is printed again.
+ */
+export function undeliveredAnswerIndexes(record: CrewRecord): number[] {
+  const waiting: number[] = [];
+  record.questions.forEach((asked, index) => {
+    if (answerWaitsForDelivery(asked)) waiting.push(index);
+  });
+  return waiting;
+}
+
+/**
+ * True when `asked` has an answer the monitor still has to print: recorded and waiting
+ * (`deliveredAt` null — a record from before the field has none, and its answer was sent by hand),
+ * on a question no newer one superseded (RG1). A superseded question takes no answer, so this
+ * only matters for a record that holds one anyway: the session was told to answer the newer
+ * question, and never hears the old one.
+ */
+function answerWaitsForDelivery(asked: CrewQuestion): boolean {
+  return (
+    asked.answer !== null && asked.deliveredAt === null && (asked.supersededBy ?? null) === null
+  );
+}
+
+/**
+ * The newest answer to `asked` the crew session heard (AN1), for the words of a correction: a
+ * superseded answer that was delivered, or — with `withCurrent` — the answer on record when it was
+ * delivered too. An answer the monitor never printed was never heard, so a correction does not
+ * claim to replace it. A record from before the field has no `deliveredAt` (its answers were
+ * sent by hand and heard). Null when nothing was heard.
+ */
+export function lastHeardAnswer(asked: CrewQuestion, withCurrent: boolean): null | string {
+  const answers = [
+    ...(asked.superseded ?? []).map((one) => ({ answer: one.answer, at: one.deliveredAt })),
+    ...(withCurrent && asked.answer !== null
+      ? [{ answer: asked.answer, at: asked.deliveredAt }]
+      : []),
+  ];
+  return answers.filter((one) => one.at !== null).at(-1)?.answer ?? null;
 }
 
 /** One line of the events log about `crew`, of `type`, with `text` as its line. */
@@ -875,6 +1308,7 @@ async function changeCrew(
   id: string,
   atMs: number,
   plan: (before: CrewRecord, at: string) => null | PlannedChange,
+  by: RunActor | null = null,
 ): Promise<{ changed: boolean; record: CrewRecord }> {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -900,6 +1334,9 @@ async function changeCrew(
     // goes on in clears it here, so no path — an answer, a resume, a report — can leave a wait
     // behind on a crew session that is running again (D42). `lastPause` stays: a re-pause reads it.
     if (merged.state !== "paused") delete merged.waitingFor;
+    // A resume's claim (`claimResume`) lasts while the record stays in the state it was claimed
+    // in: the write that makes the resumed session `working` ends it.
+    if (merged.state !== before.state) delete merged.resumeClaim;
     // A crew session removed after the lead merged its work keeps that fact here, and one removed
     // before the merge keeps the false: a phase that waits for it starts on the merge alone
     // (`finishesWait`, `places.ts`), never on the removal. Set from the record as it is now, under
@@ -907,10 +1344,31 @@ async function changeCrew(
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
+    // here, from the state the record was in, so the watch cannot forget it on a later pass.
+    // The watch's own idle stop is not the lead's call (`stoppedByWatch`): the fact is set false,
+    // not left unset, because an unset one lets the watch's legacy reading of the events log
+    // ("stopped, then merged") make it true on a later pass.
+    if (merged.state === "merged" && before.state === "stopped") {
+      merged.mergedWhileStopped = before.stoppedByWatch !== true;
+    }
+    // Who stopped it is kept only while it is stopped.
+    if (merged.state !== "stopped") delete merged.stoppedByWatch;
+    // A replaced session stays on the record (`earlierSessions`), whichever command replaced it.
+    if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
+      const kept = before.earlierSessions ?? [];
+      if (!kept.some((one) => one.sessionId === before.sessionId)) {
+        merged.earlierSessions = [
+          ...kept,
+          { sessionId: before.sessionId, shortId: before.shortId ?? before.sessionId.slice(0, 8) },
+        ];
+      }
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
+    recordRunOf({ after, at, before, by: by ?? undefined, event: line });
     return { changed: true, record: after };
   });
 }
@@ -923,6 +1381,28 @@ export function readLead(stateDir: string, repo: string, sessionId: string): Lea
 /** Every lead of `repo`, oldest first. Never throws for a broken record: it is named. */
 export function listLeads(stateDir: string, repo: string): Listed<LeadRecord> {
   return listRecords(leadRecordSchema, join(crewStoreDir(stateDir, repo), "leads"));
+}
+
+/**
+ * Records the plan file a lead found later (`crew start`, PL1) and changes nothing else: the lead
+ * record is read again under the store's lock, so a write another process made since (the
+ * presence mark) is never undone by a stale copy. Null when the lead is not recorded.
+ */
+export async function setLeadPlanFile(
+  stateDir: string,
+  repo: string,
+  sessionId: string,
+  planFile: string,
+  atMs: number,
+): Promise<LeadRecord | null> {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null) return null;
+    const after = checked(leadRecordSchema, { ...before, planFile, updatedAt: iso(atMs) }, file);
+    writeJsonFile(file, after);
+    return after;
+  });
 }
 
 /**
@@ -951,6 +1431,29 @@ export async function writeLead(
     );
     writeJsonFile(file, record);
     return record;
+  });
+}
+
+/**
+ * Records one successful agent-view observation without changing the lead's activity time.
+ * The lock keeps an ended plan or a concurrently refreshed lead intact.
+ */
+export async function setLeadPresence(
+  stateDir: string,
+  repo: string,
+  sessionId: string,
+  known: boolean,
+  atMs: number,
+): Promise<LeadRecord | null> {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null) return null;
+    const since = known ? null : (before.sessionUnknownSince ?? iso(atMs));
+    if (before.sessionUnknownSince === since) return before;
+    const after = checked(leadRecordSchema, { ...before, sessionUnknownSince: since }, file);
+    writeJsonFile(file, after);
+    return after;
   });
 }
 
@@ -1032,6 +1535,64 @@ export async function writeReport(
 }
 
 /**
+ * How long a resume's claim on a crew record holds (WF1): a resume runs `claude --bg --resume`
+ * and one read of agent view, each bounded by 30 seconds (`CLAUDE_TIMEOUT_MS`), so a claim older
+ * than this belongs to a resume that is over, whatever happened to it.
+ */
+export const RESUME_CLAIM_MS = 2 * 60_000;
+
+/**
+ * Claims the resume of crew session `id` for the resume `token` (WF1): true when the record is
+ * still in one of `states` — the state its caller judged it in — and no other resume holds an
+ * unexpired claim. Under the store's lock, so of two resumes of one record only one launches
+ * Claude. The claim lasts until the record's state changes (`changeCrew`), `releaseResume`, or
+ * `RESUME_CLAIM_MS`. Like `setCrewMemory`, it moves no `updatedAt` and writes no event.
+ */
+export async function claimResume(
+  stateDir: string,
+  repo: string,
+  id: string,
+  states: readonly string[],
+  token: string,
+  atMs: number,
+): Promise<boolean> {
+  const file = crewFile(stateDir, repo, id);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before === null) {
+      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+    }
+    if (!states.includes(before.state)) return false;
+    const held = before.resumeClaim;
+    if (held !== undefined && held.token !== token) {
+      const since = Date.parse(held.at);
+      if (Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS) return false;
+    }
+    writeJsonFile(
+      file,
+      checked(crewRecordSchema, { ...before, resumeClaim: { at: iso(atMs), token } }, file),
+    );
+    return true;
+  });
+}
+
+/** Ends the claim of the resume `token` on crew session `id`: a resume that started nothing. */
+export async function releaseResume(
+  stateDir: string,
+  repo: string,
+  id: string,
+  token: string,
+): Promise<void> {
+  const file = crewFile(stateDir, repo, id);
+  await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before?.resumeClaim?.token !== token) return;
+    const { resumeClaim: _ended, ...after } = before;
+    writeJsonFile(file, checked(crewRecordSchema, after, file));
+  });
+}
+
+/**
  * Records the memory the crew session's process holds, and nothing else: the record's `updatedAt`
  * does not move (the watch reads it to know how long a blocked crew session has waited), and no
  * event is written (the memory is in the event the watch writes when the crew session ends).
@@ -1052,6 +1613,43 @@ export async function setCrewMemory(
     writeJsonFile(file, after);
     return after;
   });
+}
+
+/**
+ * Adds one line to crew session `id`'s run record that is no change of its record: its model was
+ * changed while it ran (MC1 calls this with `detail: { from, to }`), or a note a later phase adds.
+ * Under the store's lock like every other write; it changes nothing else and writes no event.
+ * A crew session with no run record (no plan file) takes nothing.
+ *
+ * **A note that cannot be written never breaks the change it follows**, like every run record
+ * write (`recordRunOf`): a busy lock, an unknown crew session or an unreadable run file is said in
+ * one line (`reportRunFailure`), and the caller goes on.
+ */
+export async function noteCrewRun(
+  stateDir: string,
+  repo: string,
+  id: string,
+  atMs: number,
+  note: { by?: RunActor | null; detail?: Record<string, unknown>; text: string },
+): Promise<void> {
+  const file = crewFile(stateDir, repo, id);
+  try {
+    await underStoreLock(stateDir, repo, () => {
+      const record = readRecord(crewRecordSchema, file);
+      if (record === null) {
+        throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+      }
+      try {
+        recordRunNote(record, iso(atMs), note);
+      } catch (error) {
+        reportRunFailure(
+          `crew: the run record of ${record.name} was not written: ${reasonOf(error)}`,
+        );
+      }
+    });
+  } catch (error) {
+    reportRunFailure(`crew: the run record note for ${id} was not written: ${reasonOf(error)}`);
+  }
 }
 
 /**
@@ -1086,6 +1684,7 @@ export async function recordCrewReport(
   id: string,
   report: HandBackReport,
   atMs: number,
+  contextTokens: null | number = null,
 ): Promise<{ file: string; record: CrewRecord }> {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
@@ -1111,10 +1710,14 @@ export async function recordCrewReport(
       },
       recordFile,
     );
+    // This write does not go through `changeCrew`, so the fact that holds only while `stopped`
+    // goes here too.
+    if (after.state !== "stopped") delete after.stoppedByWatch;
     // The report file first: a record that names a report the file lacks is the worse half-write.
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
+    recordRunOf({ after, at, before, by: null, contextTokens, report: value });
     return after;
   });
   return { file, record };
@@ -1151,14 +1754,26 @@ export interface WatchState {
    */
   resumedAt?: number | undefined;
   routerRequests?: null | number | undefined;
+  /**
+   * When the watch last looked for folders a removal moved aside and could not remove (ms): a
+   * folder that stays costs a scan of the whole repository, so it is looked at every few
+   * minutes, not on every pass (D62). Absent on a state a kit wrote before the field.
+   */
+  parkedAt?: number | undefined;
+  removals?: Record<string, { at: number; signature: string }> | undefined;
+  /** The last daily stopped-session reminder per crew id. */
+  stoppedRemindedAt?: Record<string, number> | undefined;
 }
 
 const watchStateFields = z.object({
+  removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
+  parkedAt: z.number().int().min(0).optional(),
   noted: z.boolean().default(false),
   offset: count,
   said: z.record(z.string(), z.string()),
   resumedAt: z.number().int().min(0).optional(),
   routerRequests: z.number().int().min(0).nullable().optional(),
+  stoppedRemindedAt: z.record(z.string(), z.number().int().min(0)).optional(),
 });
 
 /**
@@ -1206,6 +1821,107 @@ export function writeWatchState(
     watchStateFile(stateDir, repo, leadSessionId),
     `${JSON.stringify(state, null, 2)}\n`,
   );
+}
+
+/**
+ * Where a lead's acting watch is named: `<store>/watch-lease/<lead session id>.json` (WF1). One
+ * file per lead, so two leads of one repository never share a lease.
+ */
+export function watchLeaseFile(stateDir: string, repo: string, leadSessionId: string): string {
+  // A folder of its own: a lead id may hold a dot, so `watch/<id>.lease.json` could be another
+  // lead's state file (`watch/<id>.json`).
+  return join(
+    crewStoreDir(stateDir, repo),
+    "watch-lease",
+    `${fileId(leadSessionId, "session id")}.json`,
+  );
+}
+
+/**
+ * The lease that names the one watch of a lead that acts (WF1): the process that holds it — its
+ * pid, start time, host and pid namespace, as the store's lock records a holder
+ * (`currentHolder`, `src/setup/lock.ts`) — its own token, so two watches in one process stay
+ * apart, and when it took the lease (ms).
+ */
+export interface WatchLease extends ProcessHolder {
+  at: number;
+  token: string;
+}
+
+const watchLeaseFields = z.object({
+  at: z.number().int().min(0),
+  host: z.string(),
+  pid: z.number().int().positive(),
+  pidns: z.string().nullable().default(null),
+  startTime: z.string().nullable(),
+  token: text,
+});
+
+/** The lead's watch lease; null when there is none, or it cannot be read (then it is free). */
+export function readWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+): null | WatchLease {
+  let raw: string;
+  try {
+    raw = readFileSync(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+  } catch (error) {
+    if (notThere(error)) return null;
+    throw error;
+  }
+  try {
+    const parsed = watchLeaseFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    // Half a file a crash left, or not JSON: no holder can be read from it, so the lease is free.
+    return null;
+  }
+}
+
+/**
+ * Takes the lead's watch lease for `lease`, whoever holds it: **the newest watch wins** — a
+ * monitor the lead restarts is its intent, and the watch it replaces ends at its next pass
+ * (`keepWatchLease`). Under the store's lock, so it never lands between another watch's look
+ * and its take.
+ */
+export async function takeWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<void> {
+  await underStoreLock(stateDir, repo, () => {
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+  });
+}
+
+/**
+ * Whether the watch `lease` may still act for its lead, judged under the store's lock: it holds
+ * the lease, or the lease is free — none, unreadable, or its holder is gone (`holderIsGone`: the
+ * pid is dead or was reused) — and it takes it back. Else `holder` is the live watch that took it.
+ */
+export async function keepWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<{ held: true } | { held: false; holder: WatchLease }> {
+  return await underStoreLock(stateDir, repo, () => {
+    const now = readWatchLease(stateDir, repo, leadSessionId);
+    if (now !== null && now.token === lease.token) return { held: true };
+    if (now !== null && !holderIsGone(now, now.at, FALLBACK_STALE_MS)) {
+      return { held: false, holder: now };
+    }
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+    return { held: true };
+  });
 }
 
 /**
@@ -1344,6 +2060,48 @@ export function readSelfWatchState(
     // Never said anything, or the file cannot be read: the crew session says it now.
     return null;
   }
+}
+
+/** How often the crew session's monitor looks for an answer: a lead's answer lands in seconds. */
+export const ANSWER_WATCH_POLL_MS = 3000;
+
+/** How often the monitor writes its heartbeat: a write is cheap, but not worth one a tick. */
+export const ANSWER_BEAT_EVERY_MS = 15_000;
+
+/** A heartbeat older than this says the monitor is not running (it misses four beats). */
+export const ANSWER_BEAT_STALE_MS = 60_000;
+
+/**
+ * Where a crew session's monitor says it is alive: `<store>/answer-watch/<crew id>.json`, one
+ * `{ at }` (AN1). `crew answer` reads it to know whether the monitor will deliver the answer, or the
+ * lead has to send it.
+ */
+export function answerWatchFile(stateDir: string, repo: string, id: string): string {
+  return join(crewStoreDir(stateDir, repo), "answer-watch", `${fileId(id, "crew id")}.json`);
+}
+
+const answerWatchFields = z.object({ at: z.number().int().min(0) });
+
+/** When the crew session's monitor last said it was alive, in ms; null when it never did. */
+export function readAnswerWatchBeat(stateDir: string, repo: string, id: string): null | number {
+  try {
+    const raw = readFileSync(answerWatchFile(stateDir, repo, id), "utf8");
+    const parsed = answerWatchFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data.at : null;
+  } catch {
+    // Never written, or unreadable: the monitor counts as not running, and the lead sends it.
+    return null;
+  }
+}
+
+/** The monitor's heartbeat, now. */
+export function writeAnswerWatchBeat(
+  stateDir: string,
+  repo: string,
+  id: string,
+  atMs: number,
+): void {
+  writeStoreFile(answerWatchFile(stateDir, repo, id), `${JSON.stringify({ at: atMs })}\n`);
 }
 
 /** Writes what the crew session's own watch said. */

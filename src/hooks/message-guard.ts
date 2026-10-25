@@ -29,6 +29,7 @@
  * message.
  */
 import { COMMAND } from "../build-info/names";
+import { REPORT_COMMAND, REPORT_DONE_COMMAND } from "../crew/brief";
 import { withoutListRef } from "../crew/names";
 import { crewIdOf } from "../crew/session";
 import { type CrewRecord, listCrew, readCrew } from "../crew/store";
@@ -80,7 +81,7 @@ export function untaggedTellRefusal(to: string, from: CrewRecord): string {
     `"${to}" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: ${COMMAND} crew tell "${to}" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("${tellTag(from.phase, "contract")} …"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: ${COMMAND} crew report --status done.`,
+    `That the phase is done, or how it goes, goes to the lead: ${REPORT_DONE_COMMAND} (with the JSON part).`,
   ].join("\n");
 }
 
@@ -88,7 +89,7 @@ export function untaggedTellRefusal(to: string, from: CrewRecord): string {
 export function leadTellRefusal(to: string): string {
   return [
     `"${to}" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: ${COMMAND} crew report --status done, or ${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: ${REPORT_DONE_COMMAND} (with the JSON part), or ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line.",
   ].join("\n");
 }

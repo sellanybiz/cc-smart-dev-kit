@@ -135,6 +135,7 @@ const CREW: CrewSummary = {
   kind: "ui",
   lastEvent: { at: "2026-10-22T10:04:00.000Z", text: "tests-green", type: "step" },
   lastLine: null,
+  leadGone: false,
   leadName: "LEAD my-app plan",
   leadSessionId: "lead-1",
   memory: [
@@ -201,6 +202,8 @@ describe("the adapters", () => {
     };
     const work: WorkAnswer = {
       crew: [CREW, { ...CREW, id: "crew-2", state: "done" }],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,
@@ -271,6 +274,8 @@ describe("the adapters", () => {
           updatedAt: "2026-10-22T10:00:00.000Z",
         },
       ],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       note: null,
       repo: "/home/user/my-app",
@@ -312,9 +317,45 @@ describe("the adapters", () => {
     ]);
   });
 
+  test("FX1: an unknown wait stays unknown, with its slot, and is never a Claude limit", () => {
+    const answer = (waitingFor: CrewSummary["waitingFor"]) =>
+      workOf({
+        crew: [{ ...CREW, state: "paused", waitingFor }],
+        finishedSessions: [],
+        finishedSessionsError: null,
+        folderNote: null,
+        leads: [],
+        note: null,
+        repo: "/home/user/my-app",
+        waitsError: null,
+        sessions: [],
+      }).leads[0]?.crew[0]?.waitingFor;
+    const since = "2026-10-22T10:00:00.000Z";
+    expect(answer({ kind: "unknown", since, slot: "my-app/cc-smart-dev-kit-worker" })).toEqual({
+      kind: "unknown",
+      since,
+      slot: "my-app/cc-smart-dev-kit-worker",
+    });
+    // No slot: the field stays absent, never an empty name.
+    expect(answer({ kind: "unknown", since })).toEqual({ kind: "unknown", since });
+    // The two kinds the record names are unchanged.
+    expect(answer({ kind: "slot", since, slot: "cc-smart-dev-kit-worker" })).toEqual({
+      kind: "slot",
+      since,
+      slot: "cc-smart-dev-kit-worker",
+    });
+    expect(answer({ kind: "claude-limit", model: "claude-opus-5-5", resetsAt: null })).toEqual({
+      kind: "claude-limit",
+      model: "claude-opus-5-5",
+      resetsAt: null,
+    });
+  });
+
   test("Work: a crew session of another lead is shown under that lead's own name", () => {
     const data = workOf({
       crew: [{ ...CREW, id: "crew-9", leadName: "LEAD my-app old", leadSessionId: "lead-0" }],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,
@@ -333,6 +374,8 @@ describe("the adapters", () => {
     // a failure and stays in `note`.
     const quiet = workOf({
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote:
         "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
       leads: [],
@@ -346,6 +389,8 @@ describe("the adapters", () => {
     expect(quiet.leads).toEqual([]);
     const broken = workOf({
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: "the crew store could not be read: EACCES: permission denied",
@@ -468,6 +513,8 @@ describe("the adapters", () => {
 
   test("Needs you: every open breaker, doctor's fix, the attach command, newest first", () => {
     const answer: NeedsAnswer = {
+      stopped: [],
+      stoppedError: null,
       breakers: [
         {
           held: 4,
@@ -1018,6 +1065,8 @@ describe("the flow report that did not run (B6e)", () => {
         doctor: { at: null, failures: [] },
         permissions: [],
         permissionsError: "the flow report did not run (exit 3): no bun",
+        stopped: [],
+        stoppedError: null,
         update: null,
       },
       "1.1.0",
@@ -1031,6 +1080,8 @@ describe("the flow report that did not run (B6e)", () => {
   test("Work says no session can show a wait, and why; none when the report ran", () => {
     const answer = {
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,

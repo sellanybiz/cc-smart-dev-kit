@@ -48,12 +48,15 @@ import {
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
+import { requiresFloor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
   checkoutFailure,
   loadProjectConfig,
   locateCheckoutAsync,
 } from "../project/resolve";
+import { isObject } from "../setup/managed-json";
+import { readUserJson } from "../setup/user-json";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
@@ -386,6 +389,34 @@ function ownCopyLines(
   return lines;
 }
 
+/**
+ * One `!` line when the file's `requires` lets in a plugin older than the one that brought a
+ * field the file holds (`requiresFloor`): that plugin reads the file strictly and refuses all
+ * of it, instead of saying "update". 1.2.0's `workflow set` left such files (a
+ * `crew.handoffTokens` under `>=1.0`). A file with no `requires`, or one in a form not read
+ * there, is not judged. `workflow set --project` and `project init` both raise it.
+ */
+function requiresLines(configFile: string, projectDir: string, home: string): ProjectLine[] {
+  let file: unknown;
+  try {
+    file = readUserJson(configFile);
+  } catch {
+    // The load above read this file already, so a failure here is a race: the next run says.
+    return [];
+  }
+  if (!isObject(file)) return [];
+  const needed = requiresFloor(file);
+  if (!requiresTooLow(file.requires, needed.version)) return [];
+  return [
+    {
+      ok: true,
+      warn: true,
+      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      fix: `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
+    },
+  ];
+}
+
 /** The project checks for the folder `cwd`; none outside git. */
 export async function projectChecks(
   cwd: string,
@@ -414,8 +445,9 @@ export async function projectChecks(
   // and its hook lines are named all the same — `project init` fixes both in one run.
   const engine = engineLines(sources, projectDir, paths.home);
   let config: CcSmartDevKitConfig | null;
+  let configFile: string | null;
   try {
-    config = loadProjectConfig(checkout).config;
+    ({ config, configFile } = loadProjectConfig(checkout));
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError)) throw error;
     return [
@@ -430,6 +462,7 @@ export async function projectChecks(
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
+    ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
     ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.

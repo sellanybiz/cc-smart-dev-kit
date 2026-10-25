@@ -24,11 +24,14 @@
  */
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
+import { type LoadReading, loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
+import { agentRows } from "./agents";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
+import { leadGone, observeLeadPresence } from "./lifecycle";
 import { withoutListRef } from "./names";
 import { OPUS_TIER, PLACE_FREE, placeFor, runningCrew, runningForLead, unmetWaits } from "./places";
 import {
@@ -37,10 +40,12 @@ import {
   crewBriefFile,
   type Listed,
   listAllCrew,
+  listAllLeads,
   listCrew,
+  openQuestionIndex,
   readCrewEvents,
 } from "./store";
-import { usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewSettingsFolder, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** How many events `crew status` shows. */
 export const STATUS_EVENTS = 6;
@@ -163,7 +168,7 @@ export function findNamed<T extends Named>(
 /** How a crew record answers to a reference: its own id, its session's id and its short id. */
 const CREW_LOOK: NamedLook<CrewRecord> = {
   ids: (one) => [one.id, one.shortId, one.sessionId],
-  live: (one) => one.state !== "removed",
+  live: (one) => !["removed", "discarded"].includes(one.state),
 };
 
 /** The crew session `ref` names; or the refusal that names every candidate. */
@@ -256,6 +261,9 @@ export function modelLine(record: CrewRecord): string {
 /** The caps a queued crew session waits on, read the way `crew start` reads them. */
 export interface Caps {
   freeGb: null | number;
+  /** The CPU load now; null where the platform gives no load average. */
+  load: LoadReading | null;
+  loadPerCore: number;
   max: number;
   maxOpus: null | number;
   needGb: number;
@@ -269,21 +277,23 @@ export interface Caps {
 
 /** The caps of this project: `workflow.crew`, over the person's own and the defaults. */
 export async function capsOf(
-  ctx: Pick<CrewContext, "cwd" | "freeMemoryGb" | "now" | "paths">,
+  ctx: Pick<CrewContext, "cwd" | "freeMemoryGb" | "load" | "now" | "paths">,
   checkout: Checkout | null,
 ): Promise<Caps | null> {
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    // The project's gateway is read at the main checkout, the folder `crew start` reads it at
-    // (`caller.repo`): the board then shows the reason `crew start` would act on.
+    // The project's gateway is read at the lead's own folder, the one `crew start` reads it at
+    // (`crewSettingsFolder`): the board then shows the reason `crew start` would act on.
     const usage = usageFacts(
       ctx.paths,
       ctx.now(),
-      checkout === null ? ctx.cwd : (checkout.mainCheckout ?? checkout.root),
+      checkout === null ? ctx.cwd : crewSettingsFolder(checkout),
     );
     return {
       freeGb: await ctx.freeMemoryGb(),
+      load: ctx.load(),
+      loadPerCore: crew.loadPerCore.value,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
@@ -317,6 +327,8 @@ export function heldBy(
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
+    load: null,
+    loadPerCore: caps.loadPerCore,
     max: caps.max,
     maxOpus: caps.maxOpus,
     needGb: caps.needGb,
@@ -332,7 +344,7 @@ export function heldBy(
   };
   const first = placeFor(input);
   if (!first.start) return first.why;
-  const withMemory = placeFor({ ...input, freeGb: caps.freeGb });
+  const withMemory = placeFor({ ...input, freeGb: caps.freeGb, load: caps.load });
   return withMemory.start ? PLACE_FREE : withMemory.why;
 }
 
@@ -344,7 +356,13 @@ export function heldBy(
 export function boardLines(
   record: CrewRecord,
   events: readonly CrewEvent[],
-  options: { held: null | string; home: string; now: number; showRepo: boolean },
+  options: {
+    held: null | string;
+    home: string;
+    now: number;
+    showRepo: boolean;
+    leadGone?: boolean;
+  },
 ): string[] {
   const lines = [
     `${record.name} — ${record.state}, ${agoText(stateSince(record, events), options.now)}`,
@@ -353,6 +371,11 @@ export function boardLines(
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
+  if (options.leadGone === true && !["removed", "discarded"].includes(record.state)) {
+    lines.push(
+      `  its lead is gone: remove it with crew rm "${record.name}", or continue it with crew start ${record.phase} --continue "${record.name}"`,
+    );
+  }
   const said = lastSaid(record, events);
   if (record.files.length > 0) lines.push(`  files: ${record.files.join(", ")}`);
   const last =
@@ -401,7 +424,9 @@ export function statusLines(
     label("brief", tildify(crewBriefFile(options.stateDir, record.repo, record.id), options.home)),
     label("report", record.reportPath === null ? "none yet" : record.reportPath),
   );
-  const open = record.questions.findLast((one) => one.answer === null);
+  // One open-question rule for every reader: a finished crew session's question is closed.
+  const openIndex = openQuestionIndex(record);
+  const open = openIndex === null ? undefined : record.questions[openIndex];
   if (open === undefined) {
     lines.push(label("question", "none open"));
   } else {
@@ -421,12 +446,35 @@ export function statusLines(
 
 /** `crew list [--all] [--json]`; the exit code. */
 export async function runCrewList(
-  args: { all: boolean; json: boolean },
+  args: { all: boolean; json: boolean; discarded?: boolean },
   ctx: CrewContext,
 ): Promise<number> {
   const read = readRecords(ctx, args.all, "list");
   if (isRefusal(read)) return refuse(read, ctx);
   for (const broken of read.broken) ctx.error(`crew list: ${broken.why}`);
+  if (args.discarded) {
+    const archived = read.records.flatMap((record) => {
+      const attempts = [
+        ...(record.archiveHistory ?? []),
+        ...(record.archive === undefined ? [] : [record.archive]),
+      ];
+      return attempts
+        .filter((archive) => archive.prunedAt === undefined)
+        .map((archive) => ({ archive, record }));
+    });
+    if (args.json) ctx.print(JSON.stringify(archived, null, 2));
+    else {
+      if (archived.length === 0) ctx.print("No discarded crew archives.");
+      for (const { archive, record } of archived) {
+        const days = Math.max(0, Math.floor((ctx.now() - Date.parse(archive.at)) / 86_400_000));
+        ctx.print(
+          `${record.name} — discarded ${days} day${days === 1 ? "" : "s"} ago — ${archive.ref}`,
+        );
+        ctx.print(`  recover: git branch ${record.branch} ${archive.ref}`);
+      }
+    }
+    return read.broken.length === 0 ? 0 : 1;
+  }
   if (args.json) {
     // Exactly the records the store holds, newest first: a page or a script reads them.
     ctx.print(JSON.stringify(read.records, null, 2));
@@ -449,8 +497,24 @@ export async function runCrewList(
       caps === null ? null : heldBy(record, read.machine(), caps),
     ]),
   );
+  const rows = args.all ? agentRows(ctx) : null;
+  const leads = args.all
+    ? await observeLeadPresence(
+        ctx.paths.stateDir,
+        listAllLeads(ctx.paths.stateDir).records,
+        rows,
+        ctx.now(),
+      )
+    : [];
   const blocks = read.records.map((record) =>
     boardLines(record, eventsAbout(record), {
+      leadGone: leadGone(
+        leads.find(
+          (lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId,
+        ) ?? null,
+        rows,
+        ctx.now(),
+      ),
       held: held.get(record.id) ?? null,
       home: ctx.paths.home,
       now: ctx.now(),
@@ -473,6 +537,13 @@ export async function runCrewList(
         one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE,
     );
   if (unguarded) ctx.print(usageUnreadLine());
+  // Where the platform gives no load average the CPU hold does not apply: said once, and only
+  // beside a crew session that waits for nothing else.
+  const unloaded =
+    caps !== null &&
+    caps.load === null &&
+    read.records.some((one) => one.state === "queued" && held.get(one.id) === PLACE_FREE);
+  if (unloaded) ctx.print(loadUnreadLine());
   return 0;
 }
 
@@ -547,11 +618,10 @@ export function runCrewAttach(ref: string, ctx: CrewContext): number {
   const found = target(ref, "attach", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
-  if (record.shortId === null || record.state === "removed") {
-    const why =
-      record.state === "removed"
-        ? "is removed; its session is gone"
-        : `has no session yet (it is ${record.state})`;
+  if (record.shortId === null || ["removed", "discarded"].includes(record.state)) {
+    const why = ["removed", "discarded"].includes(record.state)
+      ? "is removed; its session is gone"
+      : `has no session yet (it is ${record.state})`;
     return refuse(
       {
         code: 1,

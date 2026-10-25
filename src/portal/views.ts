@@ -264,6 +264,8 @@ export interface SlotsData {
   /** The slots whose breaker is open now, by slot key (the router's own answer). */
   breakers: Record<string, OpenBreaker>;
   chains: Record<string, string[]>;
+  /** The levels `gateway effort` takes for a backend target (`BACKEND_EFFORT_LEVELS`), in order. */
+  effortLevels: string[];
   /** Each slot's fallback switch, by short name (`scout`): it decides the chain's labels. */
   fallback: Record<string, boolean>;
   models: ModelRow[];

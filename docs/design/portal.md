@@ -61,6 +61,19 @@ anything. The project's own defaults are remembered per file text for the run (`
 `detectFacts` reads git and, when `gh` is there, GitHub itself, so a form change is a plan,
 not a network read.
 
+**Cleanup API contracts (CL2).** Needs exposes old stopped crew work and exact discard previews
+through a read-only `crew cleanup --json` CLI child; synchronous git never runs on the server loop.
+Work and crew details expose the shared lead-gone verdict, and Work lists finished unowned
+background sessions from the sessions command's reader. GET requests never persist absence clocks.
+A partial or unreadable agent view cannot prove absence. `crew.rm` requires explicit confirmation;
+discard also needs the exact shared content token and a second discard confirmation, then runs
+`crew rm --discard --yes --discard-token` in the record's repository. `sessions.rm` confirms and
+revalidates one id, then runs targeted `sessions --finished --remove --yes --id` from the existing
+home folder; a session folder already removed does not prevent removing its agent entry.
+Both paths use asynchronous CLI children and return their lines in place. The wire mirror carries
+these fields, but the current adapters and views do not render them: a separate UI phase must add
+the cards, shared-word dialogs, errors and results before claiming visible cleanup controls.
+
 ### What it is, and what it is not
 
 - **Everything it does is real**, and goes through the command line's own code. A slot, the
@@ -514,6 +527,23 @@ answers. Two trade-offs of those rules: a child that hangs is shared until its t
 alternative — a second full read of every transcript — costs more than the wait), and the flow
 reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
 the next request too.
+**The Needs and Work reads use the same cache** (RX3). The header reads `/api/needs` on every
+`crew`, `state`, `update` and `doctor` event (a 300 ms debounce), and each read ran `crew
+cleanup --json` (about ten git children per stopped record, and a whole-worktree diff for its
+discard facts); `/api/work` and a crew page each started `claude agents --json --all`. Reads
+overlap on a busy machine, so each is now a `shortCache` of 5 s (`PAGE_READ_FRESH_MS`):
+`readCleanupForPage` and `readPortalAgentsForPage`. A failed read (an error, a list that did not
+answer) is shown and not kept; a fault inside one stopped record's own discard facts
+(`discard.error`) is part of an answer that did arrive, so it is kept for the window like the
+rest. **The removal paths stay uncached**: `crew.rm` and `sessions.rm` call `readPortalAgents`
+and `readCleanupOffLoop` themselves and compare the confirmation token with facts they have
+just read, so a preview kept for a few seconds can never authorize one. Two things drop both
+caches (`forgetPageReads`, `api/page-reads.ts`), because the page that reloads after either must
+not be served a read kept from before it: `runAction` when any action ends, and the live
+stream's crew source just before it publishes crew news (`createLiveSources`), so a `crew rm`
+in a terminal that lands inside the window is not hidden. The sharing that remains is the
+reads one event fans out to (the header and the page open) and the events that are not crew
+news (`update`, `doctor`).
 **The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
 (20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
 manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
@@ -650,7 +680,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
-Slots page's fallback and breaker), the router restart, `doctor`, a companion's enable, the
+Slots page's fallback and breaker), the Slots page's effort pin (`slot.effort`: asked first, it
+runs `gateway effort <slot> <target> <level>|off`, shows the test request and a refusal in
+place, and is offered only while the slot is Custom), the router restart, `doctor`, a companion's enable, the
 OmniRoute update and rollback, the browser's setup and token, the auto-mode rules' write (with
 the hash of the change shown), and the update check.
 

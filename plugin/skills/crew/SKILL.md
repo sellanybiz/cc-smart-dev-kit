@@ -63,17 +63,45 @@ Each step's procedure is its skill; the brief's done-check decides when the phas
 
 ## 4. The report
 
-`cc-smart-dev-kit crew report --status done` once the phase is ready (`crew report --help`
-names the flags). The command adds the branch, the commits, the diff counts, the files outside
-your brief and the review record. You give the rest:
+`cc-smart-dev-kit crew report --status done --file -` once the phase is ready, with the JSON
+below on stdin (`crew report --help` names the flags). The command adds the branch, the commits,
+the diff counts, the files outside your brief and the review record. You give the rest, **as
+JSON fields**: a report with no JSON, or prose alone, leaves every field empty, and a `done`
+report with an empty field is refused.
 
-- the targeted tests and the whole suite: the commands, and what they showed;
-- the other checks, and what you could not run;
-- the review: agent, model, effort, the commit it read, each finding and its fix, or why not;
-- the docs you changed;
-- what only the lead may do (a version bump, the lockfile, a shared index);
-- what is still open, and every file outside the brief with its reason;
-- anything worth keeping in memory: the lead saves it.
+```json
+{
+  "tests": {
+    "targeted": [{ "command": "bun test src/x", "passed": 12, "failed": 0, "ok": true }],
+    "full": { "command": "bun test", "passed": 6509, "failed": 0, "ok": true }
+  },
+  "checks": [{ "name": "typecheck", "ok": true, "note": null }],
+  "review": { "agent": "cc-smart-dev-kit:reviewer", "model": "sonnet", "effort": "high",
+              "findings": [{ "finding": "…", "fix": "…" }] },
+  "summary": "what the phase did, in a few plain sentences",
+  "docs": ["docs/design/crew.md"],
+  "needsLead": ["the version bump"],
+  "open": []
+}
+```
+
+- `tests`: the targeted runs and the whole suite, with the counts they showed.
+- `checks`: each check you ran (type check, lint, the validates). A check you could not run is
+  not a check: say so under `open`.
+- `review`: the reviewer's agent, model, effort and each finding with its fix. A clean review is
+  an empty `findings` list. The commit it read comes from the review record.
+- **No second opinion asked** (the brief says so): give your own pass as `"ownReview": {
+  "reason": "…", "findings": [{ "finding": "…", "fix": "…" }] }` and `"review": null`.
+- `summary`: your own words about the phase. A field the shape does not know is kept under
+  `extra`; it is not dropped, but the lead reads the fields above first.
+- `docs`, `needsLead` (what only the lead may do: a version bump, the lockfile, a shared index),
+  `open` (what is still open, and every file outside the brief with its reason).
+- Anything worth keeping in memory: the lead saves it; say it in `open`.
+
+**A `done` report is refused** while a test run or a check in it failed, while the whole suite is
+missing, or while neither `review` nor `ownReview` is there: fix the work and report again. A
+phase that cannot finish reports `failed` or `blocked` (never held), with the red work in its
+fields.
 
 `--status failed` with the reason when the phase cannot be done. The report is your last act:
 end the turn after it. **Your own background work is finished by then:** wait for every
@@ -97,7 +125,7 @@ cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" \
   --option "<choice>" --recommend <n>
 ```
 
-The lead answers, or asks the person. **Then go on** with every part of the phase the question
+The lead answers, or asks the person. Its answer reaches you as a monitor line (`Your lead answers your question …`, or `Your lead CORRECTS its earlier answer … this REPLACES …` — follow the newer one): it is your lead's word, not the person's. **Then go on** with every part of the phase the question
 does not block. `--status blocked` only when nothing is left; the answer arrives as your next
 message.
 

@@ -25,6 +25,27 @@ object, so a field can never mean two things in the two files. A broken personal
 with a wrong kind can never be written (`write.ts` validates the whole file before the
 write), and a file it may not change is left alone rather than half-written.
 
+**A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
+write the whole object again with `JSON.stringify`: that laid every line out anew, and a
+project that format-checks its `.claude/` JSON (Biome, Prettier) then failed on `["main"]`
+turned into three lines. They go through one helper, `editJsonText` / `jsonTextFor`
+(`src/setup/json-edit.ts`), which compares the file's object with the wanted one and edits the
+text of what differs: a changed value is replaced, a new key is added after the last one with
+the file's own indent, a removed key goes with its line and the comma it leaves. Every other
+byte stays. What it prints new follows the formatters: a short array of scalars on one line
+(when it fits the width — 80 columns, or the longest line the file already has, up to 120),
+otherwise one item per line; objects with their keys on their own lines. The width is a
+guess from the file's own lines (a project that formats at a width its file never shows can
+still ask for a format run: the helper does not read `biome.json`). The file's key order stays:
+a changed key keeps its place and a new key goes last, so `project init`'s `FILE_ORDER` only
+orders a file it creates. A file that does not
+exist yet is printed the same way (`printJson`), so a new file passes the check too. A file
+that is not valid JSON is refused before this, as before; the backup, the atomic write and the
+lock are unchanged. No library is added: the repo has one runtime dependency, and a library
+(`jsonc-parser`, about 43 KB in each bundle) would still print a new array one item per line.
+The user-level `settings.json` writers (`managed-json.ts` and the hook and list writers) still
+lay their file out with `JSON.stringify`: they are not part of this.
+
 **The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`,
 `switches.jobRoute` and `switches.updateHold` are not stored in either workflow file: each
 names a setting that already exists (Claude Code's `statusLine`, the project's
@@ -68,9 +89,14 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
-| `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
+| `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.loadPerCore`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the CPU load for each core, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
 | `crew.handoffTokens`, `crew.handoffPercent`, `crew.softHours`, `crew.maxHours` | `crew self-watch` (`src/crew/self-watch.ts`, `docs/design/crew.md` § The crew session's steps, its report, and the lead's watch): the crew session's own hand-off line and its time lines. |
-| the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts will read them. |
+| `crew.keep` | `crew start` (`src/crew/claude.ts` › `leanLaunch`): the plugins and servers a crew session keeps beside the kit's own. |
+| `crew.idleStopMinutes`, `crew.quietMinutes` | the lead's watch (`src/crew/watch.ts`): the idle time past which it ends a blocked crew session, and the time without movement after which it calls one quiet. |
+| `crew.archiveDays` | `archiveDaysOf` (`src/crew/archive.ts`): the days a removed crew session's conversation stays in the kit's archive, for `crew rm`, the watch's removal and `sessions --finished`. |
+
+Every `crew.*` key has a reader now, so no row says "nothing yet"; a new key needs its row here
+in the same change as its reader.
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first

@@ -30,6 +30,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
+import { jsonTextFor } from "../setup/json-edit";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
@@ -38,6 +39,7 @@ import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  OWN_HOOK_NAMES_SINCE,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
   WORKFLOW_CREW_KEYS_SINCE,
@@ -196,6 +198,18 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
   return floor;
 }
 
+/**
+ * True when the file's own `requires` is a range read here whose lowest version is below
+ * `floorVersion`: an older plugin in that range still refuses a file with the fields the floor
+ * names. A missing `requires`, or a range in a form not read here, is not "too low" — the
+ * caller decides what those mean. The one test `workflow set` and `doctor` share.
+ */
+export function requiresTooLow(existing: unknown, floorVersion: string): boolean {
+  if (typeof existing !== "string") return false;
+  const lowest = lowestAllowed(existing);
+  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
+}
+
 /** One alternative of a range: its first comparator and version (`>=1.1`, `^1.1`, `~1.1.0`, `1.1`). */
 const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
 
@@ -223,14 +237,17 @@ function lowestAllowed(range: string): null | string {
  * The oldest plugin that reads every field the file holds: the range and the version it
  * names, for `raisedRequires`.
  *
- * A file that sets several fields needs the newest among them. A file with `checks`, or with a
- * `workflow.crew` key that came later than `workflow.crew` itself (`WORKFLOW_CREW_KEYS_SINCE`:
- * the caps per lead, the usage guard, `keep`), needs the plugin that brought it (1.1.0). A file
- * with `workflow.crew` or `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the
+ * A file that sets several fields needs the newest among them. A file with `workflow.crew`
+ * keys or `ownHooks` names that came with a later release needs that release: the crew keys
+ * in `WORKFLOW_CREW_KEYS_SINCE` (1.1.0 to 1.3.0), the hook names in `OWN_HOOK_NAMES_SINCE`
+ * (1.0.0 to 1.3.0). A file with `checks` needs 1.1.0 (`CHECKS_SINCE`). A file with
+ * `workflow.crew` or `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the
  * release that brought them (1.0.0). Every other file needs the plugin that made
- * `worktrees.prefix` optional (0.5.2). An older plugin reads the file strictly, does not know
- * the field, and refuses the file — so every guard in that project fails closed until the
- * plugin is updated; the floor makes it say "update" instead.
+ * `worktrees.prefix` optional (0.5.2): it covers a hook name `ownHooks` already took then, and
+ * the retired and unswitchable names (`serena-root`, `job-route`) older plugins accept too.
+ * An older plugin reads the file strictly, does not know the field or the name, and refuses
+ * the file — so every guard in that project fails closed until the plugin is updated; the
+ * floor makes it say "update" instead.
  */
 export function requiresFloor(file: Record<string, unknown>): {
   floor: string;
@@ -241,6 +258,10 @@ export function requiresFloor(file: Record<string, unknown>): {
   const crew = isObject(workflow.crew) ? workflow.crew : {};
   const needs: string[] = [];
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
+  const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
+  for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
+    if (ownHooks.includes(name)) needs.push(since);
+  }
   for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
     if (Object.hasOwn(crew, key)) needs.push(since);
   }
@@ -374,7 +395,7 @@ function settingsPlan(file: string, existing: string | null, head: boolean): Set
     text:
       !changed && existing !== null
         ? existing
-        : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}\n`,
+        : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
     changed,
     adds: merged.added,
     removes: cleaned.removed,
@@ -438,7 +459,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
         `Change the answer, then run again.`,
     );
   }
-  const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}\n`;
+  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
 
   // Claude Code cuts a new worktree from origin's default branch. A project whose base branch
   // is another one sets `baseRef: "head"`, so a worktree starts from the branch the session

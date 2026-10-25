@@ -37,11 +37,12 @@ import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
+import { parseOptions } from "../crew/args";
 import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
-import { realProbe, routerFetch } from "../gateway/health";
+import { loopbackFetch, realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
 import {
@@ -72,6 +73,7 @@ import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { runUser } from "../user-away/command";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
@@ -204,7 +206,7 @@ function launchContext(paths: ReturnType<typeof cliPaths>) {
     cwd: process.cwd(),
     env: process.env,
     error: (line: string) => console.error(line),
-    fetch: routerFetch,
+    fetch: loopbackFetch,
     home: paths.home,
     platform: process.platform,
     print: (line: string) => console.log(line),
@@ -220,7 +222,7 @@ function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
   return {
     confirm: ask,
     env: process.env,
-    health: (url: string, init: RequestInit) => fetch(url, init),
+    health: loopbackFetch,
     now: () => Date.now(),
     paths,
     registry: (url: string, init: RequestInit) => fetch(url, init),
@@ -764,14 +766,47 @@ async function main(argv: string[]): Promise<number> {
       // Everything after `--` is Claude Code's: the command reads its own options and no more.
       return await runLaunch(rest, launchContext(paths));
     case "sessions": {
-      const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
+      const parsed = parseOptions(
+        rest,
+        ["--id"],
+        ["--open", "--dry-run", "--finished", "--remove", "--yes"],
+        ["--id"],
+      );
+      if ("error" in parsed) {
+        console.error(usageError(parsed.error, "sessions"));
+        return 2;
+      }
+      const unknown = parsed.positionals;
+      const ids = parsed.lists.get("--id") ?? [];
+      if (rest.includes("--finished") && (rest.includes("--open") || rest.includes("--dry-run"))) {
+        console.error(
+          usageError("--finished cannot be combined with --open or --dry-run", "sessions"),
+        );
+        return 2;
+      }
+      if (
+        (rest.includes("--remove") && !rest.includes("--finished")) ||
+        (rest.includes("--yes") && !rest.includes("--remove"))
+      ) {
+        console.error(
+          usageError("--remove requires --finished, and --yes requires --remove", "sessions"),
+        );
+        return 2;
+      }
       if (unknown.length > 0) {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "sessions"));
         return 2;
       }
       return await runSessions(
         paths,
-        { dryRun: rest.includes("--dry-run"), open: rest.includes("--open") },
+        {
+          dryRun: rest.includes("--dry-run"),
+          open: rest.includes("--open"),
+          finished: rest.includes("--finished"),
+          ids,
+          remove: rest.includes("--remove"),
+          yes: rest.includes("--yes"),
+        },
         {
           command: COMMAND,
           now: Date.now(),
@@ -879,6 +914,16 @@ async function main(argv: string[]): Promise<number> {
       );
     case "crew":
       return await runCrew(rest, realCrewContext(paths));
+    case "user":
+      return await runUser(rest, {
+        cwd: process.cwd(),
+        env: process.env,
+        nowMs: Date.now(),
+        out: createOut(currentTerminal(process.env)),
+        paths,
+        print: (line) => console.log(line),
+        say: (line) => console.error(line),
+      });
     case "job":
       return runJobCommand(rest, {
         paths,

@@ -13,10 +13,16 @@
  *   `workflow.crew.tag`, else the main checkout's folder name (`crewTag`).
  * - `--plan` names the plan; without it, the plan this session already leads here, else the
  *   branch the checkout is on.
+ * - `--plan-file` names the plan's file (PL1): the folder beside it holds the plan's briefs and
+ *   the record of each crew run. Without it: the file this session recorded before, the one an
+ *   earlier lead of the same plan recorded (a hand-over), or the one file
+ *   `<plans dir>/*-<plan>.md` (`findPlanFile`); none or several leave it off, and a line says so.
  *
  * Running it again records the lead again: the time it was first recorded stays. Two leads in
  * one repository are two records, each by its own session id.
  */
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
 import { isSessionId, readAppliedName } from "../hooks/session-name";
@@ -24,12 +30,23 @@ import { ownHooksOf } from "../project/resolve";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
 import { crewTag, leadName } from "./names";
-import { eventsEndOffset, readLead, readWatchState, writeLead, writeWatchState } from "./store";
+import { findPlanFile, planFileOfLead, plansDirs } from "./runs";
+import {
+  eventsEndOffset,
+  listLeads,
+  readLead,
+  readWatchState,
+  writeLead,
+  writeWatchState,
+} from "./store";
 
 /** What `crew lead` was asked, already checked to be well formed (`command.ts`). */
 export interface LeadArgs {
   plan: null | string;
+  /** The plan's file (`--plan-file`): its folder holds the briefs and the run records (PL1). */
+  planFile?: null | string;
   tag: null | string;
+  end?: boolean;
 }
 
 /** How long reading the branch may take. */
@@ -60,6 +77,24 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   } catch (error) {
     return refuse(reasonOf(error), "remove that record, then run this again", 1);
   }
+  if (args.end) {
+    if (before === null)
+      return refuse("this session is not a recorded lead", "run crew lead first", 1);
+    try {
+      await writeLead(
+        ctx.paths.stateDir,
+        { ...before, endedAt: new Date(ctx.now()).toISOString() },
+        ctx.now(),
+      );
+      ctx.print(
+        `ended lead ${before.name}; its crew work is kept unless the project base holds it`,
+      );
+      return 0;
+    } catch (error) {
+      ctx.error(`crew lead: ${reasonOf(error)}`);
+      return 1;
+    }
+  }
   const branch = runGit(
     checkout.root,
     ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -74,6 +109,17 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
       2,
     );
   }
+  let planFile: null | string = null;
+  if (args.planFile != null) {
+    planFile = resolve(ctx.cwd, args.planFile);
+    if (!planFile.endsWith(".md") || !existsSync(planFile)) {
+      return refuse(
+        `the plan file ${args.planFile} is no existing .md file`,
+        "pass the plan's file: --plan-file <path>",
+        2,
+      );
+    }
+  }
   let tag: string;
   let name: string;
   try {
@@ -82,10 +128,35 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   } catch (error) {
     return refuse(reasonOf(error), "pass --plan <slug> and --tag <tag>", 2);
   }
+  let planNote: string;
+  if (planFile === null) {
+    const found = planFileOfLead(
+      { plan, planFile: before?.plan === plan ? before.planFile : undefined },
+      listLeads(ctx.paths.stateDir, repo).records.filter(
+        (one) => one.sessionId !== session.sessionId,
+      ),
+      () => findPlanFile(plan, plansDirs(repo, ctx.paths), { archived: false }),
+    );
+    planFile = found.ok ? found.file : null;
+    planNote = found.ok
+      ? `plan file ${tildify(found.file, ctx.paths.home)}`
+      : `no plan file for ${plan}${found.reason === "several" ? ` (${found.matches.length} files match)` : ""}: its briefs and run records are off; pass --plan-file <path>`;
+  } else {
+    planNote = `plan file ${tildify(planFile, ctx.paths.home)}`;
+  }
   try {
     await writeLead(
       ctx.paths.stateDir,
-      { cwd: checkout.root, name, plan, repo, sessionId: session.sessionId, tag },
+      {
+        cwd: checkout.root,
+        name,
+        plan,
+        planFile,
+        repo,
+        sessionId: session.sessionId,
+        tag,
+        ...(before?.endedAt == null ? {} : { endedAt: null }),
+      },
       ctx.now(),
     );
   } catch (error) {
@@ -106,6 +177,7 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
       // The watch reads the log from its start then: the same lines, one more time.
     }
   }
+  ctx.print(planNote);
   const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;
   // What the next prompt will really do, so the line never promises a name it cannot set: a
   // session id the naming record cannot hold, and a project running its own `lead-notes` copy

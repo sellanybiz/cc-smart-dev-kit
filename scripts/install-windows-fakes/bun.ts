@@ -39,6 +39,8 @@ export interface Context {
   mcpStatus: string;
   /** Every `--omniroute-password-stdin` run is refused, as a wrong dashboard password. */
   omniRoutePasswordRefused: boolean;
+  /** Claude Code's config folder: where `setup`'s marketplace gate reads the settings. */
+  configDir?: string | undefined;
   home: string;
   launcher: string;
   log: string;
@@ -55,10 +57,24 @@ export function contextFromEnv(): Context {
     gatewayKeyRefused: process.env.FAKE_GATEWAY_KEY_REFUSED === "yes",
     mcpStatus: process.env.FAKE_MCP_STATUS ?? '{"servers":[]}',
     omniRoutePasswordRefused: process.env.FAKE_OMNIROUTE_PASSWORD_REFUSED === "yes",
+    configDir: process.env.CLAUDE_CONFIG_DIR,
     home: process.env.HOME ?? process.env.USERPROFILE ?? "",
     launcher: process.env.FAKE_LAUNCHER ?? "",
     log: process.env.FAKE_LOG ?? "",
   };
+}
+
+/** True when the settings in this config folder declare the cc-smart-dev-kit marketplace as an object. */
+function marketplaceDeclared(configDir: string): boolean {
+  const file = join(configDir, "settings.json");
+  if (!existsSync(file)) return false;
+  try {
+    const settings = JSON.parse(readFileSync(file, "utf8").replace(/^﻿/, ""));
+    const entry = settings?.extraKnownMarketplaces?.["cc-smart-dev-kit"];
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry);
+  } catch {
+    return false;
+  }
 }
 
 function record(context: Context, line: string): void {
@@ -189,6 +205,13 @@ export async function answer(
     return 0;
   }
   if (joined.includes("dist/cli.js setup")) {
+    // The real setup's gate (`marketplaceKnown`, src/cli/setup.ts): the user settings must
+    // declare the cc-smart-dev-kit marketplace as an object. Without it setup stops, and so
+    // does this fake -- which is what makes "setup passes" in a test mean something.
+    if (context.configDir !== undefined && !marketplaceDeclared(context.configDir)) {
+      sayError("~/.claude/settings.json does not list the cc-smart-dev-kit marketplace yet.");
+      return 1;
+    }
     // The real setup writes the launcher; the fake copies the template the test made, which
     // does what the real launcher does (it runs the plugin's own CLI).
     if (context.launcher !== "") {

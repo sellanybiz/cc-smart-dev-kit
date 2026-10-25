@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The proof the Windows CI job runs, on a real Windows machine, that the plugin's hooks work
-# there (docs/windows-hooks.md says why each piece is shaped the way it is). Five cases:
+# there (docs/windows-hooks.md says why each piece is shaped the way it is). Six cases:
 #
 #   1. a hook bundle runs through the shim, through Git Bash — the shell Claude Code gives a
 #      shell-form hook on Windows — and the git guard answers;
@@ -13,7 +13,9 @@
 #      exit 1, because a command must never report success when it did not run;
 #   5. every command in `plugin/monitors/monitors.json` runs the launcher through `$HOME`, the
 #      same line shape as the user hook (whether Claude Code starts a monitor through Git Bash
-#      on Windows is a live check, docs/windows-setup.md).
+#      on Windows is a live check, docs/windows-setup.md);
+#   6. a process that ended is seen as gone: `process.kill(deadPid, 0)` throws `ESRCH` in Bun
+#      on Windows, which the heavy-job queue and the worktree scan rely on (docs/windows-jobs.md).
 #
 # The same shell and the same checks run on Linux and macOS, so this is not Windows-only code
 # that nothing else exercises: `bash scripts/windows-hook-smoke.sh`.
@@ -136,4 +138,24 @@ while IFS= read -r command; do
   esac
 done <"$home/monitors.txt"
 
-echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, the user-wired line and every monitor line ran the launcher, and --missing=fail exited 1"
+# 6. A process that has ended is "gone" to the heavy-job queue and the worktree scan
+#    (`processIsGone`, src/jobs/windows.ts). It reads only `ESRCH` as "gone"; any other error
+#    counts as alive, so the job wait never runs on top of a live holder. That is safe only if
+#    Bun throws `ESRCH` for `process.kill(deadPid, 0)` on native Windows: libuv's `uv_kill`
+#    returns UV_ESRCH for a pid that is gone, but nothing proved that Bun's own `process.kill`
+#    reaches it (docs/windows-jobs.md). This case runs the real function against a child that
+#    has exited and against this process, and prints the code Bun threw, so a different one
+#    shows up in the CI log and fails here — not in a job that waits for ever.
+proved="$(cd "$root" && bun -e '
+const { processIsGone } = await import("./src/jobs/windows.ts");
+const child = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" });
+await child.exited;
+let code = "none";
+try { process.kill(child.pid, 0); } catch (error) { code = String(error.code); }
+const gone = processIsGone(child.pid);
+const alive = !processIsGone(process.pid);
+process.stdout.write(`${code} ${gone} ${alive}`);
+')"
+[ "$proved" = "ESRCH true true" ] || fail "a process that ended is not seen as gone (the code Bun threw, processIsGone of the ended child, not of this process): $proved"
+
+echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, the user-wired line and every monitor line ran the launcher, --missing=fail exited 1, and an ended process is seen as gone"

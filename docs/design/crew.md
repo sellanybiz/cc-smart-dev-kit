@@ -17,6 +17,52 @@ answer, the lead's watch, the hand-off, its own time line, and a note to another
 (§ The crew session's steps, its report, and the lead's watch, § The crew talks), and the crew
 session's and the lead's hooks (§ The crew session's and the lead's hooks).
 
+### Cleanup continuation (CL2)
+
+The watch reminds its lead once a day about stopped, done or failed unmerged work older than a
+day. The item's age starts at the latest transition into its current terminal state, not a later
+report or step. It names resume, continuation, and removal; continuation also accepts these
+terminal states while preserving the old outcome. An old record with an active continuation no
+longer gets the reminder or a Needs removal preview. No reminder discards or removes the work.
+
+`src/crew/lifecycle.ts` is the shared rule for lead absence: an explicitly ended lead, or a
+successfully observed unknown session for more than 24 hours. An unreadable agent view proves
+nothing, and a returning lead clears its unknown clock. `crew list --all` marks that condition.
+`crew lead --end` records an ended plan; recording it again clears that mark. Manual and background
+cleans use that shared rule and require ancestry or a no-change merge onto the project base before
+calling `runCrewRm` with that immutable base. An old lead-branch proof never stands in for current
+project-base proof. Unmerged work stays with removal and continuation steps. Active crew states
+stay too. The Work API marks lead absence without writing from a GET request.
+
+When the watch first proves a merge, it stores the crew head, lead ref and immutable lead commit.
+`crew rm` can use that proof only while the crew head is unchanged, and uses the recorded lead
+commit throughout the verdict and branch deletion. Content-addressed
+`refs/crew-merge-proofs/<lead-commit>` keep those commits reachable after reflog expiry and object
+pruning; these proof refs have no automatic expiry. A later crew commit requires today's merge check. Older merged records have no proof and retain that check; no override flag is added.
+
+**Explicit recoverable discard:** `crew rm --discard` shows one shared preview (missing commits,
+dirty/untracked files and ignored files), asks once or takes `--yes`, and saves work before removal.
+`src/crew/discard.ts` owns those facts and the exact CLI/portal confirmation words. Its token hashes
+the head, staged and disk changes, file modes and raw contents; the CLI rechecks it after confirmation
+and after archiving. A different staged version survives in the archive commit's parent. Ignored
+files must be regular UTF-8 text, at most 64 KiB each, 256 files and 1 MiB total; binary files,
+symlinks and unreadable files refuse, rather than disappear. The create-only ref
+`refs/crew-discarded/<crew-id>` (with an attempt suffix when needed) holds each archive, and
+`crew list --discarded` prints its recovery
+command and age. Manual and background cleans prune completed archives after the one shared
+30-day limit. A person's programs and containers still refuse; the watch never discards.
+
+The Needs API reads old stopped work and discard previews through `crew cleanup --json` in a CLI
+child, keeping git off the server loop. Removal actions use the CLI child in the record's repo,
+require explicit confirmation and pass the displayed token for discard. Work also exposes finished
+unowned background sessions and targeted removal. The Needs and Work views need new components,
+so this phase stops at API contracts; a separate UI phase must render those controls.
+
+Older merged records recover stopped intent only from a positive stopped-to-merged transition in
+the events log. When history is missing, that intent cannot be recovered and the previous
+merged-record policy remains. No unproved merge override was added: a legacy record whose current
+merge check fails stays with a refusal explaining the missing proof and recoverable discard.
+
 **The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
 the procedures: `lead` (register, split, start, hear the news, route the questions, the merge
@@ -41,9 +87,14 @@ guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
 is the project's: the address its own settings choose over the machine's — its personal file, its
 team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
-`src/crew/usage-guard.ts`). It reads the settings files at the repository's main checkout, the
-same folder for `crew start`, for the Agent guard's question "would a start queue now?" and for
-`crew list`; the user's file alone would miss a project turned on or off with `gateway project`.
+`src/crew/usage-guard.ts`). It reads the settings files at the lead's own folder
+(`crewSettingsFolder`): a crew session's worktree is cut from the lead's branch and Claude Code
+reads the team file of the folder a session runs in, so a lead in a linked worktree whose branch
+changed `.claude/settings.json` gets the answer its crew will meet, not the main checkout's
+(proved on 2.1.310, `docs/claude-code-contract.md`). It is the same folder for `crew start`, for the
+queue's start, for the Agent guard's question "would a start queue now?" and for `crew list`; the
+user's file alone would miss a project turned on or off with `gateway project`. (`crew model`
+still asks the record's repository: it has no lead folder to hand.)
 It reads no environment: an address exported only in the shell that runs `crew start`, with no
 settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
@@ -120,7 +171,8 @@ repository, under the state folder:
   Every change of a crew record goes through one read-modify-write (`changeCrew`).
 - **A crew record** holds who it is (its id — a plain file name, known before any session
   exists: `<phase>-<slug>-<6 hex>`, so a second try of a phase never meets the first's record —,
-  its name, its session's id and short id, its lead), what it does (the repository, the plan, the
+  its name, its session's id and short id, the sessions it had before (`earlierSessions`, RX1:
+  set by the store when a write replaces the session id), its lead), what it does (the repository, the plan, the
   phase and slug, the kind, the model as named with the slot and the model that answer it
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
@@ -130,12 +182,18 @@ repository, under the state folder:
   breaker is the profile's —, Claude's own plan limit, or `unknown` when the router's state explains nothing (it keeps
   the same key, so the watch asks that session's own breaker before it resumes it); with the
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
-  § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
+  § Waiting out a limit; and, while a resume of it runs, `resumeClaim`: the token and the time of
+  that resume, optional, dropped by the write that changes the record's state — § The watch),
+  when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
   of the old crew session, set by a hand-off and by nothing else), whether the lead had merged its
   work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
-  `removed`, from the state the record was in — the fact a phase that waits for it starts on), and when it was recorded and
-  changed. The states are `queued`, `starting`,
+  `removed`, from the state the record was in — the fact a phase that waits for it starts on),
+  whether it was merged while it was `stopped` (`mergedWhileStopped`, optional: set by the store
+  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62;
+  false when the watch's own idle stop made it `stopped`), whether the watch itself stopped it
+  for idling (`stoppedByWatch`, RX1, optional: kept only while it is `stopped`), and when it was
+  recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
   id, name, repository, plan, the tag its crew sessions' names carry, and folder, and may hold
@@ -147,13 +205,31 @@ repository, under the state folder:
   at the end of its `questions` with a `question` event (`addCrewQuestion`), and the crew session goes
   on with what the question does not block; the lead's answer is recorded once, with its time
   (`answerCrewQuestion`). A recommendation that is not one of the options, or an answer without
-  its time, is refused.
+  its time, is refused. **A question of a crew session whose phase is over is closed**
+  (`openQuestionIndex`, one rule every reader shares): `done`, `failed`, `handoff`, `merged` and
+  `removed` need no answer, so the Needs page, `crew list`, `crew status` and `crew answer` agree.
+  A `stopped` crew session's question stays open — D35's answer resumes it with the question still
+  waiting. **A new question supersedes the crew session's own older open one** (RG1): the older
+  one is closed with `supersededBy`, the index of the newer, and stays on the record, never
+  deleted. `isQuestionOpen` is the one home for "is it open" (no answer, not superseded), and
+  `openQuestionIndex`, `crew answer`, the report's blocked question and the `crew-role` hook all
+  read it, so the lead, `crew list`, the Needs page and the watch see the newest open question
+  alone. `answerCrewQuestion` refuses an answer to a superseded question with the line that names
+  the newest (`question 0 … was superseded by question 1 ("…"): answer that one`): `crew answer`
+  always answers the open question, so the refusal guards a question that arrives while the lead
+  is answering. An answered question is never superseded: a question after it is a new one.
+  **A correction (AN1) goes to the newest question, once it has its answer** — never to a
+  superseded one: the store checks the pointer first, so a correction aimed at a superseded
+  question gets the same line that names the newest. The monitor's delivery skips a superseded
+  question too (`answerWaitsForDelivery`), whatever the record holds.
 - **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
   the other checks, the one review (agent, model, effort, the commit it read, each finding and its
-  fix), the docs it changed, what only the lead may do, what is still open — and, when blocked,
-  the question it waits on (a blocked report without one is refused).
+  fix) or the crew session's own review where its brief asked for no second opinion (`ownReview`:
+  the reason and each finding with its fix), the docs it changed, what only the lead may do, what
+  is still open — and, when blocked, the question it waits on (a blocked report without one is
+  refused).
 - **The events log is read from an offset**, whole lines only: a line a writer has not finished
   is left for the next read, a line that cannot be read is counted and skipped, and a log shorter
   than the offset (replaced) is read from its start.
@@ -167,7 +243,7 @@ repository, under the state folder:
 
 ### The lead and the launch
 
-**`crew lead [--plan <slug>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
+**`crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
 that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
 the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
 (`callingSession`, `src/crew/session.ts`; parents from `/proc` on Linux, one process listing
@@ -175,7 +251,8 @@ elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as da
 `lead-notes` hook sets it at the lead's next prompt by itself (§ The lead's name below); the
 command never renames the session, and prints one line saying so. The tag is
 `--tag`, else `workflow.crew.tag`, else the main checkout's folder name; the plan is `--plan`,
-else the plan this session already leads, else the branch.
+else the plan this session already leads, else the branch. `--plan-file` records the plan's file
+(§ A plan's own folder, and the record of each crew run).
 
 **The lead's name** (LD1) is that record's data, applied by `lead-notes` at the lead's next
 prompt: one `UserPromptSubmit` answer carries `sessionTitle` beside the note (Claude Code's own
@@ -211,10 +288,11 @@ a start, a resume and a compaction — never at a prompt, never on an edit, and 
 Why: the lead's context is re-read on the premium model every turn, so every file it reads or
 writes costs on every later turn, while the crew session that does the same work ends.
 
-**`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
+**`crew start <phase> --slug <slug> --kind <kind> [--brief <file|->] …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
 polls or retries. An opus-tier start with no 5-hour window reading adds one note line after it
-(D54). In order:
+(D54); a brief taken from the plan's folder (§ A plan's own folder, and the record of each crew
+run) adds `brief: <path> (the plan's folder)` before it. In order:
 
 1. **The refusals** (exit 1, a line and its `Fix:`), shared with `crew lead` (`caller.ts`): the
    caller is a crew session (`CC_SMART_DEV_KIT_CREW` set); the folder is not in a git project, or its
@@ -233,6 +311,13 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
    because `crew start` never asks — the person starts such a session themselves. Fable is
    refused: no crew session carries the person's `Fable reason: build` line.
+   A `--continue` start takes `--model` and `--effort` too (`changedLaunch`): without them the next
+   crew session runs on the old one's model and effort, judged again like any launch. **The lead
+   picks the effort by the phase's task** (the owner, 2026-10-25): the kind's effort is the
+   default, and `--effort` is allowed without the person asking — `crew start` and the Agent
+   guard refuse only what they always refused (a `ui` session below `high`, a value the guard
+   asks about). `--model` still changes only when the person asks (`plugin/skills/lead/SKILL.md`
+   § 2).
 3. **Start now, or queued** (`places.ts`), decided under one machine-wide lock
    (`<stateDir>/crew/lock`) so two starts never both take the last place, and recorded
    (`starting` or `queued`) under the same hold. First the name must be free: no crew session of this
@@ -262,11 +347,20 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    does not hold, and `crew start` and `crew list` say so once; **the memory** — the memory free
    now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
-   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The queued line
+   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS); **the CPU** — a
+   start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (3) times the
+   cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
+   The one reader is `src/machine/load.ts`, handed to the commands as `CrewContext.load`; native
+   Windows has no load average, so no hold applies there and `crew list` says so once. The load is
+   read, like the memory, only when nothing else holds. The queued line
    names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
+   queued ones, oldest first, so no lead starves another. The start itself is a compare-and-set
+   under the places lock (`startQueued`): it re-reads the record there and goes on only while the
+   store still says `queued`, so two starters of one record after a watch takeover (the lease, WF1)
+   start it once, and it starts on the model, effort and start commit the store holds at that
+   moment (a `crew model` that landed while it waited for the lock is used). A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
    **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
@@ -323,7 +417,9 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    is not read: a kept plugin that does that may still not load in a crew session.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
-   a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
+   a dependency install, is the crew session's own first step: the brief's frame says to install
+   in its own worktree and never to link another checkout's dependency folder, because undoing
+   such a link is a path outside the worktree, which Claude Code asks the person about), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <plan> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
@@ -359,6 +455,99 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    branch are taken back (the branch only while it still points at its base), so a second try
    finds the name free. When a session may have started — no `backgrounded` line, or no answer in
    time — the worktree stays.
+
+### A plan's own folder, and the record of each crew run (PL1)
+
+The owner's two asks (2026-10-25): a plan's briefs live in a folder per plan, kit-wide; and
+what ran a phase must last after `crew rm`. D62 cleans finished work up and AR1 archives only the
+conversation, so before PL1 nothing said, a month later, which session built a phase, on which
+model, and how long it took. `src/crew/runs.ts` holds the layout and the record,
+`src/crew/runs-history.ts` `crew history`.
+
+```
+<plans dir>/<plan stem>.md                           the plan
+<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md     a phase's brief, named as the crew branch
+<plans dir>/<plan stem>/runs/<crew id>.json          the record of one crew run
+<plans dir>/archive/<plan stem>/…                    the folder after the plan is archived
+```
+
+**One folder per plan, never per lead.** One plan outlives its leads (one plan has had
+three), and a folder per lead would split its briefs and its history. The file name is the crew
+branch without `crew/`, so a plan row, its brief and its branch line up.
+
+**Where the plan is: the lead record's `planFile`** (decided with the lead, 2026-10-25).
+`crew lead --plan-file <path>` records it (absolute; the file must exist and end in `.md`). Without
+the flag, `crew lead` takes the file this session recorded before, else the one an earlier lead
+of the same plan recorded (a hand-over: the new lead repeats nothing), else the one file
+`<plans dir>/*-<plan slug>.md` (or `<slug>.md`) in the repository's `.claude/plans` and the
+person's plans folder (`<CLAUDE_CONFIG_DIR>/plans`, from `cliPaths()`) with the `archive/` of each.
+None or several: off, and the first line `crew lead` prints says so; a plan written later is picked
+up at the next `crew lead` or `crew start`, never guessed. Why a field and not a setting or only a
+lookup: it is explicit, it works for a plan inside the repository and for one in the person's own
+folder, and a slug alone cannot tell two plans of one slug apart. `crew start` copies it onto the
+crew record (`planFile`), so the run record of a run is written where the run began even after
+the lead changes or the plan is archived: `livePlanFolder` looks beside the old place, in
+`archive/`, when the file has moved.
+
+**Briefs.** `crew start` with no `--brief` takes `<plan folder>/briefs/<PHASE>-<slug>.md` and
+prints `brief: <path> (the plan's folder)` first. A missing file is refused with that path;
+no plan file at all is refused with `crew lead --plan-file` as the fix. `--brief <file|->` is
+unchanged. The crew record keeps `briefSource` (the path, or null for stdin, and the sha-256 of the
+brief's text), which the run record copies.
+
+**The run record: one JSON file per run, written by the store.** One file per run, so two leads
+never write the same file and a merge conflict stays impossible; JSON because the store's own
+records are JSON, the files are read by `crew history` and by tools, and pretty-printed JSON
+diffs well in git. It is written by the store's own writers in the same hold of the store's
+lock as the change and its event (`recordRunOf` in `store.ts`: `createCrew`, `changeCrew` —
+which `updateCrew`, `updateCrewIfState` and `answerCrewQuestion` use — and `recordCrewReport`),
+so there is no second log and no second code path deciding what happened; a change that makes no
+milestone writes nothing. It is an atomic write, 0644 (a plan file's mode, not the store's 0600:
+the lead commits it). A write that fails never undoes the change: one line on stderr says so, and
+the events log still holds the change. A crew session with no plan file is not recorded.
+
+What it holds: the facts of the start (id, name, phase, slug, kind, model and effort, base ref
+and commit, branch, brief path and hash, the lead's session id and name); `sessions`, every Claude
+Code session id with its time (the start, and each resume that brought a new id); `continues` and
+`continuedBy`, a hand-off linked both ways; and `events`, the milestones — `created`, `state`
+(a pause carries `waitingFor`), `session`, `question`, `answer`, `report` (status, tests,
+checks, review), `merged` (the lead commit from the merge proof), `removed`, and `note`. Each
+event has `by`: the lead session that made it, so a plan with three leads says who answered,
+merged and removed: `by` is set on `answer`, `merged`, `removed` and a discard, and is null on the
+crew session's own changes (its report, its session, its pause). A correction of an answer (AN1)
+is a second `answer` event with `detail.correction`, so the history keeps both answers in order.
+`crew model` writes a `note` when the model or effort a crew session runs on changes (`detail`:
+`from` and `to`, each with the model and the effort), and a second one when the change is put
+back because the session could not be stopped; a change an opus cap holds writes none until the
+watch applies it (`noteCrewRun`). The acting lead comes from the
+session above the command (`actorOfCaller`, `runs-actor.ts`, used by `crew answer`, `crew model` and by
+`markState`, which `stop`, `resume` and `rm` share); where no recorded lead is above it (the
+watch's merge, the portal's click, a script) the event names the lead the crew session belongs to,
+which after a hand-over is the lead that started it, not necessarily the one that acted.
+`times` are derived from the events and written beside them: `wallMs` (recorded to the end of the
+work), `workingMs` (started to the end, without the pauses; a wait for the lead, a question or a stop is
+still counted, and the end is the last report, so a run answered and finished again counts to its
+second end), `queuedMs`, `pausedMs` and each pause.
+
+**It is never deleted.** `crew rm` and the clean-up of finished work leave it. When the plan
+is archived, its folder moves with the plan file to `<plans dir>/archive/`, the same move
+`/cc-smart-dev-kit:plan-task` § 8 makes for the plan, and the writer and `crew history` find it
+there. The kit never commits it: the lead commits the folder with its plan, and before it removes a lead worktree
+that holds an untracked plan folder. A crew session's own
+commands (`step`, `report`) reach the writer too, and write to the absolute path the record gave,
+never into their own worktree.
+
+**`crew history [<phase>] [--plan <stem>] [--json] [--backfill]`** prints one line per run: phase,
+sessions, model and effort, started, finished, took (the working time), status. `--backfill` writes
+the records of runs from before PL1 from what the store still holds — the crew records, the
+events log, the hand-back reports — once, never over a record that exists. It cannot know what the
+store never kept: the earlier session ids of a resumed run (only the last is on the record), which
+lead session answered, merged or removed, and why and how long a pause lasted; each file it writes
+says so under `backfilled`, and so does the command.
+
+**For MC1** (a running crew session's model changes): call `noteCrewRun(stateDir, repo, id, atMs,
+{ by, detail: { from, to }, text })` (`store.ts`); it adds a `note` event under the store's lock and
+changes nothing else.
 
 ### The board and the end of a crew session
 
@@ -403,24 +592,35 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   session that still has a process is not resumed — `--bg --resume` would start a copy beside it —
   and the line says it runs already. An agent view that cannot be read is a refusal, never read as
   dead — it could be either, and a copy is worse than a second try. The crew session is `working`
-  again. It is refused for one that is `removed` or `merged`, has no session yet, or has no
-  worktree or settings file any more (one line each). It does not check the caps: the person or
-  the lead asked for exactly this session.
+  again, **with the session the resume brought back** (§ The session a resume brings back). It
+  is refused for one that is `removed` or `merged`, has no session yet, or has no worktree or
+  settings file any more (one line each). It does not check the caps: the person or the lead
+  asked for exactly this session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
-  crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
-  whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and
-  the lead's watch share) asks it of the crew session's branch against the commit checked out in the
-  lead's own folder (its lead record's `cwd`; the ref the crew session was cut from when that folder is
-  gone). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
+  crew session commits on its branch and never pushes (D24), so **only the branch the crew session
+  was cut from decides** whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one
+  answer `crew rm` and the lead's watch share) asks it of the crew session's branch against the
+  commit the branch it was cut from (`record.baseRef`) is on, else the commit checked out in the
+  lead's own folder (its lead record's `cwd`). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
   when merging it into that commit changes nothing (`git merge-tree --write-tree`, the replay
   `worktrees --clean` uses: it sees a squash merge). A conflict, an error or a git older than 2.38
-  is not certain, and the crew session is kept. Then: uncommitted work in the worktree refuses it (before any
+  is not certain, and the crew session is kept. A branch with no commit of its own has nothing to
+  lose, so the removal goes on. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released, and **locked again with the same
-  reason if a later step refuses**, because the lock is what keeps `worktrees --clean` and the
-  background clean off the worktree); the session is stopped; the kit's
+  reason if a later step refuses**, because the lock protects the worktree); first the session is
+  stopped, then its Claude lock is released; **the programs its own finished turn
+  left running are stopped too** — SIGTERM, a 3 s grace, then SIGKILL, one line said — when the
+  session is gone or stopped and every program there is the session's own (`findOwnLeftovers`
+  discovers them, `stopOwnLeftovers` stops them after the verdict; both removal callers share them). A program is its own when it
+  has a readable environment carrying the session's crew id — everything its Bash started
+  inherits `CC_SMART_DEV_KIT_CREW`, and keeps it when init adopts it after the session ends
+  (`/proc/<pid>/environ`, Linux). An unreadable environment is never proof, including on macOS.
+  The verdict first ignores those owned programs; only a finished verdict permits stopping them. A program that is not — a shell or a dev
+  server the person started there, however long it has run, another crew session's program, a
+  container — keeps the worktree, as before, and one such program keeps them all; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
-  the worktree **against the lead's branch rather than `origin/<base>`** (`ScanOptions.against`)
+  the worktree **against the branch the crew session was cut from rather than `origin/<base>`** (`ScanOptions.against`)
   and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
   `claude rm <short id>`, which refuses a worktree that is still there (proved live, L1a.1). A
   `claude rm` that fails leaves the crew session `stopped` with a `step` event saying what is left, and
@@ -430,6 +630,199 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   of the crew session is refused, with the count. **A queued crew session is removed at once**,
   and so is one whose launch left nothing behind: the removal records whether the lead had merged
   first (`mergedBeforeRemoval`), so the phases that wait for it start on that fact alone.
+  **A removal that stopped halfway is finished** (D62, `src/worktrees/scan-parked.ts`). The kit
+  moves a worktree it judged finished to `<path>-removing-<time>` before asking git to remove it;
+  when git then fails, the folder stays in one of two states, and both were seen on a real
+  machine (3 of the 8 left there were the first, 5 the second):
+  - **git still lists it.** It is judged again by the same verdict as any worktree — nothing runs
+    from it, no session or container uses it, nothing in it is uncommitted beyond tracked files
+    the removal itself deleted — and, because its branch holds the commits and the move was the
+    removal's own touch, it asks for neither the commits on the base nor the idle hour
+    (`WorktreeFacts.parked`; a detached folder, whose commits no branch holds, keeps the commit
+    rule). It is removed where it stands, never moved aside a second time.
+  - **git no longer lists it.** `git worktree remove` deleted the registration and the `.git`
+    file, then failed on a file it could not delete: half a folder nobody tracks. Git cannot judge
+    it, so the folder's name does: it carries the time of the move, the verdict that allowed the
+    move said everything in the folder was disposable, and a file written after that time is not.
+    So it is removed (`rmSync`, links as links, nothing outside it) only when nothing runs from
+    it, it is no repository and has no registration of its own, it crosses no mount, and no file
+    in it is newer than its move (a directory's own time is not read: it moves when git deletes an
+    entry). Anything else stays, with the reason. Such a folder is finished only where the kit
+    can read the mount points, which today means Linux (`mountPoints`,
+    `src/worktrees/machine-facts.ts`). On Windows and macOS it stays, and the clean's log says why
+    ("its mount points could not be read"); remove it by hand.
+
+  An unreadable scan retains every requested parked path with its error; a busy clean lock refuses
+  the pass before any removal. `crew rm` finishes both kinds in the repository — its own record's first, and it refuses while
+  its own stays — `worktrees --clean` and the background clean finish any, and the watch looks
+  every five minutes (`PARKED_PASS_MS`): a folder that stays costs a scan of the whole repository.
+
+#### The session a resume brings back
+
+**Every crew resume is a copy with a new id** (WF1, 2.1.310). `claude --bg --resume <id>` on a
+session whose saved options differ from the flags it is given starts a copy, and says so on
+stderr — "background session `<old>` keeps its own saved options, so the flags you passed started
+a copy as `<new>`" — and every crew resume passes the record's own flags (`resumeArgs`: the
+settings and MCP files, the model, the effort, the permission mode), because the crew frame
+depends on them; a resume without them is not proven to keep the crew env. Seen live on
+2026-10-25: record `c7186986` was resumed by the lead at 21:07:28, Claude Code opened `d7a54fc8`
+in the same worktree, the record kept `c7186986`, and at 21:07:38 the watch read the old
+session's row as stopped and marked the record `stopped` — while the new session ran on, unseen.
+
+So **one home reads which session runs now** (`resumeSession`, `answer.ts`): the
+`backgrounded · <short id>` line on stdout (2.1.310 drops ` · <name>` when there is none), checked
+against the copy note on stderr (`parseCopyNote`, every note the binary prints). The same short
+id and no note is the record's own session, going on; any other id is read from agent view, as a
+start reads its own (`startedRow`, `claude.ts`). **The record takes the new `sessionId` and
+`shortId` in the same write that makes it `working`** — `crew answer`, `crew resume`, `crew
+resume --paused` and the watch alike — so it never names a session that is gone, and the line
+says it: `resumed C kit B6b portal-live as session d7a54fc8 (a copy of c7186986)`. The old session
+is a stopped row with no process. The record keeps it (`earlierSessions`, RX1), so `crew rm`
+removes it with the rest (§ A removed crew session's conversation); `sessions --finished` never
+offers it, because it is the crew's own.
+
+A resume that printed **no such line**, a note that names another id than the line, or a copy
+agent view cannot show is said with the reason, and the record keeps its state and its session —
+never `working` on a guess. Such a resume may have started a session nobody can name, so the
+watch **does not try it again by itself**: it says so once, and the lead's own `crew resume`
+brings it back (the hold goes when the record is no longer `paused`).
+
+#### Changing a crew session's model or effort (MC1)
+
+`crew model <name> [--model <m>] [--effort <e>]` (`model.ts`) is the one way to change what a
+running crew session runs on; before it, only the person could (`claude attach`, then `/model`),
+and the record kept naming the old model, so the caps and `crew list` were wrong.
+
+- **The same checks as a start.** The values go through `chooseLaunch` (`changedLaunch` says what
+  a model alone, an effort alone, or both ask for): a `ui` session never runs on an affordable
+  model or below `high` (D50), and anything the Agent guard refuses or would ask about is
+  refused (exit 2, the guard's words).
+- **By state.** A **running** crew session (`working`, `blocked`, `quiet`) is stopped when its
+  process lives (`stopSession`) and resumed with the new flags through `resumeSession` — the one
+  resume path, so the session Claude Code opens is followed — with a prompt that says what
+  changed and to go on from where it stopped. A **stopped** or **paused** one keeps its state
+  and its wait: the record holds the values, and its next resume reads them (`resumeArgs`, from
+  the record) — the opus caps are judged once, when the values are stored, and `crew resume`
+  judges none. A **queued** one starts on them (`startQueued` re-reads the record under the places lock, so a
+  change made after the watch listed it, or while it waited for the lock, is used). A session that ended its phase, a removed or
+  discarded one, one still `starting` and a `blocked` one (it waits for the lead's answer, and a
+  resume that says "go on" would tell it to continue without it) take no change.
+- **The record is the truth.** The model, the tier and the effort are written under the places
+  lock *before* the session is touched, so the caps and `crew list` count the new tier at once
+  and a resume that fails leaves the values stored for the next one. The resumed session's id
+  comes in the write that makes it `working`, as everywhere (§ The session a resume brings
+  back).
+- **The caps.** A move onto the opus tier is judged as a new opus session by `placeFor` (the
+  per-lead and machine opus caps, the usage window), with the session itself left out of the
+  counts and the total caps, the memory and the CPU load (`crew.loadPerCore`) left out too, since
+  a change adds no place. When one holds, the
+  change waits on the record (`pendingLaunch`: the model, the effort, the reason, when): the
+  session runs on as it is, the line says `queued (<reason>)`, and the lead's watch applies it on
+  a pass where the caps allow (`applyPendingModels`, under the lease like a start). A later
+  `crew model` that lands on a value replaces or drops it.
+- **A crew session never runs it** (`CREW_NEVER_DOES.model`, the Bash judge): its model is its
+  lead's call.
+- **Proved on 2.1.310** (`docs/claude-code-contract.md`): `--resume --model --effort` runs the
+  next turn on the new model and effort, and a crew-shaped `--settings` file pins neither. The
+  live `--bg --resume` form is owed (a crew session's guard refuses `claude --bg`).
+
+### A removed crew session's conversation (AR1)
+
+`claude rm` deletes a background session's job and its worktree, never its conversation:
+`~/.claude/projects/<project folder>/<session id>.jsonl` and the `<session id>/` folder beside it
+(its subagents' transcripts, its tool results) stay, so Claude Code's `/resume` lists every crew
+session the kit ever removed (on one machine, 58 of 62 removed crew sessions' conversations were
+still there, in 224 crew-worktree project folders and 10 GB). Claude Code's own `cleanupPeriodDays`
+cannot help: it deletes every conversation older than its days, the person's own included.
+
+So `runCrewRm` ends with one more step (`archiveAfterRemoval`, `remove.ts`; the code is
+`archive.ts`), **only after `claude rm` succeeded** (a failed one keeps the conversation where
+Claude Code expects it). The watch's removal after a merge, the background clean's removal of an
+orphaned crew session and `crew rm` all call `runCrewRm`, so the move has one home and the watch
+needs no change.
+
+- **Every session the crew session had (RX1).** A resume is a copy with a new id (WF1), and the
+  record's `sessionId` and `shortId` move to it. The write that changes the `sessionId` (`changeCrew`,
+  the one store write) keeps the session it replaces on the record, oldest first
+  (`earlierSessions`; `crewSessions` lists them with the current one first). So `crew rm` runs
+  `claude rm` on each short id (a session agent view no longer lists is gone already), the archive
+  moves each session's conversation into the same folder, and `sessionsNeverTaken`, the finished
+  list and the sweep (`readCrewLeftovers`) all count every one of them: none stays in `/resume` or
+  in `claude agents --all`. A record from before the field has only its current session. When one
+  session's conversation stays (a running Claude holds it) beside one that moved, the outcome says
+  so (`stayed`).
+- **Where it goes.** `<state>/crew-archive/<repo key>/<crew id>/` (the repo key is the crew store's
+  own, `repoKey`): `archive.json` (who it was, the project folder, when), `report.json` (a copy of the
+  hand-back report) and `projects/<project folder>/…` in **Claude Code's own layout, each file
+  gzipped on its own** (`.jsonl.gz`) and keeping its last-write time. The project folder's name comes
+  from `transcriptFile` (`transcript.ts`, over `projectFolderName`: the one home, with
+  `CLAUDE_CONFIG_DIR` honoured through `cliPaths`), never a second copy of the naming. That naming
+  includes Claude Code's cut for a long path: a name over 200 characters is cut there and ends with
+  `-` and a hash of the whole path (seen live, 2.1.310, § Lead and the crew of the contract); a
+  worktree path past 200 characters would otherwise find nothing. Why not delete
+  at once: the conversation is the only record of why a crew session did what it did; the router's
+  history is metadata only.
+- **How it moves.** Every move and every prune holds one lock on the archive folder
+  (`withArchiveLock`), and a move reads the conversation again once it holds it: two removals of one
+  crew session (the watch's and a `crew rm`, the background clean and a sweep) take turns, and the
+  second finds nothing left. Each file is written to a temporary name, synced and renamed into
+  place, and only then is the original deleted; the original is stat-ed before and after, and a file
+  that grew while it was archived stays where it is and its copy goes. A source that is *gone* after
+  its copy was made keeps the copy (`sourceAfterCopy`): a copy is deleted only when its source is
+  still there and changed. A move that stops halfway leaves every file in one place or the other
+  (or, for a moment, both: the readers count it once) and the next removal or sweep finishes it.
+  **An archived copy is never overwritten**: when any file's archived copy has other bytes (a job
+  that kept running after its files moved was seen to write a new one) nothing of that conversation
+  moves, it stays where it is, and the line says why (`kept`, not a failure: there is nothing the
+  person can clear); the same bytes are the earlier move's leftover, and finish it. The archive's
+  `archivedAt` is written once, by the first try. A session folder that is itself a link is not
+  followed, and nothing under its target moves. Empty folders go with
+  it, the project folder too once it holds nothing — Claude Code leaves an empty `memory/` folder in
+  a project folder (seen live, 2.1.310), which counts as nothing; a note in it, a file, a link or
+  another session's files keep the folder.
+- **What is never taken** (`.claude/rules/setup-and-managed-files.md`: never take what is not
+  ours). A **lead's** session (every lead record's, and every crew record's lead), the session of a
+  crew record that is **not removed** (a failed, handed-off, blocked or stopped phase is archived
+  only when its record is removed, never before), a session a running Claude process holds
+  (`liveSessions`), and every file the store does not name. Only regular files move. A crew or lead
+  record the store cannot read stops the move (`sessionsNeverTaken` throws): nobody can then say
+  whose a session is.
+- **A move that cannot happen never fails the removal.** The line says why
+  (`note: the conversation of session <id> stays in /resume: …`) and names the way on:
+  `sessions --finished --remove` moves it later.
+- **After `workflow.crew.archiveDays` (7)** the archive is deleted. One setting, the only knob: a
+  whole number of days, 1 or more, a project's file over the person's own (`workflow show` prints it).
+  The prune runs when the kit archives (`pruneCrewArchives`) and when the sweep runs, so there is
+  no timer and no service. An archive's age counts from `archive.json`'s `archivedAt`. A
+  repository whose folder is gone (moved or deleted) has no project file to read, so its archives
+  expire by the person's own days like any other; only a settings file that is there and cannot be
+  read keeps an archive (and is said). A prune that finds another run holding the archive fails
+  loudly in the sweep and with a `note:` after a removal, and never fails the removal.
+- **The sweep for what is already there** is `sessions --finished [--remove]` (`finished.ts`,
+  `readCrewLeftovers`): it lists the conversations of removed crew records still in the projects
+  folder, their worktrees' empty project folders and the archives past their days, and `--remove`
+  asks once more (or `--yes`), reads them again, then moves, removes and deletes. A conversation
+  written after its record was removed was resumed by the person since and stays, with the
+  reason; the time of the removal is the `removed` / `discarded` state event's, not the record's
+  `updatedAt`, which moves on whenever the record is touched again (the 30-day prune of a discard
+  archive does). A conversation whose archived copy differs is listed as staying, with that
+  reason. Listing moves nothing, and `--id` (finished background sessions only) leaves
+  this part out.
+- **Who reads the archive.** One reader walks both folders (`archive-read.ts`, `transcriptTree`):
+  - `cc-smart-dev-kit usage` counts an archived session's replies and says so on its line (a past
+    cost report that lost them at the move would be wrong);
+  - the flow report (`flow.ts`) reads the archived copy once (an unzipped read from offset 0 under
+    the same cache) and counts it the same as before the move;
+  - `crew/transcript.ts` (the self-watch's context gauge, the watch's quiet alert) reads sessions
+    that still run: an archived session has no context left to measure, so it never looks there;
+  - the hooks read the transcript of the session that fires them (`transcript_path`), and the
+    portal's live stream reads the store, the router and the job queue, no transcript: neither is
+    affected;
+  - the resume list (`savedSessions`) and the folders `setup` looks in for retired parts leave an
+    archived session on purpose: that is what the move is for.
+- **Bringing one back** (within the days): gunzip its files to the same place under the projects
+  folder (`gunzip -c <file>.gz > <file>`), and `claude --resume <id>` works again (proved live,
+  `docs/claude-code-contract.md` § Lead and the crew).
 
 ### The crew session's steps, its report, and the lead's watch
 
@@ -470,6 +863,30 @@ it with `TaskUpdate status completed`, or to delete it (`status deleted`) and sa
 finished. No list at all — a session that never got the tools, or one whose folder cannot be read —
 lets the report through with one `note:` line on stdout, so the lead can tell the two apart.
 
+**A `done` report is held for red or missing work too** (RG1, `doneReportRefusal`), the line the
+lead's gate draws (`plugin/skills/lead/SKILL.md` § 6), read from the report's own fields and never
+from its prose. It is refused, with one line that says what is wrong and a `Fix:` line that names
+the step, when: a test run or the whole suite it lists failed (`ok` false or `failed` above 0); a
+check it lists failed; the whole suite is missing (`tests.full` null); or neither a `review` nor an
+`ownReview` is there. A `review` with an empty `findings` list is a clean review, and an `ownReview`
+stands for the reviewer only with its `reason` (the brief asked for no second opinion). The suite
+that never ran is refused as well as the one that failed: a report that makes no green claim is not
+a green one, and a phase that truly cannot run the suite reports `failed` or `blocked`, which carry
+red work on purpose and are never held (`handoff` too). The empty fields of 2026-10-25 had one cause:
+the crew skill told a crew session what to give but never to pass it as JSON with `--file -`, so a
+`done` report came with prose and every field empty; the skill now shows the JSON, and the gate
+refuses the empty one with the step. **Nothing the crew session wrote is silently dropped:** a `summary` in the JSON part is the report's
+`summary` (as a prose report is), and a field the shape does not know — a `measurements` list, a
+misspelt `tests` — is kept as written under the report's `extra`, never over a fact the command
+fills; a refused `done` report names such fields in its own line. **Limits, on purpose:** the gate reads fields, so a claim that was
+never run (`tests.full` with `ok: true`), or an `ownReview` where the brief asked for a second
+opinion, passes it; the lead's own check of the branch is what catches that. An `ownReview` is
+not in the review record, but the watch prints `review ✓` for it and the portal's crew page shows
+it as the review (with its reason): the lead still judges it from the report. The role card, the
+brief's frame, the Stop-hook line and the message guard's refusals (`brief.ts`, `crew-role.ts`,
+`message-guard.ts`) give `crew report --status done --file -` with the JSON part
+(`REPORT_DONE_COMMAND`), as the refusal's `Fix:` line does.
+
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
 crew session's `questions`, with a `question` event, and **the crew session's state does not move**: it goes
@@ -480,17 +897,43 @@ mistakes (exit 2).
 
 **The answer** — `cc-smart-dev-kit crew answer <crew session> "<the answer>"` (`src/crew/answer.ts`)
 — comes back from the lead (an answer that starts with `--` is given after a bare `--`). A
-**running** crew session gets it as a message: the CLI cannot send one itself (Claude Code's
-`SendMessage` is a tool only a session holds), so the command prints the one line the lead sends
-it with — `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a
-quote or a line break in the answer is escaped and never changed — and records the answer, so the
-question is answered once. A **stopped** crew session (D35: the watch stops a blocked crew session that
-idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
-`claude --bg --resume <session id> "<text>"`, the form `claude --help` gives in 2.1.306 ("With
---resume <session-id>, continues that session in the background under the same ID"), run in the
-crew session's own worktree. **A crew session the answer reaches or resumes is `working` again, in the same
-hold that records the answer**: a record that kept saying `blocked` would let the watch stop a
-crew session that is busy. A stopped crew session that ended its phase (a `done`, `failed` or `handoff`
+**running** crew session gets it **from its own monitor** (AN1): the CLI cannot send a message
+itself (Claude Code has no command that sends text into a running session, and `SendMessage` is a
+tool only a session holds), so the command records the answer, and `crew self-watch` — the monitor
+every crew session runs — looks for it every 3 s (`ANSWER_WATCH_POLL_MS`; it stats the crew
+record's file and reads the record only when the file changed) and prints it into the session as
+one line. A monitor line is a notification: it reaches a busy session between its steps and **wakes
+an idle one**, a blocked crew session included (`docs/claude-code-contract.md`). The record tells
+*recorded* from *delivered*: each question carries `deliveredAt` (null until delivered), and the
+monitor claims the answer under the store's lock **before** it prints (`markAnswerDelivered`, which
+gives back the claimed question), so two monitors of one crew session — the original and a copy a
+resume started — never both print it. The claim covers *every* waiting answer, oldest first (a
+crew session may have several questions open, and the lead answers the newest first), and an answer
+is printed at most once: the claim comes before the print, so a line that fails to print is not
+tried again. A record from before the field has no `deliveredAt` at all: its answers were sent by
+hand and are not printed again. The monitor writes a heartbeat every 15 s (a one-shot `--once` run
+writes none) (`<store>/answer-watch/<id>.json`); `crew answer` reads it, waits up to 10 s for the delivery, and
+says which happened — `delivered`, or `recorded, not delivered` (no heartbeat, one older than 60 s,
+or a monitor that did not pass it on in time) with the one line the lead sends it with by hand
+(the person's click in the portal gets words instead — they cannot send it; and an answer sent by
+hand while the monitor lives arrives twice) —
+`SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a quote or a
+line break in the answer is escaped and never changed. The lead is never left without a way. **A
+second answer to the same question is a correction**: the first is kept in the question's
+`superseded` list (never deleted), the new one is delivered the same way, and its words say it
+replaces the earlier answer — the last one the session *heard* (`lastHeardAnswer`): a correction
+that lands before the first answer was printed claims to replace nothing. A question already closed
+by the phase's end takes no correction
+(`questionClosed`). A **stopped** crew session (D35: the watch stops a blocked crew session that
+idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt
+(that prompt is the delivery, and the same write records it as delivered; a correction's prompt
+carries the replace words too):
+`claude --bg --resume <session id> "<text>"`, run in the crew session's own worktree — which
+starts a copy with a new id (§ The session a resume brings back). **A crew session the answer
+reaches or resumes is `working` again, in the same hold that records the answer, with the session
+the resume brought back**: a record that kept saying `blocked` would let the watch stop a crew
+session that is busy, and one that kept the old id would read that session's stopped row as its
+own. A stopped crew session that ended its phase (a `done`, `failed` or `handoff`
 report) is not resumed by an answer, and a crew session the store does not know is never answered: the
 store, not the name, says what is a crew session.
 
@@ -511,8 +954,12 @@ nothing else**, from two readers:
   (`crew lead`), so the lines before it are history the lead already saw.
 - **agent view** (`claude agents --json --all`), read on every pass. It raises four alerts, each
   said once while it lasts and none of them an action: a crew session that **needs the person** (a
-  permission prompt or an input), one whose transcript has not moved for
-  `workflow.crew.quietMinutes` (**quiet**), one whose turn **ended with no report**, and one that
+  permission prompt or an input; when the wait ends and the record is still at work, one more
+  line, `<name>: going again — the wait is answered`, so the lead stops naming it as waiting), one
+  whose transcript has not moved for `workflow.crew.quietMinutes` (**quiet**: one line when the
+  stretch starts, one more at three times the quiet minutes, then nothing until the crew session
+  writes again — the line carries the minutes, so the watch remembers the alert's key, not its
+  text; WN1), one whose turn **ended with no report**, and one that
   **never confirmed its worktree** — its session is listed and alive, but its own start hook has
   not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (3 minutes: the hook
   may have crashed, been silenced by `ownHooks`, or run outside git). It
@@ -548,18 +995,45 @@ the store records — a session the kit does not know is the person's own:
   current (§ Waiting out a limit);
 - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
-  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record
-  becomes `stopped`; a `failed` one **stays `failed`** (the board must show why it ended), and its
-  one line says so. A stop that fails is said once, not on every pass;
-- it **marks a crew session `merged`** when the lead merged its branch, and the line says `crew rm`
-  removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
-  a crew session that failed before it committed is an ancestor of the lead's branch for that reason
-  alone), and its work must be on the commit **the lead's own folder** is on (the lead's record
+  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record and a
+  `failed` one **keep their outcome** — the board must show how it ended, and `stopped` means
+  something else (D62: a phase something stopped before it was over) — and each line says so.
+  A stop that fails is said once, not on every pass;
+- it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
+  and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy; its
+  conversation leaves `/resume` for the kit's archive, § A removed crew session's conversation). A
+  continuation holds the removal back until its work and every later continuation's work are
+  merged into the first record's base — a continuation that failed, was removed or was discarded
+  releases it (`holdsItsPredecessor`, `lifecycle.ts`: the one rule the stopped-session reminder
+  uses too, since a successor removed before it started has no branch to merge, RX1). The line says so once; a refusal — a program runs from its worktree, or work
+  nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged
+  too, because what waits for its phase starts on the merge, but **never removed by the watch**:
+  stopping it was the lead's call, and so is its removal (the store keeps the fact from the state
+  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). **The watch's own idle
+  stop is not the lead's call** (RX1): it marks the record `stoppedByWatch`, kept only while the
+  record is `stopped`, and a merge of such a record removes it like any other. One removal of a
+  record runs at a time (a lock in the record's files folder, `crewRemovalLockDir`): a second one —
+  the watch's after the person's `crew rm --discard` changed the worktree — refuses at once and
+  rolls nothing back. A pass reads the events log (it only grows) only when a record needs it, a
+  stopped-session reminder (a `done`, `stopped` or `failed` record of this lead not reminded yet) or
+  a legacy merge: on a log of 3 000 events (1.3 MB) the read takes about 23 ms, on 30 000 about 190 ms. The branch must hold a commit of its own (its tip is not
+  the base it was cut from — a crew session that failed before it committed is an ancestor of the
+  base for that reason alone), and its work must be on the commit **the branch it was cut from**
+  (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record
   holds it; the main checkout when that is gone): `workOnRef`, the answer `crew rm` gives too —
   its tip is an ancestor, or merging it changes nothing, which is how a squash merge shows. When
   git cannot say, it is not marked. The merge is looked for on every
-  crew session whose work is over (`done`, `failed`, `handoff`, `stopped`): a crew session stopped after its
-  turn ended is merged later, when the lead merges the branch.
+  crew session whose work is over (`done`, `failed`, `handoff`, `stopped`), and on a `merged` one
+  again (the continuation that held it back may have started). A handed-off record goes the same
+  way once its work is merged — through its continuation's merge too, since the continuation is
+  cut from its branch.
+- **it also finishes a removal that stopped halfway** (D62), every `PARKED_PASS_MS` (five
+  minutes): a folder a removal moved aside (`<path>-removing-<time>`) and could not remove,
+  whether or not the store still knows its crew session — judged against the record's own
+  branch when it does, `origin/<base>` (else the local branch of that name) when it does not,
+  and by what the folder holds when git no longer lists it (§ `rm`). A folder that stays is not
+  news; a later look judges it again. It runs after the merges are marked, so a crew session whose
+  branch that removal deletes was marked first.
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew
@@ -571,6 +1045,44 @@ show `-` (`docs/windows-setup.md` § The short version).
 `run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
 turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
 `--timeout <seconds>` bounds the wait.
+
+**One acting watch per lead: the newest wins** (WF1). Seen live on 2026-10-25: 13 watches whose
+monitor had ended (parent pid 1), up to 30 hours old, up to 5 for one lead — each one starting,
+resuming and stopping crew sessions, each resume wave living in its own memory (five watches
+resumed five sessions at once), and each writing the same state file over the others. So:
+
+- **A lease per lead** in the crew store (`<store>/watch-lease/<lead session id>.json`) names
+  the watch that acts: its process, as the store's lock records a holder (`currentHolder`,
+  `holderIsGone`, `src/setup/lock.ts`: pid, start time, host, pid namespace), and a token of its
+  own. A watch takes it when it starts, whoever holds it — a monitor the lead restarts is its
+  intent — and before it reads the state, so it goes on from where the last one wrote. `--once`
+  follows the same rule. Two leads never share one.
+- **Before each pass**, again right before it starts queued crew sessions and before it resumes
+  one (each launches a Claude session), and before it writes its state, a watch checks it still
+  holds the lease (under the store's lock). A watch that lost it says one line — `crew watch: a
+  newer watch of this lead runs (pid <pid>); this one ends` — and ends with 0, before it acts. A
+  lease whose holder is gone (its pid dead or reused) is free, and the watch takes it back. So
+  only the lease holder writes `<store>/watch/<lead session id>.json`.
+- **A watch ends when nobody started or reads it**: when its parent pid changes (Claude Code ends
+  a monitor by ending its shell, and the watch is re-parented), and when a line to stdout found
+  nobody reading (EPIPE). Bun's `console.log` drops such a write without a word, and
+  `process.stdout.write` reports it to its callback and as an `error` event — one nobody listens
+  to ends the process at once, with a stack trace. So the CLI's crew printer writes through
+  `process.stdout.write`, listens for that event, and keeps the failure (`stdoutPrinter`,
+  `context.ts`; proved on Bun 1.4.3 with a real closed pipe). One exit path: the checks throw
+  `WatchEnd`, and `runCrewWatch` catches it once, says why, and ends with 0. **On Windows the
+  parent check never fires** — a process there is not re-parented, so its parent pid never
+  changes — and the lease and the closed output are what end a watch.
+- **A store too busy to answer** (its lock held past its wait) is no reason to end a watch: a
+  monitor that ended is not started again. The watch acts on nothing that time — no pass, no
+  start, no resume, no state write — and asks again at its next look.
+- **One resume of a record at a time**: before `claude` runs, every resume claims the record in
+  the store, in the state its caller judged it in (`claimResume`, a `resumeClaim` on the
+  record). A second resume — the person's `crew resume --paused` beside the watch, or a watch
+  that took the lease from one resuming now — is refused with one line, so two copies never
+  start. A resume that started nothing gives the claim back; the write that changes the record's
+  state ends it; and one older than `RESUME_CLAIM_MS` (two minutes: a resume's two Claude calls
+  are bounded by 30 s each) is over.
 
 #### Waiting out a limit
 
@@ -584,8 +1096,16 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   `server_error` marks the record `paused` and takes `waitingFor` from the router's limit state,
   in this order: `slot` — the slot the crew session's model reaches has a current breaker record,
   with the time it opened; `claude-limit` — a current plan limit, the session's own model first,
-  else the freshest of a model whose family has a slot, with its reset time; `unknown` —
-  nothing the state file explains. One `state` event carries the line the watch shows
+  else the freshest of a model whose family has a slot, with its reset time, **but only when that
+  Claude model answers the session first** (`claudeLimitHolds`: a session on Claude itself, or a
+  slot whose chain in use, read from the gateway's config, starts with that model); `unknown` —
+  nothing the state file explains. On a slot whose chain starts with a backend, the Claude model
+  is only a fallback, and its limit holds nothing: the session waits for its slot (a `slot` wait
+  from now, resumed after the hold-off below, as a slot wait is once its breaker closed), and
+  neither the lead nor `crew list` names a reset date. Seen live on 2026-10-25: the worker slot
+  ran `omniroute:codex/gpt-6-luna → claude-sonnet-5-5`, one empty answer from Codex fell through
+  to Sonnet's weekly 429, and two crew sessions waited for Sonnet's reset days away while their
+  own model answered again within seconds. One `state` event carries the line the watch shows
   (`C kit B6b portal-live: paused — worker slot limited since 21:05; goes on by itself when it
   answers`), and `lastPause` records when the wait began and the hold-off it carries: 0 on a
   first pause, then 5, 10 and 20 minutes while pauses come within 15 minutes of each other.
@@ -594,7 +1114,9 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   use is not one the record says rests) or the model's limit is current. A slot wait is over when
   the breaker record closed (the router recorded an answer — only an answer closes it) or the
   chain's first target changed; a Claude limit's when the reset time passed, plus
-  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record; an `unknown` wait's after
+  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record — a `claude-limit` wait an
+  older kit recorded on a slot whose chain starts elsewhere is judged as that slot's wait; an
+  `unknown` wait's after
   its hold-off, with no breaker or limit that would explain it now. One crew session goes first
   (the canary); the next no sooner than 30 s after it, and only once the router answered a
   request since — its health page's count grew, and the state file's closed breaker or dropped
@@ -603,7 +1125,8 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   `SendMessage` line, because only a session holds that tool), `claude --bg --resume <id> "<text>"`
   **in its worktree, with the record's own `--settings` and `--strict-mcp-config --mcp-config`
   files** for one whose session has no process; the text names what changed and the phase. The
-  record is `working` with its wait cleared, in the same act. `crew resume --paused` is the
+  record is `working` with its wait cleared, in the same act, with the session the resume brought
+  back (§ The session a resume brings back). `crew resume --paused` is the
   person's way at once — after `/login` on another account — for every paused crew session of a
   lead: the same `resumeOne`, so a session whose process lives is woken with a message and one
   that has none is resumed, never copied.
@@ -627,10 +1150,22 @@ cannot be read is a refusal (a hand-off without it would lose what the next crew
 (`continues`), because a number at the end of a branch or a slug proves nothing — a phase whose
 slug is `step-2` has a branch that ends in `-2` too.
 
+**What a hand-off names, and counts (NM1).** The next crew session's record holds the old head's
+**commit** as `baseCommit`, next to `baseRef` (the old branch's name, which the board and the portal
+show). A queued continuation is cut when it starts, and `crew rm` of the old record deletes that
+branch (a branch reset would move it too), so it starts from `baseCommit` first and from `baseRef` only
+when the record has none — a record an older kit wrote. `--continue <name>` finds the old record by the
+one finder every crew command uses (`findCrew`): a name shared with removed records means the live
+one — a handed-off record is live — and two live records of one name ask for an id. The number counts
+the phase's records that **started** (a record removed before it began never ran, and takes no
+number), plus one.
+
 **The crew session's own line** — `cc-smart-dev-kit crew self-watch [--once]`
 (`src/crew/self-watch.ts`) — runs in the crew session's own monitor, and **keeps running**: it looks
-every minute and prints a line only when the crew session should act, so a crew session that is fine sees
-nothing. It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
+at the context and the clock every minute and prints a line only when the crew session should act, so
+a crew session that is fine sees nothing. Every 3 s it also looks for the lead's answer and writes
+its heartbeat (`crew answer`, above in this section, reaches a running crew session through this
+loop). It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
 written and its cache read) against the window of the model that wrote that reply
 (`context-window.ts`, the window's one home). **The window comes from three places, in order.**
 **Claude Code's own number**, when the status line recorded one for that model
@@ -751,11 +1286,24 @@ sessions, never a crew session**: a crew session follows its own lead's branch, 
 lead's work, and merging the base into it would be wrong. Each other lead also gets one `merge`
 event, so its watch says the line (who merged, what number and title, and to merge
 `origin/<base>` at its next stop) without waiting for the message the merging session sends. The
-lead that merged is never told to message itself.
+lead that merged is never told to message itself, nor is its record from before a restart: a
+restart runs `crew lead` in a new session, which writes a second record, so the hook drops a
+record that agrees with the merging lead's own in repository, plan, name and folder (the name
+alone would drop another lead of the same name in another folder). A name is listed once, though
+another lead that restarted has two records (WN1).
 
 **A file clash reaches the other lead** (D55, `src/crew/start.ts`): a new phase's `--files`
 compared with a running or queued crew session of another lead — see § The lead and the launch,
 step 3 — prints one line at the start and records one `clash` event, which that lead's watch says.
+**Each pair is said once, for its whole life** (WN1): the event carries the pair's key
+(`clashPairKey`: the two leads' session ids and phases, sorted, so it is the same from either
+side), and a start that meets a pair already in the events log says nothing. The key names the
+phase, not the crew session, so a phase started again under a new slug is the same pair (and a
+second session of that phase with other files is silent too). The key holds the lead's session
+id, so a lead that restarts in a new session starts its pairs over. A
+`--files` pattern that matches more than a quarter of the tracked files (in a repository of at
+least 20) gets one `warning:` line at the start, naming the glob; it never refuses, because a
+glob that wide makes every other lead's session clash with it.
 
 **The message guard** (`src/hooks/message-guard.ts`, PreToolUse on `SendMessage`) is the
 enforcement. Its other-repo rule is unchanged and runs first (§ The hooks): a message to a session
@@ -763,7 +1311,7 @@ that works outside this repo is denied. Then, when the sender is a crew session 
 names a crew id, `CREW_ENV`) whose record this repo's store holds, and the target is the name of
 **another crew session of the same repo**, the message's first line must carry the tag
 `[<its phase>] CONTRACT:` or `[<its phase>] QUESTION:`; an untagged one is **denied**, and the
-refusal names `crew tell`, its two kinds, and `crew report --status done` for a hand-back. A
+refusal names `crew tell`, its two kinds, and `crew report --status done --file -` for a hand-back. A
 message to the session's **own lead** is denied too, with the `crew report` route — the lead is
 matched by name, as `crew tell` matches it (`src/crew/tell.ts`), because the lead hears its crew
 through the recorded report and never a raw message. A message **from the lead**, and one to a

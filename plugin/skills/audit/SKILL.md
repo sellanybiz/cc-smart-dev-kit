@@ -63,6 +63,11 @@ Workflow({
 })
 ```
 
+- `args` is one object, as shown — never a string of JSON. A string, an unknown key or a wrong
+  type stops the run at once with a line that names the expected object.
+- `budget` is how many findings the second auditors verify, most severe first; the rest are
+  listed in the report under **Unchecked findings**, not verified. Say so in your answer, and
+  check them or run again with a larger budget.
 - `findingsPath` is where the writer puts the report. Use the project's own convention when its
   add-on names one; else `.claude/audits/<YYYY-MM-DD>-<slug>.md`. Never a file a plan or a doc
   already owns. This file is the audit's deliverable — the one artifact the run exists to make —

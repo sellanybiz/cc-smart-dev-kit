@@ -457,7 +457,7 @@ export function readGatewaySettings(settingsPath: string): {
   baseUrl: null | string;
   baseUrlProblem: null | string;
   loginOverrides: string[];
-  /** Claude Code's own model keys the file sets, in one fixed order: `model` first, then each
+  /** Claude Code's own model keys the file sets (an empty text too: it wins over a lower file), in one fixed order: `model` first, then each
    * family's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`. */
   modelKeys: ModelKeyFact[];
   subagentOverrides: string[];
@@ -474,17 +474,17 @@ export function readGatewaySettings(settingsPath: string): {
   if (Object.hasOwn(settings, "apiKeyHelper")) loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   // Claude Code's own model keys, read for the doctor's warning: a slot key or a backend target
-  // here reaches past the gateway's slots. Read as they are written; a value that is not a text
-  // names no model.
+  // here reaches past the gateway's slots. Read as they are written, an empty text too: in the
+  // file that wins, it replaces a lower file's value (proved on 2.1.310), so a reader that goes
+  // file by file must see that this file decided the key. A value that is not a text names no model.
   const modelKeys: ModelKeyFact[] = [];
-  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+  if (typeof settings.model === "string") {
     modelKeys.push({ key: "model", value: settings.model });
   }
   for (const family of CLAUDE_FAMILIES) {
     const key = familyEnv(family);
     const value = env[key];
-    if (typeof value === "string" && value.trim() !== "")
-      modelKeys.push({ key: `env.${key}`, value });
+    if (typeof value === "string") modelKeys.push({ key: `env.${key}`, value });
   }
   return {
     baseUrl: usable ? held : null,

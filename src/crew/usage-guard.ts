@@ -17,6 +17,7 @@ import { projectGatewayState } from "../gateway/project-state";
 import { familySlotKey } from "../gateway/targets";
 import { sessionGatewayOf } from "../hooks/agent-guard";
 import type { GatewayFacts } from "../models/launch-policy";
+import type { Checkout } from "../project/resolve";
 
 /** What the guard reads: the window now, and whether the opus slot's chain answers past it. */
 export interface UsageFacts {
@@ -39,6 +40,20 @@ export function opusFallbackOf(facts: {
   const slot = familySlotKey("opus");
   if (slot === null || !facts.gatewayOn || facts.config === null) return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
+}
+
+/**
+ * The folder whose settings a crew session started by this lead will run on (FX1): the lead's
+ * own checkout root. A crew session's worktree is cut from the lead's branch and the session runs
+ * in it, and Claude Code reads the **running folder's** own `.claude/settings.json` (proved on
+ * 2.1.310: a session in a linked worktree took the worktree's team file, not the main checkout's;
+ * `docs/claude-code-contract.md`). So the team file of the lead's branch, which is the lead's
+ * folder's, is the one the session will meet. The personal file is the main checkout's either
+ * way (`projectGatewayState` reads it for a linked worktree). One home: `crew start`, the queue
+ * start, the board's caps and the opus usage guard all read the project's gateway here.
+ */
+export function crewSettingsFolder(checkout: Checkout): string {
+  return checkout.root;
 }
 
 /**

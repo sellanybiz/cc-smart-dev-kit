@@ -85,6 +85,7 @@ describe("workflow show", () => {
       "crew.max = 24 (default)",
       "crew.maxOpus = (no machine-wide opus count) (default)",
       "crew.memoryGb = 2 (default)",
+      "crew.loadPerCore = 3 (default)",
       "crew.perLead = 4 (default)",
       "crew.perLeadOpus = 2 (default)",
       "crew.usagePercent = 85 (default)",
@@ -93,6 +94,7 @@ describe("workflow show", () => {
       "crew.handoffTokens = 400000 (default)",
       "crew.softHours = 2 (default)",
       "crew.maxHours = 4 (default)",
+      "crew.archiveDays = 7 (default)",
       "crew.tag = (the main checkout's folder name) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
@@ -232,7 +234,7 @@ describe("workflow set and unset", () => {
     const run = context(tempDir("not-git"), env);
     expect(await runWorkflow(["set", "alerts.events", "needs-you,finished"], run.context)).toBe(0);
     expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
-      `${JSON.stringify({ alerts: { events: ["needs-you", "finished"] } }, null, 2)}\n`,
+      '{\n  "alerts": {\n    "events": ["needs-you", "finished"]\n  }\n}\n',
     );
   });
 
@@ -247,17 +249,13 @@ describe("workflow set and unset", () => {
     const run = context(repo, env);
     expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
     expect(run.lines).toEqual([`~ ${file}: autoCommit = true`]);
-    // The indent (four spaces here) stays; a one-line object is written out, as any JSON writer does.
+    // The indent (four spaces here) stays, and so does every line the change does not touch: the
+    // one-line object and the one-line array stay as they were.
     expect(readFileSync(file, "utf8")).toBe(
       [
         "{",
-        '    "worktrees": {',
-        '        "base": "main",',
-        '        "guardMainFolder": true',
-        "    },",
-        '    "autoMode": [',
-        '        "one rule"',
-        "    ],",
+        '    "worktrees": { "base": "main", "guardMainFolder": true },',
+        '    "autoMode": ["one rule"],',
         '    "workflow": {',
         '        "autoCommit": true',
         "    }",
@@ -292,6 +290,47 @@ describe("workflow set and unset", () => {
     expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.0");
   });
 
+  test("--project on a file an older plugin wrote with a requires below its own fields raises it, for any key", async () => {
+    // 1.2.0 wrote `crew.handoffTokens` under `>=1.0`: a 1.1 teammate refuses the whole file.
+    // A write that adds nothing new still mends it, from the file's real `requires`.
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const seed = (requires: string) =>
+      writeFileSync(
+        file,
+        `${JSON.stringify({ requires, worktrees: { base: "main" }, workflow: { crew: { enabled: true, handoffTokens: 300000 } } }, null, 2)}\n`,
+      );
+    seed(">=1.0");
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.2");
+    // The raise is named in the line: a diff nobody can explain is not committed.
+    expect(run.lines).toEqual([
+      `~ ${file}: autoCommit = true; requires ">=1.0" -> ">=1.2" (the file's fields need it)`,
+    ]);
+    // A key that was set already: the line says the file's `requires` was the only change.
+    seed(">=1.0");
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { autoCommit: true, crew: { enabled: true, handoffTokens: 300000 } } }, null, 2)}\n`,
+    );
+    const again = context(repo, env);
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], again.context)).toBe(0);
+    expect(again.lines).toEqual([
+      `~ ${file}: requires ">=1.0" -> ">=1.2" (the file's fields need it); autoCommit = true (already set)`,
+    ]);
+    seed(">=1.0");
+    // Never lowered: a range that already needs a newer plugin stays as written.
+    seed(">=1.3");
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.3");
+    // A range in a form that is not read here is left alone by a write that adds nothing new.
+    seed("*");
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe("*");
+  });
+
   test("D20: --project on a file that still holds a retired engine field: refused, naming it, nothing written", async () => {
     const env = hookEnv();
     const repo = makeRepo();
@@ -315,8 +354,15 @@ describe("workflow set and unset", () => {
     expect(await runWorkflow(["set", "switches.jobRoute", "true", "--project"], run.context)).toBe(
       0,
     );
-    expect(run.lines).toEqual([`~ ${file}: switches.jobRoute = true`]);
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...SETTINGS, jobs: { route: true } });
+    expect(run.lines).toEqual([
+      `~ ${file}: switches.jobRoute = true; requires ">=0.1" -> ">=0.5.2" (the file's fields need it)`,
+    ]);
+    // SETTINGS' `>=0.1` is below the lowest plugin that reads any file (0.5.2): a write mends it.
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      ...SETTINGS,
+      requires: ">=0.5.2",
+      jobs: { route: true },
+    });
     const off = context(repo, env);
     expect(await runWorkflow(["unset", "switches.sessionNames", "--project"], off.context)).toBe(0);
     const after = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
@@ -718,7 +764,9 @@ describe("the review gate (CM-1)", () => {
     expect(mine.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: crew.max = 2"]);
     const theirs = context(repo, env);
     expect(await runWorkflow(["set", "crew.enabled", "true", "--project"], theirs.context)).toBe(0);
-    expect(theirs.lines).toEqual([`~ ${file}: crew.enabled = true`]);
+    expect(theirs.lines).toEqual([
+      `~ ${file}: crew.enabled = true; requires ">=0.1" -> ">=1.0" (the file's fields need it)`,
+    ]);
     expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ crew: { enabled: true } });
     const show = context(repo, env);
     await runWorkflow(["show"], show.context);

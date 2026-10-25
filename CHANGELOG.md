@@ -3,6 +3,196 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.3.0
+
+The lead and its crew, made dependable: a resume that keeps track of its session, a watch that
+says each piece of news once, and a removed crew session's conversation kept out of your way.
+Also new: a way to say you cannot answer (`user unavailable`), a router that ends a stream that
+goes silent, a status line that always shows the context use and the effort, and a note that
+tells every session which tier is Claude. Planned as 1.2.1; it adds commands, hooks and fields, so
+it is a minor version.
+
+- **The installer repairs a marketplace your settings lost.** When Claude Code's own list had a
+  marketplace but your `settings.json` no longer declared it, the installer skipped the add and
+  `setup` stopped with "does not list the cc-smart-dev-kit marketplace yet". Step 4 now counts this
+  repository's marketplace as added only when both records hold it, runs the add again when only
+  the list holds it (`re-declared in your settings: …`), and stops with the command when the
+  settings still lack it. The two companion marketplaces stay judged by the list alone. `setup` run
+  by hand says what is true and gives that one command, and no longer asks you to install a plugin
+  that is installed.
+- **A service on this machine no longer looks down behind a proxy.** With `HTTP_PROXY` set and no
+  `NO_PROXY`, `doctor`, the portal's start and the OmniRoute checks asked a loopback address
+  through the proxy, so a running portal or OmniRoute looked down. Every probe of a service on
+  this machine now goes straight (one helper, `loopbackFetch`); a remote address (the npm
+  registry) keeps your proxy.
+- **The portal shows an unknown wait as unknown.** A paused crew session whose wait the watch
+  could not name was shown as waiting for a Claude limit on no model; it now says it waits for an
+  answer it could not name, with its slot.
+- **`launch`'s notes are right in two more places.** A `model` key set to an empty text in a
+  higher settings file blanks a lower file's slot name (Claude Code does that), so the lower
+  file is no longer named; and `launch -- --model <id>` no longer names a file's `model`, which
+  the argument overrides.
+- **A crew session reads its lead's own team file.** The effort, the opus usage guard, the board's
+  caps and a queued start now read the project's gateway at the lead's own folder, where the crew
+  session's worktree is cut from, not at the main checkout: Claude Code reads the team file of
+  the folder a session runs in. It changes the answer only for a lead in a linked worktree whose
+  branch changed `.claude/settings.json`. A done report, an own review and the update hints say
+  what is true: `--status done --file -` with its JSON part, an own review counted as a review,
+  and `cc-smart-dev-kit setup` once for a machine set up before Claude became the default.
+- **Setup turns Remote Control's auto-connect on.** `cc-smart-dev-kit setup` writes
+  `remoteControlAtStartup: true` into `~/.claude/settings.json` only while the key is absent: a
+  `true` or `false` you set stays, and `restore` removes the key only while it still holds the
+  value setup wrote. A key you delete or change after setup wrote it is let go of once, and
+  never written again (a record in the state folder, `remote-control-released`). It connects with
+  a claude.ai login; `gateway on` still turns Remote Control off (`gateway off` brings it back).
+- **A project file's `requires` is mended, and `doctor` says when it is too low.** 1.2.0 could
+  leave a file that sets `workflow.crew.handoffTokens` under `requires: ">=1.0"`, so a teammate on
+  1.1 had the whole file refused instead of hearing "update". `workflow set … --project` now
+  raises a `requires` below what the file's fields need on any write (never lowers one; a file
+  that said `>=0.1` becomes `>=0.5.2`) and the line it prints names the raise, and `doctor` warns
+  about such a file and names the fix.
+- **The portal's header no longer starts heavy children on every refresh.** The Needs and Work
+  reads (`crew cleanup --json`, `claude agents --json --all`) are kept for 5 seconds and shared
+  while one runs. A removal still reads fresh facts.
+- **A crew resume keeps track of the session it brings back.** Claude Code starts every crew
+  resume as a copy with a new id; the record used to keep the old one, so the watch called a
+  working session `stopped` a few seconds later. The record now takes the new session in the
+  same write that marks it `working`, and the line says it (`resumed … as session <new> (a copy
+  of <old>)`). Two resumes of one record at once are refused instead of starting two copies; a
+  resume that printed no session line keeps the record as it was and is never tried again by
+  itself. The watch also survives a closed pipe and a busy store.
+- **A resumed crew session leaves nothing behind when it is removed.** A resume is a copy with a
+  new id, and `crew rm` used to remove and archive only the newest one, so every earlier copy
+  stayed in `/resume` and in `claude agents --all`. The record now keeps every earlier session,
+  and `crew rm`, the archive and `sessions --finished --remove` go through all of them. Also
+  fixed: a model change that waited for a cap no longer resumes a session that reported `done`
+  meanwhile; a second removal of one crew session refuses instead of rolling back the first one's
+  discard; the watch no longer waits for a continuation that was removed, discarded or failed; a
+  stop (the lead's `crew stop`, a `crew rm`, or the watch's idle stop) no longer writes `stopped`
+  over a session that reported `done` or was answered meanwhile; and a stop the watch made for an
+  idle blocked session no longer keeps the merged session from being removed.
+- **A removed crew session's conversation moves to the crew archive.** `crew rm` (and the watch's
+  removal after a merge) moves the conversation Claude Code keeps after `claude rm` to
+  `<state>/crew-archive/`, so `/resume` no longer lists every crew session ever removed; it is
+  deleted after `crew.archiveDays` (7 by default). Two archives at once, a moved project folder,
+  a linked session folder and a project folder name over 200 characters are handled.
+- **The lead hears each piece of news once.** "quiet" is said when a quiet stretch starts and once
+  more when it grows long, not every minute; a clash between two leads' phases once for its life;
+  "going again — the wait is answered" once when a needs-you wait ends; a merge note never names
+  the lead that made it. A `--files` pattern that matches more than a quarter of the repository
+  gets one warning.
+- **A `done` report proves itself.** `crew report --status done` refuses a report with no test
+  run, no checks or no review; a phase that ran its own review instead says so with `ownReview`
+  and a reason. A report's summary and any field the kit does not know are kept, never dropped.
+  A question a crew session asked again while the first had no answer closes the first, and an
+  answer to it is refused with the newest question named.
+- **`crew model <name> --model <model> --effort <effort>`** changes a crew session's model or
+  effort, with the same checks as `crew start`. A running one is resumed with the new flags and
+  told what changed; a stopped, paused or queued one takes the values for its next start. A move
+  to the opus tier that a cap holds waits for the cap.
+- **Crew names and continuations hold up after a clean-up.** A continuation keeps the commit it
+  started from after `crew rm`; a name that removed records share means the live one; a
+  continuation's number counts only the records that started.
+- **`workflow set`, `workflow unset` and `project init` keep the file's own layout.** Only the
+  value that changes is written: the other lines, the indent, a tab or CRLF file stay byte for
+  byte, and a new array is printed the way Biome would.
+- **The `requires` floor knows every field.** `project init` and `workflow set` raise a
+  project's `requires`, so an older plugin says "update" instead of refusing the whole file (and
+  failing every guard closed). They missed `crew.handoffTokens` (1.2.0), `crew.loadPerCore` and
+  `crew.archiveDays` (1.3.0), and the `ownHooks` names that came after `ownHooks` itself
+  (`tier-view` asks for `>=1.3`). A test now fails when a new field or hook name ships without
+  its floor.
+- **The split review ranks its findings before the budget.** Each finding is ranked by severity,
+  so a busy track of small findings cannot take every refuter; a finding past the budget comes
+  back as unchecked, never dropped. The review and audit runs refuse a malformed argument before
+  any agent starts.
+- **A research sweep.** `research-first` can start `research-sweep` for a question with several
+  sources: one researcher per angle, then a refuter per claim that opens the source and quotes it.
+- **Four tests that failed only on a busy machine** found their cause (a slow child, a held port,
+  a git setup, a wall-clock bound) and pass under load.
+- **The router ends a stream that goes silent.** Before, only a held stream's wait for its first
+  event had a limit: a stalled stream (12 of 4,957 answers from one OmniRoute target in 3
+  hours) held a session for 21 minutes; Claude Code ends no stalled stream itself. Any streaming
+  answer that sends no byte (an event, a ping or a keep-alive comment) for
+  `timeouts.streamIdleMs` (default 120 s), counted from its headers, is ended, Anthropic's too;
+  Claude Code sends the request again at once (proved on 2.1.310). The log line names the
+  target and the idle time; a backend's target rests like any failure, a Claude target rests
+  nothing. `timeouts.firstByteMs` and `streamIdleMs` are capped at 2147483647 ms. `router.js`
+  changes, so run `cc-smart-dev-kit gateway setup` on every machine that uses the gateway.
+- **When you cannot answer: `cc-smart-dev-kit user unavailable [--until <time>]`.** While it is on,
+  every session follows the `user-unavailable` skill: it never stops to ask, takes the reversible,
+  recommended choice and parks it as a decision, and parks your questions and every action that
+  needs a yes, with its exact command. The hooks hold the line: `AskUserQuestion` and
+  `ExitPlanMode` are denied with the step that parks the question, Claude Code's own permission
+  prompt is denied and parked, and every other hook's question becomes a deny that parks the call,
+  never an allow. `user available` ends it; `/cc-smart-dev-kit:user-available` goes through the
+  list (`user list`, `user status`, `user clear`). In Claude Code's default permission mode, allow
+  `Bash(cc-smart-dev-kit user park:*)` once.
+- **Every session knows which tier is Claude.** A note at each session start, and once when a
+  slot changes mid-session, says what Haiku, Sonnet, Opus and Fable run for this session (the
+  agent guard's reading, the session's own gateway) and the effort rule. The usage-limit alert
+  judges the session's own chain: a limit that does not hold this session says so, gives no
+  reset date and names the slot's first target.
+- **The status line always shows the context use and the effort**: `ctx 312k · 78% of 400k`,
+  measured against Claude Code's auto-compact window when you set one (`/autocompact`), else the
+  model's window, then the effort (`· xhigh`), or a backend's pinned effort when one answers.
+- **`crew answer` reaches a running crew session itself**, through the session's own monitor,
+  even when it sits idle or blocked, and says `delivered`; when it cannot, it says `recorded, not
+  delivered` with the one line to send by hand. Answering the same question again is a
+  correction.
+- **A plan keeps its briefs and a record of each crew run.** `<plans dir>/<plan stem>/briefs/`
+  holds each phase's brief, and `crew start` takes it from there when `--brief` is left out. One
+  record per crew run in `<plan folder>/runs/` (its sessions, model and effort, each step, the
+  wall and working time) stays after `crew rm` and moves with the plan; `crew history` reads
+  them, and `--backfill` writes them once for older runs.
+- **A crew start waits while the machine is busy.** `crew.loadPerCore` (default 3): a start
+  queues while the 1-minute load per core is past it. A crew session is told to install its
+  worktree's own dependencies.
+- **The effort pin on the Slots page.** The portal's Slots page shows each backend target's pin, or
+  "follows Claude Code", and sets it: it asks first, runs `gateway effort`, and shows the test
+  request and a backend's refusal in place.
+- **Stopped crew work stays in sight, and unmerged work is never cleaned away.** A daily reminder
+  names each stopped crew session whose work is not merged. `crew lead --end` records that a plan
+  ended, and the board and the Work API mark a lead that is proved gone. A clean, by hand or in the
+  background, removes a crew session's work only through `crew rm`, and only once it proves today
+  that the work is merged into the project's base. A merge proved for an exact commit still holds
+  after the lead's branch is rewritten or old objects are pruned; a crew commit made after it needs
+  a new check. `crew rm --discard` archives the work before it removes it, once you confirm what it
+  will discard; `crew list --discarded` prints how to get it back, and archives are pruned after 30
+  days. The watch never discards. An older record whose history shows a merge counts as merged;
+  with no history, the old rule holds. Finished background sessions that are not crew are removed
+  once you confirm, and `--id` (repeatable) picks exact ones. On Linux, a stale Claude lock is
+  cleared only when no process holds it and every usual check passes; a failed move puts the lock
+  back. Supabase's `cli-latest` cache alone no longer keeps a worktree. The portal's API has the
+  cleanup actions; its pages do not show them yet.
+- **Finished crew work cleans itself up (D62).** A project with seven leads held 39 crew worktrees,
+  13 working and the rest finished work nobody had removed (7 merged, 11 handed off, 6 stopped),
+  plus 2 folders a removal left half done. The lead's watch now removes a merged crew session with
+  `crew rm`'s own steps and says a refusal once; it waits until every later continuation's work is
+  merged into the first record's base, and never removes a `stopped` one (that stays your call,
+  though it is still marked merged, so a phase that waits for it starts). The merge is judged
+  against the branch the session was cut from, not the lead's current one. The programs a finished
+  session's own turn left running (its background `bun run check` and their `sh` and `bash`) are
+  stopped, SIGTERM then SIGKILL, instead of refusing the removal; a dev server you started there
+  still keeps it. Ownership requires a readable environment naming that crew session; an unreadable
+  environment (including macOS) keeps the folder. Other blockers are judged before its programs are
+  stopped. Older records rewritten to `stopped` need a manual `crew rm`; the watch does not guess
+  whether their stop was intentional. A `…-removing-<time>` folder is finished by the next `crew
+  rm`, `worktrees --clean` or watch pass: while git lists it, under the usual checks; when git no
+  longer lists it (5 of the 8 found on one machine), only when nothing runs from it and no file in
+  it is newer than the move its name records, and only on Linux, where the kit can read the mount
+  points: on Windows and macOS that folder stays, the log says why, and you remove it by hand.
+  `worktrees` names a crew worktree as one, with its
+  lead and who removes it, and `--clean` leaves it alone instead of listing 30 of them "kept" and
+  saying "Nothing finished to clear". A finished session's unanswered question is closed, so it
+  leaves the Needs page.
+
+**What to run for 1.3.0:** `cc-smart-dev-kit gateway setup` on every machine that uses the
+gateway (`router.js` changed: the stalled stream); `cc-smart-dev-kit setup` once (Remote
+Control's auto-connect); then restart your sessions, so each carries the new hooks. A project
+that sets `crew.loadPerCore` or `crew.archiveDays`, or lists `tier-view` in `ownHooks`, needs
+`"requires": ">=1.3"`; `workflow set` and `project init` write it for you.
+
 ## 1.2.0
 
 Claude by default (every slot on Claude, every fallback off, the gateway off), the gateway per

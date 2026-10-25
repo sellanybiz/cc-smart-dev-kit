@@ -33,6 +33,7 @@ import {
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { USER_USAGE } from "../user-away/words";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { LAUNCH_USAGE } from "./launch";
@@ -199,11 +200,27 @@ installs it in the background; --hold stops that on this machine, --resume start
 Nothing restarts: restart the sessions to load it.`;
 
 const SESSIONS_HELP = `Usage: ${COMMAND} sessions [--open] [--dry-run]
+       ${COMMAND} sessions --finished [--remove [--yes] [--id <short-id>…]]
 
 This project's Claude Code sessions of the last two days, by name and worktree, with the
 command that resumes each. --open reopens every session that was open when the machine went
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
-it would open and opens nothing.`;
+it would open and opens nothing.
+
+--finished lists this machine's background sessions done or stopped for more than one day,
+with their name, folder and age. Crew sessions and leads stay out, even when renamed.
+Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
+A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
+A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
+--id limits removal to that exact eligible session; repeat it to name several.
+
+--finished also lists what removed crew sessions left in /resume: their conversations still in
+Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
+past crew.archiveDays (${workflowDefaults.crew.archiveDays} by default). --remove asks once more, then moves each conversation into
+the kit's archive (gzipped, deleted after crew.archiveDays), removes each empty folder and deletes
+each expired archive. A lead's session, a crew session still on the board, one a running Claude
+holds and one written after its removal are never taken. --id leaves this part out.
+Use --finished separately from --open and --dry-run.`;
 
 const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 
@@ -335,6 +352,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
   { name: "crew", listed: "more", help: CREW_USAGE },
+  { name: "user", listed: "more", help: USER_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
   { name: "version", listed: "more", help: VERSION_HELP },

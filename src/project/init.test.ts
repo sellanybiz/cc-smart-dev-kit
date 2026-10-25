@@ -81,10 +81,7 @@ describe("planProjectInit", () => {
         '      "release/": "main"',
         "    }",
         "  },",
-        '  "protectedBranches": [',
-        '    "main",',
-        '    "dev"',
-        "  ],",
+        '  "protectedBranches": ["main", "dev"],',
         '  "sessionNames": true',
         "}",
         "",
@@ -382,7 +379,8 @@ describe("D20: the retired worktree engine is taken out", () => {
     expect(plan.localSettings.changed).toBe(true);
     expect(plan.localSettings.lines).toEqual([`- hooks.WorktreeRemove: ${ENGINE_REMOVE}`]);
     // The `hooks` object held nothing else, so it goes with its last line.
-    expect(plan.localSettings.text).toBe('{\n  "env": {\n    "FOO": "1"\n  }\n}\n');
+    // The file was one line, and stays one line: the layout is the file's own.
+    expect(plan.localSettings.text).toBe('{"env":{"FOO":"1"}}\n');
     expect(plan.notes).toContain(
       "the plugin's worktree engine was retired in 1.0.0: its hook lines go, because Claude Code's own worktrees need none",
     );
@@ -546,6 +544,66 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("a workflow.crew key that came with 1.2.0 or 1.3.0 needs that release", () => {
+    // `handoffTokens` is on the 1.2.0 plugin; `loadPerCore` and `archiveDays` are new in 1.3.0.
+    // A plugin one release older refuses each as an unknown field.
+    expect(requiresFloor({ workflow: { crew: { handoffTokens: 400000 } } })).toEqual({
+      floor: ">=1.2",
+      version: "1.2.0",
+    });
+    for (const crew of [{ loadPerCore: 3 }, { archiveDays: 7 }]) {
+      expect(requiresFloor({ workflow: { crew } })).toEqual({ floor: ">=1.3", version: "1.3.0" });
+    }
+    // The newest key wins.
+    expect(requiresFloor({ workflow: { crew: { handoffTokens: 1, loadPerCore: 2 } } })).toEqual({
+      floor: ">=1.3",
+      version: "1.3.0",
+    });
+  });
+
+  test("an ownHooks name that came after ownHooks needs the release that brought it", () => {
+    // A plugin that predates the hook validates the name as an enum and refuses the file.
+    expect(requiresFloor({ ownHooks: ["tier-view"] })).toEqual({
+      floor: ">=1.3",
+      version: "1.3.0",
+    });
+    expect(requiresFloor({ ownHooks: ["git-guard", "verify-gate"] })).toEqual({
+      floor: ">=1.1",
+      version: "1.1.0",
+    });
+    expect(requiresFloor({ ownHooks: ["crew-role"] })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+  });
+
+  test("an ownHooks name the 0.5.2 plugin already took leaves the floor where it is", () => {
+    // Includes the retired and the unswitchable names: every plugin since 0.3.0 accepts them.
+    expect(
+      requiresFloor({ ownHooks: ["git-guard", "fable-session", "serena-root", "job-route"] }),
+    ).toEqual({ floor: ">=0.5.2", version: "0.5.2" });
+    expect(requiresFloor({ ownHooks: [] })).toEqual({ floor: ">=0.5.2", version: "0.5.2" });
+  });
+
+  test("an ownHooks that is not a list changes no floor", () => {
+    expect(requiresFloor({ ownHooks: "tier-view" })).toEqual({
+      floor: ">=0.5.2",
+      version: "0.5.2",
+    });
+  });
+
+  test("the plan keeps an ownHooks name of a later release, and asks for that release", () => {
+    const root = tempDir("project-init");
+    const existing = JSON.stringify(
+      { requires: ">=1.0", worktrees: { base: "dev" }, ownHooks: ["tier-view"] },
+      null,
+      2,
+    );
+    const plan = planProjectInit(input({ root, existing }));
+    expect(plan.text).toContain('"requires": ">=1.3"');
+    expect(plan.text).toContain('"tier-view"');
+  });
+
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(
@@ -567,13 +625,36 @@ describe("requiresFloor", () => {
     expect(() => parseCcSmartDevKitConfig(plan.text, plan.file, "1.1.0")).not.toThrow();
   });
 
+  test("JW1: an existing file keeps its own layout where the answers change nothing", () => {
+    const root = tempDir("project-init");
+    const existing = [
+      "{",
+      `  "requires": "${NO_PREFIX_MINOR}",`,
+      '  "worktrees": { "base": "dev", "guardMainFolder": true, "bases": { "hotfix/": "main", "release/": "main" } },',
+      '  "protectedBranches": ["main", "dev"],',
+      '  "sessionNames": true,',
+      '  "autoMode": ["one rule"]',
+      "}",
+      "",
+    ].join("\n");
+    const plan = planProjectInit(input({ root, existing, answers: ANSWERS }));
+    // `autoMode` is not an answer of `project init`, so it stays exactly as it was.
+    expect(plan.text).toBe(existing);
+    const moved = planProjectInit(
+      input({ root, existing, answers: { ...ANSWERS, protectedBranches: ["main"] } }),
+    );
+    expect(moved.text).toBe(existing.replace('["main", "dev"]', '["main"]'));
+  });
+
   test("the fast check: `null` takes the field out; no answer at all leaves the file's own", () => {
     const root = tempDir("project-init");
     const existing = `${JSON.stringify({ checks: { fast: "bun run check" }, worktrees: { base: "dev" } })}\n`;
     // The portal's form does not show the field: `undefined` must not remove what a person wrote.
     const kept = planProjectInit(input({ root, existing, answers: ANSWERS }));
-    expect(kept.text).toContain('"fast": "bun run check"');
-    expect(kept.text).toContain('"requires": ">=1.1"');
+    expect(JSON.parse(kept.text)).toMatchObject({
+      checks: { fast: "bun run check" },
+      requires: ">=1.1",
+    });
     const removed = planProjectInit(
       input({ root, existing, answers: { ...ANSWERS, checks: null } }),
     );

@@ -31,6 +31,12 @@ export interface BriefFacts {
 export const REPORT_COMMAND = `${COMMAND} crew report`;
 
 /**
+ * The done report as a crew session runs it: a done report needs its JSON part (the tests, the
+ * checks, the review), which the command reads from stdin with `--file -` (`report.ts`).
+ */
+export const REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
+
+/**
  * The commands a lead runs, and what a crew session never does with each (D45): one home for
  * the words the launcher's refusal (`readCaller`) uses for every command. The keys are the
  * commands; the values complete "a crew session never …". `resume`'s words name all three end
@@ -42,6 +48,7 @@ export const CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
   "lead tell": "tells another lead",
+  model: "changes a crew session's model or effort",
   resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions",
@@ -60,6 +67,7 @@ export const CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
+  model: CREW_NEVER_DOES.model,
   resume: CREW_NEVER_DOES.resume,
   rm: CREW_NEVER_DOES.resume,
   start: CREW_NEVER_DOES.start,
@@ -95,7 +103,8 @@ export function briefFrame(facts: BriefFacts): string {
     `## Your frame (written by \`${COMMAND} crew start\`)`,
     "",
     `- You are the crew session \`${facts.crewName}\`, for the lead \`${facts.leadName}\`. You run in the background: nobody watches this session.`,
-    `- Your worktree is \`${facts.worktree}\`, on the branch \`${facts.branch}\`, cut from \`${facts.baseRef}\`. Work only there. Anything slow it needs first (a dependency install) is your first step.`,
+    `- Your worktree is \`${facts.worktree}\`, on the branch \`${facts.branch}\`, cut from \`${facts.baseRef}\`. Work only there.`,
+    "- Setup, your first step, before anything else slow: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session.",
   ];
   if (facts.files.length > 0) {
     lines.push(
@@ -104,8 +113,10 @@ export function briefFrame(facts: BriefFacts): string {
   }
   lines.push(
     `- Work by \`/${CREW_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`,
+    "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
     "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
-    `- When the phase is ready, hand it back with \`${REPORT_COMMAND} --status done\`; when it cannot be done, with \`--status failed\` and why.`,
+    `- When the phase is ready, hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review); when it cannot be done, with \`--status failed\` and why.`,
+    "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.",
     `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`,
   );
   return lines.join("\n");

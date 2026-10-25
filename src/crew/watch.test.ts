@@ -4,37 +4,64 @@
  * outlives its work).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
+import { currentHolder } from "../setup/lock";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
 import { runCrew } from "./command";
+import type { CrewContext } from "./context";
 import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewFile,
   crewMcpFile,
   crewSettingsFile,
+  crewStoreDir,
   eventsEndOffset,
+  keepWatchLease,
   listCrew,
   readCrew,
+  readWatchLease,
   readWatchState,
+  takeWatchLease,
   updateCrew,
+  type WatchLease,
   type WatchState,
+  watchLeaseFile,
   writeLead,
   writeStoreFile,
+  writeWatchState,
 } from "./store";
 import type { GatewayNow } from "./wait";
-import { eventLine, type WatchScope, watchPass } from "./watch";
+import { eventLine, PARKED_PASS_MS, WatchEnd, type WatchScope, watchPass } from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
+
+/**
+ * A machine with nothing at work, for `CrewContext.scanFacts`: no containers, no mount points,
+ * no programs, no sessions. Every fact is given, mounts too: a fact left out is read from this
+ * host, and only Linux can list its mount points (`mountPoints`), so a moved-aside folder would
+ * stay everywhere else (D62).
+ */
+const quietScan = () => ({ containers: [], mounts: [], programs: [], sessions: [] });
 
 /** A world with a lead and no crew session. */
 async function leadWorld() {
@@ -122,6 +149,37 @@ async function queuedCrew(
 /** The agent view the fake `claude agents --json` prints. */
 function agentsJson(rows: Array<Record<string, unknown>>): string {
   return JSON.stringify(rows);
+}
+
+/**
+ * A real background program in `cwd`, as a crew session's own check outlives its turn: the
+ * removal signals this test's own child, never a process the test did not start. `crew` is the
+ * crew id its environment carries (`CC_SMART_DEV_KIT_CREW`, which everything a crew session
+ * starts inherits); null starts one that carries none, as a person's dev server does. The
+ * environment is built here, not inherited, so the session that runs the suite cannot leak its
+ * own marker in.
+ */
+async function startProgram(cwd: string, crew: null | string): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", "exec sleep 60"], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(crew === null ? {} : { CC_SMART_DEV_KIT_CREW: crew }),
+    },
+    stderr: "ignore",
+    stdout: "ignore",
+  });
+  // Until the child has run `sleep`, /proc shows the environment it was forked with — the
+  // suite's own — and a removal that read it then would judge the wrong program.
+  for (let tries = 0; tries < 400; tries += 1) {
+    try {
+      if (readFileSync(`/proc/${String(child.pid)}/cmdline`, "utf8").includes("sleep")) break;
+    } catch {
+      break;
+    }
+    await Bun.sleep(5);
+  }
+  return child;
 }
 
 /** One row for the crew session of the world. */
@@ -551,18 +609,180 @@ describe("crew watch", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
   });
 
-  test("D35: a crew session whose turn ended is stopped, and the line says so", async () => {
+  /** Set the crew session's transcript to be last written `minutes` before the tests' clock. */
+  function writeTranscriptAgo(world: Awaited<ReturnType<typeof leadWorld>>, minutes: number): void {
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    mkdirSync(worktree, { recursive: true });
+    const folder = join(world.paths.projectsDir, projectFolderName(worktree));
+    mkdirSync(folder, { recursive: true });
+    const transcript = join(folder, "aaaa1111-2222-3333-4444-555555555555.jsonl");
+    writeFileSync(transcript, "{}\n");
+    const at = new Date(T0 - minutes * 60_000);
+    utimesSync(transcript, at, at);
+  }
+
+  test("WN1: a quiet stretch is said once, again at 3x the quiet minutes, then not again", async () => {
     const world = await leadWorld();
-    await addCrew(world, "done");
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const pass = async (minutes: number): Promise<string[]> => {
+      writeTranscriptAgo(world, minutes);
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      return [...world.out];
+    };
+    // `crew.quietMinutes` is 20: the first line at 21 minutes, the long step at 60.
+    expect(await pass(21)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 21 minutes",
+    ]);
+    for (const minutes of [22, 23, 40, 59]) expect(await pass(minutes)).toEqual([]);
+    expect(await pass(60)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 60 minutes",
+    ]);
+    for (const minutes of [61, 90, 300]) expect(await pass(minutes)).toEqual([]);
+  });
+
+  test("WN1: a write ends a quiet stretch, and a second stretch is said", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const pass = async (minutes: number): Promise<string[]> => {
+      writeTranscriptAgo(world, minutes);
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      return [...world.out];
+    };
+    expect(await pass(25)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 25 minutes",
+    ]);
+    expect(await pass(26)).toEqual([]);
+    // The crew session writes again: the stretch is over.
+    expect(await pass(1)).toEqual([]);
+    // A new stretch starts later.
+    expect(await pass(30)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 30 minutes",
+    ]);
+    expect(await pass(31)).toEqual([]);
+  });
+
+  test("WN1: a wait the person answered is said once as going again, then nothing while it works", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const waiting = world.ctx(
+      {},
+      {
+        FAKE_AGENTS_JSON: agentsJson([
+          agentRowOf({ state: "blocked", status: "waiting", waitingFor: "permission prompt" }),
+        ]),
+      },
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual(["C my-app B6b portal-live: needs you — permission prompt"]);
+    world.out.length = 0;
+    // Still waiting: nothing more.
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual([]);
+    // The person answered: agent view says it works again.
+    const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a quiet stretch first seen past 3x is said once, as the long one", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    writeTranscriptAgo(world, 90);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual(["C my-app B6b portal-live: quiet — nothing written for 90 minutes"]);
+    world.out.length = 0;
+    writeTranscriptAgo(world, 120);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a watch state from before the key (the alert's whole line) says nothing again", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    writeTranscriptAgo(world, 25);
+    // The state an older watch wrote: the line it said, minutes included.
+    writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [ID]: "C my-app B6b portal-live: quiet — nothing written for 24 minutes" },
+    });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a wait begun before the key is still said going again when it ends", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [ID]: "C my-app B6b portal-live: needs you — permission prompt" },
+    });
     await runCrew(
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: stopped — its turn ended"]);
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+  });
+
+  test("WN1: a start-time wait of a starting record is said going again too", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "starting");
+    const waiting = world.ctx(
+      {},
+      {
+        FAKE_AGENTS_JSON: agentsJson([
+          agentRowOf({ state: "blocked", status: "waiting", waitingFor: "trust prompt" }),
+        ]),
+      },
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual(["C my-app B6b portal-live: needs you — trust prompt"]);
+    world.out.length = 0;
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+  });
+
+  test("WN1: a session that was never waiting is not said going again", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual([]);
+  });
+
+  test("D35: a crew session whose turn ended is stopped once, and the record keeps done", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: its session stopped — its turn ended; the record stays done",
+    ]);
     const calls = world.claudeCalls();
     expect(calls).toContainEqual(["stop", "aaaa1111"]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(record?.state).toBe("stopped");
+    // D62: `stopped` means something stopped a crew session before its phase was over; a done
+    // record keeps its outcome, so the watch can still remove it once the lead merges.
+    expect(record?.state).toBe("done");
+    // A pass while agent view still lists the session stops it no second time, and says nothing.
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(1);
   });
 
   test("H101: a failed crew session's session is stopped once, and the record stays failed", async () => {
@@ -666,7 +886,94 @@ describe("crew watch", () => {
     expect(record?.state).toBe("stopped");
   });
 
-  test("D35: a branch the lead merged is marked merged, and the line says who removes it", async () => {
+  test("RX1: a stop the watch made for an idle blocked session is not the lead's call: the merge removes it", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]).toMatchObject({
+      state: "stopped",
+      stoppedByWatch: true,
+    });
+    // The lead never stopped it; it merges the branch without answering.
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    world.out.length = 0;
+
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("removed");
+    expect(record?.mergedWhileStopped).toBe(false);
+    expect(record?.stoppedByWatch).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(world.out[0]).toBe(
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    );
+  });
+
+  test("RX1: the watch's idle stop does not overwrite an answer that arrived while it stopped", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const real = ctx.runProgram;
+    const file = crewFile(world.paths.stateDir, world.repo, ID);
+    ctx.runProgram = (argv, options) => {
+      // The lead's answer brings the session back while `claude stop` runs.
+      if (argv.includes("stop")) {
+        const stored = JSON.parse(readFileSync(file, "utf8"));
+        writeFileSync(file, JSON.stringify({ ...stored, state: "working" }));
+      }
+      return real(argv, options);
+    };
+
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("working");
+    expect(record?.stoppedByWatch).toBeUndefined();
+  });
+
+  test("RX1: the watch's own stop stays removable when the first removal is refused", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // Work nobody committed: the first removal is refused.
+    writeFileSync(join(worktree, "wip.txt"), "unsaved\n");
+    const ctx = world.ctx();
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("merged");
+    // The person commits it; the watch's later pass removes the record.
+    rmSync(join(worktree, "wip.txt"));
+
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.mergedWhileStopped).toBe(false);
+    expect(record?.state).toBe("removed");
+  });
+
+  test("D35: a branch the lead merged is removed by the watch's next pass", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");
     // The crew session's branch is merged into the main checkout's branch.
@@ -681,13 +988,77 @@ describe("crew watch", () => {
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
     expect(world.out).toContain(
-      "C my-app B6b portal-live: merged — the lead merged its branch; `crew rm` removes it",
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(record?.state).toBe("merged");
+    expect(record?.state).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
   });
 
-  test("D35: a branch the lead squash-merged is marked merged too", async () => {
+  test("H2: a real worktree-list failure during auto-removal is one line and the watch continues", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "merged");
+    git(world.repo, "worktree", "add", "-b", record.branch, record.worktree);
+    // No proof lookup is needed for a legacy merged record. Fail the actual list subprocess
+    // used by crew rm, not branchMerged, and count it so this cannot pass on an unrelated path.
+    const log = join(world.bin, "git-list.log");
+    const realGit = Bun.which("git");
+    expect(realGit).not.toBeNull();
+    const fakeGit = join(world.bin, "git");
+    writeFileSync(
+      fakeGit,
+      `#!/bin/sh\nif [ "$1 $2" = "worktree list" ]; then\n  count=0\n  if [ -f "$LIST_LOG" ]; then while IFS= read -r line; do count=$((count + 1)); done < "$LIST_LOG"; fi\n  printf 'list\\n' >> "$LIST_LOG"\n  if [ "$count" = 1 ]; then printf 'injected list failure\\n' >&2; exit 1; fi\nfi\nexec "$REAL_GIT" "$@"\n`,
+    );
+    chmodSync(fakeGit, 0o755);
+    // A later record proves the pass goes on after the refused removal.
+    const later = await addCrew(world, "failed", {
+      id: "later-1a2b3c",
+      name: "C my-app later check",
+      branch: "crew/later",
+      sessionId: "bbbb1111-2222-3333-4444-555555555555",
+      shortId: "bbbb1111",
+    });
+    const ctx = world.ctx(
+      {},
+      {
+        REAL_GIT: realGit ?? "",
+        LIST_LOG: log,
+        FAKE_AGENTS_JSON: agentsJson([
+          agentRowOf({ id: later.shortId, sessionId: later.sessionId }),
+        ]),
+      },
+    );
+    const scope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const first = await watchPass(
+      {
+        noted: true,
+        offset: eventsEndOffset(world.paths.stateDir, world.repo),
+        said: {},
+        parkedAt: T0,
+      },
+      ctx,
+      scope,
+    );
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "crew rm: git worktree list failed: injected list failure",
+      "C my-app later check: its session stopped — it failed; the record stays failed",
+    ]);
+    expect(readFileSync(log, "utf8")).toBe("list\nlist\n");
+    expect(world.claudeCalls()).toContainEqual(["stop", "bbbb1111"]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
+    expect(existsSync(record.worktree)).toBe(true);
+    world.out.length = 0;
+    await watchPass(first.state, ctx, scope);
+    expect(world.out).toEqual([]);
+  });
+
+  test("D35: a branch the lead squash-merged is removed too", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
@@ -703,10 +1074,650 @@ describe("crew watch", () => {
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
     expect(world.out).toContain(
-      "C my-app B6b portal-live: merged — the lead merged its branch; `crew rm` removes it",
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("D62: the watch finishes a removal that stopped halfway, its record still there", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // What `removeWorktree` leaves when git cannot remove the folder it moved aside: the lead's
+    // `crew rm` stopped there, and the record is still `done`.
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    // Marked merged, then removed with `crew rm`'s own steps: the parked folder goes first.
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live")).toBe("");
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("removed");
+    expect(record?.mergedBeforeRemoval).toBe(true);
+  });
+
+  test("D62: the watch finishes a stopped record's moved-aside folder and leaves the record to the lead", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "stopped");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    // The folder was the lead's own removal, left half done: it is finished. The record is
+    // marked merged and stays for the lead's `crew rm` (D62).
+    expect(existsSync(parked)).toBe(false);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
+    expect(record?.mergedWhileStopped).toBe(true);
+    expect(record?.mergeProof).toEqual({
+      head: git(world.repo, "rev-parse", "main^2").trim(),
+      leadRef: "main",
+      leadCommit: git(world.repo, "rev-parse", "main").trim(),
+    });
+  });
+
+  test("D62: the watch finishes a removal that stopped halfway with no record at all", async () => {
+    const world = await leadWorld();
+    // No crew record names this folder, and the repository has no remote: the base it is
+    // judged against is the local branch `worktrees` would use (`main`).
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-ghost");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/ghost", worktree);
+    writeFileSync(join(worktree, "ghost.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "ghost work");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    // The removal had deleted a tracked file of it before it stopped.
+    rmSync(join(parked, "README.md"));
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    // Its commit is safe on the branch the folder stood on.
+    expect(git(world.repo, "log", "--format=%s", "-1", "crew/ghost").trim()).toBe("ghost work");
+  });
+
+  test("D62: the watch finishes a leftover folder git no longer lists, and says so once", async () => {
+    const world = await leadWorld();
+    const folder = join(world.repo, ".claude", "worktrees", "crew-ghost-removing-1761300000000");
+    mkdirSync(join(folder, "docs"), { recursive: true });
+    writeFileSync(join(folder, "docs", "guide.md"), "left\n");
+    const before = new Date(1761300000000 - 60_000);
+    utimesSync(join(folder, "docs", "guide.md"), before, before);
+    const ctx = world.ctx({ scanFacts: quietScan() });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(folder)).toBe(false);
+    expect(world.out).toEqual([
+      `removed ${folder} (left by a removal that stopped halfway; git no longer lists it)`,
+    ]);
+  });
+
+  test("D62: the watch looks for moved-aside folders every few minutes, not on every pass", async () => {
+    const world = await leadWorld();
+    let clock = T0;
+    const ctx = world.ctx({
+      now: () => clock,
+      scanFacts: quietScan(),
+    });
+    const leftover = (name: string): string => {
+      const folder = join(world.repo, ".claude", "worktrees", `${name}-removing-1761300000000`);
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "left.txt"), "left\n");
+      const before = new Date(1761300000000 - 60_000);
+      utimesSync(join(folder, "left.txt"), before, before);
+      return folder;
+    };
+    const first = leftover("crew-one");
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(first)).toBe(false);
+    // A minute later: too soon to look again, however many passes there are.
+    const second = leftover("crew-two");
+    clock = T0 + 60_000;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(second)).toBe(true);
+    // Past the interval: it looks, and finishes it.
+    clock = T0 + PARKED_PASS_MS + 1;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(existsSync(second)).toBe(false);
+  });
+
+  test("D62: the watch leaves a moved-aside folder alone while something is uncommitted in it", async () => {
+    const world = await leadWorld();
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-ghost");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/ghost", worktree);
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    writeFileSync(join(parked, "mine.txt"), "someone's notes\n");
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    // Said nothing, removed nothing: the next pass judges it again.
+    expect(world.out).toEqual([]);
+    expect(existsSync(join(parked, "mine.txt"))).toBe(true);
+  });
+
+  test("D62: a merged one whose own stopped session left a check running is removed after it is stopped", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // It carries the session's marker, as everything the session's Bash started does.
+    const check = await startProgram(worktree, ID);
+    try {
+      const ctx = world.ctx({
+        scanFacts: {
+          ...quietScan(),
+          programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
+        },
+      });
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toContain(
+        "C my-app B6b portal-live: stopped its own leftover programs (check.sh)",
+      );
+      const [record] = listCrew(world.paths.stateDir, world.repo).records;
+      expect(record?.state).toBe("removed");
+      expect(existsSync(worktree)).toBe(false);
+    } finally {
+      if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a merged one with a program someone else started there is kept, with one line said once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // The person's dev server: it carries no marker, however long it has been there — this one
+    // started before the session's turn ended.
+    const server = await startProgram(worktree, null);
+    try {
+      const ctx = world.ctx({
+        scanFacts: {
+          ...quietScan(),
+          programs: [
+            {
+              cwd: worktree,
+              path: "/usr/bin/bun dev",
+              pid: server.pid,
+              startedAt: T0 - 60_000,
+            },
+          ],
+        },
+      });
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toContain(
+        "crew rm: .claude/worktrees/crew-B6b-portal-live is kept: a program runs from its files: bun",
+      );
+      const [record] = listCrew(world.paths.stateDir, world.repo).records;
+      expect(record?.state).toBe("merged");
+      expect(existsSync(worktree)).toBe(true);
+      expect(server.exitCode).toBeNull();
+      // The refusal is said once, not on every pass.
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toEqual([]);
+    } finally {
+      server.kill("SIGKILL");
+    }
+  });
+
+  test("M6/L9: refusal retries throttle stop and unlock, and say refusal before each detail once", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "done");
+    git(world.repo, "worktree", "add", "-b", record.branch, record.worktree);
+    writeFileSync(join(record.worktree, "done.txt"), "done\n");
+    git(record.worktree, "add", ".");
+    git(record.worktree, "commit", "-m", "work");
+    git(world.repo, "merge", "--no-ff", "-m", "merge", record.branch);
+    git(world.repo, "worktree", "lock", "--reason", "claude session test", record.worktree);
+    const realGit = Bun.which("git");
+    const log = join(world.bin, "unlocks.log");
+    const fakeGit = join(world.bin, "git");
+    writeFileSync(
+      fakeGit,
+      `#!/bin/sh\nif [ "$1 $2" = "worktree unlock" ]; then printf 'unlock\\n' >> "$UNLOCK_LOG"; fi\nexec "$REAL_GIT" "$@"\n`,
+    );
+    chmodSync(fakeGit, 0o755);
+    let clock = T0;
+    const ctx = world.ctx(
+      {
+        now: () => clock,
+        scanFacts: { ...quietScan(), containers: [{ name: "db", sources: [record.worktree] }] },
+      },
+      {
+        REAL_GIT: realGit ?? "",
+        UNLOCK_LOG: log,
+        FAKE_STOP: "fail",
+        FAKE_AGENTS_JSON: agentsJson([agentRowOf()]),
+      },
+    );
+    const scope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    let state: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+      parkedAt: T0,
+    };
+    const pass = async () => {
+      world.out.length = 0;
+      const result = await watchPass(state, ctx, scope);
+      state = result.state;
+    };
+    const counts = (expected: number) => {
+      expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(expected);
+      expect(readFileSync(log, "utf8")).toBe("unlock\n".repeat(expected));
+    };
+    await pass();
+    counts(1);
+    expect(world.out.slice(0, 3)).toEqual([
+      'crew rm: .claude/worktrees/crew-B6b-portal-live is kept: Docker container "db" uses its files',
+      "note: claude stop aaaa1111 failed (exit 1): no such session; going on, the check below stops the removal if anything still works in its worktree",
+      "Fix: clear that, then run crew rm again; it never forces",
+    ]);
+    clock += 1;
+    await pass();
+    counts(1);
+    expect(world.out).toEqual([]);
+    clock = T0 + PARKED_PASS_MS;
+    await pass();
+    counts(2);
+    expect(world.out).toEqual([]);
+    // A changed HEAD retries without waiting for the timer, even on an already merged record.
+    git(record.worktree, "commit", "--allow-empty", "-m", "new head");
+    clock += 1;
+    await pass();
+    counts(3);
+    expect(world.out).toEqual([]);
+    // A changed status retries too. Use the same HEAD and no time advance.
+    writeFileSync(join(record.worktree, "notes.txt"), "mine\n");
+    await pass();
+    counts(3); // Dirty work refuses before stop/unlock, proving this retry stays harmless.
+    expect(world.out).toEqual([
+      `crew rm: ${record.worktree} has changes that are not committed (or git cannot read it)`,
+      "Fix: commit or discard them there, then run crew rm again; it never forces",
+    ]);
+    rmSync(join(record.worktree, "notes.txt"));
+    await pass();
+    counts(4);
+    expect(world.out).toEqual([
+      'crew rm: .claude/worktrees/crew-B6b-portal-live is kept: Docker container "db" uses its files',
+    ]);
+    expect(world.err).toEqual([]);
+    expect(existsSync(record.worktree)).toBe(true);
+  });
+
+  test("L12: historical stopped-to-merged evidence keeps a legacy record for its lead", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "stopped");
+    git(world.repo, "worktree", "add", "-b", record.branch, record.worktree);
+    writeFileSync(join(record.worktree, "done.txt"), "done\n");
+    git(record.worktree, "add", ".");
+    git(record.worktree, "commit", "-m", "work");
+    git(world.repo, "merge", "--no-ff", "-m", "merge", record.branch);
+    // Simulate the old writer: it left the transition in events, but not the new field.
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "merged" },
+      T0,
+      "the lead merged its branch; it was stopped",
+    );
+    const { crewFile } = await import("./store");
+    const file = crewFile(world.paths.stateDir, world.repo, record.id);
+    const old = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    delete old.mergedWhileStopped;
+    writeFileSync(file, JSON.stringify(old));
+    const ctx = world.ctx({ scanFacts: quietScan() });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.mergedWhileStopped).toBe(true);
+    expect(existsSync(record.worktree)).toBe(true);
+    expect(world.claudeCalls().some((call) => call[0] === "stop" || call[0] === "rm")).toBe(false);
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    expect(existsSync(record.worktree)).toBe(true);
+  });
+
+  test("L12: a historical stop followed by a resume does not block merged removal", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "stopped");
+    git(world.repo, "worktree", "add", "-b", record.branch, record.worktree);
+    writeFileSync(join(record.worktree, "done.txt"), "done\n");
+    git(record.worktree, "add", ".");
+    git(record.worktree, "commit", "-m", "work");
+    git(world.repo, "merge", "--no-ff", "-m", "merge", record.branch);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "working" },
+      T0,
+      "resumed",
+    );
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "merged" },
+      T0,
+      "merged",
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
+    expect(existsSync(record.worktree)).toBe(false);
+    expect(world.claudeCalls()).toContainEqual(["rm", "aaaa1111"]);
+  });
+
+  test("a merged record with a deleted branch is removed on the next pass", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "merged", { shortId: null });
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
+  });
+
+  test("D35: a merged one with uncommitted work is kept, with one line said once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    writeFileSync(join(worktree, "uncommitted.txt"), "y\n");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    );
+    expect(world.out.some((line) => line.includes("changes that are not committed"))).toBe(true);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    world.out.length = 0;
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toEqual([]);
+  });
+
+  test("D35: a merged one with a queued continuation is kept until that continuation merges", async () => {
+    const world = await leadWorld();
+    const original = await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // A phase it waits for keeps the continuation queued: a queue that could start it would start
+    // it here, and the fake `claude` has no session to give it (it would fail, which releases the
+    // original, RX1).
+    await addCrew(world, "working", {
+      branch: "crew/Z9-hold",
+      id: "Z9-hold-1a2b3c",
+      name: "C my-app Z9 hold",
+      phase: "Z9",
+      sessionId: null,
+      shortId: null,
+      slug: "hold",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-Z9-hold"),
+    });
+    const continuation = await addCrew(world, "queued", {
+      base: null,
+      branch: "crew/B6b-portal-live-2",
+      continues: original.id,
+      id: "B6b-portal-live-2-1a2b3c",
+      name: "C my-app B6b portal-live 2",
+      sessionId: null,
+      shortId: null,
+      waitsFor: ["Z9"],
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
+    });
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to merge",
+    );
+    const kept = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === original.id,
+    );
+    expect(kept?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    // The waiting line is said once.
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).not.toContain("waiting for its continuation");
+    // Starting is not enough: the original stays until the continuation merges.
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      continuation.id,
+      { state: "working" },
+      T0 + 1000,
+      "started",
+    );
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      continuation.id,
+      { state: "merged" },
+      T0 + 2000,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test.each(["removed", "discarded", "failed"])(
+    "RX1: a continuation that is %s before it started releases its merged original",
+    async (ended) => {
+      const world = await leadWorld();
+      const original = await addCrew(world, "done");
+      const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+      git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+      writeFileSync(join(worktree, "done.txt"), "x\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-q", "-m", "the phase");
+      git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+      // Queued, so it has no branch and no worktree; then removed (or failed) before it started.
+      await addCrew(world, ended, {
+        base: null,
+        branch: "crew/B6b-portal-live-2",
+        continues: original.id,
+        id: "B6b-portal-live-2-1a2b3c",
+        name: "C my-app B6b portal-live 2",
+        sessionId: null,
+        shortId: null,
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
+      });
+      const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+      expect(world.out.join("\n")).not.toContain("waiting for its continuation");
+      expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
+      expect(existsSync(worktree)).toBe(false);
+    },
+  );
+
+  test("a handed-off ancestor stays while its continuation has unmerged work", async () => {
+    const world = await leadWorld();
+    const original = await addCrew(world, "handoff");
+    const worktree = original.worktree;
+    git(world.repo, "worktree", "add", "-q", "-b", original.branch, worktree);
+    writeFileSync(join(worktree, "part-one.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "part one");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", original.branch);
+    await addCrew(world, "working", {
+      branch: "crew/next",
+      continues: original.id,
+      id: "next-1a2b3c",
+      name: "C my-app B6b next",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-next"),
+    });
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
+    expect(existsSync(worktree)).toBe(true);
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b next to merge",
+    );
+  });
+
+  test("D62: a handoff is removed once its continuation's work is merged", async () => {
+    const world = await leadWorld();
+    const original = await addCrew(world, "handoff");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "part-one.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "part one");
+    const originalHead = git(worktree, "rev-parse", "HEAD").trim();
+    // Its continuation, cut from the hand-off's branch as `crew start --continue` cuts it.
+    const nextWorktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2");
+    await addCrew(world, "working", {
+      base: { ref: "crew/B6b-portal-live", sha: originalHead },
+      baseRef: "crew/B6b-portal-live",
+      branch: "crew/B6b-portal-live-2",
+      continues: original.id,
+      id: "B6b-portal-live-2-1a2b3c",
+      name: "C my-app B6b portal-live 2",
+      worktree: nextWorktree,
+    });
+    git(
+      world.repo,
+      "worktree",
+      "add",
+      "-q",
+      "-b",
+      "crew/B6b-portal-live-2",
+      nextWorktree,
+      "crew/B6b-portal-live",
+    );
+    writeFileSync(join(nextWorktree, "part-two.txt"), "y\n");
+    git(nextWorktree, "add", ".");
+    git(nextWorktree, "commit", "-q", "-m", "part two");
+    const ctx = world.ctx();
+    // Nothing is merged yet: the hand-off stays, and so does its branch.
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    const stateOf = (id: string) =>
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === id)?.state;
+    expect(stateOf(original.id)).toBe("handoff");
+    expect(existsSync(worktree)).toBe(true);
+    // The lead merges the continuation: the hand-off's own commits are on the base through it.
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live-2");
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    );
+    expect(stateOf(original.id)).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("H3: a three-level continuation waits for its last merge, then every record uses the first base", async () => {
+    const world = await leadWorld();
+    const leadFolder = join(world.repo, ".claude", "worktrees", "lead-other");
+    git(world.repo, "worktree", "add", "-b", "lead-other", leadFolder);
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: leadFolder,
+        name: "LEAD my-app master-plan",
+        plan: "master-plan",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    const chain: CrewRecord[] = [];
+    const heads: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const previous = chain.at(-1);
+      const branch = `crew/chain-${index}`;
+      const worktree = join(world.repo, ".claude", "worktrees", `crew-chain-${index}`);
+      const record = await addCrew(world, index === 2 ? "done" : "handoff", {
+        id: `chain-${index}-1a2b3c`,
+        name: `C my-app chain ${index}`,
+        branch,
+        worktree,
+        shortId: `cccc000${index}`,
+        sessionId: `cccc000${index}-2222-3333-4444-555555555555`,
+        ...(previous === undefined
+          ? {}
+          : {
+              base: { ref: previous.branch, sha: heads[index - 1] ?? "" },
+              baseRef: previous.branch,
+              continues: previous.id,
+            }),
+      });
+      git(world.repo, "worktree", "add", "-b", branch, worktree, previous?.branch ?? "main");
+      writeFileSync(join(worktree, `part-${index}.txt`), `part ${index}\n`);
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-m", `part ${index}`);
+      heads.push(git(worktree, "rev-parse", "HEAD").trim());
+      chain.push(record);
+    }
+    git(world.repo, "merge", "--no-ff", "-m", "first two parts", "crew/chain-1");
+    const ctx = world.ctx({ scanFacts: quietScan() });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    for (const record of chain.slice(0, 2)) {
+      expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
+      expect(existsSync(record.worktree)).toBe(true);
+      expect(world.out).toContain(
+        `${record.name}: merged — waiting for its continuation C my-app chain 2 to merge`,
+      );
+    }
+    expect(readCrew(world.paths.stateDir, world.repo, chain[2]?.id ?? "")?.state).toBe("done");
+    git(world.repo, "merge", "--no-ff", "-m", "last part", "crew/chain-2");
+    const received = git(world.repo, "rev-parse", "main").trim();
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    for (const [index, record] of chain.entries()) {
+      const stored = readCrew(world.paths.stateDir, world.repo, record.id);
+      expect(stored?.state).toBe("removed");
+      expect(stored?.mergedBeforeRemoval).toBe(true);
+      expect(stored?.mergeProof).toMatchObject({ head: heads[index], leadRef: "main" });
+      if (index === 2) expect(stored?.mergeProof?.leadCommit).toBe(received);
+      expect(existsSync(record.worktree)).toBe(false);
+      expect(git(world.repo, "branch", "--list", record.branch)).toBe("");
+      expect(world.claudeCalls()).toContainEqual(["rm", record.shortId ?? ""]);
+    }
+    expect(git(leadFolder, "log", "--format=%s", "-1").trim()).toBe("first");
   });
 
   test("D35: a branch with no commit of its own is never reported merged", async () => {
@@ -722,7 +1733,7 @@ describe("crew watch", () => {
     expect(record?.state).toBe("failed");
   });
 
-  test("D35: the merge is looked for in the lead's own folder, where it merges", async () => {
+  test("D35: the merge is looked for on the record's own base, not the lead's folder", async () => {
     const world = await leadWorld();
     // The lead works in a linked worktree on its own branch; the main checkout stays on main.
     const leadFolder = join(world.repo, ".claude", "worktrees", "lead-folder");
@@ -747,11 +1758,8 @@ describe("crew watch", () => {
       T0,
     );
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: merged — the lead merged its branch; `crew rm` removes it",
-    ]);
-    // The main checkout is still on main, which does not hold the branch: it is the lead's
-    // folder that was asked.
+    // The base is main, which does not hold the branch: the lead's folder is not the judge.
+    expect(world.out).toEqual([]);
     expect(git(world.repo, "branch", "--merged", "main")).not.toContain("crew/B6b-portal-live");
   });
 
@@ -884,7 +1892,40 @@ describe("crew watch", () => {
     ]);
   });
 
-  test("D35: a branch merged after the crew session was stopped is still marked merged", async () => {
+  test("FX1: a done report with an own review says review ✓, not review ✗", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const { recordCrewReport } = await import("./store");
+    const sha = git(world.repo, "rev-parse", "HEAD").trim();
+    const { file } = await recordCrewReport(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      {
+        base: { ref: "main", sha },
+        branch: { name: "crew/B6b-portal-live", sha },
+        changed: { deletions: 0, files: 0, insertions: 0 },
+        checks: [],
+        docs: [],
+        needsLead: [],
+        open: [],
+        outsideBrief: [],
+        ownReview: { findings: [], reason: "the brief asked for no second opinion" },
+        phase: "B6b",
+        pr: null,
+        question: null,
+        review: null,
+        status: "done",
+        tests: { full: null, targeted: [] },
+        version: 1,
+      },
+      T0,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.out).toEqual([`C my-app B6b portal-live: done · review ✓ · report ${file}`]);
+  });
+
+  test("D62: a stopped crew session is marked merged, so its dependents start, and never removed by the watch", async () => {
     const world = await leadWorld();
     await addCrew(world, "stopped");
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
@@ -893,12 +1934,56 @@ describe("crew watch", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-q", "-m", "the phase");
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
-    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toContain(
-      "C my-app B6b portal-live: merged — the lead merged its branch; `crew rm` removes it",
-    );
+    const ctx = world.ctx();
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    // The mark is said, with who removes it: stopping it was the lead's call, and so is this.
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: merged — the lead merged its branch; it was stopped, so `crew rm` removes it",
+    ]);
+    // Later passes remove nothing, however often they look, and say nothing more.
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
+    expect(record?.mergedWhileStopped).toBe(true);
+    expect(existsSync(worktree)).toBe(true);
+    // The lead's own `crew rm` still removes it.
+    expect(await runCrew(["rm", record?.id ?? ""], ctx)).toBe(0);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("D62: a phase that waits for a stopped crew session starts once the lead merged it", async () => {
+    const world = await leadWorld();
+    world.writeConfig({ max: 4 });
+    await addCrew(world, "stopped");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    await queuedCrew(world, {
+      branch: "crew/B6c-next",
+      id: "B6c-next-1a2b3c",
+      name: "C my-app B6c next",
+      phase: "B6c",
+      slug: "next",
+      waitsFor: ["B6b"],
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6c-next"),
+    });
+    const ctx = world.ctx();
+    // Not merged yet: the dependent waits.
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    const stateOf = (id: string) =>
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === id)?.state;
+    expect(stateOf("B6c-next-1a2b3c")).toBe("queued");
+    // The lead merges: the stopped crew session is marked merged, and what waited starts.
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(stateOf(ID)).toBe("merged");
+    expect(stateOf("B6c-next-1a2b3c")).toBe("starting");
   });
 
   test("D25: a queued crew session starts when a place frees, and its start is one line", async () => {
@@ -1161,6 +2246,132 @@ describe("crew watch", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
     expect(world.out).toEqual([`${NAME}: committed`]);
+  });
+
+  test("reminds once a day about stopped unmerged sessions without removing them", async () => {
+    const world = await leadWorld();
+    const stopped = await addCrew(world, "working");
+    git(world.repo, "worktree", "add", "-b", stopped.branch, stopped.worktree);
+    writeFileSync(join(stopped.worktree, "unmerged.txt"), "unmerged work\n");
+    git(stopped.worktree, "add", ".");
+    git(stopped.worktree, "commit", "-m", "unmerged work");
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      stopped.id,
+      { state: "stopped" },
+      T0 - 2 * 86_400_000,
+    );
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const first = await watchPass(
+      { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {}, noted: true },
+      world.ctx({ now: () => T0 }),
+      scope,
+    );
+    expect(world.out).toEqual([
+      `${NAME}: stopped 2 days ago; 1 unmerged commit — crew resume "${NAME}", crew start B6b --continue "${NAME}", or crew rm "${NAME}"`,
+    ]);
+    expect(first.state.stoppedRemindedAt?.[stopped.id]).toBe(T0);
+    world.out.length = 0;
+    const second = await watchPass(first.state, world.ctx({ now: () => T0 + 60_000 }), scope);
+    expect(world.out).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, stopped.id)?.state).toBe("stopped");
+    expect(existsSync(stopped.worktree)).toBe(true);
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([]);
+    await watchPass(second.state, world.ctx({ now: () => T0 + 86_400_000 }), scope);
+    expect(world.out.join("\n")).toContain("crew resume");
+  });
+
+  test.each(["stopped", "done", "failed"])(
+    "does not remind about old %s work after a continuation under another lead",
+    async (state) => {
+      const world = await leadWorld();
+      const original = await addCrew(world, "working");
+      git(world.repo, "worktree", "add", "-b", original.branch, original.worktree);
+      writeFileSync(join(original.worktree, "unmerged.txt"), "unmerged work\n");
+      git(original.worktree, "add", ".");
+      git(original.worktree, "commit", "-m", "unmerged work");
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        original.id,
+        { state },
+        T0 - 2 * 86_400_000,
+      );
+      await addCrew(world, "working", {
+        id: "continued-1a2b3c",
+        branch: "crew/continued",
+        name: "C my-app B6b continued",
+        leadSessionId: OTHER_SESSION,
+        continues: original.id,
+      });
+      const pass = await watchPass(
+        { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {}, noted: true },
+        world.ctx({}, { FAKE_AGENTS_JSON: "[]" }),
+        {
+          leadSessionId: LEAD_SESSION,
+          mergeInto: world.repo,
+          repo: world.repo,
+          resolved: resolveWorkflow(world.paths, null),
+        },
+      );
+      expect(world.out).toEqual([]);
+      expect(pass.state.stoppedRemindedAt?.[original.id]).toBeUndefined();
+      expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe(state);
+    },
+  );
+
+  test("a throttled stopped reminder skips its synchronous merge-tree check", async () => {
+    const world = await leadWorld();
+    const stopped = await addCrew(world, "working");
+    git(world.repo, "worktree", "add", "-b", stopped.branch, stopped.worktree);
+    writeFileSync(join(stopped.worktree, "unmerged.txt"), "unmerged work\n");
+    git(stopped.worktree, "add", ".");
+    git(stopped.worktree, "commit", "-m", "unmerged work");
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      stopped.id,
+      { state: "stopped" },
+      T0 - 2 * 86_400_000,
+    );
+    const realGit = Bun.which("git");
+    if (realGit === null) throw new Error("test requires git");
+    const log = join(world.bin, "merge-tree.log");
+    writeFileSync(log, "");
+    const fakeGit = join(world.bin, "git");
+    writeFileSync(
+      fakeGit,
+      `#!/bin/sh\nif [ "$1" = "merge-tree" ]; then printf 'replay\\n' >> "$MERGE_LOG"; fi\nexec "$REAL_GIT" "$@"\n`,
+    );
+    chmodSync(fakeGit, 0o755);
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: "[]", REAL_GIT: realGit, MERGE_LOG: log });
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const state: WatchState = {
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+      noted: true,
+      parkedAt: T0,
+      stoppedRemindedAt: { [stopped.id]: T0 - 60_000 },
+    };
+    const throttled = await watchPass(state, ctx, scope);
+    // The ordinary merge detection still runs once; no second replay for the hidden reminder.
+    expect(readFileSync(log, "utf8")).toBe("replay\n");
+    expect(world.out).toEqual([]);
+    writeFileSync(log, "");
+    await watchPass(throttled.state, { ...ctx, now: () => T0 + 86_400_000 }, scope);
+    expect(readFileSync(log, "utf8")).toBe("replay\nreplay\n");
+    expect(world.out.join("\n")).toContain("crew resume");
   });
 
   test("D60: the person's own switch, turned off mid-run, starts nothing", async () => {
@@ -1619,6 +2830,89 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 
+  test("WF1: a resume that starts a copy: the record follows it, and the next pass does not mark it stopped", async () => {
+    // The live case (2026-10-25): the record held c7186986, Claude Code opened d7a54fc8, the
+    // record kept the old id, and ten seconds later the watch read the old row as stopped.
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world, {
+      sessionId: "c7186986-0000-1111-2222-333333333333",
+      shortId: "c7186986",
+    });
+    const copy = {
+      id: "a1b2c3d4",
+      pid: 4242,
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      state: "working",
+    };
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    // Its old session has no process; the resume starts a copy, which agent view lists.
+    const old = { id: "c7186986", sessionId: "c7186986-0000-1111-2222-333333333333" };
+    const first = await watchPass(
+      fresh(world),
+      world.ctx(
+        { now: () => T0 },
+        {
+          FAKE_AGENTS_JSON: JSON.stringify([{ ...old, state: "done" }, copy]),
+          FAKE_RESUME: "copy",
+        },
+      ),
+      scope,
+    );
+    expect(world.out).toEqual([
+      `${NAME}: working — the wait is over; it was resumed as session a1b2c3d4 (a copy of c7186986)`,
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    // Ten seconds later agent view says the old session is stopped: it is not this record's any more.
+    const second = await watchPass(
+      first.state,
+      world.ctx(
+        { now: () => T0 + 10_000 },
+        { FAKE_AGENTS_JSON: JSON.stringify([{ ...old, state: "stopped" }, copy]) },
+      ),
+      scope,
+    );
+    expect(second.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+  });
+
+  test("WF1: a resume that prints no session id is one line; it stays paused, and the watch does not try again", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]", FAKE_BG: "noline" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — claude --bg --resume ${record.sessionId} printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again; the watch leaves it paused: ${COMMAND} crew resume "${NAME}" brings it back`,
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+    // A second try could start a second unnamed session: the next pass leaves it alone.
+    const again = await watchPass(
+      done.state,
+      world.ctx({ now: () => T0 + 60_000 }, { FAKE_AGENTS_JSON: "[]", FAKE_BG: "noline" }),
+      scope,
+    );
+    expect(again.lines).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+  });
+
   test("a resume that claude refuses is one line, and the record stays paused", async () => {
     const world = await leadWorld();
     const resolved = resolvedOf(world);
@@ -1638,5 +2932,310 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(1);
     expect(done.state.resumedAt).toBeUndefined();
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+});
+
+/**
+ * WF1: one acting watch per lead. Seen live on 2026-10-25: 13 watches whose monitor had ended
+ * (parent pid 1), up to 30 hours old, up to 5 for one lead, each starting, resuming and stopping
+ * crew sessions and writing the same state file.
+ */
+describe("WF1: one acting watch per lead", () => {
+  /** A step of the crew session in the log: news a watch that acts would say. */
+  async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      T0,
+    );
+  }
+
+  /**
+   * A context whose `sleep` runs `between` once — what happens while the watch waits for its next
+   * pass — and refuses a second wait, so a watch that does not end fails the test, never hangs it.
+   */
+  function waiting(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    between: () => Promise<void>,
+    change: Partial<CrewContext> = {},
+  ): CrewContext {
+    let waits = 0;
+    return world.ctx({
+      ...change,
+      sleep: async () => {
+        waits += 1;
+        if (waits > 1) throw new Error("the watch went on to a third pass");
+        await between();
+      },
+    });
+  }
+
+  /** A lease another watch of this test's own process holds: alive, with a token of its own. */
+  function newer(token = "the-newer-watch"): WatchLease {
+    return { ...currentHolder(), at: T0, token };
+  }
+
+  /** A lease whose process is gone: a pid that ran and ended. */
+  function deadLease(): WatchLease {
+    const ended = Bun.spawnSync(["true"]);
+    return { ...currentHolder(), at: T0, pid: ended.pid, token: "a-watch-that-died" };
+  }
+
+  test("a newer watch takes over: the older one says so once and ends before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const offset = () => readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.offset;
+    let written: number | undefined;
+    const ctx = waiting(world, async () => {
+      // Its first pass held the lease and wrote its state. Then a restarted monitor's watch
+      // takes the lease, and news arrives.
+      written = offset();
+      await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer());
+      await step(world, "tests-green");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    // It ended before its next pass: the step it would have said is left to the newer watch, and
+    // it wrote no state after it lost the lease.
+    expect(world.out).toEqual([
+      `crew watch: a newer watch of this lead runs (pid ${process.pid}); this one ends`,
+    ]);
+    expect(written).toBeGreaterThan(0);
+    expect(offset()).toBe(written);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.token).toBe(
+      "the-newer-watch",
+    );
+  });
+
+  test("a watch takes the lease when it starts, whoever holds it: the newest wins", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer("an-older-watch"));
+    await step(world, "tests-red");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
+    expect(held?.pid).toBe(process.pid);
+    expect(held?.token).not.toBe("an-older-watch");
+  });
+
+  test("a lease whose watch died is free: the watch takes it back and goes on", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = waiting(world, async () => {
+      await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, deadLease());
+      await step(world, "committed");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: committed"]);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.pid).toBe(process.pid);
+  });
+
+  test("a watch whose parent is gone ends, before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let parent = 4100;
+    const ctx = waiting(
+      world,
+      async () => {
+        // Claude Code ended the monitor's shell: the watch was re-parented.
+        parent = 1;
+        await step(world, "tests-green");
+      },
+      { parentPid: () => parent },
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual(["crew watch: the process that started it ended; this watch ends"]);
+  });
+
+  test("a watch whose stdout is closed ends, before it acts", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let closed = false;
+    const ctx = waiting(
+      world,
+      async () => {
+        closed = true;
+        await step(world, "tests-green");
+      },
+      { outputClosed: () => closed },
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
+  });
+
+  // A file mode does not stop root, so this test means nothing there.
+  test.skipIf(process.getuid?.() === 0)(
+    "a lease it cannot read ends the watch as a failed pass does: one line, exit 1",
+    async () => {
+      const world = await leadWorld();
+      await addCrew(world, "working");
+      const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
+      const ctx = waiting(world, async () => {
+        chmodSync(file, 0o000);
+        await step(world, "tests-green");
+      });
+      let code: number;
+      try {
+        code = await runCrew(["watch", "--once", "--timeout", "60"], ctx);
+      } finally {
+        chmodSync(file, 0o600);
+      }
+      expect(code).toBe(1);
+      expect(world.out).toEqual([]);
+      expect(world.err).toHaveLength(1);
+      expect(world.err[0]).toStartWith("crew watch: EACCES");
+    },
+  );
+
+  test("two leads never share a lease", async () => {
+    const world = await leadWorld();
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app other-plan",
+        plan: "other-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    await addCrew(world, "working");
+    // The other lead's watch holds its own lease, alive: this lead's watch acts all the same.
+    await takeWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION, newer("other-lead"));
+    const ctx = waiting(world, async () => {
+      await takeWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION, newer("other-again"));
+      await step(world, "tests-green");
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60", "--lead", LEAD_SESSION], ctx)).toBe(
+      0,
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION)).not.toBe(
+      watchLeaseFile(world.paths.stateDir, world.repo, OTHER_SESSION),
+    );
+    expect(readWatchLease(world.paths.stateDir, world.repo, OTHER_SESSION)?.token).toBe(
+      "other-again",
+    );
+  });
+
+  test("a pass whose watch lost the lease before its resumes resumes nothing", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "paused", {
+      lastPause: { backoffMs: 0, since: "2026-10-21T09:50:00.000Z" },
+      waitingFor: { kind: "unknown", since: "2026-10-21T09:50:00.000Z" },
+    });
+    mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve({ breakers: {}, inUse: null, limits: {}, requests: 10 }),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      // A newer watch took the lease while this pass ran: the check before the resume says so.
+      goesOn: () => Promise.reject(new WatchEnd("print", "a newer watch of this lead runs")),
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    };
+    const state: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    };
+    await expect(
+      watchPass(state, world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]" }), scope),
+    ).rejects.toBeInstanceOf(WatchEnd);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("a pass that may not act now starts no queued crew session; one that may, does", async () => {
+    const world = await leadWorld();
+    await queuedCrew(world);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope = (acts: boolean): WatchScope => ({
+      goesOn: () => Promise.resolve(acts),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    });
+    const state: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    };
+    const queued = () =>
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state;
+    await watchPass(state, world.ctx(), scope(false));
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(queued()).toBe("queued");
+    await watchPass(state, world.ctx(), scope(true));
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(queued()).toBe("starting");
+  });
+
+  test("a store too busy to answer skips a pass; the watch goes on, and says the news after", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const lock = join(crewStoreDir(world.paths.stateDir, world.repo), "lock");
+    let waits = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        waits += 1;
+        if (waits === 1) {
+          // News, then another writer holds the store's lock past the watch's wait.
+          await step(world, "tests-green");
+          writeFileSync(
+            lock,
+            JSON.stringify({ ...currentHolder(), time: Date.now(), token: "another-writer" }),
+          );
+        } else if (waits === 2) {
+          rmSync(lock);
+        } else {
+          throw new Error("the watch went on to a fourth pass");
+        }
+      },
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
+    // The busy pass said nothing and ended nothing; the next one said the news.
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(waits).toBe(2);
+  }, 15_000);
+});
+
+describe("WF1: the lease in the store", () => {
+  test("held by its own token; taken back from a watch that died; never from a live one", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
+    const theirs: WatchLease = { ...currentHolder(), at: T0, token: "theirs" };
+    // No lease yet: free, so it is taken.
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, theirs);
+    const lost = await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine);
+    expect(lost.held).toBe(false);
+    expect(lost.held ? null : lost.holder.token).toBe("theirs");
+    const ended = Bun.spawnSync(["true"]);
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, { ...theirs, pid: ended.pid });
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)?.token).toBe("mine");
+  });
+
+  test("a lease file that cannot be read is free", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    writeStoreFile(watchLeaseFile(stateDir, world.repo, LEAD_SESSION), "{ half a file");
+    expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)).toBeNull();
+    const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
   });
 });

@@ -47,6 +47,8 @@ export interface LiveSourcesDeps {
   paths: CliPaths;
   /** Where the events go (the hub's `publish`), each with its own data (`LiveEvents`). */
   publish: LivePublish;
+  /** Drops the page reads kept for a few seconds; called before crew news is published. */
+  forgetPageReads?: (() => void) | undefined;
   /** The router's port now, or null when no config names one. Read fresh every poll. */
   routerPort: () => null | number;
   /** The heavy-job queue's answer (`/api/jobs`'s shape), built only when its files changed. */
@@ -195,6 +197,9 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
         if (seeding) continue;
         const read = readCrewEvents(deps.paths.stateDir, repo, offset);
         offsets.set(repo, read.offset);
+        // News first drops what the pages kept: the page that reloads on the event must not be
+        // served the heavy read it kept a moment before the change (`api/page-reads.ts`).
+        if (read.events.length > 0) deps.forgetPageReads?.();
         for (const event of read.events) deps.publish("crew", event);
       } catch {
         // One repository's log cannot be read: the next poll tries again.

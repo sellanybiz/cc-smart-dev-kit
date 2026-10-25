@@ -1483,7 +1483,10 @@ export function insideClaudeWorktrees(path: string): boolean {
  * finished-worktree check (`worktrees --remove`, `src/worktrees/`), which removes the folder
  * and the branch only when the worktree is finished.
  */
-export function clearWorktreeNote(path: string, branch: string): string {
+export function clearWorktreeNote(path: string, branch: string, lead = false): string {
+  if (lead) {
+    return `The work of ${branch} is in the base; once nothing remains to do here, leave and remove this lead's worktree with ExitWorktree (action "remove").`;
+  }
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path)
@@ -1554,10 +1557,33 @@ function leadsOf(
   const leads = listLeads(stateDir, repo).records;
   // No session id: which lead merged is unknown, so every lead is another one to tell.
   if (sessionId === null) return { merger: null, others: leads };
+  const merger = leads.find((one) => one.sessionId === sessionId) ?? null;
   return {
-    merger: leads.find((one) => one.sessionId === sessionId) ?? null,
-    others: leads.filter((one) => one.sessionId !== sessionId),
+    merger,
+    others: leads.filter((one) => one.sessionId !== sessionId && !sameLead(one, merger)),
   };
+}
+
+/**
+ * True when `one` is a record of the same lead as `merger` from before the lead's restart. A
+ * restarted lead runs `crew lead` in a new session, which writes a second record (the first stays),
+ * so the two differ in session id and agree in everything the command derives: the plan, the name,
+ * the folder it works in. The name alone is not enough — two leads may share a name in different
+ * folders — and the merging session's own record is no "other lead" to tell.
+ */
+function sameLead(one: LeadRecord, merger: LeadRecord | null): boolean {
+  return (
+    merger !== null &&
+    one.repo === merger.repo &&
+    one.plan === merger.plan &&
+    one.name === merger.name &&
+    one.cwd === merger.cwd
+  );
+}
+
+/** The names of `leads`, each said once: an other lead that restarted has two records. */
+function leadNames(leads: readonly LeadRecord[]): string[] {
+  return [...new Set(leads.map((one) => one.name))];
 }
 
 /**
@@ -1693,8 +1719,17 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
     worktree,
   });
   const notes: string[] = [];
-  if (outcome.clear !== null)
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  if (outcome.clear !== null) {
+    let lead = false;
+    try {
+      lead = listLeads(context.paths.stateDir, repo).records.some(
+        (one) => one.sessionId === input.session_id,
+      );
+    } catch {
+      // The ordinary note still gives ExitWorktree when the lead's store cannot be read.
+    }
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, lead));
+  }
   if (outcome.announce !== null && record !== null) {
     const pr = outcome.announce;
     // The other leads of this repo (D55): the note names them, and each one's watch also gets
@@ -1712,7 +1747,7 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
         pr,
         base,
         project.config?.worktrees?.bases ?? {},
-        found?.others.map((one) => one.name) ?? null,
+        found === null ? null : leadNames(found.others),
       ),
     );
     // The marker first: a merge event written twice is worse than a note the next merge

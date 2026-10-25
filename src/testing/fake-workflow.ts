@@ -50,11 +50,13 @@ export function defaultResolved(): ResolvedWorkflow {
       updateHold: at(false),
     },
     crew: {
+      archiveDays: at(7),
       enabled: at(false),
       handoffPercent: at(70),
       handoffTokens: at(400_000),
       idleStopMinutes: at(10),
       keep: at<string[]>([]),
+      loadPerCore: at(3),
       max: at(24),
       maxOpus: at<null | number>(null),
       maxHours: at(4),

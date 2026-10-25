@@ -30,18 +30,19 @@ export interface HealthProbe {
 }
 
 /**
- * The real `fetch` for a request to this machine's own router: straight, never through a proxy
- * from the environment (`directIfLoopback`). Bun sends a loopback request to `HTTP_PROXY` unless
- * `NO_PROXY` names the host, and a router that runs would then look silent to `launch`, `setup`
- * and `doctor`.
+ * The real `fetch` for every probe of a service on this machine — the router, the portal,
+ * OmniRoute: straight, never through a proxy from the environment (`directIfLoopback`). Bun sends
+ * a loopback request to `HTTP_PROXY` unless `NO_PROXY` names the host, and a service that runs
+ * would then look down to `launch`, `setup` and `doctor`. A host that is not this machine keeps
+ * the environment's proxy settings, so a remote address reaches the same way as a plain `fetch`.
  */
-export const routerFetch: HealthFetch = (url, init) =>
+export const loopbackFetch: HealthFetch = (url, init) =>
   fetch(url, { ...init, ...directIfLoopback(url) });
 
 /** The real network and clock. */
 export function realProbe(): HealthProbe {
   return {
-    fetch: routerFetch,
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms),
   };
@@ -58,7 +59,7 @@ function healthUrl(port: number, path: string = HEALTH_PATH): string {
 /** The router's own health answer, with a short timeout; the reason in words when there is none. */
 export async function routerHealth(
   port: number,
-  fetchImpl: HealthFetch = routerFetch,
+  fetchImpl: HealthFetch = loopbackFetch,
 ): Promise<{ body: unknown } | { error: string }> {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3_000) });

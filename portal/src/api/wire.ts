@@ -219,6 +219,7 @@ export interface SlotsAnswer extends NotSetUp {
   backendNotes: string[];
   breakers: Record<string, OpenBreaker>;
   chains: Record<string, string[]>;
+  effortLevels: string[];
   fallback: Record<string, boolean>;
   models: ModelRow[];
   slots: SlotRow[];
@@ -459,6 +460,7 @@ export type WorkflowKey =
   | "crew.max"
   | "crew.maxOpus"
   | "crew.memoryGb"
+  | "crew.loadPerCore"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"
@@ -467,6 +469,7 @@ export type WorkflowKey =
   | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
+  | "crew.archiveDays"
   | "crew.tag"
   | "switches.statusLine"
   | "switches.sessionNames"
@@ -653,6 +656,7 @@ export interface CrewSummary {
   kind: string;
   lastEvent: null | { at: string; text: string; type: string };
   lastLine: null | string;
+  leadGone: boolean;
   leadName: string;
   leadSessionId: string;
   memory: CrewMemoryPoint[];
@@ -708,7 +712,40 @@ export interface SessionSummary {
   state: "ended" | "idle" | "waiting" | "working";
 }
 
+export interface FinishedSession {
+  id: string;
+  sessionId: string;
+  name: string;
+  folder: string;
+  state: "done" | "stopped";
+  finishedAt: number;
+  ageMs: number;
+}
+
+export interface CrewDiscardFacts {
+  head: string;
+  archiveRef: string;
+  token: string;
+  unmergedCommits: { count: number | null; subjects: string[] };
+  changedFiles: string[];
+  ignoredFiles: string[];
+  lines: string[];
+  question: string;
+}
+
+export interface StoppedCrewItem {
+  discard: { facts: CrewDiscardFacts | null; error: string | null };
+  crew: { id: string; name: string; shortId: null | string; state: string };
+  repo: string;
+  since: string;
+  days: number;
+  unmergedCommits: null | number;
+  line: string;
+}
+
 export interface WorkAnswer {
+  finishedSessions: FinishedSession[];
+  finishedSessionsError: string | null;
   crew: CrewSummary[];
   leads: LeadSummary[];
   folderNote: null | string;
@@ -743,6 +780,8 @@ export interface CrewReport {
   docs: string[];
   needsLead: string[];
   open: string[];
+  /** The crew session's own review, where its brief asked for no second opinion (RG1); null or absent when there is none. */
+  ownReview?: null | { findings: { finding: string; fix: string }[]; reason: string } | undefined;
   outsideBrief: string[];
   phase: string;
   pr: null | number;
@@ -870,6 +909,8 @@ export interface DoctorFailure {
 }
 
 export interface NeedsAnswer {
+  stopped: StoppedCrewItem[];
+  stoppedError: string | null;
   breakers: BreakerNeed[];
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
@@ -1127,8 +1168,10 @@ export const ACTION_NAMES = [
   "project.workflow.propose",
   "project.write",
   "router.restart",
+  "sessions.rm",
   "slot.breaker",
   "slot.check",
+  "slot.effort",
   "slot.fallback",
   "slot.mode",
   "slot.save",
@@ -1198,6 +1241,7 @@ export interface CrewEvent {
   sha?: string | null | undefined;
   note?: string | null | undefined;
   memoryMb?: number | null | undefined;
+  pair?: string | undefined;
   tell?: { [key: string]: unknown; kind: string; to: string[] } | null | undefined;
 }
 

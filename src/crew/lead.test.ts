@@ -6,15 +6,34 @@ import { namesDir } from "../hooks/session-name";
 import { crewWorld, LEAD_SESSION, SESSION_PID, writeSessionRecord } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { runCrewLead } from "./lead";
 import { CREW_STEPS } from "./step";
 import { listLeads, readLead } from "./store";
 
+/** What `crew lead` says first when it finds no plan file for the plan (PL1). */
+const NO_PLAN_FILE =
+  "no plan file for master-plan: its briefs and run records are off; pass --plan-file <path>";
+
 describe("D26: crew lead", () => {
+  test("an explicitly ended lead is recorded; recording the plan again reopens it", async () => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    expect(await runCrewLead({ plan: null, tag: null, end: true }, world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.endedAt).toBe(
+      "2026-10-21T10:00:00.000Z",
+    );
+    expect(world.out.at(-1)).toBe(
+      "ended lead LEAD my-app master-plan; its crew work is kept unless the project base holds it",
+    );
+    await runCrewLead({ plan: null, tag: null }, world.ctx());
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.endedAt).toBeNull();
+  });
   test("D26: the session's record, its LEAD <tag> <plan> name, and the next prompt's name", async () => {
     const world = crewWorld();
     expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
+      NO_PLAN_FILE,
       `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this session takes that name at its next prompt`,
     ]);
     expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)).toEqual({
@@ -22,6 +41,7 @@ describe("D26: crew lead", () => {
       cwd: world.repo,
       name: "LEAD my-app master-plan",
       plan: "master-plan",
+      planFile: null,
       repo: world.repo,
       sessionId: LEAD_SESSION,
       tag: "my-app",
@@ -38,6 +58,7 @@ describe("D26: crew lead", () => {
       "LEAD my-app master-plan",
     );
     expect(world.out).toEqual([
+      NO_PLAN_FILE,
       `lead LEAD my-app master-plan (plain-se): the crew this session starts in ${world.repo} report to it; this session's id cannot carry a session name, so type the next line in this session`,
       "/rename LEAD my-app master-plan",
     ]);
@@ -51,6 +72,7 @@ describe("D26: crew lead", () => {
     );
     expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);
     expect(world.out).toEqual([
+      NO_PLAN_FILE,
       `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this project runs its own lead-notes hook, so type the next line if the name does not appear`,
       "/rename LEAD my-app master-plan",
     ]);
@@ -63,6 +85,7 @@ describe("D26: crew lead", () => {
     writeFileSync(join(namesDir(env), LEAD_SESSION), "LEAD my-app master-plan");
     expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx({}, env))).toBe(0);
     expect(world.out).toEqual([
+      NO_PLAN_FILE,
       `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this session already took that name, and a name given with /rename stays`,
     ]);
   });

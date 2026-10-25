@@ -27,7 +27,13 @@ import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
 import { DiffError, type DiffFacts, diffAgainstBase, outsideBrief } from "./diff";
 import { headSha } from "./step";
-import { addCrewQuestion, type CrewRecord, type HandBackReport, recordCrewReport } from "./store";
+import {
+  addCrewQuestion,
+  type CrewRecord,
+  type HandBackReport,
+  isQuestionOpen,
+  recordCrewReport,
+} from "./store";
 import {
   openTasks,
   readSessionTasks,
@@ -35,6 +41,7 @@ import {
   sessionTasksDir,
   taskListId,
 } from "./tasks";
+import { contextUseOf, transcriptFile } from "./transcript";
 
 /** The statuses a report can end a phase with (`REPORT_STATUSES`). */
 export const REPORT_STATUS_NAMES = ["done", "blocked", "failed", "handoff"] as const;
@@ -74,6 +81,16 @@ const modelReviewFields = z.looseObject({
 });
 
 /**
+ * An own review (`/cc-smart-dev-kit:review`): the review of a phase whose brief asked for no
+ * second opinion. It is the crew session's word, not the review record's, so it carries no
+ * commit, and it names why no second opinion was needed.
+ */
+const ownReviewFields = z.looseObject({
+  findings: z.array(z.looseObject({ finding: z.string().min(1), fix: z.string().min(1) })),
+  reason: z.string().min(1),
+});
+
+/**
  * The part of the report the **model** writes: what only the crew session knows. Everything else —
  * the branch, the base, the counts, the files outside the brief, the review's commit, the pull
  * request — the command fills.
@@ -87,10 +104,17 @@ export const modelReportSchema = z.looseObject({
     .default({ targeted: [], full: null }),
   checks: z.array(checkFields).default([]),
   review: modelReviewFields.nullable().default(null),
+  ownReview: ownReviewFields.nullable().default(null),
   docs: z.array(z.string().min(1)).default([]),
   needsLead: z.array(z.string().min(1)).default([]),
   open: z.array(z.string().min(1)).default([]),
   question: z.string().nullable().default(null),
+  /** The crew session's own words about the phase; an empty one is none. */
+  summary: z
+    .string()
+    .nullable()
+    .default(null)
+    .transform((value) => (value === null || value.trim() === "" ? null : value.trim())),
 });
 
 /** The part of the report the model writes. */
@@ -103,16 +127,18 @@ export type ModelReport = z.infer<typeof modelReportSchema>;
  */
 export function modelPartOf(
   raw: string,
-): { error: string } | { summary: null | string; part: ModelReport } {
+):
+  | { error: string }
+  | { extra: Record<string, unknown>; summary: null | string; part: ModelReport } {
   if (raw.trim() === "") {
-    return { part: modelReportSchema.parse({}), summary: null };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: null };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     // Not JSON: prose, kept as the summary.
-    return { part: modelReportSchema.parse({}), summary: raw.trim() };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: raw.trim() };
   }
   const model = modelReportSchema.safeParse(parsed);
   if (!model.success) {
@@ -122,7 +148,17 @@ export function modelPartOf(
         .join("; ")}`,
     };
   }
-  return { part: model.data, summary: null };
+  return { extra: unknownFieldsOf(model.data), part: model.data, summary: null };
+}
+
+/**
+ * The fields of the JSON part that the report shape does not know (a `measurements` list, a
+ * misspelt `tests`). The shape is loose on purpose, so they parse; they are kept under the
+ * report's `extra`, never dropped and never over a fact the command fills.
+ */
+function unknownFieldsOf(part: ModelReport): Record<string, unknown> {
+  const known = new Set(Object.keys(modelReportSchema.shape));
+  return Object.fromEntries(Object.entries(part).filter(([name]) => !known.has(name)));
 }
 
 /** What `crew report` was asked, already checked to be well formed. */
@@ -262,11 +298,68 @@ function taskLine(task: SessionTask): string {
     : `#${task.id} "${task.subject}" (${task.status})`;
 }
 
-/** The crew session's own question it has not been answered yet, the newest first. */
+/** A test run's words in a refusal: its command and what failed. */
+function runLine(run: { command: string; failed: number }): string {
+  return `\`${run.command}\`: ${run.failed > 0 ? `${run.failed} failed` : "not ok"}`;
+}
+
+/**
+ * What stops a `done` report: red work, and work the lead's gate cannot judge (`plugin/skills/lead`
+ * § 6: the whole suite and the checks green, the review recorded). Read from the report's own
+ * fields, never from its prose. **A suite that never ran is refused too**: "green" is a claim the
+ * lead checks, and a report that makes none is not a green one. A phase that cannot run the
+ * suite reports `blocked` or `failed`, which are never held. An empty list of findings with a
+ * reviewer is a clean review; an `ownReview` stands for the reviewer only with its reason.
+ * Null when the report may go through.
+ */
+export function doneReportRefusal(
+  model: ModelReport,
+  extra: Record<string, unknown> = {},
+): ReportRefusal | null {
+  const red: string[] = [];
+  const full = model.tests.full;
+  if (full !== null && (!full.ok || full.failed > 0)) {
+    red.push(`the whole suite failed (${runLine(full)})`);
+  }
+  for (const run of model.tests.targeted) {
+    if (!run.ok || run.failed > 0) red.push(`a test run failed (${runLine(run)})`);
+  }
+  for (const check of model.checks) {
+    if (!check.ok) {
+      red.push(
+        `the check \`${check.name}\` failed${check.note === null ? "" : ` (${check.note})`}`,
+      );
+    }
+  }
+  const lines: string[] = [];
+  if (red.length > 0) {
+    lines.push(`crew report: a done report cannot carry red work: ${red.join("; ")}`);
+  }
+  if (full === null) {
+    lines.push("crew report: a done report needs the whole suite: none is recorded (`tests.full`)");
+  }
+  if (model.review === null && model.ownReview === null) {
+    lines.push(
+      "crew report: a done report needs a review: none is recorded (a reviewer's `review`, or an `ownReview` where the brief asked for no second opinion)",
+    );
+  }
+  if (lines.length === 0) return null;
+  if (Object.keys(extra).length > 0) {
+    lines.push(
+      `crew report: the part holds fields the report shape does not know (kept under \`extra\`): ${Object.keys(extra).join(", ")}`,
+    );
+  }
+  lines.push(
+    `Fix: fix it and run the whole suite and the checks again, then report \`done\` with the JSON part (\`crew report --status done --file -\`: tests, checks, review); report \`failed\` or \`blocked\` instead when the phase cannot be finished`,
+  );
+  return new ReportRefusal(lines, 1);
+}
+
+/** The crew session's own question that still waits for an answer, the newest first. */
 function openQuestion(record: CrewRecord): null | string {
   for (let index = record.questions.length - 1; index >= 0; index -= 1) {
     const asked = record.questions[index];
-    if (asked?.answer === null) return asked.question;
+    if (asked !== undefined && isQuestionOpen(asked)) return asked.question;
   }
   return null;
 }
@@ -286,6 +379,7 @@ export function buildReport(
   status: ReportStatusName,
   record: CrewRecord,
   summary: null | string = null,
+  extra: Record<string, unknown> = {},
 ): HandBackReport {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal(
@@ -303,14 +397,16 @@ export function buildReport(
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
+    ownReview: model.ownReview,
     phase: record.phase,
     pr: facts.pr,
     question: status === "blocked" ? (model.question ?? openQuestion(record)) : null,
     review,
     status,
-    summary,
+    summary: summary ?? model.summary,
     tests: model.tests,
     version: 1,
+    ...(Object.keys(extra).length === 0 ? {} : { extra }),
   };
 }
 
@@ -417,16 +513,33 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
       ),
     );
   }
+  // A done report is held for red or missing work; every other status carries it on purpose.
+  if (args.status === "done") {
+    const held = doneReportRefusal(model.part, model.extra);
+    if (held !== null) return say(ctx, held);
+  }
   let report: HandBackReport;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary);
+    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
   } catch (error) {
     if (!(error instanceof ReportRefusal)) throw error;
     return say(ctx, error);
   }
   try {
-    const written = await recordCrewReport(ctx.paths.stateDir, repo, record.id, report, ctx.now());
+    // The context its last reply used, for the run record (PL1): the transcript's tail, read once.
+    const context =
+      record.sessionId === null
+        ? null
+        : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+    const written = await recordCrewReport(
+      ctx.paths.stateDir,
+      repo,
+      record.id,
+      report,
+      ctx.now(),
+      context?.tokens ?? null,
+    );
     ctx.print(`report ${report.status} · ${written.file}`);
     return 0;
   } catch (error) {

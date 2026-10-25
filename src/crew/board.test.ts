@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow, usageWindowFile } from "../cli/usage-window";
+import { loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { boardWorld, MINUTE, NOW } from "../testing/board-world";
 import { LEAD_SESSION } from "../testing/crew-world";
@@ -37,6 +38,76 @@ const OPUS_CHAIN = {
 };
 
 describe("crew list", () => {
+  test("list --discarded names recovery and age and excludes pruned archives", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({
+      state: "discarded",
+      atMs: NOW - 3 * 86_400_000,
+      worktree: false,
+    });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      {
+        archive: {
+          ref: `refs/crew-discarded/${record.id}`,
+          head: "a".repeat(40),
+          at: new Date(NOW - 2 * 86_400_000).toISOString(),
+        },
+        archiveHistory: [
+          {
+            ref: `refs/crew-discarded/${record.id}-2`,
+            head: "b".repeat(40),
+            at: new Date(NOW - 3 * 86_400_000).toISOString(),
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(await runCrew(["list", "--discarded"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `C my-app B1 help — discarded 3 days ago — refs/crew-discarded/${record.id}-2`,
+      `  recover: git branch ${record.branch} refs/crew-discarded/${record.id}-2`,
+      `C my-app B1 help — discarded 2 days ago — refs/crew-discarded/${record.id}`,
+      `  recover: git branch ${record.branch} refs/crew-discarded/${record.id}`,
+    ]);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      {
+        archive: {
+          ref: `refs/crew-discarded/${record.id}`,
+          head: "a".repeat(40),
+          at: new Date(NOW - 2 * 86_400_000).toISOString(),
+          prunedAt: new Date(NOW).toISOString(),
+        },
+        archiveHistory: [
+          {
+            ref: `refs/crew-discarded/${record.id}-2`,
+            head: "b".repeat(40),
+            at: new Date(NOW - 3 * 86_400_000).toISOString(),
+            prunedAt: new Date(NOW).toISOString(),
+          },
+        ],
+      },
+      NOW,
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list", "--discarded", "--json"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["[]"]);
+  });
+  test("list --all marks a crew session after its lead has been unknown for more than a day", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["list", "--all"], world.ctx())).toBe(0);
+    expect(world.out.join("\n")).not.toContain("its lead is gone");
+    world.out.length = 0;
+    expect(await runCrew(["list", "--all"], world.ctx({ now: () => NOW + 86_400_001 }))).toBe(0);
+    expect(world.out.join("\n")).toContain("its lead is gone");
+  });
+
   test("newest first; the state is since its last change, not since the last write to the record", async () => {
     const world = await boardWorld();
     const stateDir = world.paths.stateDir;
@@ -332,6 +403,29 @@ describe("crew list", () => {
     world.out.length = 0;
     expect(await runCrew(["list"], world.ctx())).toBe(0);
     expect(world.out[3]).toBe("  held: a place is free; its lead's watch starts it");
+  });
+
+  test("a load that is held says so, and no load average says so once", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ shortId: null, state: "queued", worktree: false });
+    await world.addCrew({
+      phase: "B2",
+      shortId: null,
+      slug: "api",
+      state: "queued",
+      worktree: false,
+    });
+    const busy = world.ctx({ load: () => ({ cores: 8, oneMinute: 50 }) });
+    expect(await runCrew(["list"], busy)).toBe(0);
+    expect(world.out).toContain(
+      "  held: the load is 50 on 8 cores, past 24 (3 for each core); it starts when the load falls",
+    );
+    expect(world.out).not.toContain(loadUnreadLine());
+
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx({ load: () => null }))).toBe(0);
+    expect(world.out.filter((line) => line === loadUnreadLine())).toHaveLength(1);
+    expect(world.out).toContain("  held: a place is free; its lead's watch starts it");
   });
 
   test("another repository's crew sessions are left out, and `--all` brings them in with their folder", async () => {

@@ -8,6 +8,7 @@
  * key and address before a value reaches this module (`.claude/rules/portal.md`).
  */
 
+import { BACKEND_EFFORT_LEVELS } from "../../gateway/targets";
 import { type JobsAnswer, jobsAnswer, readJobs } from "../../jobs/status";
 import { readClaudeMemFacts } from "../../machine/claude-mem-choices";
 import { jobContext } from "../actions";
@@ -157,6 +158,7 @@ export async function slotsAnswer(deps: PageDataDeps): Promise<SlotsAnswer> {
       backendNotes: [],
       breakers: {},
       chains: {},
+      effortLevels: [...BACKEND_EFFORT_LEVELS],
       fallback: {},
       models: [],
       slots: [],

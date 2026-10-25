@@ -11,8 +11,9 @@
  *   nowhere else**: the watch's own acts write events too, so a change it makes is said once, in
  *   the same pass, and never twice.
  * - **agent view** (`claude agents --json --all`), read on every pass: what the sessions are doing
- *   now. It raises three alerts, each said once while it lasts, and none of them an action: a
- *   crew session that waits on a permission prompt or an input ("needs you"), one whose transcript has
+ *   now. It raises alerts, each said once while it lasts, and none of them an action: a
+ *   crew session that waits on a permission prompt or an input ("needs you", and one line when
+ *   the wait is answered), one whose transcript has
  *   not moved for `workflow.crew.quietMinutes` ("quiet"), and one whose turn ended with no
  *   report. It also keeps the store true: a session that failed is `failed`, one that was stopped
  *   by hand is `stopped` — a crew session that is neither running nor reported must not hold a place
@@ -29,37 +30,70 @@
  *   one first, the others 30 s apart and only after the router answered a request since, never
  *   while a slot's breaker is open or a Claude limit is current (`src/crew/wait.ts`);
  * - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
- *   the conversation stays), and a `blocked` one that has idled past
- *   `workflow.crew.idleStopMinutes`;
- * - it marks a crew session **merged** when the lead merged its branch. The removal is `crew rm`'s
- *   work (W1c), and the line says so.
+ *   the conversation stays; the record keeps `done` or `failed`), and a `blocked` one that has
+ *   idled past `workflow.crew.idleStopMinutes`;
+ * - it marks a crew session **merged** when the lead merged its branch, and then **removes it**
+ *   (D62): the same steps `crew rm` runs (`runCrewRm`), never a second copy. A queued or starting
+ *   continuation that still needs the branch holds the removal back until it starts; a refusal —
+ *   a program still runs from the worktree, or work nobody committed — is said once and left for
+ *   the lead. A **stopped** record is marked merged too, so what waits for its phase starts, but
+ *   never removed: that is the lead's call (D62);
+ * - every few minutes it finishes a removal that stopped halfway (`<path>-removing-<time>`).
  *
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
+ *
+ * **One watch acts for a lead: the newest** (WF1). A watch takes its lead's lease in the store
+ * when it starts (`takeWatchLease`), and checks it still holds it before each pass, before it
+ * starts or resumes a session, and before it writes its state (`keepWatchLease`); one that lost it
+ * says so once and ends. A watch also ends when its parent ended (a monitor's shell is gone) or
+ * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
+import { randomUUID } from "node:crypto";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
+import { currentHolder, LockBusyError } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
-import { workOnRef } from "../worktrees/scan";
+import { baseBranch } from "../worktrees/command";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
-import { readCaller, reasonOf } from "./caller";
+import {
+  type ResumedSession,
+  resumedAs,
+  resumeSession,
+  sendMessageLine,
+  UNREADABLE_VIEW_WHY,
+} from "./answer";
+import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
+import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
+import {
+  holdsItsPredecessor,
+  mergeProof,
+  observeLeadPresence,
+  STOPPED_REMINDER_MS,
+  stoppedCrewNeed,
+} from "./lifecycle";
 import { memoryMbOf } from "./memory";
+import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
+import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { startQueued } from "./start";
 import {
   type CrewEvent,
   type CrewRecord,
+  keepWatchLease,
   listCrew,
   listLeads,
   readCrewEvents,
   readReport,
   readWatchState,
   setCrewMemory,
+  takeWatchLease,
   updateCrew,
+  updateCrewIfState,
+  type WatchLease,
   type WatchState,
   writeWatchState,
 } from "./store";
@@ -80,6 +114,23 @@ import {
 export const WATCH_POLL_MS = 20_000;
 
 /**
+ * A watch that must stop acting (WF1): a newer watch of its lead took the lease, the process that
+ * started it ended, or nobody reads its output. Thrown by its check (`WatchScope.goesOn`) before
+ * it acts, and caught once in `runCrewWatch`, which says `line` on `stream` and ends with 0.
+ */
+export class WatchEnd extends Error {
+  override name = "WatchEnd";
+  readonly line: string;
+  readonly stream: "error" | "print";
+
+  constructor(stream: "error" | "print", line: string) {
+    super(line);
+    this.line = line;
+    this.stream = stream;
+  }
+}
+
+/**
  * How long a `starting` crew session may run before its own SessionStart hook has said it reached
  * its worktree (H101). The hook runs within seconds of the session's start; past this, it never
  * did — a crash, `ownHooks` silencing it, or a session outside git — so the watch alerts the lead
@@ -90,12 +141,22 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
 
 /**
  * The states a crew session's work is over in: the watch looks at the lead's merge for each of them,
- * because the merge can come after the crew session was stopped.
+ * because the merge can come after the crew session was stopped. A `stopped` one is marked merged
+ * too — what waits for its phase starts on the merge — but **never removed by the watch (D62)**:
+ * stopping it was the lead's call, and so is its removal (`mergedWhileStopped`, `store.ts`).
+ * The watch's own idle stop of a blocked session is not the lead's call (`stoppedByWatch`).
  */
-const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "stopped"];
+const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
-/** How long one git call may take (a `rev-parse`, a `merge-base`). */
-const GIT_TIMEOUT_MS = 15_000;
+/**
+ * How often the watch looks for folders a removal moved aside and could not remove (D62). One
+ * that stays costs a scan of the whole repository, so a pass every 20 seconds would repeat it
+ * for ever; a few minutes is soon enough for something that is not urgent.
+ */
+export const PARKED_PASS_MS = 5 * 60_000;
+
+/** The key under which the watch remembers it said a look for moved-aside folders failed. */
+const PARKED_SAID_KEY = "watch:parked";
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -116,19 +177,22 @@ function clip(text: string): string {
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}…`;
 }
 
+/** The crew session's report; null when there is none or it cannot be read (the line then says its status alone). */
+function reportOfRecord(record: null | CrewRecord): ReturnType<typeof readReport> {
+  if (record === null || record.reportPath === null) return null;
+  try {
+    return readReport(record.reportPath);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * What a blocked or failed crew session's report says about why, in a few words; null for any other
  * report, or one that cannot be read (the line then says the status alone).
  */
 function reportDetail(record: null | CrewRecord): null | string {
-  if (record === null || record.reportPath === null) return null;
-  let report: ReturnType<typeof readReport>;
-  try {
-    report = readReport(record.reportPath);
-  } catch {
-    // A report that cannot be read leaves the line with its status alone.
-    return null;
-  }
+  const report = reportOfRecord(record);
   if (report === null) return null;
   if (report.status === "blocked" && report.question !== null) {
     return `waits on: ${clip(report.question)}`;
@@ -179,7 +243,11 @@ export function eventLine(
       const parts = [`${name}: ${status}`];
       const detail = reportDetail(record);
       if (detail !== null) parts.push(detail);
-      if (status === "done" || status === "handoff") parts.push(reviewed ? "review ✓" : "review ✗");
+      if (status === "done" || status === "handoff") {
+        // A review is the record's, or the report's own review (RG1: a brief that asked for no second opinion).
+        const hasReview = reviewed || (reportOfRecord(record)?.ownReview ?? null) !== null;
+        parts.push(hasReview ? "review ✓" : "review ✗");
+      }
       if (status === "done" && waits.length > 0) parts.push(`unblocks ${waits.join(", ")}`);
       if (typeof record?.reportPath === "string") parts.push(`report ${record.reportPath}`);
       return parts.join(" · ");
@@ -253,6 +321,42 @@ function isRunning(record: CrewRecord): boolean {
 }
 
 /**
+ * How many times `crew.quietMinutes` a quiet stretch lasts before the watch says it a second time.
+ * One reminder at three times the quiet limit tells the lead a stretch is long (the crew session
+ * may be stuck); a line a minute, as it was, cost the lead a turn each time.
+ */
+const QUIET_LONG_FACTOR = 3;
+
+/** The start of the `said` key of a "needs you" alert: the watch looks for it when the wait ends. */
+const NEEDS_YOU_KEY = "needs-you:";
+
+/**
+ * True when what the watch last said for a crew session was a "needs you": a key (WN1), or the
+ * whole line a watch state written before the key held.
+ */
+function wasNeedsYou(said: string | undefined): boolean {
+  return said !== undefined && (said.startsWith(NEEDS_YOU_KEY) || said.includes(": needs you — "));
+}
+
+/**
+ * True when `said` is what a watch state written before WN1 held for the same alert: the alert's
+ * whole line, or (for a quiet alert, whose line carried the minutes) an older quiet line.
+ */
+function isLegacySaid(said: string | undefined, alert: CrewAlert): boolean {
+  if (said === undefined) return false;
+  return (
+    said === alert.line ||
+    (alert.key.startsWith("quiet") && said.includes(": quiet — nothing written for "))
+  );
+}
+
+/** An alert for a crew session: its `line`, and the `key` the watch compares to say it once. */
+export interface CrewAlert {
+  key: string;
+  line: string;
+}
+
+/**
  * The alert for a running crew session, from agent view; null when there is nothing to say. Each is
  * said once while it lasts, and none is an action:
  *
@@ -262,7 +366,12 @@ function isRunning(record: CrewRecord): boolean {
  *   has not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (H101: the hook
  *   may have crashed, been silenced by `ownHooks`, or run outside git);
  * - it is **quiet**: agent view says working, but its transcript has not been written for
- *   `quietMinutes`.
+ *   `quietMinutes`. The minutes are in the line, so the line is not what is remembered: the
+ *   alert's `key` is. A quiet stretch is said when it starts and once more at `QUIET_LONG_FACTOR`
+ *   times `quietMinutes`, and never again until the crew session writes (WN1).
+ *
+ * The watch says an alert when its `key` differs from the one it said last, and forgets the key
+ * when there is no alert.
  */
 export function crewAlert(
   record: CrewRecord,
@@ -270,52 +379,61 @@ export function crewAlert(
   now: number,
   quietMinutes: number,
   projectsDir: string,
-): null | string {
+): CrewAlert | null {
   if (row === null || !isRunning(record)) return null;
   if (row.state === "blocked" || row.status === "waiting") {
-    return `${record.name}: needs you — ${row.waitingFor ?? "it is waiting"}`;
+    const line = `${record.name}: needs you — ${row.waitingFor ?? "it is waiting"}`;
+    return { key: `${NEEDS_YOU_KEY}${line}`, line };
   }
   if (row.state === "done" && (record.state === "working" || record.state === "starting")) {
-    return `${record.name}: ended its turn with no report`;
+    const line = `${record.name}: ended its turn with no report`;
+    return { key: line, line };
   }
   if (record.state === "starting" && isLiveRow(row)) {
     const since = Date.parse(record.startedAt ?? record.createdAt);
     if (Number.isFinite(since) && now - since > WORKTREE_CONFIRM_MS) {
       // One stable line, so it is said once while the record stays `starting` (the map in the
       // watch's state keeps it from repeating).
-      return `${record.name}: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      const line = `${record.name}: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      return { key: line, line };
     }
   }
   if (row.state === "working" && record.sessionId !== null) {
     const last = changedAt(transcriptFile(projectsDir, record.worktree, record.sessionId));
     if (last !== null && now - last > quietMinutes * 60_000) {
-      return `${record.name}: quiet — nothing written for ${Math.round((now - last) / 60_000)} minutes`;
+      const long = now - last >= QUIET_LONG_FACTOR * quietMinutes * 60_000;
+      return {
+        key: long ? "quiet:long" : "quiet",
+        line: `${record.name}: quiet — nothing written for ${Math.round((now - last) / 60_000)} minutes`,
+      };
     }
   }
   return null;
 }
 
 /**
- * True when the lead merged the branch of `record`: the branch holds a commit of its own, and
- * its work is on the commit `mergeInto` (the lead's folder) is on — `workOnRef`, the answer
- * `crew rm` gives too: its tip is an ancestor (a merge commit), or merging it changes nothing
- * (a squash merge). When git cannot say, the branch is not reported merged.
- *
- * A branch with no commit of its own — a crew session that failed or was stopped before it committed —
- * has its base as its tip, and the base is an ancestor of the lead's branch for that reason alone:
- * it was never merged, and is not reported as merged.
+ * True when the lead merged the branch of `record` into the branch it was cut from
+ * (`record.baseRef`): the branch holds a commit of its own, and its work is on the base —
+ * `mergedIntoBase`, the answer `crew rm` gives too: its tip is an ancestor (a merge commit), or
+ * merging it changes nothing (a squash merge). When git cannot say, the branch is not reported
+ * merged. A branch with no commit of its own has its base as its tip and is not reported merged.
  */
-export function branchMerged(record: CrewRecord, mergeInto: string, ctx: CrewContext): boolean {
-  if (record.base === null) return false;
-  const tip = runGit(
-    mergeInto,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}^{commit}`],
-    ctx.env,
-    GIT_TIMEOUT_MS,
-  );
-  if (!tip.ok || tip.out === "" || tip.out === record.base.sha) return false;
-  const found = workOnRef(mergeInto, "HEAD", tip.out, ctx.env);
+export function branchMerged(record: CrewRecord, ctx: CrewContext): boolean {
+  const found = mergedIntoBase(record, ctx);
   return found === "ancestor" || found === "replay";
+}
+
+/**
+ * Recover the stopped intent of a legacy merged record from its last two distinct states.
+ * Events are newest first. A stop before a resume is not a stopped-to-merged transition.
+ * Missing history cannot prove intent and keeps the legacy policy unchanged.
+ */
+function historicallyMergedWhileStopped(record: CrewRecord, events: readonly CrewEvent[]): boolean {
+  const transitions = events.filter(
+    (event) => event.crew === record.id && ["created", "state", "report"].includes(event.type),
+  );
+  if (transitions[0]?.state !== "merged") return false;
+  return transitions.find((event) => event.state !== "merged")?.state === "stopped";
 }
 
 /** What one pass of the watch works over. */
@@ -326,6 +444,13 @@ export interface WatchScope {
   mergeInto: string;
   repo: string;
   resolved: ResolvedWorkflow;
+  /**
+   * The ref a removal that stopped halfway is judged against when the store no longer knows its
+   * crew session: `origin/<base>`, else the local branch of that name (`watchBase`). Null when
+   * the repository has neither, and then such a folder is left alone rather than judged against
+   * a guess.
+   */
+  base?: null | { label: string; ref: string };
   /**
    * False: this pass starts no queued crew session (`startQueued`). The watch sets it for a pass
    * whose workflow it could not read again — a file it cannot use, **and the person's own
@@ -340,6 +465,14 @@ export interface WatchScope {
    * test reaches a real router's port.
    */
   gateway?: (nowMs: number) => Promise<GatewayNow>;
+  /**
+   * Whether this watch may act now (WF1): true; false when the store was too busy to say (its
+   * lock), so it acts on nothing this time and asks again later; and it throws `WatchEnd` when it
+   * may never act again — it lost its lead's lease, its parent ended, or nobody reads its output.
+   * The pass asks again right before it starts queued crew sessions and before it resumes a
+   * paused one: each launches a Claude session. Left out (a test's own pass): always true.
+   */
+  goesOn?: () => Promise<boolean>;
 }
 
 /**
@@ -364,6 +497,16 @@ export function failedStopLine(record: CrewRecord): string {
 }
 
 /**
+ * The one line the watch says when it ends the session of a crew session whose turn ended (D35).
+ * **The record keeps `done`.** A `stopped` record means a crew session something stopped before
+ * its phase was over, and D62 leaves that one's removal to the lead: were a finished turn written
+ * `stopped`, every auto-removal below would be dead.
+ */
+export function doneStopLine(record: CrewRecord): string {
+  return `${record.name}: its session stopped — its turn ended; the record stays done`;
+}
+
+/**
  * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
  * Null when done; else why not, for an alert.
  */
@@ -372,18 +515,20 @@ async function stopCrew(
   state: "merged" | "stopped",
   reason: string,
   ctx: CrewContext,
-  row: null | AgentRow,
 ): Promise<null | string> {
   const why = await stopSession(record, ctx);
   if (why !== null) return why;
-  await updateCrew(
+  // The record was read a pass ago: a record that moved on while the session stopped (the lead's
+  // answer brought it back as a copy) is not written over. The next pass reads it again.
+  await updateCrewIfState(
     ctx.paths.stateDir,
     record.repo,
     record.id,
-    { state },
+    [record.state],
+    // A stop the watch makes is its own, not the lead's call (`stoppedByWatch`).
+    { state, ...(state === "stopped" ? { stoppedByWatch: true } : {}) },
     ctx.now(),
     reason,
-    memoryMbOf(row?.pid ?? null),
   );
   return null;
 }
@@ -433,23 +578,36 @@ const RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
 type ResumeMark = Pick<WatchState, "resumedAt" | "routerRequests">;
 
 /**
+ * The `said` key that holds a paused crew session back from the watch's resumes: its last resume
+ * may have started a session the kit could not name (`ResumeResult.unnamed`), and a second try
+ * could start a second one. The lead's own `crew resume` brings it back; the key goes when the
+ * record is no longer `paused`.
+ */
+function resumeHoldKey(id: string): string {
+  return `resume-hold:${id}`;
+}
+
+/**
  * Resumes the ready paused crew sessions of one pass (D42): **one at a time**. The first of a
  * wave is the canary. Each further one waits `RESUME_SPACING_MS` after the resume before it,
  * and only goes once the router answered a request since (`routerAnsweredSince`); a pass that
- * may not resume yet says nothing, because nothing changed.
+ * may not resume yet says nothing, because nothing changed. A crew session held back
+ * (`resumeHoldKey`) is skipped.
  */
 async function resumePaused(
   paused: readonly CrewRecord[],
   state: WatchState,
+  said: Record<string, string>,
   ctx: CrewContext,
   gateway: (nowMs: number) => Promise<GatewayNow>,
+  goesOn: () => Promise<boolean>,
   agents: null | AgentRow[],
   say: (line: string) => void,
 ): Promise<null | ResumeMark> {
   const now = ctx.now();
   const facts = await gateway(now);
   const ready = paused
-    .filter((one) => waitOver(one, facts, now))
+    .filter((one) => said[resumeHoldKey(one.id)] === undefined && waitOver(one, facts, now))
     .sort(
       (a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt),
     );
@@ -460,8 +618,13 @@ async function resumePaused(
     if (now - last < RESUME_SPACING_MS) return null;
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
+  // Only the watch that holds its lead's lease resumes (WF1): two would start two sessions.
+  if (!(await goesOn())) return null;
+  const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
+  const one = await resumeOne(next, ctx, now, agents, say, held);
+  if (one.unnamed) said[resumeHoldKey(next.id)] = held;
   // A resume that failed is no resume: the next pass tries again, and the others wait for it.
-  if (!(await resumeOne(next, ctx, now, agents, say)).ok) return null;
+  if (!one.ok) return null;
   return { resumedAt: now, routerRequests: facts.requests };
 }
 
@@ -472,6 +635,10 @@ export interface OneResume {
   stored: boolean;
   /** A message to a session that still has a process, or a resume of one that has none. */
   way: "message" | "resume";
+  /** The short id of the session that runs now: the record's own, or the copy a resume started. */
+  shortId: null | string;
+  /** True when the resume may have started a session it could not name (`ResumeResult`). */
+  unnamed: boolean;
 }
 
 /**
@@ -480,9 +647,12 @@ export interface OneResume {
  * only a session holds that tool), `claude --bg --resume <id> "<text>"` in its worktree, with its
  * own settings and MCP files, for one whose session has none. **One home for bringing a paused
  * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
- * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
- * that fails is one line, and the record stays `paused`; so is an agent view that cannot be read —
- * it could be either, and a copy is worse than a second try.
+ * `working` again in the same act, so nothing resumes it twice and it holds its place — with the
+ * session the resume brought back (WF1: every crew resume is a copy with a new id), so the record
+ * never names a session that is gone. A resume that fails is one line, and the record stays
+ * `paused`; so is an agent view that cannot be read — it could be either, and a copy is worse than
+ * a second try. `unnamedNote` ends the line of a resume that may have started a session it could
+ * not name (the watch says it holds the record back).
  */
 export async function resumeOne(
   record: CrewRecord,
@@ -490,8 +660,10 @@ export async function resumeOne(
   now: number,
   agents: null | AgentRow[],
   say: (line: string) => void,
+  unnamedNote: null | string = null,
 ): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
+  const failed = { ok: false, shortId: record.shortId, stored: false, way: "resume" } as const;
   if (agents === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     const why =
@@ -499,32 +671,46 @@ export async function resumeOne(
         ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
         : UNREADABLE_VIEW_WHY;
     say(`${record.name}: not resumed — ${why}`);
-    return { ok: false, stored: false, way: "resume" };
+    return { ...failed, unnamed: false };
   }
   if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
     const stored = await sayResumed(
       record,
       "the wait is over; the message to it wakes it",
+      null,
       ctx,
       now,
       say,
     );
-    return { ok: true, stored, way: "message" };
+    return { ok: true, shortId: record.shortId, stored, unnamed: false, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
-    say(`${record.name}: not resumed — ${resumed.why}`);
-    return { ok: false, stored: false, way: "resume" };
+    const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
+    say(`${record.name}: not resumed — ${resumed.why}${note}`);
+    return { ...failed, unnamed: resumed.unnamed };
   }
-  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return { ok: true, stored, way: "resume" };
+  const { session } = resumed;
+  const stored = await sayResumed(
+    record,
+    `the wait is over; it was resumed${resumedAs(record, session.shortId)}`,
+    session,
+    ctx,
+    now,
+    say,
+  );
+  return { ok: true, shortId: session.shortId, stored, unnamed: false, way: "resume" };
 }
 
-/** Records a resumed crew session `working` with its wait cleared; false (and one line) when the store cannot. */
+/**
+ * Records a resumed crew session `working` with its wait cleared, and with the session a resume
+ * brought back (null: a message woke its own); false (and one line) when the store cannot.
+ */
 async function sayResumed(
   record: CrewRecord,
   text: string,
+  session: null | ResumedSession,
   ctx: CrewContext,
   now: number,
   say: (line: string) => void,
@@ -534,13 +720,19 @@ async function sayResumed(
       ctx.paths.stateDir,
       record.repo,
       record.id,
-      { state: "working", waitingFor: undefined },
+      {
+        state: "working",
+        waitingFor: undefined,
+        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+      },
       now,
       text,
     );
     return true;
   } catch (error) {
-    say(`${record.name}: resumed, but the store could not record it: ${reasonOf(error)}`);
+    // A copy that runs while the record still names the old session: the line names the copy.
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    say(`${record.name}: resumed${as}, but the store could not record it: ${reasonOf(error)}`);
     return false;
   }
 }
@@ -553,6 +745,8 @@ export async function watchPass(
 ): Promise<{ lines: number; state: WatchState }> {
   const { repo, resolved } = scope;
   const said = { ...state.said };
+  const removals = { ...state.removals };
+  const stoppedRemindedAt = { ...state.stoppedRemindedAt };
   let noted = state.noted;
   let lines = 0;
   const say = (line: string): void => {
@@ -575,6 +769,12 @@ export async function watchPass(
 
   // What the sessions are doing now.
   const agents = agentRows(ctx);
+  await observeLeadPresence(
+    ctx.paths.stateDir,
+    listLeads(ctx.paths.stateDir, repo).records,
+    agents,
+    ctx.now(),
+  );
   const mine = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId,
   );
@@ -587,9 +787,25 @@ export async function watchPass(
       resolved.crew.quietMinutes.value,
       ctx.paths.projectsDir,
     );
-    if (alert !== null && said[record.id] !== alert) {
-      say(alert);
-      said[record.id] = alert;
+    // A wait that ended while the record is still at work: the lead holds the "needs you" it
+    // heard, so it hears once that the person answered it (WN1). A start-time prompt (trust,
+    // permission) is a wait of a `starting` record too.
+    if (
+      wasNeedsYou(said[record.id]) &&
+      alert?.key.startsWith(NEEDS_YOU_KEY) !== true &&
+      row?.state === "working" &&
+      (record.state === "working" || record.state === "starting")
+    ) {
+      say(`${record.name}: going again — the wait is answered`);
+    }
+    // A watch state written before WN1 holds the alert's whole line, not its key: the same alert
+    // is already said, so its key is taken in silently (one repeated line per open alert on the
+    // first pass after an update is what the key exists to stop).
+    if (alert !== null && isLegacySaid(said[record.id], alert)) {
+      said[record.id] = alert.key;
+    } else if (alert !== null && said[record.id] !== alert.key) {
+      say(alert.line);
+      said[record.id] = alert.key;
     } else if (alert === null) {
       delete said[record.id];
     }
@@ -625,8 +841,25 @@ export async function watchPass(
 
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
-  for (const record of listCrew(ctx.paths.stateDir, repo).records) {
+  const allRecords = listCrew(ctx.paths.stateDir, repo).records;
+  // The log only grows (`events.jsonl` is never cut), and a pass runs every 20 seconds: it is read
+  // once, and only when a record needs it (a stopped-session reminder, a legacy merge).
+  let eventsRead: CrewEvent[] | undefined;
+  const events = (): readonly CrewEvent[] => {
+    eventsRead ??= readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
+    return eventsRead;
+  };
+  for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
+    const lastReminder = stoppedRemindedAt[record.id];
+    // Check spacing before the shared need runs synchronous git merge proof.
+    if (lastReminder === undefined || ctx.now() - lastReminder >= STOPPED_REMINDER_MS) {
+      const need = stoppedCrewNeed(record, events, ctx, allRecords);
+      if (need !== null) {
+        say(need.line);
+        stoppedRemindedAt[record.id] = ctx.now();
+      }
+    }
     const row = agents === null ? null : rowOf(agents, record);
     // Its session is in agent view and is neither stopped nor dead: it may still hold a process
     // (a session whose turn ended keeps one, D35). A session that crashed has nothing to stop.
@@ -635,19 +868,130 @@ export async function watchPass(
     let refusal: null | string = null;
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
-    if (OVER_STATES.includes(record.state) && branchMerged(record, scope.mergeInto, ctx)) {
-      const reason = "the lead merged its branch; `crew rm` removes it";
-      if (listed) {
-        refusal = await stopCrew(record, "merged", reason, ctx, row);
-      } else {
+    if (
+      OVER_STATES.includes(record.state) &&
+      (record.state === "merged" || branchMerged(record, ctx))
+    ) {
+      // Stopped by the lead (D62), not by the watch's own idle stop (`stoppedByWatch`, RX1).
+      const wasStopped = record.state === "stopped" && record.stoppedByWatch !== true;
+      // Marked once: a record that is merged already is not written again on every pass.
+      if (record.state !== "merged") {
+        const proof = mergeProof(record, ctx);
+        if (proof === undefined) continue;
         await updateCrew(
           ctx.paths.stateDir,
           record.repo,
           record.id,
-          { state: "merged" },
+          { state: "merged", mergeProof: proof },
           ctx.now(),
-          reason,
+          wasStopped
+            ? "the lead merged its branch; it was stopped, so `crew rm` removes it"
+            : "the lead merged its branch; the watch removes it",
         );
+      }
+      // D62: stopping a crew session was the lead's call, and so is removing it. It is marked
+      // merged all the same — what waits for its phase starts on the merge — and left for
+      // `crew rm`. The store keeps the fact (`mergedWhileStopped`), so a later pass sees it too.
+      if (wasStopped || record.mergedWhileStopped === true) continue;
+      if (
+        record.state === "merged" &&
+        record.mergedWhileStopped === undefined &&
+        historicallyMergedWhileStopped(record, events())
+      ) {
+        await updateCrew(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          { mergedWhileStopped: true },
+          ctx.now(),
+        );
+        continue;
+      }
+      // Keep the chain's records until every later continuation's work is on its first base.
+      // The records are also the proof of that base for later removals.
+      const descendants = new Set([record.id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const one of allRecords) {
+          if (one.continues != null && descendants.has(one.continues) && !descendants.has(one.id)) {
+            descendants.add(one.id);
+            grew = true;
+          }
+        }
+      }
+      const continuations = allRecords.filter(
+        (one) =>
+          one.id !== record.id &&
+          descendants.has(one.id) &&
+          holdsItsPredecessor(one) &&
+          !(one.state === "merged" || (one.state === "removed" && one.mergedBeforeRemoval)) &&
+          !branchMerged(one, ctx),
+      );
+      if (continuations.length > 0) {
+        const line = `${record.name}: merged — waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to merge`;
+        if (said[stopKey] !== line) {
+          say(line);
+          said[stopKey] = line;
+        }
+        continue;
+      }
+      // Retry refusals only when the folder changes, or after the parked-folder interval.
+      const head = runGit(record.worktree, ["rev-parse", "HEAD"], ctx.env);
+      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
+      const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
+      const previous = removals[record.id];
+      if (
+        previous !== undefined &&
+        previous.signature === signature &&
+        ctx.now() - previous.at < PARKED_PASS_MS
+      )
+        continue;
+      removals[record.id] = { at: ctx.now(), signature };
+      // The watch removes it by itself, with the same steps `crew rm` runs.
+      const captured: string[] = [];
+      const capture = {
+        ...ctx,
+        error: (line: string) => {
+          captured.push(line);
+        },
+        print: (line: string) => {
+          captured.push(line);
+        },
+      };
+      let code: number;
+      try {
+        code = await runCrewRm(record.id, capture, { skipParked: true });
+      } catch (error) {
+        captured.push(`crew rm: ${reasonOf(error)}`);
+        code = 1;
+      }
+      if (code !== 0) {
+        refusal =
+          captured.find((line) => line.startsWith("crew rm:")) ??
+          captured.at(-1) ??
+          "the removal refused";
+        if (said[stopKey] !== refusal) {
+          say(refusal);
+          said[stopKey] = refusal;
+        }
+      }
+      for (const line of captured.filter(
+        (one) =>
+          one.startsWith("Fix:") || one.startsWith("note:") || one.startsWith("  the worktree"),
+      )) {
+        const key = `${record.id}:detail:${line}`;
+        if (said[key] !== line) {
+          say(line);
+          said[key] = line;
+        }
+      }
+      // A removal that stopped the programs a finished turn left running says so once (D62):
+      // the lead needs to know, and the rest of the removal's own lines stay captured.
+      const stopped = captured.find((line) => line.includes(LEFTOVER_STOP_MARK));
+      if (code === 0 && stopped !== undefined && said[stopKey] !== stopped) {
+        say(stopped);
+        said[stopKey] = stopped;
       }
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a
@@ -661,7 +1005,16 @@ export async function watchPass(
         news = line;
       }
     } else if (record.state === "done" && listed) {
-      refusal = await stopCrew(record, "stopped", "its turn ended", ctx, row);
+      // Its session ends; its record keeps `done` (D62: `stopped` is for a phase something
+      // stopped before it ended, and its removal is the lead's call). Stopped once: the mark
+      // in `said` remembers it while agent view catches up.
+      const line = doneStopLine(record);
+      if (said[stopKey] !== line) {
+        refusal = await stopSession(record, ctx);
+        if (refusal === null) news = line;
+      } else {
+        news = line;
+      }
     } else if (record.state === "blocked" && listed) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
       if (Number.isFinite(idle) && idle > resolved.crew.idleStopMinutes.value * 60_000) {
@@ -671,7 +1024,6 @@ export async function watchPass(
           "stopped",
           `it has been blocked for ${minutes} minutes; an answer brings it back`,
           ctx,
-          row,
         );
       }
     }
@@ -687,13 +1039,37 @@ export async function watchPass(
     }
   }
 
+  // Removals that stopped halfway are finished here too (D62): a folder a removal moved aside
+  // (`<path>-removing-<time>`) and could not remove, whether or not the store still knows its
+  // crew session. After the loop above, so a crew session whose branch this folder's removal
+  // deletes was marked merged first — what waits for its phase starts on that mark. A folder
+  // that stays is not news; a later look judges it again, every `PARKED_PASS_MS`.
+  let parkedAt = state.parkedAt;
+  if (parkedAt === undefined || ctx.now() - parkedAt >= PARKED_PASS_MS) {
+    parkedAt = ctx.now();
+    try {
+      await finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+    } catch (error) {
+      // A look that fails never ends the watch: it is said once, and tried again later.
+      const line = `crew watch: could not look for folders a removal left half done: ${reasonOf(error)}`;
+      if (said[PARKED_SAID_KEY] !== line) {
+        ctx.error(line);
+        said[PARKED_SAID_KEY] = line;
+      }
+    }
+  }
+
   // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) {
-    if (scope.mayStart !== false) await startQueued(record, ctx, resolved);
+    // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
+    // a start launches Claude, and a newer watch may have taken over during the one before.
+    if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
+      await startQueued(record, ctx, resolved, scope.mergeInto);
+    }
     // A phase that was removed before its work was merged releases nothing, so this one never
     // starts by itself: say it once, with the way to drop the wait (a phase that was merged
     // before its removal started it, and the start's own state event is its line).
@@ -707,19 +1083,38 @@ export async function watchPass(
     }
   }
 
+  // Model or effort changes the lead asked for that a cap held back (`crew model`, MC1): applied
+  // once the caps allow, by the watch that holds its lead's lease like any start.
+  if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
+    await applyPendingModels(
+      here.filter((one) => one.leadSessionId === scope.leadSessionId && one.pendingLaunch),
+      ctx,
+      resolved,
+      say,
+    );
+  }
+
   // Crew sessions that wait out a limit: resume them once the gateway answers again (D42), one
   // at a time, and never while a breaker is open or a limit is current.
   const paused = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId && one.state === "paused",
   );
+  // A hold lasts while its record stays paused: once the lead brought it back, it goes.
+  for (const key of Object.keys(said)) {
+    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+      delete said[key];
+    }
+  }
   const marked =
     paused.length === 0
       ? null
       : await resumePaused(
           paused,
           state,
+          said,
           ctx,
           scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)),
+          scope.goesOn ?? (() => Promise.resolve(true)),
           agents,
           say,
         );
@@ -732,10 +1127,13 @@ export async function watchPass(
     lines,
     state: {
       noted,
+      removals,
+      stoppedRemindedAt,
       offset,
       said,
       ...(resumedAt === undefined ? {} : { resumedAt }),
       ...(routerRequests === undefined ? {} : { routerRequests }),
+      parkedAt,
     },
   };
 }
@@ -753,6 +1151,23 @@ export function leadOf(
   if (named !== null) return named;
   if (sessionId !== null) return sessionId;
   return leadSessionIds.length === 1 ? (leadSessionIds[0] ?? null) : null;
+}
+
+/**
+ * The ref a removal that stopped halfway is judged against when its record is gone: the base
+ * `worktrees` judges against (`baseBranch`: the project's `worktrees.base`, else the remote's
+ * default branch, else `main`) as `origin/<base>`, else — a repository with no remote — the
+ * local branch of that name. Null when neither is there, and then such a folder is left alone:
+ * nothing is judged against a guess.
+ */
+function watchBase(caller: Caller, ctx: CrewContext): null | { label: string; ref: string } {
+  const { base } = baseBranch(caller.checkout, ctx.env, caller.repo);
+  for (const ref of [`refs/remotes/origin/${base}`, `refs/heads/${base}`]) {
+    if (runGit(caller.repo, ["rev-parse", "--verify", "--quiet", ref], ctx.env).ok) {
+      return { label: base, ref };
+    }
+  }
+  return null;
 }
 
 /** `crew watch`; the exit code. */
@@ -781,6 +1196,76 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   }
   // The lead merges in its own folder; where that is gone, in the main checkout.
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
+  // **One acting watch per lead: the newest wins** (WF1). A monitor the lead restarts is its
+  // intent, so this watch takes the lease whoever holds it, and the one it replaces ends at its
+  // next look. Before the state is read, so this watch goes on from where the last one wrote.
+  const lease: WatchLease = { ...currentHolder(), at: ctx.now(), token: randomUUID() };
+  try {
+    await takeWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+  } catch (error) {
+    ctx.error(`crew watch: could not take this lead's watch lease: ${reasonOf(error)}`);
+    return 1;
+  }
+  const parent = ctx.parentPid?.() ?? null;
+  const goesOn = async (): Promise<boolean> => {
+    // Claude Code ends a monitor by ending its shell, and the watch is re-parented: nobody
+    // started it any more, and nobody reads it.
+    if (parent !== null && ctx.parentPid?.() !== parent) {
+      throw new WatchEnd("error", "crew watch: the process that started it ended; this watch ends");
+    }
+    if (ctx.outputClosed?.() === true) {
+      throw new WatchEnd("error", "crew watch: nobody reads its output any more; this watch ends");
+    }
+    let kept: Awaited<ReturnType<typeof keepWatchLease>>;
+    try {
+      kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    } catch (error) {
+      // Another writer held the store's lock past its wait: this watch cannot say whether it
+      // still holds the lease, so it acts on nothing now and asks again at its next look. A
+      // monitor that ended is not started again, so a busy moment must not end it.
+      if (error instanceof LockBusyError) return false;
+      throw error;
+    }
+    if (!kept.held) {
+      throw new WatchEnd(
+        "print",
+        `crew watch: a newer watch of this lead runs (pid ${kept.holder.pid}); this one ends`,
+      );
+    }
+    return true;
+  };
+  try {
+    return await watchLoop(args, ctx, {
+      base: watchBase(read.caller, ctx),
+      goesOn,
+      leadSessionId,
+      mergeInto,
+      repo,
+      resolved,
+    });
+  } catch (error) {
+    // The one way a watch ends by itself: it says why once, and ends well. Anything else — a
+    // store it cannot read or lock — ends it the way a failed pass does.
+    if (error instanceof WatchEnd) {
+      (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+      return 0;
+    }
+    ctx.error(`crew watch: ${reasonOf(error)}`);
+    return 1;
+  }
+}
+
+/**
+ * The watch's passes, one every `WATCH_POLL_MS`, each after `scope.goesOn` said this watch may
+ * still act, and its state written only while it holds the lease. `--once` ends on the first pass
+ * with news, `--timeout` on its deadline.
+ */
+async function watchLoop(
+  args: WatchArgs,
+  ctx: CrewContext,
+  start: WatchScope & { goesOn: () => Promise<boolean> },
+): Promise<number> {
+  const { goesOn, leadSessionId, repo, resolved } = start;
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
@@ -797,6 +1282,13 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
+    // Before it acts: a watch that may not act any more ends here (`WatchEnd`), and one whose
+    // store is too busy to say acts on nothing this time.
+    if (!(await goesOn())) {
+      if (deadline !== null && ctx.now() >= deadline) return 0;
+      await ctx.sleep(WATCH_POLL_MS);
+      continue;
+    }
     const reread = readCaller("watch", ctx, { session: "optional" });
     let mayStart = true;
     if (reread.ok) {
@@ -813,16 +1305,20 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
         capsSaid = true;
       }
     }
-    const scope: WatchScope = { leadSessionId, mergeInto, mayStart, repo, resolved: caps };
+    const scope: WatchScope = { ...start, mayStart, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
     } catch (error) {
+      if (error instanceof WatchEnd) throw error;
       ctx.error(`crew watch: ${reasonOf(error)}`);
       return 1;
     }
     state = pass.state;
-    writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
+    // Only the lease holder writes the state: a watch that lost the lease while this pass ran
+    // leaves it to the newer one, which goes on from what it read. A busy store keeps it in
+    // memory for the next write.
+    if (await goesOn()) writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
     // `--once` ends on the next change: the lead runs it in the background, and its end
     // starts the lead's next turn. A pass with nothing to say waits for the next one — a
     // watch that ended at once would wake the lead with no news, over and over.

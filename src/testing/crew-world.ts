@@ -7,6 +7,10 @@
  * The fake's answers are chosen per test through its environment:
  *   FAKE_BG       `untrusted` (Workspace not trusted), `fail` (exit 4), `noline` (no
  *                 backgrounded line); unset: it starts.
+ *   FAKE_RESUME   for `--bg --resume <id>`: `copy` (the stderr note 2.1.310 prints when the
+ *                 flags we pass start a copy, and `backgrounded · <SHORT_ID>`; FAKE_COPY_AS
+ *                 names another id in the note only); unset: it continues under the same id,
+ *                 `backgrounded · <the id's first 8>` (2.1.310 drops ` · <name>` when it has none).
  *   FAKE_AGENTS   `other` (the session works in the main checkout), `missing` (no row),
  *                 `broken` (not JSON); unset: the row names the `-w` worktree.
  *   FAKE_AGENTS_JSON  the exact JSON `agents --json` prints (the watch's own view).
@@ -21,6 +25,7 @@ import { realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
 import { sessionRecordFile } from "../crew/session";
 import { locateCheckout } from "../project/resolve";
+import type { CleanLock } from "../worktrees/clean";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 /** The lead session's id in every world. */
@@ -36,6 +41,29 @@ export const SHORT_ID = "a1b2c3d4";
 export const SESSION_PID = 300;
 export const COMMAND_PID = 500;
 
+/**
+ * How a fake `claude` answers `--bg --resume <id>`, as 2.1.310 does (`docs/claude-code-contract.md`):
+ * `backgrounded · <short id>` on stdout — no ` · <name>` when it has none — and, when it started a
+ * copy, a note on stderr naming the copy. FAKE_RESUME `copy`: the note the flags we pass cause
+ * ("keeps its own saved options"), and the copy is `SHORT_ID` (FAKE_COPY_AS names another id in
+ * the note only); unset: it continues under the same id. One home for both fakes (this one and
+ * `board-world.ts`'s); it sits in the `--bg)` branch, and lets a call without `--resume` through.
+ */
+export const FAKE_RESUME_SH = `    resumed=""; prev=""
+    for a in "$@"; do [ "$prev" = "--resume" ] && resumed="$a"; prev="$a"; done
+    if [ -n "$resumed" ]; then
+      old="$(printf '%s' "$resumed" | cut -c1-8)"
+      case "$FAKE_RESUME" in
+        copy)
+          echo "note: background session $old keeps its own saved options, so the flags you passed started a copy as \${FAKE_COPY_AS:-${SHORT_ID}}. Without flags, the same command continues $old itself." >&2
+          echo "backgrounded · ${SHORT_ID}"
+          ;;
+        *) echo "backgrounded · $old" ;;
+      esac
+      exit 0
+    fi
+`;
+
 /** The fake `claude`: logs its argv (one argument per line, `----` after each call) and its folder. */
 const FAKE_CLAUDE = `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> "$FAKE_CLAUDE_LOG"; done
@@ -48,7 +76,7 @@ case "$1" in
       fail) echo "something broke" >&2; exit 4 ;;
       noline) echo "started something"; exit 0 ;;
     esac
-    prev=""; tree=""; name=""
+${FAKE_RESUME_SH}    prev=""; tree=""; name=""
     for a in "$@"; do
       [ "$prev" = "-w" ] && tree="$a"
       [ "$prev" = "--name" ] && name="$a"
@@ -90,6 +118,11 @@ export interface CrewWorld {
   claudeCalls: () => string[][];
   /** The folder each call ran in, in order: a resume runs in the crew session's worktree. */
   cwdCalls: () => string[];
+  /**
+   * The world's own clean lock (`CrewContext.holdCleanLock`): never the machine's, which another
+   * suite or the person's clean may hold at that moment. `held` is true while a test holds it.
+   */
+  cleanLock: { held: boolean; hold: () => Promise<null | CleanLock> };
   /** What the commands printed, and wrote to stderr. */
   out: string[];
   err: string[];
@@ -139,6 +172,18 @@ export function crewWorld(): CrewWorld {
   const gitDir = dirname(Bun.which("git") ?? "/usr/bin/git");
   const out: string[] = [];
   const err: string[] = [];
+  const cleanLock: CrewWorld["cleanLock"] = {
+    held: false,
+    hold: () => {
+      if (cleanLock.held) return Promise.resolve(null);
+      cleanLock.held = true;
+      return Promise.resolve({
+        close: () => {
+          cleanLock.held = false;
+        },
+      });
+    },
+  };
   writeSessionRecord(paths, SESSION_PID, LEAD_SESSION, repo);
   const writeConfig = (crew: Record<string, unknown>): void => {
     mkdirSync(join(repo, ".claude"), { recursive: true });
@@ -167,6 +212,9 @@ export function crewWorld(): CrewWorld {
       env: fullEnv,
       error: (line: string) => err.push(line),
       freeMemoryGb: () => Promise.resolve(64),
+      holdCleanLock: cleanLock.hold,
+      // Calm, whatever the host runs: a test that wants a busy machine hands in its own.
+      load: () => ({ cores: 16, oneMinute: 1 }),
       now: () => Date.parse("2026-10-21T10:00:00.000Z"),
       paths,
       pid: COMMAND_PID,
@@ -194,5 +242,5 @@ export function crewWorld(): CrewWorld {
     readFileSync(cwdLog, "utf8")
       .split("\n")
       .filter((line) => line !== "");
-  return { bin, claudeCalls, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
+  return { bin, claudeCalls, cleanLock, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
 }

@@ -60,6 +60,7 @@ const NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.loadPerCore": ABOVE_ZERO,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -68,6 +69,7 @@ const NUMBER_RULES = {
   "crew.handoffTokens": AT_LEAST_ONE,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
+  "crew.archiveDays": AT_LEAST_ONE,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -171,7 +173,7 @@ export const workflowSchema = z.strictObject({
    * Lead and crew sessions (decisions D34, D35, D54): the switch, one lead's caps, the machine's
    * guards a start waits at, and the tag in their names. In the person's file it is every
    * project's default; a project's file wins field by field. `crew lead` and `crew start` read
-   * `enabled`, `perLead`, `perLeadOpus`, `max`, `maxOpus`, `memoryGb`, `usagePercent` and `tag`
+   * `enabled`, `perLead`, `perLeadOpus`, `max`, `maxOpus`, `memoryGb`, `loadPerCore`, `usagePercent` and `tag`
    * (`src/crew/`); the rest is for the parts after them.
    */
   crew: z
@@ -197,6 +199,12 @@ export const workflowSchema = z.strictObject({
       maxOpus: numberField("crew.maxOpus"),
       /** The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. Default: 2. */
       memoryGb: numberField("crew.memoryGb"),
+      /**
+       * A new crew session waits while the 1-minute load average is above this many per core
+       * (the cores times this number). Where the platform gives no load average (native
+       * Windows), the hold does not apply. Default: 3.
+       */
+      loadPerCore: numberField("crew.loadPerCore"),
       /** At most this many crew sessions run for one lead at once, in every repository (D54). Default: 4. */
       perLead: numberField("crew.perLead"),
       /** At most this many of one lead's crew sessions on the opus tier (D54). Default: 2. */
@@ -226,6 +234,11 @@ export const workflowSchema = z.strictObject({
       softHours: numberField("crew.softHours"),
       /** Hours after which a crew session hands off. Default: 4. */
       maxHours: numberField("crew.maxHours"),
+      /**
+       * Days a removed crew session's conversation stays in the kit's archive, out of `/resume`,
+       * before it is deleted (`src/crew/archive.ts`). Default: 7.
+       */
+      archiveDays: numberField("crew.archiveDays"),
       /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
       tag: tagSchema.optional(),
     })
@@ -266,6 +279,8 @@ export const workflowDefaults = {
     /** Null: no machine-wide opus count; one set is the person's own ceiling. */
     maxOpus: null,
     memoryGb: 2,
+    /** A start waits past a 1-minute load of 3 per core: busy but not drowning, queued work still finishes (seen: load 85 on 16 cores, 5 per core, with 24 sessions). */
+    loadPerCore: 3,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -274,6 +289,7 @@ export const workflowDefaults = {
     handoffTokens: 400_000,
     softHours: 2,
     maxHours: 4,
+    archiveDays: 7,
     /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
     tag: null,
   },
@@ -315,6 +331,7 @@ export type WorkflowKey =
   | "crew.max"
   | "crew.maxOpus"
   | "crew.memoryGb"
+  | "crew.loadPerCore"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"
@@ -323,6 +340,7 @@ export type WorkflowKey =
   | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
+  | "crew.archiveDays"
   | "crew.tag"
   | `switches.${SwitchName}`;
 
@@ -349,6 +367,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.loadPerCore",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -357,6 +376,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.handoffTokens",
   "crew.softHours",
   "crew.maxHours",
+  "crew.archiveDays",
   "crew.tag",
 ];
 

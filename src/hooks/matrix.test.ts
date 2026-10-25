@@ -56,6 +56,8 @@ import {
   sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
+  tierViewHook,
+  userAwayHook,
   verifyGateHook,
   worktreeLeftoversHook,
 } from "./specs";
@@ -271,6 +273,25 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       const said: string = JSON.parse(result.stdout ?? "{}").systemMessage;
       expect(said).toStartWith("cc-smart-dev-kit: this session runs on Claude Fable");
+    },
+  },
+  {
+    spec: tierViewHook,
+    own: { event: "SessionStart", matcher: "startup" },
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "SessionStart",
+        session_id: SESSION,
+        cwd: project(config),
+        source: "startup",
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const said: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+      expect(said).toStartWith("Subagent tiers now (the Agent tool's `model`):");
     },
   },
   {
@@ -625,6 +646,40 @@ const CASES: Case[] = [
       expect(text).toBe("C app W2 hooks: tests-green · a1b2c3d");
     },
   },
+  {
+    spec: userAwayHook,
+    own: { event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
+    // Machine-wide and `alwaysOn`: the person is one for the machine, so the answer reads the
+    // state file and never the project's, and no `ownHooks` list switches it off.
+    machineWide: true,
+    alwaysOn: true,
+    setup: (config) => {
+      const env = hookEnv();
+      // The state file, written by hand: the person has been away since 01:00.
+      const folder = join(cliPaths(env).stateDir, "user-away");
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(
+        join(folder, "state.json"),
+        `${JSON.stringify({ unavailable: true, since: AT, until: null, items: [], nextId: 1, said: {} })}\n`,
+      );
+      return {
+        input: {
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          cwd: project(config),
+          tool_name: "AskUserQuestion",
+          tool_input: { questions: [] },
+        },
+        env,
+      };
+    },
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toStartWith("The person is unavailable since ");
+    },
+  },
 ];
 
 test("the table covers every hook", () => {
@@ -641,6 +696,7 @@ test("ownHooks accepts exactly the plugin's hooks that a project can switch off"
   expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
     "session-escape-guard",
     "job-route",
+    "user-away",
   ]);
   const alwaysOn = HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name);
   expect([...UNSWITCHABLE_HOOK_NAMES].every((name) => alwaysOn.includes(name))).toBe(true);
@@ -1003,13 +1059,13 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     `"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.`,
+    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done --file - (with the JSON part).`,
   ].join("\n");
 
   /** The refusal of a message to the lead, in the guard's own words. */
   const TO_LEAD = [
     `"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: cc-smart-dev-kit crew report --status done --file - (with the JSON part), or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line.",
   ].join("\n");
 

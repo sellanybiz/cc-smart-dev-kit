@@ -109,8 +109,9 @@ check its cached-input price (subagent tokens are mostly cached re-reads).
 A slot whose every target fails for want of capacity (a 429, a 5xx, a timeout) need not fail
 the request at once. The router holds it, watches the config, and asks one target at a time.
 It then answers a 429 that Claude Code retries by itself, and fakes no usage headers.
-Anthropic's own answers always pass unchanged, and a refused key is never held, with one
-exception (D65):
+Anthropic's own answers always pass unchanged (a stream, Claude's too, that sends no byte
+for `timeouts.streamIdleMs`, 120 s by default, is ended and Claude Code sends the request
+again), and a refused key is never held, with one exception (D65):
 - A Claude target behind a chain's first, at a plan limit the router already knows, is skipped
   while it rests, the last one too, so a backend's hiccup before it is held, not ended on
   Claude's limit. It is asked again after its rest (10 minutes at most) to see an early reset;

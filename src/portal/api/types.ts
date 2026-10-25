@@ -16,7 +16,9 @@
  */
 
 import type { Check as DoctorCheck } from "../../cli/doctor";
+import type { StoppedCrewItem } from "../../crew/cleanup-read";
 import type { DiffFile } from "../../crew/diff";
+import type { CrewDiscardFacts } from "../../crew/discard";
 import type { CrewEvent } from "../../crew/store";
 import {
   HISTORY_RANGE_MS,
@@ -35,6 +37,7 @@ import type {
   ClaudeMemFacts,
   ClaudeMemSource,
 } from "../../machine/claude-mem-choices";
+import type { FinishedSession } from "../../sessions/finished";
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
 import type { MergeDetail } from "../../workflow/merge-check";
@@ -73,11 +76,13 @@ export type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
+  CrewDiscardFacts,
   CrewEvent,
   DiffFile,
   DoctorCheck,
   FallbackRecord,
   FallbackRow,
+  FinishedSession,
   FlowReport,
   GuardAsk,
   HistoryKeys,
@@ -101,6 +106,7 @@ export type {
   SettingsData,
   SlotRow,
   SlotTarget,
+  StoppedCrewItem,
   SwitchFacts,
 };
 
@@ -410,6 +416,8 @@ export interface CrewSummary {
   lastEvent: null | { at: string; text: string; type: string };
   /** What it said at the end of its last turn; null before the first. */
   lastLine: null | string;
+  /** The shared lifecycle rule: ended, or continuously absent from a readable agent view for a day. */
+  leadGone: boolean;
   leadName: string;
   /** The lead session that started it. */
   leadSessionId: string;
@@ -486,6 +494,10 @@ export interface SessionSummary {
 
 /** `GET /api/work`: every lead on the machine, its crew nested, and the other sessions. */
 export interface WorkAnswer {
+  /** Finished unowned background sessions, from the sessions command's shared reader. Never removed automatically. */
+  finishedSessions: FinishedSession[];
+  /** Unknown agent view or broken ownership records: no candidate is offered. */
+  finishedSessionsError: string | null;
   /**
    * Every crew session on the machine, newest first. The crew store is the machine's, so a
    * portal started in any folder shows them all; each summary names its own `repo`.
@@ -533,6 +545,8 @@ export interface CrewReport {
   docs: string[];
   needsLead: string[];
   open: string[];
+  /** The crew session's own review, where its brief asked for no second opinion (RG1); null or absent when there is none. */
+  ownReview?: null | { findings: { finding: string; fix: string }[]; reason: string } | undefined;
   outsideBrief: string[];
   phase: string;
   pr: null | number;
@@ -690,6 +704,10 @@ export interface DoctorFailure {
 
 /** `GET /api/needs`: everything that waits on the person (D52). */
 export interface NeedsAnswer {
+  /** Old stopped unmerged crew work: the watch's own reminder and age rule. */
+  stopped: StoppedCrewItem[];
+  /** Why cleanup facts could not be read; null when they were. */
+  stoppedError: string | null;
   /** Every breaker open now, by slot. */
   breakers: BreakerNeed[];
   crew: CrewNeed[];

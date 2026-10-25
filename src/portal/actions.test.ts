@@ -9,10 +9,10 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { createCrew, type NewCrew } from "../crew/store";
+import { createCrew, crewStoreDir, type NewCrew } from "../crew/store";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
@@ -85,6 +85,8 @@ if (process.argv[2] === "workflow" && process.argv[3] === "propose") {
     url: "https://github.com/example-org/app/pull/42",
     worktree: process.cwd() + "/.claude/worktrees/worktree-workflow-autoCommit-20261023",
   }));
+} else if (process.argv[2] === "crew" && process.argv[3] === "cleanup") {
+  console.log(process.env.FAKE_CLEANUP_JSON ?? "{}");
 } else {
   console.log("crew " + process.argv.slice(2).join(" ") + ": done");
 }
@@ -138,6 +140,10 @@ function world(options: { exit?: number; sleep?: boolean } = {}) {
     () => Date.now(),
     { pluginFolder: () => ({ folder: plugin.folder }) },
   );
+  const agentBinary = join(home, "fake-claude");
+  writeFileSync(agentBinary, `#!${process.execPath}\nconsole.log("[]");\n`);
+  chmodSync(agentBinary, 0o755);
+  ctx.which = (name) => (name === "claude" ? agentBinary : null);
   const workflow = fakeWorkflow();
   const action: ActionContext = {
     cwd: home,
@@ -576,6 +582,177 @@ describe("the Gateway card's actions run the CLI's own command in a child (GP4b)
       lines: ["crew gateway profile cheap slot scout off: done"],
       ok: false,
     });
+  });
+});
+
+function sessionCandidate(w: ReturnType<typeof world>, state = "done", cwd = w.repoB) {
+  const folder = tempDir("session-agent");
+  const binary = join(folder, "claude");
+  const now = w.action.portal.now();
+  w.action.portal.now = () => now;
+  const rows = [
+    {
+      id: "abcd1234",
+      sessionId: "finished-session",
+      name: "background task",
+      cwd,
+      kind: "background",
+      state,
+    },
+  ];
+  writeFileSync(
+    binary,
+    `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(rows))});\n`,
+  );
+  chmodSync(binary, 0o755);
+  w.action.portal.which = (name) => (name === "claude" ? binary : null);
+  const job = join(w.paths.claudeConfigDir, "jobs", "abcd1234");
+  mkdirSync(job, { recursive: true });
+  const at = new Date(now - 2 * 86400000).toISOString();
+  writeFileSync(
+    join(job, "state.json"),
+    JSON.stringify({ sessionId: "finished-session", state, updatedAt: at, lastTerminalAt: at }),
+  );
+  return binary;
+}
+
+describe("finished session removal", () => {
+  test("asks first, revalidates shared eligibility, and runs the targeted CLI from home when the session folder is gone", async () => {
+    const w = world();
+    const folder = join(w.repoB, ".claude", "worktrees", "removed-session");
+    expect(existsSync(folder)).toBe(false);
+    sessionCandidate(w, "done", folder);
+    expect((await runAction("sessions.rm", { id: "abcd1234" }, w.action)).ok).toBe(false);
+    expect(runsOf(w.log)).toEqual([]);
+    const removed = await runAction("sessions.rm", { id: "abcd1234", confirm: true }, w.action);
+    expect(removed.ok).toBe(true);
+    expect(runsOf(w.log)).toEqual([
+      {
+        args: ["sessions", "--finished", "--remove", "--yes", "--id", "abcd1234"],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.home,
+      },
+    ]);
+  });
+
+  test("a resumed session, unknown agent view, renamed crew session and broken store never run removal", async () => {
+    const resumed = world();
+    sessionCandidate(resumed, "working");
+    expect(
+      (await runAction("sessions.rm", { id: "abcd1234", confirm: true }, resumed.action)).ok,
+    ).toBe(false);
+    expect(runsOf(resumed.log)).toEqual([]);
+    const unknown = world();
+    const binary = sessionCandidate(unknown);
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log("not JSON");`);
+    expect(
+      (await runAction("sessions.rm", { id: "abcd1234", confirm: true }, unknown.action)).ok,
+    ).toBe(false);
+    expect(runsOf(unknown.log)).toEqual([]);
+    const owned = world();
+    sessionCandidate(owned);
+    await owned.crewIn(owned.repoA, "renamed", { sessionId: "finished-session" });
+    expect(
+      (await runAction("sessions.rm", { id: "abcd1234", confirm: true }, owned.action)).ok,
+    ).toBe(false);
+    expect(runsOf(owned.log)).toEqual([]);
+    const broken = world();
+    sessionCandidate(broken);
+    const dir = join(crewStoreDir(broken.paths.stateDir, broken.repoA), "crew");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bad.json"), "{");
+    expect(
+      (await runAction("sessions.rm", { id: "abcd1234", confirm: true }, broken.action)).ok,
+    ).toBe(false);
+    expect(runsOf(broken.log)).toEqual([]);
+  });
+
+  test("crew removal fails closed when any ownership record is broken", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-P-rm", { state: "done" });
+    const dir = join(crewStoreDir(w.paths.stateDir, w.repoB), "crew");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bad.json"), "{");
+    const removed = await runAction("crew.rm", { crew: id, confirm: true }, w.action);
+    expect(removed.ok).toBe(false);
+    expect(removed.lines.join(" ")).toContain("record");
+    expect(runsOf(w.log)).toEqual([]);
+  });
+
+  test("discard revalidates the shared preview token and passes it to the CLI, never a stale confirmation", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoB, "crew-discard", { state: "stopped" });
+    const token = "a".repeat(64);
+    w.action.portal.env.FAKE_CLEANUP_JSON = JSON.stringify({
+      error: null,
+      stopped: [
+        {
+          crew: { id, name: "C my-app crew-discard", shortId: null, state: "stopped" },
+          repo: w.repoB,
+          since: "2026-10-20T12:00:00.000Z",
+          days: 2,
+          unmergedCommits: 1,
+          line: "shared reminder",
+          discard: {
+            error: null,
+            facts: {
+              token,
+              head: "b".repeat(40),
+              archiveRef: "refs/crew-discarded/crew/crew-discard",
+              unmergedCommits: { count: 1, subjects: ["work"] },
+              changedFiles: ["work.txt"],
+              ignoredFiles: [],
+              lines: ["shared exact confirmation words"],
+              question: "shared question",
+            },
+          },
+        },
+      ],
+    });
+    const body = {
+      crew: id,
+      confirm: true,
+      discard: true,
+      discardConfirm: true,
+      discardToken: "c".repeat(64),
+    };
+    const stale = await runAction("crew.rm", body, w.action);
+    expect(stale.ok).toBe(false);
+    expect(stale.lines.join(" ")).toContain("changed");
+    expect(runsOf(w.log).map((one) => one.args)).toEqual([["crew", "cleanup", "--json"]]);
+    const removed = await runAction("crew.rm", { ...body, discardToken: token }, w.action);
+    expect(removed.ok).toBe(true);
+    expect(runsOf(w.log).at(-1)).toEqual({
+      args: ["crew", "rm", id, "--discard", "--yes", "--discard-token", token],
+      claudeCode: null,
+      config: w.paths.claudeConfigDir,
+      crew: null,
+      cwd: w.repoB,
+    });
+  });
+
+  test("crew removal refuses an unknown agent view before any CLI removal", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-unknown", { state: "stopped" });
+    w.action.portal.which = () => null;
+    const removed = await runAction("crew.rm", { crew: id, confirm: true }, w.action);
+    expect(removed.ok).toBe(false);
+    expect(removed.lines.join(" ")).toContain("agent");
+    expect(runsOf(w.log)).toEqual([]);
+  });
+
+  test("discard is never silently downgraded to normal removal", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-discard", { state: "stopped" });
+    const removed = await runAction(
+      "crew.rm",
+      { crew: id, confirm: true, discard: true },
+      w.action,
+    );
+    expect(removed.ok).toBe(false);
+    expect(runsOf(w.log)).toEqual([]);
   });
 });
 

@@ -6,9 +6,21 @@
  * nothing here reads the host.
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  lutimesSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { createCrew, type NewCrew } from "../crew/store";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
@@ -23,11 +35,14 @@ import {
 import {
   deleteMergedBranch,
   fetchBase,
+  isParkedWorktree,
+  parkedOriginal,
   pullRequestMerged,
   removeWorktree,
   replayOntoBase,
   scanWorktrees,
 } from "./scan";
+import { finishStrays, strayParkedFolders } from "./scan-parked";
 import { IDLE_MINUTES, verdict, type WorktreeFacts } from "./verdict";
 
 /** A repo with a bare "origin", one commit on `main`, and one linked worktree. */
@@ -59,6 +74,7 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   innerWorktree: null,
   locked: false,
   mergedBy: null,
+  parked: false,
   programs: [],
   sessionName: null,
   ...over,
@@ -99,9 +115,79 @@ echo '[{"number":7,"headRefOid":"${head}"}]'
 /** A machine-wide clean lock nobody else holds: the real port is never reached from a test. */
 const freeLock = async (): Promise<{ close(): void }> => ({ close: () => undefined });
 
+/** Makes git's own files of a worktree look an hour and a half old, as a finished one is. */
+function makeIdle(worktree: string): void {
+  const admin = resolve(
+    worktree,
+    readFileSync(join(worktree, ".git"), "utf8")
+      .trim()
+      .replace(/^gitdir:\s*/, ""),
+  );
+  const old = new Date(Date.now() - 90 * 60_000);
+  for (const file of ["index", "HEAD", join("logs", "HEAD")]) {
+    try {
+      utimesSync(join(admin, file), old, old);
+    } catch {
+      // Not every worktree has every file.
+    }
+  }
+}
+
+/** One crew record whose worktree is `worktree`, as the store writes one. */
+function crewAt(repo: string, worktree: string): NewCrew {
+  return {
+    base: null,
+    baseRef: "main",
+    branch: "fix/login",
+    effort: "high",
+    files: [],
+    id: "B7-tidy-1a2b3c",
+    kind: "build",
+    lastLine: null,
+    leadName: "LEAD app master-plan",
+    leadSessionId: "11111111-1111-4111-8111-111111111111",
+    memoryMb: null,
+    model: { named: "sonnet", resolved: "claude-sonnet-5-5", slot: null, tier: null },
+    name: "C app B7 tidy",
+    permissionMode: "auto",
+    phase: "B7",
+    plan: "master-plan",
+    pr: null,
+    questions: [],
+    reportPath: null,
+    repo,
+    sessionId: null,
+    shortId: null,
+    slug: "tidy",
+    state: "merged",
+    waitsFor: [],
+    worktree,
+  };
+}
+
 describe("the verdict on one worktree", () => {
   test("everything clean: finished", () => {
     expect(verdict(facts(), () => clean)).toEqual({ finished: true, note: null });
+  });
+
+  test("D62: a folder a removal moved aside asks for neither the base's commits nor the idle hour", () => {
+    // Its branch keeps the commits, and the move itself was the removal's own touch.
+    expect(
+      verdict(facts({ aheadOfBase: 3, idleMinutes: 0, parked: true }), () => clean, IDLE_MINUTES),
+    ).toEqual({ finished: true, note: null });
+    // Every other reason to keep it stands.
+    expect(verdict(facts({ parked: true, programs: ["bun"] }), () => clean)).toMatchObject({
+      finished: false,
+      why: "a program runs from its files: bun",
+    });
+    expect(
+      verdict(facts({ parked: true }), () => ({ localFiles: [], uncommitted: true })),
+    ).toMatchObject({ finished: false, why: "uncommitted changes" });
+    // And a worktree that is not parked still waits for both.
+    expect(verdict(facts({ aheadOfBase: 3 }), () => clean)).toMatchObject({ finished: false });
+    expect(verdict(facts({ idleMinutes: 0 }), () => clean, IDLE_MINUTES)).toMatchObject({
+      finished: false,
+    });
   });
 
   test("each reason to keep it, with the words a person reads", () => {
@@ -793,6 +879,218 @@ describe("scanning and removing, against a real repo", () => {
     ).toThrow("origin/trunk is not known here");
   });
 
+  test.each([null, "pid:[12345]"])(
+    "a nested or unknown pid namespace %s never proves a host locker gone",
+    (pidNamespace) => {
+      const { main, worktree } = repo();
+      const reason = "claude session live-host (pid 424242 start 12345)";
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: [],
+          programs: [],
+          mounts: [],
+          sessions: [],
+          processIsGone: () => true,
+          processStartTime: () => "proc:different",
+          platform: "linux" as const,
+          pidNamespace,
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      expect(found?.state).toMatchObject({ finished: false });
+      if (found === undefined) throw new Error("missing test worktree");
+      expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
+  test.each(["claude session unreadable identity", "a person's lock"])(
+    "unprovable lock reason %s stays even if a PID probe would report gone",
+    (reason) => {
+      const { main, worktree } = repo();
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: [],
+          mounts: [],
+          programs: [],
+          sessions: [],
+          processIsGone: () => true,
+          platform: "linux" as const,
+          pidNamespace: "pid:[4026531836]",
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      expect(found?.state).toMatchObject({
+        finished: false,
+        why: `locked: ${reason} (locker cannot be proved gone)`,
+      });
+      if (found === undefined) throw new Error("missing test worktree");
+      expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
+  test("a stale lock is restored when git cannot move the worktree", () => {
+    const { main, worktree } = repo();
+    const reason = "claude session ended (pid 424242 start 12345)";
+    git(main, "worktree", "lock", "--reason", reason, worktree);
+    const bin = tempDir("failing-move");
+    const realGit = Bun.which("git");
+    if (realGit === null) throw new Error("test requires git");
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nif [ "$1 $2" = "worktree move" ]; then printf 'move refused\\n' >&2; exit 1; fi\nexec '${realGit}' "$@"\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("claude"),
+      env: { ...cleanGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` },
+      idleLimit: 0,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processIsGone: () => true,
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+      },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing test worktree");
+    expect(removeWorktree(main, found.listed, options).status).toBe("held");
+    expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+  });
+
+  test.each(["dirty", "local", "container"])(
+    "a %s refusal leaves a stale lock in place",
+    (blocker) => {
+      const { main, worktree } = repo();
+      const reason = "claude session ended (pid 424242 start 12345)";
+      git(main, "worktree", "lock", "--reason", reason, worktree);
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("claude"),
+        env: cleanGitEnv(),
+        idleLimit: 0,
+        facts: {
+          containers: blocker === "container" ? [{ name: "service", sources: [worktree] }] : [],
+          mounts: [],
+          programs: [],
+          sessions: [],
+          processIsGone: () => true,
+          platform: "linux" as const,
+          pidNamespace: "pid:[4026531836]",
+        },
+      };
+      const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+      if (found === undefined) throw new Error("missing test worktree");
+      if (blocker === "dirty") writeFileSync(join(worktree, "new.txt"), "keep\n");
+      if (blocker === "local") {
+        writeFileSync(join(main, ".git", "info", "exclude"), "private.txt\n");
+        writeFileSync(join(worktree, "private.txt"), "keep private data\n");
+      }
+      expect(removeWorktree(main, found.listed, options).status).not.toBe("removed");
+      expect(existsSync(worktree)).toBe(true);
+      expect(git(main, "worktree", "list", "--porcelain")).toContain(`locked ${reason}`);
+    },
+  );
+
+  test("a stale Claude lock is unlocked only when process identity is proven gone", () => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session old-session (pid 424242 start 12345)",
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: join(tempDir("claude"), ".claude"),
+      env: cleanGitEnv(),
+      now: Date.now() + 60 * 60 * 1000,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processStartTime: () => null,
+        processIsGone: () => false,
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+      },
+    };
+    const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    expect(listed?.state).toMatchObject({
+      finished: false,
+      why: "locked by live or unprovable Claude session old-session; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session",
+    });
+    expect(existsSync(worktree)).toBe(true);
+
+    const gone = {
+      ...options,
+      facts: { ...options.facts, processStartTime: () => "proc:different" },
+    };
+    const result = scanWorktrees(main, gone).find((one) => one.listed.path === worktree);
+    expect(result?.state).toMatchObject({ finished: true });
+    if (result === undefined) throw new Error("missing test worktree");
+    const removed = removeWorktree(main, result.listed, gone);
+    expect(removed.status).toBe("removed");
+    expect(removed.said[0]).toBe(`unlocked stale Claude lock and removed ${worktree}`);
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("a dead PID's numeric Claude lock can be removed, but an unreadable live PID stays", () => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session old-session (pid 424242 start 12345)",
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: join(tempDir("claude"), ".claude"),
+      env: cleanGitEnv(),
+      now: Date.now() + 60 * 60 * 1000,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        processStartTime: () => null,
+        processIsGone: () => false,
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+      },
+    };
+    expect(
+      scanWorktrees(main, options).find((one) => one.listed.path === worktree)?.state,
+    ).toMatchObject({ finished: false });
+    const dead = { ...options, facts: { ...options.facts, processIsGone: () => true } };
+    const found = scanWorktrees(main, dead).find((one) => one.listed.path === worktree);
+    expect(found?.state).toMatchObject({ finished: true });
+    expect(found === undefined ? null : removeWorktree(main, found.listed, dead).status).toBe(
+      "removed",
+    );
+    expect(existsSync(worktree)).toBe(false);
+  });
+
   test("a branch git still has checked out is kept, and the reason is git's own", () => {
     const { main, worktree } = repo();
     // git refuses while the worktree holds it: the removal deletes the branch afterwards.
@@ -980,6 +1278,459 @@ describe("the worktrees command", () => {
     const answer = JSON.parse(out[0] ?? "") as { note: null | string; worktrees: unknown[] };
     expect(answer.note).toContain("cc-smart-dev-kit.json");
     expect(answer.worktrees).toEqual([]);
+  });
+
+  test("D62: a crew session's worktree is named as one, with its lead and who removes it", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    // Plain `worktrees`: the line names the session, its lead and the step; the summary says
+    // their leads remove them, in place of a bare "Nothing finished to clear".
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: false, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain(
+      "kept: crew session `C app B7 tidy` (lead `LEAD app master-plan`), merged into its lead's branch — its lead removes it with `cc-smart-dev-kit crew rm`, or the watch does",
+    );
+    expect(text).toContain("1 crew worktree: their leads remove them (`cc-smart-dev-kit crew rm`)");
+    expect(text).not.toContain("Nothing finished to clear");
+    expect(text).not.toContain("FINISHED");
+  });
+
+  test("D62: a removed crew session names nothing: a worktree at its path is judged as any other", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, { ...crewAt(main, worktree), state: "removed" }, Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    // `crew rm` refuses a removed record, so the clean is the only thing that can take it.
+    expect(existsSync(worktree)).toBe(false);
+    expect(out.join("\n")).not.toContain("crew session");
+  });
+
+  test("D62: --clean leaves a crew session's worktree alone, though every commit is on the base", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(existsSync(worktree)).toBe(true);
+    expect(out.join("\n")).not.toContain(`removing ${worktree}`);
+    expect(out.join("\n")).toContain(
+      "1 crew worktree: their leads remove them (`cc-smart-dev-kit crew rm`)",
+    );
+    // `--remove <path>` is the same: a crew session's worktree is its lead's to remove.
+    out.length = 0;
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: false, json: false, noFetch: true, remove: worktree },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(1);
+    expect(existsSync(worktree)).toBe(true);
+    expect(out.join("\n")).toContain("crew session `C app B7 tidy` (lead `LEAD app master-plan`)");
+    expect(out.join("\n")).toContain(
+      'Fix: its lead removes it: cc-smart-dev-kit crew rm "C app B7 tidy"',
+    );
+  });
+
+  test("D62: a worktree the crew store does not know is judged as before", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    // A record for some other folder: this one has none.
+    await createCrew(paths.stateDir, crewAt(main, join(main, "elsewhere")), Date.now());
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(existsSync(worktree)).toBe(false);
+    expect(out.join("\n")).toContain(`removed ${worktree}`);
+  });
+
+  test("D62: --json names the crew session in the page's reason too", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    makeIdle(worktree);
+    await createCrew(paths.stateDir, crewAt(main, worktree), Date.now());
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          undefined,
+          freeLock,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    const answer = JSON.parse(out[0] ?? "") as WorktreesAnswer;
+    const item = answer.worktrees.find((one) => one.path === worktree);
+    expect(item?.kind).toBe("kept");
+    expect(item?.why).toContain("crew session `C app B7 tidy` (lead `LEAD app master-plan`)");
+  });
+
+  test("D62: the mark a removal gives a folder it moves aside is read back, once or repeated", () => {
+    expect(
+      isParkedWorktree("/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000"),
+    ).toBe(true);
+    expect(parkedOriginal("/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000")).toBe(
+      "/work/app/.claude/worktrees/crew-B1-help",
+    );
+    // An older removal moved a parked folder again: every mark comes off, not only the last.
+    expect(
+      parkedOriginal(
+        "/work/app/.claude/worktrees/crew-B1-help-removing-1761300000000-removing-1761300090000",
+      ),
+    ).toBe("/work/app/.claude/worktrees/crew-B1-help");
+    // A worktree that is not one, and a name that only looks like one.
+    expect(isParkedWorktree("/work/app/.claude/worktrees/crew-B1-help")).toBe(false);
+    expect(parkedOriginal("/work/app/.claude/worktrees/crew-B1-help")).toBeNull();
+    expect(isParkedWorktree("/work/app/.claude/worktrees/removing-things")).toBe(false);
+    expect(isParkedWorktree("/work/app-removing-1761300000000/.claude/worktrees/x")).toBe(false);
+  });
+
+  test("D62: a removal that stopped halfway keeps its work on its branch and is finished", () => {
+    const { main, worktree } = repo();
+    // The session's own commit: on its branch, and on no other ref the base reads.
+    writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "work");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === parked);
+    // Judged now: no idle hour, and 1 commit ahead of the base is its branch's to keep.
+    expect(found?.state).toEqual({ finished: true, note: null });
+    const listed = found?.listed;
+    if (listed === undefined) throw new Error("the parked folder is not listed");
+    const removal = removeWorktree(main, listed, options);
+    expect(removal.status).toBe("removed");
+    expect(removal.said).toEqual([
+      `removed ${parked}`,
+      "kept branch fix/login: it has commits that are not on main",
+    ]);
+    expect(existsSync(parked)).toBe(false);
+    // The commit is still there, on the branch the folder had.
+    expect(git(main, "log", "--format=%s", "-1", "fix/login").trim()).toBe("work");
+  });
+
+  test("D62: the tracked files a half-done removal deleted are its own, anything else is not", () => {
+    const { main, worktree } = repo();
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // `git worktree remove` deleted a tracked file before it failed.
+    rmSync(join(parked, "README.md"));
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    };
+    const state = () =>
+      scanWorktrees(main, options).find((one) => one.listed.path === parked)?.state;
+    expect(state()).toEqual({ finished: true, note: null });
+    // A file someone changed is not the removal's own work.
+    writeFileSync(join(parked, "README.md"), "# mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+    git(parked, "checkout", "--", "README.md");
+    expect(state()).toEqual({ finished: true, note: null });
+    // Nor is a file nobody tracks.
+    writeFileSync(join(parked, "notes.txt"), "mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+  });
+
+  test("D62: a folder that moved aside on a detached head keeps the commits the base lacks", () => {
+    const { main, worktree } = repo();
+    git(worktree, "checkout", "--detach");
+    writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "work");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    const found = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [] },
+    }).find((one) => one.listed.path === parked);
+    // No branch holds this commit: removing the folder would lose it.
+    expect(found?.state).toMatchObject({ finished: false, why: "1 commit not on main" });
+  });
+
+  test("D62: a folder already moved aside is removed where it stands, never moved again", () => {
+    const { main, worktree } = repo();
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // The name a second move would take is taken. A move would fail on it (and a removal that
+    // moved first would be held); a removal in place does not need it.
+    const realNow = Date.now;
+    Date.now = () => 1761300090000;
+    mkdirSync(`${parked}-removing-1761300090000`);
+    try {
+      const options = {
+        base: "main",
+        claudeConfigDir: tempDir("worktrees-config"),
+        env: cleanGitEnv(),
+        facts: { containers: [], programs: [], sessions: [] },
+        idleLimit: 0,
+      };
+      const listed = scanWorktrees(main, options).find((one) => one.listed.path === parked)?.listed;
+      if (listed === undefined) throw new Error("the parked folder is not listed");
+      const removal = removeWorktree(main, listed, options);
+      expect(removal.status).toBe("removed");
+      expect(removal.said[0]).toBe(`removed ${parked}`);
+      expect(existsSync(parked)).toBe(false);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  describe("D62: a folder git no longer lists, left by a removal that stopped halfway", () => {
+    /** The moment the removal moved it aside, in the name `removeWorktree` gives it. */
+    const PARKED_AT = 1761300000000;
+
+    /**
+     * What `git worktree remove` leaves when it fails midway: git has deleted the registration,
+     * the `.git` file and most of the files, and what it could not delete stays. The files keep
+     * the time they were written, which is before the move.
+     */
+    function leftover(
+      root: string,
+      name = "app-wt-gone",
+      files = ["docs/guide.md", "next.config.ts"],
+    ) {
+      const folder = join(root, `${name}-removing-${String(PARKED_AT)}`);
+      for (const file of files) {
+        mkdirSync(dirname(join(folder, file)), { recursive: true });
+        writeFileSync(join(folder, file), "left\n");
+        const before = new Date(PARKED_AT - 60_000);
+        utimesSync(join(folder, file), before, before);
+      }
+      return folder;
+    }
+
+    const options = (facts: Record<string, unknown> = {}) => ({
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: cleanGitEnv(),
+      facts: { containers: [], programs: [], sessions: [], ...facts },
+    });
+
+    test("it is found beside the worktrees git lists, and nothing else is", () => {
+      const { main, worktree } = repo();
+      const root = dirname(main);
+      const folder = leftover(root);
+      // Not strays: a name without the mark, the registered worktree, and a plain file with it.
+      mkdirSync(join(root, "app-wt-notes"));
+      writeFileSync(join(root, `app-wt-file-removing-${String(PARKED_AT)}`), "x\n");
+      expect(strayParkedFolders(main, cleanGitEnv())).toEqual([
+        { parkedAt: PARKED_AT, path: folder },
+      ]);
+      expect(existsSync(worktree)).toBe(true);
+    });
+
+    test("--clean removes it when nothing runs from it and nothing was written after the move", async () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+      const out: string[] = [];
+      const sinks = {
+        error: (line: string) => out.push(line),
+        print: (line: string) => out.push(line),
+      };
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: true, json: false, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          sinks,
+          freeLock,
+        ),
+      ).toBe(0);
+      expect(existsSync(folder)).toBe(false);
+      expect(out.join("\n")).toContain(
+        `removed ${folder} (left by a removal that stopped halfway; git no longer lists it)`,
+      );
+    });
+
+    test("plain `worktrees` names it and changes nothing", async () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+      const out: string[] = [];
+      const sinks = {
+        error: (line: string) => out.push(line),
+        print: (line: string) => out.push(line),
+      };
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: false, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+          sinks,
+          freeLock,
+        ),
+      ).toBe(0);
+      expect(existsSync(folder)).toBe(true);
+      const text = out.join("\n");
+      expect(text).toContain("app-wt-gone-removing-1761300000000");
+      expect(text).toContain("left by a removal that stopped halfway");
+      expect(text).toContain("`cc-smart-dev-kit worktrees --clean`");
+    });
+
+    test("a file written after the move keeps it, and says which", () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      // Newer than the move: something wrote here since, and it is not the removal's own.
+      writeFileSync(join(folder, "mine.txt"), "someone's notes\n");
+      const pass = finishStrays(main, options(), () => undefined);
+      expect(pass.removed).toEqual([]);
+      expect(pass.kept).toEqual([
+        { path: folder, why: "files were written in it after the removal moved it: mine.txt" },
+      ]);
+      expect(existsSync(join(folder, "mine.txt"))).toBe(true);
+    });
+
+    test("a program that runs from it, a session in it or a container on it keeps it", () => {
+      const { main } = repo();
+      const folder = leftover(dirname(main));
+      const whyKept = (facts: Record<string, unknown>) =>
+        finishStrays(main, options(facts), () => undefined).kept.map((one) => one.why);
+      expect(whyKept({ programs: [{ cwd: folder, path: "/usr/bin/bun dev", pid: 9 }] })).toEqual([
+        "a program runs from its files: bun",
+      ]);
+      expect(
+        whyKept({ sessions: [{ cwd: folder, name: "busy", pid: 9, sessionId: "s" }] }),
+      ).toEqual(['Claude session "busy" works in it']);
+      expect(whyKept({ containers: [{ name: "db", sources: [folder] }] })).toEqual([
+        'Docker container "db" uses its files',
+      ]);
+      expect(whyKept({ programs: "unknown" })[0]).toContain("could not be listed");
+      expect(existsSync(folder)).toBe(true);
+    });
+
+    test("a repository of its own is never removed", () => {
+      const { main } = repo();
+      const own = leftover(dirname(main), "app-wt-clone");
+      git(own, "init", "-q");
+      expect(finishStrays(main, options(), () => undefined).kept).toEqual([
+        { path: own, why: "it holds a git repository of its own" },
+      ]);
+      expect(existsSync(own)).toBe(true);
+    });
+
+    test("it goes with its links, and nothing outside it goes", () => {
+      const { main } = repo();
+      const root = dirname(main);
+      const folder = leftover(root);
+      const outside = join(root, "precious.txt");
+      writeFileSync(outside, "keep me\n");
+      symlinkSync(outside, join(folder, "link-out"));
+      const before = new Date(PARKED_AT - 60_000);
+      lutimesSync(join(folder, "link-out"), before, before);
+      expect(finishStrays(main, options(), () => undefined).removed).toEqual([folder]);
+      expect(existsSync(folder)).toBe(false);
+      expect(existsSync(outside)).toBe(true);
+    });
+  });
+
+  test("D62: a removal that stopped halfway is finished by --clean, with no record of it", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    // What `removeWorktree` leaves when `git worktree remove` fails on the folder it moved
+    // aside: no crew record names the parked path, and the move itself is the removal's touch.
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    const out: string[] = [];
+    const sinks = {
+      error: (line: string) => out.push(line),
+      print: (line: string) => out.push(line),
+    };
+    expect(
+      await runWorktrees(
+        paths,
+        { clean: true, json: false, noFetch: true, remove: null },
+        cleanGitEnv(),
+        main,
+        sinks,
+        freeLock,
+      ),
+    ).toBe(0);
+    expect(out.join("\n")).toContain(`removed ${parked}`);
+    expect(existsSync(parked)).toBe(false);
+    expect(git(main, "worktree", "list")).not.toContain("-removing-");
   });
 
   test("`--remove <path>` removes one now, without the one-hour wait", async () => {

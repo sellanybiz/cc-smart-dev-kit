@@ -3,7 +3,7 @@ import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
-import { workflowSchema } from "../workflow/schema";
+import { type Workflow, workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
@@ -19,6 +19,7 @@ export const PLUGIN_HOOK_NAMES = [
   "message-guard",
   "agent-guard",
   "fable-session",
+  "tier-view",
   "after-merge",
   "review-record",
   "subagent-background",
@@ -29,6 +30,9 @@ export const PLUGIN_HOOK_NAMES = [
   "crew-role",
   "lead-notes",
 ] as const;
+
+/** One name from `PLUGIN_HOOK_NAMES`. */
+export type PluginHookName = (typeof PLUGIN_HOOK_NAMES)[number];
 
 /**
  * The plugin hooks a project's `ownHooks` still ACCEPTS although listing them silences
@@ -90,14 +94,40 @@ export const CHECKS_SINCE = "1.1.0";
 /**
  * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
  * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
- * start). A project file that sets one needs that plugin version or newer, for the same reason
- * as `WORKFLOW_CREW_SINCE`.
+ * start) in 1.1.0; `handoffTokens` (the hand-off at a token count) in 1.2.0; `loadPerCore`
+ * (the load hold) and `archiveDays` (how long a removed crew session's conversation stays) in
+ * 1.3.0. A project file that sets one needs that plugin version or newer, for the same reason
+ * as `WORKFLOW_CREW_SINCE`. The keys are typed from the schema, so a name that is not a crew
+ * key does not compile; `config.test.ts` fails when a new crew key has no entry here.
  */
-export const WORKFLOW_CREW_KEYS_SINCE: Readonly<Record<string, string>> = {
+export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
+  Partial<Record<keyof NonNullable<Workflow["crew"]>, string>>
+> = {
   perLead: "1.1.0",
   perLeadOpus: "1.1.0",
   usagePercent: "1.1.0",
   keep: "1.1.0",
+  handoffTokens: "1.2.0",
+  loadPerCore: "1.3.0",
+  archiveDays: "1.3.0",
+};
+
+/**
+ * The plugin hooks `ownHooks` may list that came after `ownHooks` itself (0.3.0), with the
+ * release that brought each. Older plugins validate the names as an enum, so one they do not
+ * know makes them refuse the whole file, and every guard in that project fails closed. A
+ * project file that lists one needs that plugin version or newer, for the same reason as
+ * `WORKFLOW_CREW_SINCE`. A name from 0.5.2 or earlier needs no entry: 0.5.2 is the floor of every
+ * file (`WORKTREE_PREFIX_OPTIONAL_SINCE`). The keys are typed from `PLUGIN_HOOK_NAMES`;
+ * `config.test.ts` fails when a new hook name has no entry here.
+ */
+export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, string>>> = {
+  "subagent-background": "1.0.0",
+  "crew-role": "1.0.0",
+  "lead-notes": "1.0.0",
+  "verify-gate": "1.1.0",
+  "agent-usage": "1.1.0",
+  "tier-view": "1.3.0",
 };
 
 /**

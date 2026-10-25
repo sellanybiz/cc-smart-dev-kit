@@ -290,6 +290,7 @@ describe("a crew session running a lead's command", () => {
     ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
     ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
     ["cc-smart-dev-kit crew resume C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew model C-x --effort max", "changes a crew session's model or effort"],
     ["cc-smart-dev-kit crew lead --plan plan", "leads"],
     ["cc-smart-dev-kit crew lead tell LEAD-y --kind contract 'a note'", "tells another lead"],
   ];

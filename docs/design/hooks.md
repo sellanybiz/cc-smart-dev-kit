@@ -57,11 +57,13 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    project, prints one `·` line per listed hook, and warns (`!`) when a listed hook has no
    project hook left to answer, or when a project hook runs next to a plugin hook the list
    does not name. A hook the project wires itself skips this step: that wiring is its
-   opt-in. **Two hooks skip the step themselves:** `session-escape-guard` and `job-route`
-   are `alwaysOn` (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for them — the
-   project's file is one of the things the first guards, and the second limits what the session
-   itself may launch (§ The session-escape guard, § The Bash judge and the job route).
-   `ownHooks` does not accept `session-escape-guard`'s name; it still accepts `job-route`'s,
+   opt-in. **Three hooks skip the step themselves:** `session-escape-guard`, `job-route` and
+   `user-away` are `alwaysOn` (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for
+   them — the project's file is one of the things the first guards, the second limits what the
+   session itself may launch, and the switch of the third is the person's (§ The session-escape
+   guard, § The Bash judge and the job route, § While the person is away).
+   `ownHooks` does not accept `session-escape-guard`'s or `user-away`'s name; it still accepts
+   `job-route`'s,
    because a project file written before 1.0.0 may carry it, and the name silences nothing
    (`UNSWITCHABLE_HOOK_NAMES`).
 4. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
@@ -72,15 +74,22 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    stops work. A **guard's** error answers through its `onCrash` (`guardCrash` in
    `specs.ts`): it asks about the call in its own domain, so a crash never lets a call
    through.
-6. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
+6. **While the person cannot answer** (`cc-smart-dev-kit user unavailable`), an answer that
+   asks them becomes a deny (`askedWhileAway`, § While the person is away). It keeps the
+   hook's own words, adds "parked as #N", and puts the call on the person's list as an
+   `action` with its exact command. One step for every hook, so a new guard needs nothing
+   here. It only ever makes an answer stricter: a deny, an allow and silence pass through
+   unchanged, and a state it cannot read keeps the ask.
+7. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
    state folder (`src/hooks/ask-log.ts`): the time, the hook, the session, the tool and a
    short reason, put through `maskedLine` so no secret reaches it. The file stays small by
    the rule of `update.log` (past `LOG_MAX_BYTES` the newer half is kept). A write that fails
-   is one line on stderr and never changes the answer.
+   is one line on stderr and never changes the answer. An ask that step 6 turned into a deny
+   is no ask: it is on the person's list instead.
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role) | Any other plugin hook | `hook notify` |
+| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role, user-away) | Any other plugin hook | `hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
@@ -150,6 +159,21 @@ runs by itself (owner's decision D48, 2026-10-22).
   onto the base (`workOnRef`), and the fresh verdict `removeWorktree` takes right before it
   moves a folder decide, so a session, a program, a Docker container, uncommitted changes, a
   local file, a commit not on the base or a replay that cannot answer all keep the worktree.
+- **A crew session's worktree is never this clean's (D62).** Its work goes to its **lead's**
+  branch, which reaches `origin/<base>` only when the lead's pull request merges (a squash
+  merge never makes those commits ancestors of it), so judged against the base it is kept for
+  ever — and removing it here would leave its record, branch and session behind. A worktree the
+  crew store names (any state, any lead of the repository) is skipped by `cleanFinished`
+  (`skip`), listed by `worktrees` as the crew session's with its lead, state and who removes it
+  (`crew rm`, or the watch once merged), and counted in the summary; the SessionStart note
+  never names it, nor a locked one. **A folder a removal moved aside**
+  (`<path>-removing-<time>`) is the exception that is finished (`src/worktrees/scan-parked.ts`):
+  while git lists it, it is an ordinary worktree that asks for neither the commits on the base
+  nor the idle hour (its branch holds them; `WorktreeFacts.parked`) and the clean removes it; when
+  git no longer lists it (the removal's `git worktree remove` failed after deleting its
+  registration), `finishStrays` removes what is left only when nothing runs from it, it is no
+  repository, it crosses no mount and no file in it is newer than the move its name records. The
+  background clean, `worktrees --clean`, `crew rm` and the watch's pass all use it.
 - **The background clean** (`src/worktrees/auto-clean.ts`, run by the bundle
   `src/entries/worktrees-clean.ts`) takes the machine-wide lock (`LOCK_PORTS.worktreesClean`)
   and does nothing when it is busy, re-reads `worktrees.autoClean`, fetches `origin/<base>`,
@@ -202,24 +226,27 @@ that, so the plugin ships no worktree hook at all.
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. **A crew session opens no pull request and merges none** (D24): `gh pr create` pushes the branch, so it is denied, and so is a program the line works out when it runs whose words name an opening or a merge (`$GH pr create`). **Every question above before a merge is one refusal** — the policy off, `--admin`, another repository, a check not green, no covering review, a policy or a form it cannot read, its own budget — because nobody is at the machine to answer and every one ends at the same step: it commits on its branch, and the lead merges locally (`CREW_MERGE_REFUSAL`). A merge the policy would allow is refused too, never `allow`. That is the guard's **crew part** (`crewPullRequestAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists, and the fail-closed ask for a broken or too new file is silence for a crew session. A `gh pr create` outside the base its head branch belongs to (`worktrees.base`, or `worktrees.bases` for that branch; with no `--base`, the repository's default branch) asks, naming both branches, and never denies (WA1). Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Denies a message to a session that works outside this repo (from Claude Code's session records), and a crew session's message to another crew session of this repo that does not carry the `crew tell` tag (§ The crew talks); a message to the session's own lead is denied with the `crew report` route. The crew rule is the guard's **crew part** (`crewMessageAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists. |
-| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. **In a recorded lead's session a building launch waits for the crew queue** (D59): while a `crew start` from that lead would queue now, a launch that can change files — any type but the four built-in read-only ones and the kit's own, plugin-qualified, reviewer/auditor/ui-verifier; a fork; anything with `isolation: "worktree"`; any Workflow but the kit's two read-only ones by their `cc-smart-dev-kit:` ids — is **denied**, naming the cap that holds and the `crew start` step; read-only launches are never held. **A crew session is judged as a session nobody watches** (D36): every launch it would ask the person about — Fable, an Opus-family model it cannot read, Opus at `max`, an unreadable Workflow — is denied with the step that puts the question to its lead (`crew report --question`), in the guard's **crew part** (`crewAgentAnswer`), which judges without recording and runs before `ownHooks`. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on a Claude `haiku` or `sonnet` when the task wants it, with no restriction (the owner, 2026-10-25: the tier note says which tier is Claude) — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. **In a recorded lead's session a building launch waits for the crew queue** (D59): while a `crew start` from that lead would queue now, a launch that can change files — any type but the four built-in read-only ones and the kit's own, plugin-qualified, reviewer/auditor/ui-verifier; a fork; anything with `isolation: "worktree"`; any Workflow but the kit's two read-only ones by their `cc-smart-dev-kit:` ids — is **denied**, naming the cap that holds and the `crew start` step; read-only launches are never held. **A crew session is judged as a session nobody watches** (D36): every launch it would ask the person about — Fable, an Opus-family model it cannot read, Opus at `max`, an unreadable Workflow — is denied with the step that puts the question to its lead (`crew report --question`), in the guard's **crew part** (`crewAgentAnswer`), which judges without recording and runs before `ownHooks`. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. **A crew session is never asked**: each ask is a denial naming the step that reaches its lead — the kit's own limits are the person's, and the portal is no place for a crew session (`CREW_KIT_REFUSAL`, `CREW_PORTAL_REFUSAL`) — and the `alwaysOn` flag carries that answer into every path the guard answers through. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
-| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's lead commands (`crew start`, `answer`, `stop`, `rm`, `resume`, `watch`, `lead`, `lead tell`) are denied, and so is `workflow propose` (D24: it pushes a branch and opens a pull request in children no hook sees) — in any other session `workflow propose` **asks** while the gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`) — each under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`; the words `workflow propose` on any line), `env -u`, and with redirections dropped; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). **A crew session is never asked** (D36): a `claude -p` launch the launch policy would question is refused by the policy's unattended rule, and a heavy command whose routing cannot be read because the project's file is broken or too new is refused too — each with the step that puts the question to its lead. § The Bash judge and the job route. |
+| `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read the Agent guard's way through the session's own gateway view. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's lead commands (`crew start`, `answer`, `model`, `stop`, `rm`, `resume`, `watch`, `lead`, `lead tell`) are denied, and so is `workflow propose` (D24: it pushes a branch and opens a pull request in children no hook sees) — in any other session `workflow propose` **asks** while the gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`) — each under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`; the words `workflow propose` on any line), `env -u`, and with redirections dropped; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). **A crew session is never asked** (D36): a `claude -p` launch the launch policy would question is refused by the policy's unattended rule, and a heavy command whose routing cannot be read because the project's file is broken or too new is refused too — each with the step that puts the question to its lead. § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send **the other leads of the repo and the person's own sessions — never a crew session** when it went into `worktrees.base`, one `merge` event per other lead so its watch says the line, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). The message says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched. A form that names no pull request gets no note (§ The crew talks). |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit is a change (an edit whose result was an error or a refusal changed nothing), a shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), in a crew session (its report gate is `crew-role`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlock`), so the "finished" alert waits for the stop that really ends the turn. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
-| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
+| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone — never a crew session's worktree or a locked one, which `worktrees --clean` keeps (D62) — says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt — unless the session is a recorded lead: its role name is `lead-notes'`, and one title has one owner — or a crew session: `crew start --name` gave it the name its lead, `crew answer` and the message guard address it by, so it gets no note and no title, and `cc-smart-dev-kit session-name` refuses inside it (§ The lead and the launch › The lead's name). |
 | `crew-role` | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); **the first `Edit`, `Write` or `NotebookEdit` denied with the task-list step while the session's task folder holds no task file** (D23) — the folder Claude Code keeps the list in, read once and then answered from the crew session's own cache (`src/crew/tasks.ts`), with every answer it cannot make letting the edit through; the person's own prompt recorded as one `person` event with one line of context, and every other delivery recognised and recorded as nothing (D55); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
+| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt. The frame's step 6 turns every other hook's ask into a deny the same way (§ While the person is away). |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions — a note another lead told it, a file clash, a merge into the base — since its last turn, from a per-lead cursor in the store, said once and never twice. **At a SessionStart — a start, a resume, a compaction (the hook's matcher is `startup|resume|compact`) — it adds one line first** (D61): the lead's crew sessions build the work, because the lead's context is re-read on every turn; never at a prompt and never on an edit. At a prompt it also **names the session** `LEAD <tag> <plan>` (`sessionTitle` beside the line in one answer, no setting), never over a name the person gave and never twice (§ The lead and the launch › The lead's name). **At a prompt it also adds one reminder line while the lead's own task folder holds no task file** (D23): put the person's asks and its open work on the list — never a block, and gone once a task exists. § Lead and the crew › The crew session's and the lead's hooks. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
+Without `cc-smart-dev-kit.json` every one of them is silent — except the ten machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
 `session-escape-guard` (§ The session-escape guard),
-`fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew),
+`fable-session` (§ The Fable-session note), `tier-view` (§ The tier note), `crew-role` and `lead-notes` (§ Lead and the crew),
+`user-away` (§ While the person is away),
 `agent-usage` (§ Each subagent's usage on record), and
 `playwright-output`, which reads no project file at all — and the **crew part** of `git-guard`,
 `merge-guard`, `agent-guard` and `message-guard`, which answers only in a crew session (D24,
@@ -227,7 +254,9 @@ D36, D47; § The crew talks), so a project that never opted in
 sees only Claude Code's own worktrees and the limits a session may not get around. `job-route`
 and `session-escape-guard` are also `alwaysOn`: `ownHooks` cannot switch them off, because they
 limit what the session itself may do — their crew answer lives in their own `run` and config
-answer (§ The Bash judge and the job route, § The session-escape guard). The machine-wide
+answer (§ The Bash judge and the job route, § The session-escape guard). `user-away` is the
+third `alwaysOn` hook, for another reason: the switch is the person's (§ While the person is
+away). The machine-wide
 `notify` hook needs no project file
 and acts without one; the
 `workflow.alerts` settings are the one thing it reads from a project that has them (§ The
@@ -249,8 +278,9 @@ session's model — on an Opus session, every plain `Explore` is an Opus spawn �
 Fable agent spends the person's own plan usage, and a subagent at `low` does work nobody chose
 to cheapen. So the guard holds the effort rule first — `medium`, `high`, `xhigh` or `max` only,
 `ALLOWED_EFFORTS` in the code, `low` refused on every model (D5, D13: `medium` for searches and
-reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the
-person asks) — and then reads the launch's
+reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on a Claude
+`haiku` or `sonnet` when the task wants it; the `opus` tier asks at `max`, an affordable backend
+runs at `max`) — and then reads the launch's
 `model`, `effort`, `subagent_type` and prompt, and resolves the model the launch will really
 run on:
 
@@ -429,7 +459,7 @@ it ran; an `ask` names every launch of the script that asks, not only the first.
 **A lead's building launch waits for the crew queue** (the owner's decision D59, 2026-10-23). A
 lead that finds its crew sessions queued may be tempted to hand a phase to a builder subagent
 instead, and that launch runs outside every count the queue enforces — the machine's `crew.max`,
-the lead's `crew.perLead`, the free memory, the 5-hour window — and has none of a crew phase's
+the lead's `crew.perLead`, the free memory, the CPU load, the 5-hour window — and has none of a crew phase's
 worktree, review, report gate or to-do list. So in a session with a **lead record** for this
 repository and this `session_id` (`readLead`), the guard refuses a launch that can change files
 while a `crew start` from that lead would queue now, and names the cap that holds and the
@@ -439,8 +469,8 @@ place) and `placeFor` as the one decision. Read-only launches are never held —
 (`READ_ONLY_BUILT_INS`) and, plugin-qualified as Claude Code addresses them, the kit's own
 reviewer, auditor and ui-verifier (`READ_ONLY_KIT_AGENTS`); so a project's own `reviewer.md` or
 another plugin's `probe-kit:reviewer` builds, as the brief's "any unknown or custom type" says.
-A Workflow is read-only only when it names one of the kit's own two by their plugin-qualified id
-(`READ_ONLY_WORKFLOWS`, `cc-smart-dev-kit:audit-run` and `:review-split`): a call that also gives
+A Workflow is read-only only when it names one of the kit's own three by their plugin-qualified id
+(`READ_ONLY_WORKFLOWS`, `cc-smart-dev-kit:audit-run`, `:review-split` and `:research-sweep`): a call that also gives
 an inline `script`, a `scriptPath` or a `resumeFromRunId` runs that instead (Claude Code's own
 order, `callScript`), and a bare name only ever finds a saved file. The rule holds **only while
 the queue is full**: a subagent takes no place, so with one free place a lead may run as many
@@ -595,6 +625,140 @@ The portal check reads the text of the whole command, so a script in a here-doc 
 counts — and so does a commit message that only mentions the address: one extra question, not a
 miss.
 
+### While the person is away
+
+`cc-smart-dev-kit user unavailable` marks the person as unable to answer — asleep, in a meeting,
+on a phone; the owner's pair of words, 2026-10-25 — and `user available` ends it. A session that
+stops to ask, or waits on a permission prompt, only stops: nobody reads the question for hours,
+and a lead that waits leaves every ready phase unstarted. So while the person is away the hooks
+hold the line, and the sessions **park** what needs the person on a list instead
+(`/cc-smart-dev-kit:user-unavailable`); `/cc-smart-dev-kit:user-available` goes through it when
+they are back.
+
+**The state, one home** (`src/user-away/state.ts`). One file, `<stateDir>/user-away/state.json`
+(the kit's state folder: the machine's `~/.claude/cc-smart-dev-kit/` unless Claude Code runs on
+another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailable`), mode 0600, written whole through the kit's atomic write, under the folder's **own** lock (not
+setup's: a hook that parks must never wait for a setup run) so two sessions that park at once
+both keep their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the
+`items`, `nextId` (an id is never reused) and `said` (the note each session heard). `until` is
+a note only: it shows in the notes and never switches back. An item has a kind — `question`
+(with its options and the recommended one), `action` (with its exact command) or `decision`
+(what was chosen, why, how to undo it) — the session and the crew session that parked it, and
+the time. The same kind with the same command (or, with none, the same words) **in the same
+folder and for the same crew session** parks once: a retry from one session is one item, while
+the same `git push` from two worktrees is two actions (a yes runs an action in its own `cwd`
+only), and two crew sessions' same-worded questions are two (each answer goes to its own
+session). The session is not part of the key. The list holds 500 items and `said` 100 sessions. **A file that cannot be read is an
+`AwayStateError`, never "available"**: a reader that cannot tell must not guess in the loose
+direction. A parked command is kept **exactly**, as the session's own transcript already holds
+it — masking would break "a later yes can run it" — and one over 16,000 characters is cut, and
+the item says so. Only a guard's own reason text goes through `maskedLine`. The command
+(`src/user-away/command.ts`) is `unavailable [--until]`, `available`, `status`, `park`, `list`
+and `clear`; `available` keeps the list.
+
+**Four answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
+where there was a question, never an allow.
+
+- **PreToolUse on `AskUserQuestion` and `ExitPlanMode`:** denied, with the step that parks the
+  question. Nothing is parked by the hook: the session parks it in its own words, or takes the
+  choice and parks a `decision`. A plan waiting for approval is the same wait as a question.
+- **`PermissionRequest`, Claude Code's own prompt** (a hook event of 2.1.310; its decision is
+  `{"behavior":"deny","message":…}`, `docs/claude-code-contract.md` § Hooks): denied with the
+  step, and the call parked as an `action` with its exact command. This is the answer for every
+  prompt Claude Code raises itself. It should also catch the prompt that follows a project's own
+  copy of a guard (`ownHooks`), which the frame never runs — **not proved**: the contract row
+  proves Claude Code's own prompt on `claude -p`, nothing about an own copy. A call that is no
+  shell command keeps its target and a short, masked piece of its other arguments in the item's
+  words (`WebFetch <url> {"prompt":…}`, `Edit <file> {"old_string":…}`), so two prompts of one tool
+  at different targets are two items, and a session denied the same call again is told the
+  same number. A shell call is its `command`, kept whole. **One exception, so the person can
+  come back:** a shell call that is nothing but the kit's own `user available`, `user status`
+  (with or without `--json`) or `user list` (the same) gets silence, and Claude Code's own
+  prompt goes to the person, who is back and answers it. Without it the skill's own calls would
+  be parked and denied in the default permission mode, and the one command that ends the state
+  could never run. The line is read with the one shell reader and the one kit-command reader
+  (`kitArguments` is not used for this: it leans toward yes for guards and would read
+  `bash -c '…' cc-smart-dev-kit user available` as the kit's; here the program must be the kit's
+  own command by name); a second command, a substitution, a redirection, a prefix, a computed
+  program, another program or any other argument is parked as before, so nothing gets looser. A
+  crew session never gets the silence: it never asks the person, so its call is denied and parked
+  under its name. **The trade-off:** the hook cannot tell the returning person's run from a
+  session's own `user status` or `user list` while the person is away, so such a call waits for
+  Claude Code's prompt; the `user-unavailable` skill tells a session not to run them (the hook's
+  note carries the state and the count). When a session
+  still cannot run it, the person types `! cc-smart-dev-kit user available` in the session
+  (`/cc-smart-dev-kit:user-available` says so).
+- **A kit guard that would ask** — the frame's step 6, for every hook, so a new guard needs
+  nothing: the ask becomes a deny that keeps the guard's own words and adds "parked as #N", and
+  the call is parked as an `action`. A deny, an allow and silence pass through unchanged. A park
+  that fails (a full list, a lock held too long) still denies, and the deny says to park by hand:
+  the person is away, so the call must not wait. **The park fits inside the hook's time:** it
+  waits at most `PARK_WAIT_MS` (1 s) for the lock, half of `BUDGET_MARGIN_MS`, the time a guard
+  keeps back for its answer. For a guard that runs on a budget (the merge guard 25 s of its 30 s,
+  `job-route`'s `workflow propose` question and `after-merge`, `src/hooks/budget.ts`) the last
+  child ends by 6 s of 10 s, or 23 s of 30 s, so the park ends well inside the hook's `timeout`.
+  A guard with no budget (`git-guard`, `main-folder-guard`, `message-guard`, and the frame's own
+  project lookup, each with 5 s git calls) was never held to a shared deadline: the short wait
+  does not fix that, it only stops the park from adding 5 s. The command `user park` still waits
+  5 s (`AWAY_LOCK_WAIT_MS`). A hook the host kills answers nothing, and `onFailure: block` then
+  blocks the call with no word to the session. `user-away`'s own crash-ask is not converted.
+- **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
+  …: follow `/cc-smart-dev-kit:user-unavailable`", with the expected return and how many items
+  wait — **said once per change** (`since|until|count`, per session, in `said`), never at every
+  prompt. **The person's own prompt does not switch the state back** (it may be one line from a
+  phone): a bare prompt in a session that is no crew session's gets its own note, every time,
+  that it is still on and how many items wait, and `/cc-smart-dev-kit:user-available` goes
+  through them. An automated turn (`prompt-source.ts`: a monitor's line, another session's
+  message) and a crew session's prompt are never the person's. A session that heard
+  "unavailable" is told once when the person is available again.
+
+**Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
+state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
+outside git, are judged the same way. `ownHooks` cannot switch it off — the switch is the
+person's, and a project must not turn it off for a session — so it is not in `PLUGIN_HOOK_NAMES`
+and `.claude/cc-smart-dev-kit.json` needs no new field. A crash asks about the two question
+tools like any guard; on the other events it says one line on stderr and the session goes on.
+
+**A state it cannot read changes nothing.** The hook says one line on stderr and the answer is
+what it would have been without this feature: the question or the ask goes to the person as it
+always did.
+
+**Crew sessions** never ask the person (§ Lead and the crew): `crew-role` and `user-away` both
+deny the two question tools in a crew session, and both give the same step (`crew report
+--question`, `CREW_QUESTION_STEP`), so the two reasons agree: the lead takes the question and
+parks what is the person's. A crew session's prompt gets the once-per-change note only. A
+permission prompt in a crew session while the person is away is denied and parked with the crew
+session's name, so its lead knows what waits; a lead parks its crew session's question with
+`park --crew <name>`, so `user-available` sends the answer back to that crew session.
+
+**The notifier stays quiet for a denied question.** `notify` raises "Claude asks you" on
+`AskUserQuestion` and `ExitPlanMode`; while the person is away those calls are denied and nothing
+waits for them, so it raises no alert (a state it cannot read keeps the alert).
+
+**What it cannot reach.** A project's own copy of a guard (`ownHooks`) answers in Claude Code
+directly: only the prompt Claude Code then raises is caught, by the `PermissionRequest` answer.
+**An MCP server's elicitation dialog** (a server asking the person for input mid-call) is
+reached by neither event: Claude Code has its own `Elicitation` hook event for it, apart from
+`PermissionRequest` (read from the 2.1.310 binary: "Fired when an MCP server requests user input.
+Hooks can auto-respond (accept/decline) instead of showing the dialog" — read only, not proved
+live), and `user-away` wires neither. While the person is away, such a dialog waits for them like
+any other; the notifier still raises its alert. **A call two guards judge differently** (one
+denies, one asks — a polling loop job-route denies, with a force-push git-guard asks about,
+in one line) is parked by the asking guard's own process, which cannot see the other's deny: the
+list may hold a line a guard refuses. A yes to it runs the line again, through the same
+hooks, so the deny holds and nothing gets through; the item shows the exact line.
+The shim's `--missing=ask` (no bun at all) cannot read any state, so there the ask goes to the
+person. A session that started before the update carries an older plugin version with none of this
+(no step 6, no `PermissionRequest` entry), and `user unavailable` still succeeds for it: restart it.
+In Claude Code's default permission mode a session's own `user park` call is a command that asks, so
+it is denied and parked like any other; the person allows `Bash(cc-smart-dev-kit user park:*)`
+once (the hook cannot allow it: it answers only with a deny). `PermissionRequest` is proved live on `claude -p` only — an interactive and a `--bg`
+session are owed — and `AskUserQuestion` does not exist in `claude -p`, so its PreToolUse deny is
+proved by the hook's tests alone. **It stops mistakes, not a session set on getting past it:**
+`user available` is the person's command, run through `/cc-smart-dev-kit:user-available`, and
+a session that runs it itself lifts the line. No hook can tell the two apart, so the skill says
+never, the way the review gate does (§ The review record in `workflow.md`).
+
 ### The Fable-session note
 
 `fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`: the
@@ -636,6 +800,46 @@ is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`, beside the sess
 files (`namesDir`, one home), so the OS clears it; it is made with `wx`, so two runs that race
 cannot both speak, and a mark that cannot be made means the line is not said at all — never
 twice.
+
+### The tier note
+
+`tier-view` (SessionStart, UserPromptSubmit) tells **Claude** what each subagent tier runs now,
+so it picks the effort the task needs (the owner, 2026-10-25). Claude models are not cheap
+models: a Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task and may take
+`max` when the task wants it, with no restriction; an affordable backend runs at `max`; the
+`opus` tier keeps the guard's rule (`max` asks the person). Before the note, a session read "the
+gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and the plan paid for.
+
+- **What it says** (`tierNote`, `src/models/tier-view.ts`): a header and one line per tier the
+  Agent tool's `model` names — `- sonnet → Claude Sonnet: the effort the task needs, medium to
+  max.`, or `- sonnet → omniroute:glm-x (a backend): runs at max.` The model is the guard's own
+  reading (`resolveLaunchModel`: the person's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then the
+  family's slot while it has a chain, its **first** target answering) through the session's own
+  gateway view (`sessionGatewayOf`: the effective `ANTHROPIC_BASE_URL`, a profile's chains). The
+  levels come from the guard's constants (`ALLOWED_EFFORTS`, `OPUS_FREE_EFFORTS`,
+  `OPUS_ASK_EFFORT`, `AFFORDABLE_EFFORT`), never a second list. A Claude-first chain with a
+  backend fallback is Claude, as the guard reads it. A name a slot answers with a stricter
+  premium Claude model reads as that tier (`sonnet` → Claude Opus).
+- **The gateway off** says the same four lines, all Claude: the instructions' effort rule reads
+  the note, and a session without a gateway needs it as much as one with.
+- **A config that cannot be read** (`gateway.json` is there and unusable, while the session's
+  address is a gateway's) is one plain line that the view is not known. An address with no
+  `gateway.json` is another program's proxy, and reads as Claude, the guard's way.
+- **When.** At every `SessionStart` — a start, a resume, a clear, a compaction each build Claude's
+  context again, so its `hooks.json` entry has no matcher. At `UserPromptSubmit` only when the
+  note differs from the one said last in this session (the owner may change a slot while sessions
+  run; a line costs context in every session on the machine). The last note is the mark
+  `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.tiers`; a prompt in a session whose start
+  the hook never saw says it once, and a mark that cannot be kept makes a prompt silent rather
+  than repeat itself. It was chosen over the Agent guard's `PreToolUse`: that answer comes after
+  Claude chose its effort.
+- **Why a hook of its own.** `fable-session` speaks to the person and never to Claude, by its
+  contract; `lead-notes`, `crew-role` and `session-name` have other jobs.
+- **Machine-wide**, like `agent-guard`: no project file, a folder outside git, a crew session
+  (its subagents run on these tiers) and `claude -p` all get it. Never a question, never a block.
+  Not covered: Claude Code's own overrides of the subagent model or effort
+  (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, `CLAUDE_CODE_EFFORT_LEVEL`); the guard still judges those
+  and names them in its answer.
 
 ### The notifier
 
@@ -761,7 +965,8 @@ ported so a machine that moves to the plugin loses nothing.
 
 Everything that waits runs in a detached worker — the notifier's `alert-worker`, through the
 launcher, never in the hook (the usage-limit alert has no button and starts no worker: it says
-which limit was hit and when it resets, and offers nothing) — and each extra runs only where its
+which limit was hit and, when that limit holds the session, when it resets — a limit that does
+not hold it gets no reset date, `docs/gateway.md` — and offers nothing) — and each extra runs only where its
 tool is on PATH: `xdotool` to raise a window (the terminal's `WINDOWID`, or a VS Code or
 Warp window found by its class and title); `gdbus`, the notification server itself, for the
 notification's id — the minute and the one-per-session rule need it, and `notify-send`

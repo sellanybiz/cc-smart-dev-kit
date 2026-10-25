@@ -32,6 +32,49 @@ asked for (`src/sessions/`, `src/worktrees/`):
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.
 
+### Finished background sessions
+
+`sessions --finished` uses `src/sessions/finished.ts` for both the command and the Work API. It accepts only `background` jobs in `done` or `stopped`, older than a day by their
+matched job-state end timestamps. Stored crew and lead identities (full and short ids), role
+names, unknown kinds, active states and damaged records keep a session out. `--remove` shows
+the list and asks once, or takes `--yes`; repeated `--id <short-id>` limits the selection to those
+exact eligible sessions. Each candidate is read again before `claude rm`; any requested ineligible
+id refuses the whole selection before removal. The portal action uses that same targeted CLI.
+A still-registered or locked worktree refuses `claude rm`: its session uses `ExitWorktree`, or the
+project's finished-worktree clean removes it first. One refusal does not block later eligible rows;
+the final exit is nonzero if any failed. The portal child runs from the existing home folder, not
+from a possibly removed session folder. Nothing runs this removal by itself.
+
+The same command sweeps what removed **crew** sessions left in `/resume` (AR1,
+`readCrewLeftovers` in `finished.ts`): the conversations of crew records the store marks
+`removed` or `discarded` that are still under Claude Code's projects folder, the empty project
+folders of their worktrees, and the crew archives past `workflow.crew.archiveDays`. `--remove`
+asks once more (or takes `--yes`), reads the lists again, then moves each conversation into the
+crew archive with the code `crew rm` uses (`archive.ts`), removes each folder that holds nothing
+and deletes each expired archive. Listing moves nothing. Never listed or taken: a lead's session,
+a session any crew record still on the board names, one a running Claude holds, one written after
+its removal event (the person resumed it; the event's time counts, not the record's last write),
+one whose archived copy has other bytes, and any file the store does not name. A crew
+store or lead record it cannot read fails closed. `--id` names finished background sessions
+only, so it leaves this part out. How the archive works: `docs/design/crew.md` § A removed crew
+session's conversation.
+
+### Stale locks and local caches
+
+The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,
+a dead PID or a reused PID with a different `/proc` start time proves the locker gone only in the
+initial PID namespace. A nested or unreadable namespace cannot prove a host PID dead. Only
+then, and after the normal contents/program/container checks, can the clean unlock and remove
+it. A failed move or removal restores the same lock on the retained path and says when restoration
+fails. Other lock formats and platforms stay protected. A live lock whose work is on the base
+names `ExitWorktree` (remove), or closing the session, as its next step.
+
+The Supabase CLI's `supabase/.temp/cli-latest` version-check cache is disposable. Its parent
+folder is not: different project-link or pooler state stays protected. An unchanged copy in
+the main checkout remains safe by the existing byte-for-byte comparison. A bounded directory
+walk allows that one cache without hiding other local files. A project-declared safe-path
+field remains deferred.
+
 ### The flow report
 
 `cc-smart-dev-kit report` answers what a week of sessions cost in a person's time, from the

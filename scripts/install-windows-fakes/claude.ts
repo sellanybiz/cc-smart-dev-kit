@@ -28,6 +28,12 @@ export interface Context {
    * found" — access, not ssh, and the HTTPS form cannot fix it (the installer must not retry).
    */
   addNotFound: boolean;
+  /**
+   * `marketplace add` succeeds but leaves the user settings alone, so the marketplace is on disk
+   * and not declared. Real Claude Code always declares it (docs/claude-code-contract.md); this
+   * is the world where it somehow did not.
+   */
+  addNoDeclare?: boolean;
   configDir: string;
   log: string;
   version: string;
@@ -41,6 +47,7 @@ export const MARKETPLACE_NAMES: Record<string, string> = {
 
 export function contextFromEnv(): Context {
   return {
+    addNoDeclare: process.env.FAKE_CLAUDE_NO_DECLARE === "yes",
     addNotFound: process.env.FAKE_CLAUDE_ADD_NOT_FOUND === "yes",
     addSshRefused: process.env.FAKE_CLAUDE_SSH_REFUSED === "yes",
     configDir: process.env.CLAUDE_CONFIG_DIR ?? "",
@@ -115,6 +122,16 @@ function marketplaceAdd(
   const known = readJson(knownFile(context));
   known[name] = { source: { source: "github", repo: source }, installLocation: dir };
   writeJson(knownFile(context), known);
+  // Claude Code also DECLARES the marketplace in the user settings (`extraKnownMarketplaces`,
+  // with its source) -- on a repeat add of one already on disk too (proved live: Claude Code
+  // 2.1.310, docs/claude-code-contract.md).
+  if (context.addNoDeclare !== true) {
+    const settings = readJson(settingsFile(context));
+    const declared = (settings.extraKnownMarketplaces ?? {}) as Record<string, unknown>;
+    declared[name] = { source: { source: "github", repo: source } };
+    settings.extraKnownMarketplaces = declared;
+    writeJson(settingsFile(context), settings);
+  }
   return 0;
 }
 

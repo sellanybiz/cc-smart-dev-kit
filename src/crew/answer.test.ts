@@ -13,12 +13,17 @@ import { resumeArgs, runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
+  answerCrewQuestion,
   createCrew,
   crewMcpFile,
   crewReportFile,
   crewSettingsFile,
   listCrew,
+  markAnswerDelivered,
+  openQuestionIndex,
   readCrewEvents,
+  updateCrew,
+  writeAnswerWatchBeat,
   writeLead,
   writeStoreFile,
 } from "./store";
@@ -41,7 +46,10 @@ function filesOf(world: ReturnType<typeof crewWorld>): { mcp: string; settings: 
 }
 
 /** A world with one crew session that asked a question, in `state`. */
-async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "working") {
+async function askedWorld(
+  state: "working" | "stopped" | "blocked" | "done" = "working",
+  asks = true,
+) {
   const world = crewWorld();
   const worktree = worktreeOf(world);
   mkdirSync(worktree, { recursive: true });
@@ -89,13 +97,15 @@ async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "w
     },
     T0,
   );
-  await addCrewQuestion(
-    world.paths.stateDir,
-    world.repo,
-    ID,
-    { options: ["3210", "3211"], question: "which port?", recommended: 1 },
-    T0,
-  );
+  if (asks) {
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port?", recommended: 1 },
+      T0,
+    );
+  }
   // Its own files, as `crew start` writes them: a resume carries them.
   writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, ID), "{}\n");
   writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, ID), '{"mcpServers":{}}\n');
@@ -108,8 +118,11 @@ describe("crew answer", () => {
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
+    // No heartbeat from the crew session's monitor: the answer is only recorded, and the lead
+    // keeps the line it sends it with.
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
+      "recorded, not delivered: no heartbeat from its monitor, so send it yourself:",
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -117,13 +130,163 @@ describe("crew answer", () => {
       question: "which port?",
       answer: "the port is 3210",
       answeredAt: "2026-10-21T10:00:00.000Z",
+      deliveredAt: null,
     });
+  });
+
+  test("AN1: a monitor that is alive delivers the answer: the command says delivered, and prints no SendMessage line", async () => {
+    const world = await askedWorld();
+    // The monitor beat 5 s ago.
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 5000);
+    // The command waits for the monitor; the monitor claims the answer while it waits.
+    const ctx = world.ctx({
+      sleep: async () => {
+        await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0 + 1000);
+      },
+    });
+    expect(await runCrew(["answer", NAME, "the port is 3210"], ctx)).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      "delivered: its monitor gave it to the session",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:00:01.000Z");
+  });
+
+  test("AN1: a monitor that is alive but has not passed it on in time: recorded, and the lead keeps the line", async () => {
+    const world = await askedWorld();
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 5000);
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      "recorded, not delivered yet: its monitor is running but did not pass it on within 10 s; if the session stays silent, send it yourself (it then arrives twice):",
+      'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
+    ]);
+  });
+
+  test("AN1: a heartbeat that is old counts as no monitor: recorded only, with the age", async () => {
+    const world = await askedWorld();
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 125_000);
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      "recorded, not delivered: its monitor's last heartbeat was 125 s ago, so send it yourself:",
+      'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
+    ]);
+  });
+
+  test("AN1: a second answer is a correction: the first is kept as superseded, the new one says it replaces it", async () => {
+    const world = await askedWorld();
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    // The session heard the first one (sent by hand, then marked by its monitor).
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
+    world.out.length = 0;
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "corrected the answer to C my-app B6b portal-live: which port?",
+      "recorded, not delivered: no heartbeat from its monitor, so send it yourself:",
+      'SendMessage {"to":"C my-app B6b portal-live","message":"Your lead CORRECTS its earlier answer to your question \\"which port?\\": this REPLACES the earlier answer (\\"the port is 3210\\"). Follow this one instead:\\nsorry, 3211"}',
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]).toMatchObject({
+      answer: "sorry, 3211",
+      deliveredAt: null,
+      superseded: [
+        {
+          answer: "the port is 3210",
+          answeredAt: "2026-10-21T10:00:00.000Z",
+          deliveredAt: "2026-10-21T10:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  test("AN1: a correction of an answer the session never heard says nothing of replacing it", async () => {
+    const world = await askedWorld();
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    world.out.length = 0;
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
+    expect(world.out[2]).toBe(
+      'SendMessage {"to":"C my-app B6b portal-live","message":"sorry, 3211"}',
+    );
+  });
+
+  test("AN1: the person's click with no monitor running is told no SendMessage line: they cannot send it", async () => {
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({ processes: { commandLineOf: () => null, parentOf: () => null } });
+    expect(await runCrew(["answer", "--as-person", "--", NAME, "3210"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      "answered C my-app B6b portal-live: which port?",
+      "recorded, not delivered: no heartbeat from its monitor, so it hears the answer when its monitor next runs, or when its lead sends it",
+    ]);
+  });
+
+  test("AN1: a correction through a live monitor is delivered the same way", async () => {
+    const world = await askedWorld();
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 5000);
+    await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
+    world.out.length = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0 + 1000);
+      },
+    });
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      "corrected the answer to C my-app B6b portal-live: which port?",
+      "delivered: its monitor gave the session your correction, which replaces your earlier answer",
+    ]);
+  });
+
+  test("AN1: a question closed by the phase's end takes no correction", async () => {
+    const world = await askedWorld();
+    await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "done" }, T0 + 1000);
+    world.err.length = 0;
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (done), so its answer cannot be corrected`,
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBe("the port is 3210");
+    expect(record?.questions[0]?.superseded).toBeUndefined();
+  });
+
+  test("AN1: a stopped crew session is resumed with the correction as its prompt, and the record says delivered", async () => {
+    const world = await askedWorld("stopped");
+    // The first answer was recorded while it ran; it stopped before it read it.
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "the port is 3210", T0);
+    await markAnswerDelivered(world.paths.stateDir, world.repo, ID, 0, T0);
+    expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    const resume = world.claudeCalls().find((call) => call[0] === "--bg");
+    // The fake logs one argument per line, so a prompt with a line break is read back joined.
+    expect(resume?.slice(resume.indexOf("--", 3) + 1).join("\n")).toBe(
+      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead:\nsorry, 3211',
+    );
+    expect(world.out).toEqual([`answered ${NAME}: resumed with your correction · which port?`]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]).toMatchObject({
+      answer: "sorry, 3211",
+      deliveredAt: "2026-10-21T10:00:00.000Z",
+    });
+    expect(record?.state).toBe("working");
+  });
+
+  test("AN1: a stopped crew session resumed with its first answer is delivered in the same write", async () => {
+    const world = await askedWorld("stopped");
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:00:00.000Z");
   });
 
   test("D36: a quote or a line break in the answer is escaped, never changed", async () => {
     const world = await askedWorld();
     await runCrew(["answer", NAME, 'use "3210"\nnot 3211'], world.ctx());
-    expect(world.out[1]).toBe(
+    expect(world.out[2]).toBe(
       'SendMessage {"to":"C my-app B6b portal-live","message":"use \\"3210\\"\\nnot 3211"}',
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -191,11 +354,13 @@ describe("crew answer", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
-  test("D36: a crew session that is done takes no more answers", async () => {
+  test("D36: a crew session that is done takes no more answers, and its question needs none", async () => {
     const world = await askedWorld("done");
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
     expect(code).toBe(1);
-    expect(world.err[0]).toBe(`crew answer: ${NAME} is done, and it takes no more answers`);
+    expect(world.err[0]).toBe(
+      `crew answer: ${NAME} is finished (done), so its question needs no answer`,
+    );
   });
 
   test("D35: a stopped crew session is resumed with the answer as its next prompt, in its worktree, with its own files", async () => {
@@ -235,6 +400,126 @@ describe("crew answer", () => {
     expect(record?.questions[0]?.answer).toBe("the port is 3210");
     // It is running again, so it holds a place and the watch must not stop it.
     expect(record?.state).toBe("working");
+  });
+
+  test("WF1: a resume under the same id keeps the record's session", async () => {
+    const world = await askedWorld("stopped");
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    // The same short id and no copy note: the same session goes on, and agent view is not read again.
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["agents", "--bg"]);
+    expect(world.out).toEqual([`answered ${NAME}: resumed with your answer · which port?`]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({
+      sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      shortId: "aaaa1111",
+      state: "working",
+    });
+  });
+
+  test("WF1: a resume that starts a copy: the record takes its new id in the same write as working", async () => {
+    // The live case (2026-10-25): the record held c7186986, the resume opened d7a54fc8, and the
+    // record kept the old id — so the watch read the old session's row as stopped.
+    const world = await askedWorld("stopped");
+    const view = JSON.stringify([
+      { id: "aaaa1111", sessionId: "aaaa1111-2222-3333-4444-555555555555", state: "stopped" },
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    // Agent view before (is it gone?), the resume, and agent view again for the copy's row.
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["agents", "--bg", "agents"]);
+    expect(world.out).toEqual([
+      `answered ${NAME}: resumed with your answer as session a1b2c3d4 (a copy of aaaa1111) · which port?`,
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    expect(record?.questions[0]?.answer).toBe("the port is 3210");
+    // One state event: the ids came in the write that made it working.
+    const states = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.type === "state",
+    );
+    expect(states.map((one) => [one.state, one.text])).toEqual([
+      ["working", "an answer brought it back"],
+    ]);
+  });
+
+  test("WF1: a resume that prints no session id is said with why; the record stays as it was", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_BG: "noline" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("WF1: a copy note that names another id than the line is not guessed at", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_COPY_AS: "b2c3d4e5", FAKE_RESUME: "copy" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 said it started a copy as b2c3d4e5, but printed backgrounded · a1b2c3d4; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+  });
+
+  test("WF1: a resume that does not answer in time may have started one: said, the record as it was", async () => {
+    const world = await askedWorld("stopped");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) =>
+        argv.includes("--resume")
+          ? { error: null, exitCode: null, stderr: "", stdout: "", timedOut: true }
+          : real(argv, options),
+    });
+    expect(await runCrew(["answer", NAME, "the port is 3210"], ctx)).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 did not answer in time; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+    expect(record?.questions[0]?.answer).toBeNull();
+    // It may have started a session: its claim stays until it is over, so a second resume waits.
+    expect(record?.resumeClaim).toBeDefined();
+  });
+
+  test("WF1: a copy agent view does not list is said, with the copy's id to stop", async () => {
+    const world = await askedWorld("stopped");
+    const view = JSON.stringify([
+      { id: "aaaa1111", sessionId: "aaaa1111-2222-3333-4444-555555555555", state: "stopped" },
+    ]);
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: session a1b2c3d4 started, but claude agents does not list it; see claude agents, and stop it (claude stop a1b2c3d4) before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
   });
 
   test("D35: a stopped crew session whose agent view cannot be read is not resumed: it could be running", async () => {
@@ -294,7 +579,7 @@ describe("crew answer", () => {
       world.ctx({}, { FAKE_AGENTS_JSON: live }),
     );
     expect(code).toBe(0);
-    expect(world.out[1]).toBe(
+    expect(world.out[2]).toBe(
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     );
     // `claude --bg --resume` on a running session would start a copy beside it.
@@ -412,13 +697,13 @@ describe("crew answer", () => {
     expect(answer?.[2]).toBe("aaaa1111-2222-3333-4444-555555555555");
   });
 
-  test("D36: an answer to a crew session with no open question is refused", async () => {
-    const world = await askedWorld();
-    expect(await runCrew(["answer", NAME, "first"], world.ctx())).toBe(0);
-    world.err.length = 0;
-    const code = await runCrew(["answer", NAME, "second"], world.ctx());
+  test("D36: an answer to a crew session that never asked is refused", async () => {
+    const world = await askedWorld("working", false);
+    const code = await runCrew(["answer", NAME, "first"], world.ctx());
     expect(code).toBe(1);
-    expect(world.err[0]).toContain("no question waiting");
+    expect(world.err[0]).toBe(
+      `crew answer: ${NAME} has no question waiting for an answer (it never asked one)`,
+    );
   });
 
   test("D36: an answer from inside a crew session is refused", async () => {
@@ -477,7 +762,7 @@ describe("crew answer", () => {
     expect(code).toBe(0);
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
-      'SendMessage {"to":"C my-app B6b portal-live","message":"-- 3210 it is"}',
+      "recorded, not delivered: no heartbeat from its monitor, so it hears the answer when its monitor next runs, or when its lead sends it",
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("-- 3210 it is");
@@ -526,5 +811,139 @@ describe("crew answer", () => {
     expect(world.err[0]).toBe(
       "crew answer: this session was started in bypassPermissions mode, and a lead there acts on every crew session's message with no question",
     );
+  });
+});
+
+describe("a finished crew session's question is never open", () => {
+  /** The one question's open index of a record the store holds in `state`. */
+  async function indexIn(
+    world: Awaited<ReturnType<typeof askedWorld>>,
+    state: string,
+  ): Promise<null | number> {
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state }, T0 + 1000, "moved");
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    return record === undefined ? null : openQuestionIndex(record);
+  }
+
+  test("open on a working record, and closed on a merged, a handoff, a done, a failed and a removed one", async () => {
+    const world = await askedWorld("working");
+    expect(await indexIn(world, "working")).toBe(0);
+    for (const state of ["merged", "handoff", "done", "failed", "removed"]) {
+      expect([state, await indexIn(world, state)]).toEqual([state, null]);
+    }
+  });
+
+  test("open on a stopped record: D35's answer resumes it with the question still waiting", async () => {
+    const world = await askedWorld("stopped");
+    expect(await indexIn(world, "stopped")).toBe(0);
+  });
+
+  test("crew answer on a merged record says the session is finished, in one line", async () => {
+    const world = await askedWorld("working");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "merged" }, T0 + 1000);
+    const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (merged), so its question needs no answer`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("crew answer on a handoff record says the same", async () => {
+    const world = await askedWorld("working");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "handoff" }, T0 + 1000);
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (handoff), so its question needs no answer`,
+    ]);
+  });
+});
+
+describe("RG1: crew answer after a supersede", () => {
+  test("the answer goes to the newest question, and the superseded one stays unanswered", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    const code = await runCrew(["answer", NAME, "3211"], world.ctx());
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out[0]).toBe(`answered ${NAME}: which port, exactly?`);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(record?.questions[1]).toMatchObject({ answer: "3211" });
+  });
+
+  test("IN1: a second answer corrects the newest question, never the superseded one", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    expect(await runCrew(["answer", NAME, "3211"], world.ctx())).toBe(0);
+    world.out.length = 0;
+    expect(await runCrew(["answer", NAME, "3211 again"], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out[0]).toBe(`corrected the answer to ${NAME}: which port, exactly?`);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    // The old question stays closed and unanswered; the newest holds the correction and the first answer.
+    expect(record?.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(record?.questions[0]?.superseded).toBeUndefined();
+    expect(record?.questions[1]).toMatchObject({
+      answer: "3211 again",
+      deliveredAt: null,
+      superseded: [{ answer: "3211" }],
+    });
+  });
+
+  test("IN1: the correction is no answer to the superseded question: it asks nothing of the old one", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    await runCrew(["answer", NAME, "3211"], world.ctx());
+    await runCrew(["answer", NAME, "3211 again"], world.ctx());
+    // A stale reader that still holds the old index is refused, with or without the correction flag.
+    for (const correction of [false, true]) {
+      await expect(
+        answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "late", T0 + 5000, null, null, {
+          correction,
+        }),
+      ).rejects.toThrow("was superseded by question 1");
+    }
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("a finished session with a superseded question left says its answer cannot be corrected", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "3211", T0 + 2000);
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "merged" }, T0 + 3000);
+    expect(await runCrew(["answer", NAME, "late"], world.ctx())).toBe(1);
+    // The old question was superseded, never left open: the line is not the "needs no answer" one
+    // (RG1), and the newest question's answer is the one a finished phase cannot correct (AN1).
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} is finished (merged), so its answer cannot be corrected`,
+    ]);
   });
 });

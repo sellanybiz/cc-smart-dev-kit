@@ -4,23 +4,34 @@
  * refuses `rm` while the worktree is still there — as the real one does (proved live, L1a.1) —
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
-import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { OTHER_SESSION } from "../testing/crew-world";
-import { git } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { repoKey } from "../workflow/reviews";
+import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
+import { procEnviron, stopLeftoverProcesses, stopSession } from "./end";
 import {
+  claimResume,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
+  RESUME_CLAIM_MS,
   readCrew,
   readCrewEvents,
+  releaseResume,
+  updateCrew,
   writeLead,
 } from "./store";
+
+// Every test builds a real repo and worktrees, and runs real git in them: its own speed limit
+// (src/testing/timeouts.ts). On a loaded machine the setup alone passed the 5 s default.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** The session of another lead of the world: its paused crew sessions are not this lead's. */
 const OTHER_LEAD = OTHER_SESSION;
@@ -68,9 +79,74 @@ function commitWork(worktree: string): void {
   git(worktree, "commit", "-m", "work");
 }
 
+/** One commit of a second crew session's own, in its worktree: different work, so a replay sees a change. */
+function commitOtherWork(worktree: string): void {
+  writeFileSync(join(worktree, "other.ts"), "export const y = 2;\n");
+  git(worktree, "add", ".");
+  git(worktree, "commit", "-m", "other work");
+}
+
 /** The lead merges the crew session's branch into its own, as D24 has it. */
 function leadMerges(repo: string, branch: string): void {
   git(repo, "merge", "--no-ff", "-m", "merge the crew session", branch);
+}
+
+/**
+ * A real background program in `cwd`, as a crew session's own check outlives its turn: the
+ * removal signals this test's own child, never a process the test did not start. `crew` is the
+ * crew id its environment carries (`CC_SMART_DEV_KIT_CREW`, which every program a crew session
+ * starts inherits, whoever it is reparented to); null starts one that carries none, as a
+ * person's terminal or dev server does. The environment is built here, not inherited, so the
+ * session that runs the suite cannot leak its own marker in.
+ */
+async function startProgram(
+  cwd: string,
+  crew: null | string,
+  command = "exec sleep 60",
+): Promise<Bun.Subprocess> {
+  const child = Bun.spawn(["sh", "-c", command], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(crew === null ? {} : { CC_SMART_DEV_KIT_CREW: crew }),
+    },
+    stderr: "ignore",
+    stdout: "ignore",
+  });
+  // Until the child has run `sleep`, /proc shows the environment it was forked with — the
+  // suite's own — and a removal that read it then would judge the wrong program.
+  for (let tries = 0; tries < 400; tries += 1) {
+    try {
+      if (readFileSync(`/proc/${String(child.pid)}/cmdline`, "utf8").includes("sleep")) break;
+    } catch {
+      break;
+    }
+    await Bun.sleep(5);
+  }
+  return child;
+}
+
+/** True when `child` ended within two seconds (the removal's SIGTERM and SIGKILL are instant here). */
+async function ended(child: Bun.Subprocess): Promise<boolean> {
+  return await Promise.race([child.exited.then(() => true), Bun.sleep(2_000).then(() => false)]);
+}
+
+/** The moment a removal moved a leftover folder aside, in the name `removeWorktree` gives it. */
+const PARKED_AT = 1761300000000;
+
+/**
+ * What a removal that failed midway leaves when git no longer lists the folder: the files git
+ * could not delete, written before the move.
+ */
+function leftoverFolder(repo: string, name: string, files = ["docs/guide.md"]): string {
+  const folder = join(repo, ".claude", "worktrees", `${name}-removing-${String(PARKED_AT)}`);
+  for (const file of files) {
+    mkdirSync(dirname(join(folder, file)), { recursive: true });
+    writeFileSync(join(folder, file), "left\n");
+    const before = new Date(PARKED_AT - 60_000);
+    utimesSync(join(folder, file), before, before);
+  }
+  return folder;
 }
 
 /** Agent view still lists the crew session of the board world: a failed `claude rm` is a real failure. */
@@ -106,6 +182,43 @@ describe("crew stop", () => {
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "done",
     });
+  });
+
+  test("RX1: a stop never overwrites the end a crew session reported after the stopper read it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    // The stopper read `working`; the session reported `done` before the stop's write.
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "done" }, NOW, "done");
+
+    const stopped = await stopSession(record, world.ctx());
+
+    expect(stopped).toEqual({ gone: false, ok: true, state: "done", stored: true });
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "done",
+    });
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+        (one) => one.state === "stopped",
+      ),
+    ).toEqual([]);
+  });
+
+  test("RX1: the lead's own stop of a session the watch stopped makes the removal the lead's call", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "working" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { state: "stopped", stoppedByWatch: true },
+      NOW,
+    );
+
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("stopped");
+    expect(after?.stoppedByWatch).toBeUndefined();
   });
 
   test("a session Claude Code no longer lists is stopped all the same, and the line says so", async () => {
@@ -297,7 +410,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
-  test("the lead's own folder is the branch it merges into, wherever the main checkout is", async () => {
+  test("the crew session's own base is the branch it merges into, wherever the lead's folder is", async () => {
     const world = await boardWorld();
     // A lead that works in a worktree of its own, on its own branch.
     const leadFolder = join(world.repo, ".claude", "worktrees", "lead");
@@ -317,14 +430,80 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     const record = await world.addCrew({ leadSessionId: "f00dfeed-0000-1111-2222-333333333333" });
     const { branch, worktree } = places(world.repo);
     commitWork(worktree);
-    // Merged into the main checkout's branch: the lead's folder is on another branch.
+    // Merged into the branch it was cut from (main), though the lead's folder is on another branch.
     leadMerges(world.repo, branch);
 
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", branch)).toBe("");
+  });
+
+  test("M4: the Fix line names the checked-out base, not the lead folder", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    commitWork(record.worktree);
+    git(world.repo, "checkout", "-b", "lead-other");
+    const baseFolder = join(world.repo, ".claude", "worktrees", "base");
+    git(world.repo, "worktree", "add", baseFolder, "main");
     expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
     expect(world.err).toEqual([
-      `crew rm: ${branch} has 1 commit that lead-work does not have`,
-      `Fix: the lead merges it first (git merge ${branch}, in ${leadFolder}), then run crew rm again`,
+      "crew rm: crew/B1-help has 1 commit that main does not have",
+      `Fix: the lead merges it first (git merge crew/B1-help, in ${baseFolder}), then run crew rm again`,
     ]);
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("M4: the Fix line names the merge target when no folder checks it out", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    commitWork(record.worktree);
+    git(world.repo, "checkout", "-b", "lead-other");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: crew/B1-help has 1 commit that main does not have",
+      "Fix: the lead must merge crew/B1-help into main, then run crew rm again",
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("a continuation is removed against the first base while the lead is on another branch", async () => {
+    const world = await boardWorld();
+    const original = await world.addCrew({ state: "handoff" });
+    commitWork(original.worktree);
+    const previousHead = git(original.worktree, "rev-parse", "HEAD").trim();
+    const next = await world.addCrew({ slug: "next", state: "done" });
+    git(next.worktree, "merge", "--ff-only", original.branch);
+    commitOtherWork(next.worktree);
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      next.id,
+      {
+        base: { ref: original.branch, sha: previousHead },
+        baseRef: original.branch,
+        continues: original.id,
+      },
+      NOW,
+    );
+    const leadFolder = join(world.repo, ".claude", "worktrees", "lead-other");
+    git(world.repo, "worktree", "add", "-b", "lead-other", leadFolder, "HEAD");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: leadFolder,
+        name: original.leadName,
+        plan: original.plan,
+        repo: world.repo,
+        sessionId: original.leadSessionId,
+        tag: "my-app",
+      },
+      NOW,
+    );
+    leadMerges(world.repo, next.branch);
+    expect(await runCrew(["rm", next.id], world.ctx())).toBe(0);
+    expect(existsSync(next.worktree)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, next.id)?.state).toBe("removed");
   });
 
   test("a lead whose folder is gone: the ref the crew session was cut from stands in", async () => {
@@ -348,6 +527,52 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       "crew rm: crew/B1-help has 1 commit that main does not have",
       `Fix: the lead merges it first (git merge crew/B1-help, in ${world.repo}), then run crew rm again`,
     ]);
+  });
+
+  test("two crew sessions of one lead, on two bases, each merged into its own base and each removed", async () => {
+    const world = await boardWorld();
+    const { repo } = world;
+    // A second base, cut from main: the lead runs two release branches.
+    git(repo, "branch", "release-1.1.3", "main");
+    const mainSha = git(repo, "rev-parse", "main").trim();
+    const releaseSha = git(repo, "rev-parse", "release-1.1.3").trim();
+    // One crew session on each base. The lead's own folder stays on main, which holds only the first.
+    const first = await world.addCrew({ base: { ref: "main", sha: mainSha }, baseRef: "main" });
+    const second = await world.addCrew({
+      base: { ref: "release-1.1.3", sha: releaseSha },
+      baseRef: "release-1.1.3",
+      phase: "B2",
+      slug: "api",
+      suffix: "2b3c4d",
+    });
+    const firstPlaces = places(repo);
+    const secondPlaces = {
+      branch: "crew/B2-api",
+      worktree: join(repo, ".claude", "worktrees", "crew-B2-api"),
+    };
+    commitWork(firstPlaces.worktree);
+    commitOtherWork(secondPlaces.worktree);
+    leadMerges(repo, firstPlaces.branch);
+    git(repo, "checkout", "release-1.1.3");
+    git(repo, "merge", "--no-ff", "-m", "merge the crew session", secondPlaces.branch);
+    git(repo, "checkout", "main");
+
+    expect(
+      await runCrew(["rm", first.id], world.ctx({}, { FAKE_WORKTREE: firstPlaces.worktree })),
+    ).toBe(0);
+    expect(
+      await runCrew(["rm", second.id], world.ctx({}, { FAKE_WORKTREE: secondPlaces.worktree })),
+    ).toBe(0);
+    expect(existsSync(firstPlaces.worktree)).toBe(false);
+    expect(existsSync(secondPlaces.worktree)).toBe(false);
+    expect(git(repo, "branch", "--list", firstPlaces.branch)).toBe("");
+    expect(git(repo, "branch", "--list", secondPlaces.branch)).toBe("");
+    expect(await readCrew(world.paths.stateDir, repo, first.id)).toMatchObject({
+      state: "removed",
+    });
+    expect(await readCrew(world.paths.stateDir, repo, second.id)).toMatchObject({
+      state: "removed",
+    });
   });
 
   test("after the merge: stop, unlock, remove the worktree and branch, and only then claude rm", async () => {
@@ -498,6 +723,402 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
+  test("D62: a finished session's own leftover program is stopped, and the worktree goes", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    // It carries the session's marker, as everything the session's Bash started does.
+    const check = await startProgram(worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
+            },
+          }),
+        ),
+      ).toBe(0);
+      expect(world.out).toContain("C my-app B1 help: stopped its own leftover programs (check.sh)");
+      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+        state: "removed",
+      });
+      expect(existsSync(worktree)).toBe(false);
+      expect(await ended(check)).toBe(true);
+    } finally {
+      if (check.exitCode === null) check.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a program that is not the session's is never stopped, however long it has run", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    // A person's shell or dev server, started before the session's turn ended and still there:
+    // it has no marker, so it is not the session's. Another crew session's has someone else's.
+    const server = await startProgram(worktree, null);
+    const sibling = await startProgram(worktree, "B2-other-9f8e7d");
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                {
+                  cwd: worktree,
+                  path: "/usr/bin/bun dev",
+                  pid: server.pid,
+                  startedAt: NOW - 13 * MINUTE,
+                },
+                {
+                  cwd: worktree,
+                  path: "/usr/bin/bun test",
+                  pid: sibling.pid,
+                  startedAt: NOW - 13 * MINUTE,
+                },
+              ],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: bun",
+      );
+      expect(world.out.some((line) => line.includes("stopped its own leftover programs"))).toBe(
+        false,
+      );
+      expect(existsSync(worktree)).toBe(true);
+      expect(server.exitCode).toBeNull();
+      expect(sibling.exitCode).toBeNull();
+      expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+        state: "done",
+      });
+    } finally {
+      server.kill("SIGKILL");
+      sibling.kill("SIGKILL");
+    }
+  });
+
+  test("D62: one program that is not the session's keeps all of them", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const mine = await startProgram(worktree, record.id);
+    const theirs = await startProgram(worktree, null);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [
+                { parentPid: 1, path: join(worktree, "check.sh"), pid: mine.pid },
+                { cwd: worktree, path: "/usr/bin/bun dev", pid: theirs.pid },
+              ],
+            },
+          }),
+        ),
+      ).toBe(1);
+      // Nothing is stopped when something there is somebody else's: half a stop helps nobody.
+      expect(mine.exitCode).toBeNull();
+      expect(theirs.exitCode).toBeNull();
+    } finally {
+      mine.kill("SIGKILL");
+      theirs.kill("SIGKILL");
+    }
+  });
+
+  test("D62: a live session's children are never stopped, marker or not", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const check = await startProgram(worktree, record.id);
+    try {
+      // Agent view lists the session with a process: it is not finished, its children are its work.
+      const live = JSON.stringify([
+        {
+          id: "a1b2c3d4",
+          pid: 4242,
+          sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+          state: "working",
+        },
+      ]);
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx(
+            {
+              scanFacts: {
+                ...QUIET_MACHINE,
+                programs: [{ parentPid: 4242, path: join(worktree, "check.sh"), pid: check.pid }],
+              },
+            },
+            { FAKE_AGENTS_JSON: live },
+          ),
+        ),
+      ).toBe(1);
+      expect(world.err).toContain(
+        "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: check.sh",
+      );
+      expect(check.exitCode).toBeNull();
+    } finally {
+      check.kill("SIGKILL");
+    }
+  });
+
+  describe("D62: what proves a program is the session's own", () => {
+    /** The record, its worktree and the context a direct call needs, with `programs` running. */
+    async function direct(programs: RunningProgram[], env: Record<string, string> = {}) {
+      const world = await boardWorld();
+      // Recorded an hour before NOW.
+      const record = await world.addCrew({ atMs: NOW - 60 * MINUTE, state: "done" });
+      const ctx = world.ctx({ scanFacts: { ...QUIET_MACHINE, programs } }, env);
+      return { ctx, record, world };
+    }
+    const unreadable = () => null;
+
+    test("an unreadable environment is never proof, whenever the program started", async () => {
+      const worktree = tempDir("leftover-lifetime");
+      const own = await startProgram(worktree, null);
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: own.pid },
+        ]);
+        // The environment cannot be read (not Linux, or not this user's process). Whatever the
+        // program's age or parent, it may be a person's editor or dev server: it stays.
+        const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx, unreadable);
+        expect(stopped.line).toBeNull();
+        expect(own.exitCode).toBeNull();
+      } finally {
+        if (own.exitCode === null) own.kill("SIGKILL");
+      }
+    });
+
+    test("a readable environment decides, even for a program that descends from the session", async () => {
+      const worktree = tempDir("leftover-reused-pid");
+      // A person's program that happens to sit under the session's pid (a reused pid): it carries
+      // no id of this crew session, so the session's descent cannot make it the session's own.
+      const stranger = await startProgram(worktree, null);
+      try {
+        const stopped = JSON.stringify([
+          {
+            id: "a1b2c3d4",
+            pid: 4242,
+            sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+            state: "stopped",
+          },
+        ]);
+        const { ctx, record } = await direct(
+          [
+            {
+              cwd: worktree,
+              parentPid: 4242,
+              path: join(worktree, "server.sh"),
+              pid: stranger.pid,
+            },
+          ],
+          { FAKE_AGENTS_JSON: stopped },
+        );
+        const result = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+        expect(result.line).toBeNull();
+        expect(stranger.exitCode).toBeNull();
+      } finally {
+        stranger.kill("SIGKILL");
+      }
+    });
+
+    test.skipIf(process.platform !== "linux")(
+      "SIGKILL goes to the process that got the SIGTERM",
+      async () => {
+        const worktree = tempDir("leftover-sigkill");
+        // It ignores SIGTERM, so only SIGKILL ends it.
+        const stubborn = await startProgram(
+          worktree,
+          "B1-help-1a2b3c",
+          "trap '' TERM; exec sleep 60",
+        );
+        try {
+          const { ctx, record } = await direct([
+            { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+          ]);
+          const stopped = await stopLeftoverProcesses({ ...record, worktree }, ctx);
+          expect(stopped.line).toBe(
+            "C my-app B1 help: stopped its own leftover programs (check.sh)",
+          );
+          expect(await ended(stubborn)).toBe(true);
+        } finally {
+          if (stubborn.exitCode === null) stubborn.kill("SIGKILL");
+        }
+      },
+    );
+
+    test("a pid another process took while this one was given time to end is not killed", async () => {
+      const worktree = tempDir("leftover-pid-reused");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        // The first reading is the process that is signalled; the second, after the grace, is
+        // somebody else's start time on the same pid.
+        const reads = ["proc:100", "proc:200"];
+        const startOf = () => reads.shift() ?? null;
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          startOf,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(reads).toEqual([]);
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
+      }
+    });
+
+    test("a start time that was never read is no licence for SIGKILL", async () => {
+      const worktree = tempDir("leftover-start-unread");
+      const stubborn = await startProgram(
+        worktree,
+        "B1-help-1a2b3c",
+        "trap '' TERM; exec sleep 60",
+      );
+      try {
+        const { ctx, record } = await direct([
+          { cwd: worktree, parentPid: 1, path: join(worktree, "check.sh"), pid: stubborn.pid },
+        ]);
+        const stopped = await stopLeftoverProcesses(
+          { ...record, worktree },
+          ctx,
+          procEnviron,
+          () => null,
+        );
+        expect(stopped.line).toBe("C my-app B1 help: stopped its own leftover programs (check.sh)");
+        expect(stubborn.exitCode).toBeNull();
+      } finally {
+        stubborn.kill("SIGKILL");
+      }
+    });
+  });
+
+  test.skipIf(process.platform !== "linux")(
+    "D62: a program's environment is read from /proc, and a pid nobody has reads as unreadable",
+    async () => {
+      const child = await startProgram(tempDir("environ"), "B1-help-1a2b3c");
+      try {
+        expect(procEnviron(child.pid)?.CC_SMART_DEV_KIT_CREW).toBe("B1-help-1a2b3c");
+        expect(procEnviron(999_999_999)).toBeNull();
+      } finally {
+        child.kill("SIGKILL");
+      }
+    },
+  );
+
+  test("M7: a container refusal leaves the session's owned program alive", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    const child = await startProgram(record.worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              containers: [{ name: "db", sources: [record.worktree] }],
+              programs: [{ parentPid: 1, path: join(record.worktree, "check.sh"), pid: child.pid }],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(world.err).toEqual([
+        'crew rm: .claude/worktrees/crew-B1-help is kept: Docker container "db" uses its files',
+        "Fix: clear that, then run crew rm again; it never forces",
+      ]);
+      expect(await ended(child)).toBe(false);
+      expect(child.exitCode).toBeNull();
+      expect(existsSync(record.worktree)).toBe(true);
+      expect(world.claudeVerbs()).not.toContain("rm");
+      expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
+
+  test("L15: a busy clean lock refuses crew rm and preserves its parked folder", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    const parked = `${record.worktree}-removing-${String(PARKED_AT)}`;
+    git(world.repo, "worktree", "move", record.worktree, parked);
+    const lock = await world.cleanLock.hold();
+    expect(lock).not.toBeNull();
+    try {
+      expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+      expect(world.err).toEqual([
+        "crew rm:  is kept: another worktree clean is running",
+        "Fix: clear that, then run crew rm again; it never forces",
+      ]);
+      expect(existsSync(parked)).toBe(true);
+      expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("done");
+      expect(world.claudeVerbs()).not.toContain("rm");
+      expect(git(world.repo, "branch", "--list", record.branch)).not.toBe("");
+    } finally {
+      lock?.close();
+    }
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(parked)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
+    expect(world.claudeVerbs()).toContain("rm");
+  });
+
+  test("local files keep the session's owned program alive", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    commitWork(record.worktree);
+    leadMerges(world.repo, record.branch);
+    writeFileSync(join(record.worktree, ".env.local"), "LOCAL=1\n");
+    const child = await startProgram(record.worktree, record.id);
+    try {
+      expect(
+        await runCrew(
+          ["rm", record.id],
+          world.ctx({
+            scanFacts: {
+              ...QUIET_MACHINE,
+              programs: [{ parentPid: 1, path: join(record.worktree, "check.sh"), pid: child.pid }],
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(await ended(child)).toBe(false);
+      expect(child.exitCode).toBeNull();
+      expect(world.err[0]).toContain("local files git does not keep");
+      expect(world.out.some((line) => line.includes("stopped its own leftover"))).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
+
   test("a file git does not keep would be lost with the worktree, so it stays", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();
@@ -509,6 +1130,56 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       "Fix: clear that, then run crew rm again; it never forces",
     ]);
     expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("D62: a removal that stopped halfway is finished by crew rm", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    leadMerges(world.repo, branch);
+    // What `removeWorktree` leaves when git could not remove the folder it moved aside.
+    const parked = `${worktree}-removing-1761300000000`;
+    git(world.repo, "worktree", "move", worktree, parked);
+    const code = await runCrew(["rm", record.id], world.ctx());
+    expect({ code, err: world.err }).toEqual({ code: 0, err: [] });
+    expect(existsSync(parked)).toBe(false);
+    expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "removed",
+    });
+  });
+
+  test("D62: crew rm also finishes a leftover folder no record names, and says so", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const { branch } = places(world.repo);
+    leadMerges(world.repo, branch);
+    const stray = leftoverFolder(world.repo, "crew-ghost");
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
+    expect(existsSync(stray)).toBe(false);
+    expect(world.out).toContain(
+      `removed ${stray} (left by a removal that stopped halfway; git no longer lists it)`,
+    );
+  });
+
+  test("D62: a leftover of this crew session's own that stays refuses crew rm, with its reason", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done", worktree: false });
+    const { worktree } = places(world.repo);
+    const stray = leftoverFolder(world.repo, "crew-B1-help");
+    // Something wrote in it after the removal moved it: not the removal's own, and not ours to delete.
+    writeFileSync(join(stray, "mine.txt"), "someone's notes\n");
+    expect(stray).toBe(`${worktree}-removing-${String(PARKED_AT)}`);
+    expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: .claude/worktrees/crew-B1-help-removing-1761300000000 is kept: files were written in it after the removal moved it: mine.txt",
+      "Fix: clear that, then run crew rm again; it never forces",
+    ]);
+    expect(existsSync(join(stray, "mine.txt"))).toBe(true);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "done",
+    });
   });
 
   test("`claude rm` fails: the store says so, the worktree is gone, and a second run finishes it", async () => {
@@ -813,6 +1484,83 @@ describe("crew resume", () => {
     });
   });
 
+  test("WF1: a resume that starts a copy: the record takes its new id in the same write as working", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", state: "stopped" });
+    const view = JSON.stringify([
+      { id: "b2c3d4e5", sessionId: "b2c3d4e5-0000-1111-2222-333333333333", state: "stopped" },
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    const states = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.crew === record.id && one.type === "state",
+    );
+    expect(states.map((one) => [one.state, one.text])).toEqual([
+      ["working", "resumed by the lead"],
+    ]);
+  });
+
+  test("WF1: a working record whose session is gone takes the copy's id too", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5" });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    // Its state did not change: no state event.
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+        (one) => one.crew === record.id && one.type === "state",
+      ),
+    ).toEqual([]);
+  });
+
+  test("WF1: a resume that prints no session id is refused with why, and changes nothing", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: "noline" }))).toBe(1);
+    expect(world.err).toEqual([
+      "crew resume: claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again",
+      `Fix: ${COMMAND} crew status "C my-app B1 help" shows its files; if it cannot come back, merge its branch and start the phase again`,
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "stopped",
+    });
+  });
+
   test("a crew session with no worktree is refused with one line: there is nowhere to bring it back", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped", worktree: false });
@@ -1018,6 +1766,73 @@ describe("D42: crew resume --paused", () => {
     expect(world.out).toEqual(["resumed C my-app B4 y (d4e5f6a7)"]);
   });
 
+  test("WF1: a paused one another resume holds is not resumed twice: one line, no claude call", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    // The watch is inside its own `claude --bg --resume` of this record right now.
+    expect(
+      await claimResume(world.paths.stateDir, world.repo, record.id, ["paused"], "the-watch", NOW),
+    ).toBe(true);
+    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(1);
+    expect(world.out).toEqual([
+      "C my-app B1 help: not resumed — C my-app B1 help is being resumed by another command right now, or it changed since it was read; try again in a moment",
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("WF1: the claim on a resume: one holder; in the state judged; given back; ended by a change of state or by time", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    const { stateDir } = world.paths;
+    const claim = (token: string, atMs = NOW, states = ["paused"]) =>
+      claimResume(stateDir, world.repo, record.id, states, token, atMs);
+    expect(await claim("first")).toBe(true);
+    // Its own token again: still its claim. Another: refused while it holds.
+    expect(await claim("first")).toBe(true);
+    expect(await claim("second", NOW + RESUME_CLAIM_MS - 1)).toBe(false);
+    // Over by time: a resume that never came back frees the record.
+    expect(await claim("second", NOW + RESUME_CLAIM_MS)).toBe(true);
+    // Given back by its holder only.
+    await releaseResume(stateDir, world.repo, record.id, "first");
+    expect(await claim("third", NOW + RESUME_CLAIM_MS)).toBe(false);
+    await releaseResume(stateDir, world.repo, record.id, "second");
+    expect(readCrew(stateDir, world.repo, record.id)?.resumeClaim).toBeUndefined();
+    // In the state its caller judged it in, and the change of state ends it.
+    expect(await claim("third", NOW, ["stopped"])).toBe(false);
+    expect(await claim("third")).toBe(true);
+    await updateCrew(stateDir, world.repo, record.id, { state: "working" }, NOW, "resumed");
+    expect(readCrew(stateDir, world.repo, record.id)?.resumeClaim).toBeUndefined();
+    expect(await claim("fourth")).toBe(false);
+  });
+
+  test("WF1: a paused one resumed as a copy takes the copy's id, and the line names it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", ...pausedChange(5) });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+  });
+
   test("nothing paused: one line, nothing run", async () => {
     const world = await boardWorld();
     await world.addCrew();
@@ -1075,7 +1890,35 @@ describe("D42: crew resume --paused", () => {
   test("a resume the store could not record is named, and the exit code says so", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ ...pausedChange(5) });
-    // The store's record folder gone read-only: the session comes back, its record cannot be written.
+    // The store's record folder goes read-only while `claude --bg --resume` runs — after the
+    // resume claimed the record: the session comes back, its record cannot be written.
+    const recordsDir = join(world.paths.stateDir, "crew", repoKey(world.repo), "crew");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) => {
+        if (argv.includes("--resume")) chmodSync(recordsDir, 0o500);
+        return real(argv, options);
+      },
+    });
+    let code: number;
+    try {
+      code = await runCrew(["resume", "--paused"], ctx);
+    } finally {
+      chmodSync(recordsDir, 0o700);
+    }
+    expect(code).toBe(1);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith(
+      "C my-app B1 help: resumed, but the store could not record it:",
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("WF1: a store that cannot claim the resume launches nothing: one line, and it stays paused", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    // The store's record folder read-only before the resume: its claim cannot be written.
     const recordsDir = join(world.paths.stateDir, "crew", repoKey(world.repo), "crew");
     chmodSync(recordsDir, 0o500);
     let code: number;
@@ -1087,9 +1930,9 @@ describe("D42: crew resume --paused", () => {
     expect(code).toBe(1);
     expect(world.out).toHaveLength(1);
     expect(world.out[0]).toStartWith(
-      "C my-app B1 help: resumed, but the store could not record it:",
+      "C my-app B1 help: not resumed — the store could not claim its resume:",
     );
-    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 

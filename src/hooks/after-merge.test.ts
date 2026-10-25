@@ -375,6 +375,31 @@ describe("the hook", () => {
     mergedAt: new Date().toISOString(),
   };
 
+  test("a recorded lead's own merged worktree gets the ExitWorktree removal note", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: worktree,
+        repo,
+        sessionId: "11111111-2222-3333-4444-555555555555",
+        name: "LEAD app plan",
+        tag: "app",
+        plan: "plan",
+      },
+      Date.now(),
+    );
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr merge --squash"),
+      env,
+    );
+    expect(result.stdout).toContain(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action \\"remove\\").',
+    );
+  });
+
   test("after merging its own branch from a worktree: both notes, then announced once", async () => {
     const { worktree } = project();
     const env = fakeGh(merged);
@@ -501,6 +526,9 @@ describe("the hook", () => {
         'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
         'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
       ].join("\n"),
+    );
+    expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "fix/a", true)).toBe(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action "remove").',
     );
     // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
     // discard_changes is needed.
@@ -681,7 +709,18 @@ describe("the hook", () => {
   /** The merging session's id, as `ran` gives every input. */
   const MERGING_SESSION = "11111111-2222-3333-4444-555555555555";
 
-  /** A lead recorded in the store the hook's env points at. */
+  /**
+   * The time of the next lead record: a fixed start, one second more each call. The store lists
+   * leads by `createdAt` and breaks a tie by session id, so a record's time is never the clock's.
+   */
+  const LEAD_CLOCK_START = Date.UTC(2026, 0, 1);
+  let leadClockTicks = 0;
+  function nextLeadTime(): number {
+    leadClockTicks += 1;
+    return LEAD_CLOCK_START + leadClockTicks * 1000;
+  }
+
+  /** A lead recorded in the store the hook's env points at, one second after the one before. */
   async function recordLead(
     env: Record<string, string>,
     repo: string,
@@ -692,7 +731,7 @@ describe("the hook", () => {
     await writeLead(
       cliPaths(env).stateDir,
       { cwd: repo, name, plan, repo, sessionId, tag: "my-app" },
-      Date.now(),
+      nextLeadTime(),
     );
   }
 
@@ -753,5 +792,68 @@ describe("the hook", () => {
         text: "a session merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
       }),
     ]);
+  });
+
+  /** A session id of an earlier run of the merging lead (before its restart). */
+  const OLD_MERGING_SESSION = "99999999-2222-3333-4444-555555555555";
+  const THIRD_SESSION = "77777777-2222-3333-4444-555555555555";
+
+  test("WN1: a merge by a restarted lead leaves out its own earlier record", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const paths = cliPaths(env);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", OLD_MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
+    expect(note).not.toContain("LEAD my-app master-plan");
+    // Its own earlier record is not told either: one event, for the real other lead.
+    expect(
+      readCrewEvents(paths.stateDir, repo)
+        .events.filter((one) => one.type === "merge")
+        .map((one) => one.lead),
+    ).toEqual([OTHER_SESSION]);
+  });
+
+  test("WN1: two other leads are both named, once each", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    // The docs lead restarted: its earlier record is the same lead, so its name is said once.
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OLD_MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    await recordLead(env, repo, "LEAD my-app beta-plan", "beta-plan", THIRD_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan, LEAD my-app beta-plan.");
+  });
+
+  test("WN1: a lead of the same name in another folder is another lead, not a restart", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: join(repo, ".claude", "worktrees", "elsewhere"),
+        name: "LEAD my-app master-plan",
+        plan: "master-plan",
+        repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      nextLeadTime(),
+    );
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app master-plan.");
+  });
+
+  test("WN1: no other lead but its own earlier record says none", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", OLD_MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("No other lead is recorded in this repo.");
   });
 });

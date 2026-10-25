@@ -85,6 +85,7 @@ export interface ResolvedWorkflow {
     /** Null: no machine-wide opus count is set (D54). */
     maxOpus: ResolvedValue<null | number>;
     memoryGb: ResolvedValue<number>;
+    loadPerCore: ResolvedValue<number>;
     perLead: ResolvedValue<number>;
     perLeadOpus: ResolvedValue<number>;
     usagePercent: ResolvedValue<number>;
@@ -93,6 +94,8 @@ export interface ResolvedWorkflow {
     handoffTokens: ResolvedValue<number>;
     softHours: ResolvedValue<number>;
     maxHours: ResolvedValue<number>;
+    /** Days a removed crew session's conversation stays in the kit's archive. */
+    archiveDays: ResolvedValue<number>;
     /** Null: no tag is set, and the main checkout's folder name stands in. */
     tag: ResolvedValue<null | string>;
   };
@@ -356,6 +359,7 @@ const RESOLVED: {
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.loadPerCore": (r) => r.crew.loadPerCore,
   "crew.perLead": (r) => r.crew.perLead,
   "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
   "crew.usagePercent": (r) => r.crew.usagePercent,
@@ -364,6 +368,7 @@ const RESOLVED: {
   "crew.handoffTokens": (r) => r.crew.handoffTokens,
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
+  "crew.archiveDays": (r) => r.crew.archiveDays,
   "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
@@ -436,6 +441,7 @@ export function resolveWorkflow(
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of(
@@ -456,6 +462,7 @@ export function resolveWorkflow(
       ),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {

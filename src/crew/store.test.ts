@@ -22,21 +22,27 @@ import {
   crewEventsFile,
   crewFile,
   crewFilesDir,
+  crewOfWorktree,
   crewReportFile,
   crewSettingsFile,
   crewStoreDir,
   type HandBackReport,
   isKnownState,
+  isQuestionOpen,
   leadFile,
   listAllCrew,
   listAllLeads,
   listCrew,
   listLeads,
+  markAnswerDelivered,
   type NewCrew,
+  openQuestionIndex,
+  questionClosed,
   readCrew,
   readCrewEvents,
   readLead,
   readReport,
+  recordCrewReport,
   updateCrew,
   updateCrewIfState,
   writeLead,
@@ -287,6 +293,49 @@ describe("the crew record", () => {
     expect(readCrew(state, REPO, "crew-K-contracts")?.waitsFor).toEqual(["B6a", "B7"]);
   });
 
+  test("RX1: a change of the session keeps the earlier ones, oldest first, once each", async () => {
+    const state = tempDir("state");
+    const first = "aaaaaaaa-0000-1111-2222-333333333333";
+    const second = "bbbbbbbb-0000-1111-2222-333333333333";
+    const third = "cccccccc-0000-1111-2222-333333333333";
+    await createCrew(
+      state,
+      { ...queued(), sessionId: first, shortId: "aaaaaaaa", state: "working" },
+      T0,
+    );
+    const id = "crew-K-contracts";
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    // A write that does not change the session adds nothing.
+    await updateCrew(state, REPO, id, { lastLine: "hi" }, T1);
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: third, shortId: "cccccccc" }, T1);
+    const record = readCrew(state, REPO, id);
+    expect(record?.sessionId).toBe(third);
+    expect(record?.earlierSessions).toEqual([
+      { sessionId: first, shortId: "aaaaaaaa" },
+      { sessionId: second, shortId: "bbbbbbbb" },
+    ]);
+  });
+
+  test("RX1: stoppedByWatch lasts while the record is stopped, whichever write leaves it", async () => {
+    const state = tempDir("state");
+    const id = "crew-K-contracts";
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBe(true);
+    // A hand-back report moves the state without `changeCrew`.
+    await recordCrewReport(state, REPO, id, { ...report(), status: "done" }, T1 + 1000);
+    expect(readCrew(state, REPO, id)).toMatchObject({ state: "done" });
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
+    // A merge of a record the watch stopped is not "merged while stopped": the lead never stopped it.
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1 + 2000);
+    await updateCrew(state, REPO, id, { state: "merged" }, T1 + 3000);
+    expect(readCrew(state, REPO, id)?.mergedWhileStopped).toBe(false);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
+  });
+
   test("H101: a conditional change is written while the state is the one judged, with its event", async () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), state: "starting" }, T0);
@@ -355,6 +404,40 @@ describe("the crew record", () => {
       0,
     );
   });
+
+  test("D62: the crew session a worktree belongs to: a removed record names nothing, the newest live one wins", async () => {
+    const state = tempDir("state");
+    const path = `${REPO}/.claude/worktrees/crew-K-contracts`;
+    await createCrew(state, { ...queued("crew-K-1"), state: "removed", worktree: path }, T0);
+    const list = () => listCrew(state, REPO).records;
+    // Only a removed record is at that path: its worktree is gone, so a folder there is not its own.
+    expect(crewOfWorktree(list(), path)).toBeNull();
+    // The phase was started again in the same folder: the live one is the owner.
+    await createCrew(state, { ...queued("crew-K-2"), state: "working", worktree: path }, T1);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-2");
+    await createCrew(state, { ...queued("crew-K-3"), state: "done", worktree: path }, T1 + 1000);
+    expect(crewOfWorktree(list(), path)?.id).toBe("crew-K-3");
+    // Any other folder has none.
+    expect(crewOfWorktree(list(), `${REPO}/.claude/worktrees/crew-other`)).toBeNull();
+  });
+
+  test("D62: a crew session the lead merged after it was stopped is the lead's to remove", async () => {
+    // The store keeps the fact from the state the record was in, so no later pass can forget it.
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "stopped" }, T0);
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "merged" }, T1, "merged");
+    expect(readCrew(state, REPO, "crew-K-contracts")).toMatchObject({
+      mergedWhileStopped: true,
+      state: "merged",
+    });
+    // Written again as merged, it stays marked.
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "merged" }, T1 + 1000);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.mergedWhileStopped).toBe(true);
+    // Any other crew session that is merged carries no such mark.
+    await createCrew(state, { ...queued("crew-L-other"), state: "done" }, T0);
+    await updateCrew(state, REPO, "crew-L-other", { state: "merged" }, T1, "merged");
+    expect(readCrew(state, REPO, "crew-L-other")?.mergedWhileStopped).toBeUndefined();
+  });
 });
 
 describe("D36: a crew session's questions", () => {
@@ -411,6 +494,132 @@ describe("D36: a crew session's questions", () => {
     await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "a", T1)).rejects.toThrow(
       'crew "crew-K-contracts" has no question 1',
     );
+  });
+
+  test("AN1: an answer is recorded, not delivered, until a delivery marks it — once", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "b", T1);
+    expect(answered.questions[0]?.deliveredAt ?? null).toBeNull();
+    // The first delivery claims it; a second finds it taken.
+    const claimed = await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000);
+    expect(claimed).toMatchObject({ answer: "b", deliveredAt: "2026-10-21T10:05:01.000Z" });
+    expect(await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 2000)).toBeNull();
+    const [record] = listCrew(state, REPO).records;
+    expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:05:01.000Z");
+  });
+
+  test("AN1: an answer given as a resume's prompt is delivered in the same write", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    const answered = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "b",
+      T1,
+      null,
+      null,
+      {
+        delivered: true,
+      },
+    );
+    expect(answered.questions[0]).toMatchObject({
+      answer: "b",
+      deliveredAt: "2026-10-21T10:05:00.000Z",
+    });
+  });
+
+  test("AN1: a correction keeps the first answer as superseded and needs a delivery of its own", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1);
+    await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000);
+    const corrected = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "b",
+      T1 + 5000,
+      null,
+      null,
+      { correction: true },
+    );
+    expect(corrected.questions[0]).toMatchObject({
+      answer: "b",
+      answeredAt: "2026-10-21T10:05:05.000Z",
+      superseded: [
+        {
+          answer: "a",
+          answeredAt: "2026-10-21T10:05:00.000Z",
+          deliveredAt: "2026-10-21T10:05:01.000Z",
+        },
+      ],
+    });
+    expect(corrected.questions[0]?.deliveredAt ?? null).toBeNull();
+    // A second correction stacks: nothing is ever dropped.
+    const again = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "c",
+      T1 + 9000,
+      null,
+      null,
+      {
+        correction: true,
+      },
+    );
+    expect(again.questions[0]?.superseded?.map((one) => one.answer)).toEqual(["a", "b"]);
+    // A correction of a question that has no answer yet is no correction.
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T1 + 10_000);
+    await expect(
+      answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "x", T1 + 11_000, null, null, {
+        correction: true,
+      }),
+    ).rejects.toThrow('question 1 of crew session "crew-K-contracts" has no answer to correct');
+  });
+
+  test("D62: a question is open while its phase is, and closed when the phase is over", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { options: ["a", "b"], question: "which?", recommended: 1 },
+      T1,
+    );
+    const indexIn = async (next: string): Promise<null | number> => {
+      await updateCrew(state, REPO, "crew-K-contracts", { state: next }, T1 + 1000);
+      const record = readCrew(state, REPO, "crew-K-contracts");
+      return record === null ? null : openQuestionIndex(record);
+    };
+    // The states a crew session's phase runs in, and `stopped`, which an answer resumes.
+    for (const open of ["working", "blocked", "paused", "quiet", "starting", "stopped"]) {
+      expect([open, await indexIn(open)]).toEqual([open, 0]);
+    }
+    // The states it is over in: nothing reads the question any more.
+    for (const closed of ["done", "failed", "handoff", "merged", "removed"]) {
+      expect([closed, await indexIn(closed)]).toEqual([closed, null]);
+      expect(questionClosed(closed)).toBe(true);
+    }
+    expect(questionClosed("working")).toBe(false);
+    expect(questionClosed("stopped")).toBe(false);
+    // An answered question was never open.
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "working" }, T1 + 2000);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1 + 3000);
+    const answered = readCrew(state, REPO, "crew-K-contracts");
+    expect(answered === null ? "missing" : openQuestionIndex(answered)).toBeNull();
   });
 
   test("D36: a question with one option, or a recommendation it does not hold, is never written", async () => {
@@ -531,7 +740,7 @@ describe("a record a newer kit wrote", () => {
     expect(after).toEqual({ ...newer, lastLine: "x", updatedAt: "2026-10-21T10:05:00.000Z" });
   });
 
-  test("the twelve states this kit knows", () => {
+  test("the thirteen states this kit knows", () => {
     expect(CREW_STATES).toEqual([
       "queued",
       "starting",
@@ -545,6 +754,7 @@ describe("a record a newer kit wrote", () => {
       "handoff",
       "merged",
       "removed",
+      "discarded",
     ]);
     for (const state of CREW_STATES) expect(isKnownState(state)).toBe(true);
   });
@@ -1006,7 +1216,7 @@ describe("the events log", () => {
     );
     const file = crewEventsFile(state, REPO);
     // A writer that stopped half way: the reader leaves that line for later.
-    const torn = '{"version":1,"at":"2026-10-21T10:06:00.000Z"';
+    const torn = '{"version":1,"at":"2026-10-21T10:05:01.000Z"';
     appendFileSync(file, torn);
     const next = readCrewEvents(state, REPO, first.offset);
     expect(next.events).toEqual([
@@ -1095,5 +1305,74 @@ describe("the hand-back report", () => {
     const newer = { ...report(), cost: { tokens: 1 }, status: "split", version: 2 };
     writeFileSync(file, JSON.stringify(newer));
     expect(readReport(file)).toEqual(newer);
+  });
+});
+
+describe("RG1: a new question supersedes the crew session's older open one", () => {
+  const first = { options: ["a", "b"], question: "Which port?", recommended: null };
+  const second = { options: ["c", "d"], question: "Which port, 3210 or 3211?", recommended: 1 };
+
+  test("two questions in a row: the first is closed as superseded, with a pointer, and one is open", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    const after = await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    // Never deleted: both are on the record, the older one points at the newer.
+    expect(after.questions.map((one) => one.question)).toEqual([
+      "Which port?",
+      "Which port, 3210 or 3211?",
+    ]);
+    expect(after.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(after.questions[1]?.supersededBy ?? null).toBeNull();
+    expect(openQuestionIndex(after)).toBe(1);
+    expect(after.questions.map(isQuestionOpen)).toEqual([false, true]);
+  });
+
+  test("three in a row: only the newest is open, and each older one points at the one that replaced it", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", second, T0 + 1000);
+    const after = await addCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { ...second, question: "Third?" },
+      T0 + 2000,
+    );
+    expect(after.questions.map((one) => one.supersededBy ?? null)).toEqual([1, 2, null]);
+    expect(openQuestionIndex(after)).toBe(2);
+    // An answer to the oldest is refused with the line that names the newest, not the middle one.
+    await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1)).rejects.toThrow(
+      'was superseded by question 2 ("Third?"): answer that one',
+    );
+  });
+
+  test("an answer to a superseded question is refused with the line that names the newest", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    await expect(
+      answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "3210", T1),
+    ).rejects.toThrow(
+      'question 0 of crew session "crew-K-contracts" was superseded by question 1 ("Which port, 3210 or 3211?"): answer that one',
+    );
+    expect(readCrew(state, REPO, "crew-K-contracts")?.questions[0]?.answer).toBeNull();
+    // The newest takes the answer.
+    const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "3210", T1);
+    expect(answered.questions[1]).toMatchObject({ answer: "3210" });
+    expect(openQuestionIndex(answered)).toBeNull();
+  });
+
+  test("a question after an answered one is a new question: the answered one is not superseded", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T0 + 1000);
+    const after = await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    expect(after.questions[0]?.supersededBy ?? null).toBeNull();
+    expect(after.questions[0]?.answer).toBe("a");
+    expect(openQuestionIndex(after)).toBe(1);
   });
 });

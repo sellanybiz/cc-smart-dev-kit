@@ -1,7 +1,7 @@
 # Instructions, skills and agents
 
 
-The plugin carries general working instructions for Claude, 19 skills, 5 agents and two
+The plugin carries general working instructions for Claude, 21 skills, 5 agents and two
 Workflows, all written for any project (`README.md` § Instructions, skills and agents lists
 them).
 
@@ -77,6 +77,20 @@ the skills say which model and effort fit which job, never what the agent guard 
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
 owner's D12).
 
+**The skill pair for the person's availability.** `user-unavailable` and `user-available` are the
+two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
+asleep, or just away). `user-unavailable` is the rules while the person cannot answer: never stop
+to ask; an easy-to-undo choice with a recommended option is taken and parked as a `decision`; the
+person's own choice is parked as a `question` with its options; an action that needs their yes is
+parked as an `action` with its exact command and never tried; a lead keeps its crew going; each
+stretch ends with a `Summary:` decision. `user-available` switches the state back, shows what
+was done, then goes through the list: decisions to keep or undo, the questions in one call, each
+action run on the person's yes. Neither skill duplicates the hooks (`hooks.md` § While the person
+is away): the hooks deny and park, the skills say how to work in that state. The pointer to them
+is in the hooks' notes, not in `core.md`, which stays inside its line budget. A skill's name and
+description are carried by every session, used or not, so both descriptions stay to one short
+sentence or two (`check:context-budget`).
+
 **The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
 one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to
 refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the
@@ -99,6 +113,37 @@ names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.te
 shipped script against fakes and checks the guard the plugin ships allows every launch. Biome
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
+
+*The arguments and the budget (1.3.0).* The Workflow tool hands `args` to the script verbatim,
+so a caller that passes the text of an object gets a string. Both scripts refuse that at the
+start: a string, `null`, an array, an unknown key or a wrong type throws one line that names the
+problem and the expected object, before any agent starts; no `args` at all still runs on the
+defaults, for a person starting the workflow by hand. Both scripts rank the distinct findings by
+severity (the order of the final list), then by track, and the budget refutes the first
+`budget` of them, so a busy track of lesser findings cannot take every refuter and starve a
+critical finding of the last one (equal severities still go in track order). A finding past the budget is never dropped: `review-split` returns it in an
+**Unchecked** section (severity, title, file and line), `audit-run` hands the same lines to the
+writer for an **Unchecked findings** section, and each run's log and summary line say how many
+were checked and how many were not. The two scripts carry the same argument check and the same
+ranking, each in its own file: Claude Code documents a workflow script as a plain function body
+with no filesystem or Node API and no import, and the only reuse it names is `workflow()`, which
+runs a whole script as a step and returns its result, not a helper (read from the Workflow
+tool's own description, not proved by a live run). A shared piece would be a third script that
+runs agents, so the two stay self-contained (the checks are code, which `check:duplicates`,
+reading sentences, does not flag).
+
+The third, `plugin/workflows/research-sweep.js`, is the run the `research-first` skill starts for a question
+with several sources (D28's third): one read-only `auditor` per angle on `sonnet` at `max`, then
+one refuter per claim on `opus` at `high` that opens the cited source and confirms or refutes the
+claim with the quote. The researchers are on `max` for the same reason as the audit's: an
+affordable worker slot allows no lower effort, and a literal cannot depend on the gateway. The
+refuters are the judgment, so they take the premium tier, which runs at `high` with no question.
+The decisive claims are checked first, taken in turn from each angle so one angle cannot use the
+whole `budget` (1 to 40), which cuts the rest, and the cut claims come back
+as `unchecked`, never dropped; so do a claim a refuter could not settle (`unproven`) and an angle
+that returned no report (an open question). The script needs its argument object (a research
+question has no default), so a string, a missing field or an unknown field is refused before any
+agent starts.
 
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.

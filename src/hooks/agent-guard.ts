@@ -18,8 +18,10 @@
  * model: the guard refuses a launch whose `effort` is not `medium`, `high`, `xhigh` or `max`.
  * That list lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all
  * read it. `medium` is for searches and reads, `high` for building and reviews, `xhigh` for
- * the hardest judgment, and `max` only when the person asks. On top of it, an affordable slot
- * must be `max`, and an `opus`-tier launch asks the person at `OPUS_ASK_EFFORT` (`max`).
+ * the hardest judgment, and `max` on a Claude `haiku` or `sonnet` when the task wants it, with no
+ * restriction (the owner, 2026-10-25: the session-start note, `tier-view.ts`, tells Claude which
+ * tier is Claude). On top of it, an affordable slot must be `max`, and an `opus`-tier launch asks
+ * the person at `OPUS_ASK_EFFORT` (`max`).
  *
  * **The launch policy** — that list, the model resolution below and the Fable reason words —
  * has its one home in `src/models/launch-policy.ts`; this file is the hook around it.
@@ -150,6 +152,7 @@ import {
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gateway/settings";
 import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
+import { type LoadFacts, realLoadFacts } from "../machine/load";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
@@ -275,7 +278,11 @@ const READ_ONLY_KIT_KEYS: ReadonlySet<string> = new Set(
  * no hook of their own. A bare name only ever finds a saved file (`scriptByName`), never the
  * kit's own workflow: its id is the plugin-qualified `<plugin>:<name>` the skills call.
  */
-export const READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`] as const;
+export const READ_ONLY_WORKFLOWS = [
+  `${PLUGIN}:audit-run`,
+  `${PLUGIN}:review-split`,
+  `${PLUGIN}:research-sweep`,
+] as const;
 
 /** `READ_ONLY_WORKFLOWS` as Claude Code sends a plugin workflow's name, read once. */
 const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(
@@ -1084,7 +1091,7 @@ const EFFORTS = levelsText(ALLOWED_EFFORTS);
 
 /** What each allowed level is for (the owner's decision D13), as every effort message says it. */
 const EFFORT_USE =
-  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
 
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",
@@ -1764,6 +1771,7 @@ async function queuedLaunch(
   checkout: null | Checkout,
   nowMs: number,
   memory: MemoryFacts,
+  load: LoadFacts,
 ): Promise<null | string> {
   // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
   if (inCrew(env)) return null;
@@ -1791,6 +1799,7 @@ async function queuedLaunch(
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
+      load,
       memory,
       nowMs,
       opus,
@@ -1836,6 +1845,7 @@ export async function agentGuard(
   nowMs: number = Date.now(),
   checkout: null | Checkout = null,
   memory: MemoryFacts = realMemoryFacts(),
+  load: LoadFacts = realLoadFacts(),
 ): Promise<HookResult> {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
@@ -1845,7 +1855,7 @@ export async function agentGuard(
   const judgedDeny =
     judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load);
     if (queued !== null) return toolDecision("deny", queued);
   }
   const file = agentLaunchesFile(paths.stateDir);

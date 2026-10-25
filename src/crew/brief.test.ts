@@ -24,15 +24,24 @@ describe("the brief", () => {
         "## Your frame (written by `cc-smart-dev-kit crew start`)",
         "",
         "- You are the crew session `C kit B6b portal-live`, for the lead `LEAD kit master-plan`. You run in the background: nobody watches this session.",
-        "- Your worktree is `/home/user/kit/.claude/worktrees/crew-B6b-portal-live`, on the branch `crew/B6b-portal-live`, cut from `release-1.0.0`. Work only there. Anything slow it needs first (a dependency install) is your first step.",
+        "- Your worktree is `/home/user/kit/.claude/worktrees/crew-B6b-portal-live`, on the branch `crew/B6b-portal-live`, cut from `release-1.0.0`. Work only there.",
+        "- Setup, your first step, before anything else slow: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session.",
         "- The files this phase owns: `src/portal/server.ts`, `src/portal/views.ts`. Say in your report why you changed any other file.",
         "- Work by `/cc-smart-dev-kit:crew`: it says how to build the phase, how to mark each step, and how to hand it back.",
+        "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
         "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
-        "- When the phase is ready, hand it back with `cc-smart-dev-kit crew report --status done`; when it cannot be done, with `--status failed` and why.",
+        "- When the phase is ready, hand it back with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review); when it cannot be done, with `--status failed` and why.",
+        "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.",
         '- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report `--status blocked` only when nothing else is left; an answer arrives as your next message.',
         "",
       ].join("\n"),
     );
+  });
+
+  test("the frame says to install the dependencies in the worktree, and never to link another checkout's", () => {
+    const frame = briefText("Do it.", { ...FACTS, files: [] });
+    expect(frame).toContain("install the project's dependencies in your own worktree");
+    expect(frame).toContain("Never link or reuse another checkout's dependency folder");
   });
 
   test("no files named: no files line", () => {

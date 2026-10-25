@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { createCrew, type NewCrew } from "../crew/store";
 import {
   hookEnv,
   makeClone,
@@ -46,6 +47,38 @@ function project() {
   return { repo, add };
 }
 
+/** One crew record whose worktree is `worktree`, as the store writes one. */
+function crewRecord(repo: string, worktree: string): NewCrew {
+  return {
+    base: null,
+    baseRef: "main",
+    branch: "crew/B7-tidy",
+    effort: "high",
+    files: [],
+    id: "B7-tidy-1a2b3c",
+    kind: "build",
+    lastLine: null,
+    leadName: "LEAD app master-plan",
+    leadSessionId: "11111111-1111-4111-8111-111111111111",
+    memoryMb: null,
+    model: { named: "sonnet", resolved: "claude-sonnet-5-5", slot: null, tier: null },
+    name: "C app B7 tidy",
+    permissionMode: "auto",
+    phase: "B7",
+    plan: "master-plan",
+    pr: null,
+    questions: [],
+    reportPath: null,
+    repo,
+    sessionId: null,
+    shortId: null,
+    slug: "tidy",
+    state: "working",
+    waitsFor: [],
+    worktree,
+  };
+}
+
 const start = (cwd: string) => ({
   hook_event_name: "SessionStart",
   session_id: "11111111-2222-3333-4444-555555555555",
@@ -88,6 +121,20 @@ describe("worktree-leftovers", () => {
         },
       }),
     });
+  });
+
+  test("D62: never a crew session's worktree, and never a locked one", async () => {
+    const { repo, add } = project();
+    const env = hookEnv();
+    const crew = add("crew-done");
+    const locked = add("locked");
+    makeIdle(crew);
+    makeIdle(locked);
+    git(repo, "worktree", "lock", "--reason", "claude session aaaa (pid 1 start now)", locked);
+    await createCrew(cliPaths(env).stateDir, crewRecord(repo, crew), Date.now());
+    // `--clean` keeps both — a crew session's is its lead's to remove, a locked one is never
+    // touched — so naming either would send the person to a command that does nothing.
+    expect(await runHook(worktreeLeftoversHook, start(repo), env)).toEqual({});
   });
 
   test("nothing to say: silent", async () => {

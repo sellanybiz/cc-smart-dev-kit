@@ -123,6 +123,24 @@ describe("reading a saved session", () => {
     expect(sessionLabel(session({ name: null }))).toBe("session aaaaaaaa — my-app");
   });
 
+  test("a long folder's name is cut at 200 characters and ends with a hash of the whole path (seen live, 2.1.310)", () => {
+    // The names below are what Claude Code 2.1.310 itself made for sessions started in these
+    // folders (a throwaway config; the expected hashes are read from its project folders).
+    const at200 = `/tmp/ar1-probe/${"c".repeat(185)}`;
+    expect(at200).toHaveLength(200);
+    expect(projectFolderName(at200)).toBe(`-tmp-ar1-probe-${"c".repeat(185)}`);
+    expect(projectFolderName(at200)).toHaveLength(200);
+
+    const at201 = `/tmp/ar1-probe/${"c".repeat(186)}`;
+    expect(projectFolderName(at201)).toBe(`-tmp-ar1-probe-${"c".repeat(185)}-mewvn1`);
+
+    const mixed = `/tmp/ar1-probe/${"work-tree.x_".repeat(17)}${"y".repeat(48)}`;
+    expect(mixed).toHaveLength(267);
+    expect(projectFolderName(mixed)).toBe(
+      `${`-tmp-ar1-probe-${"work-tree-x-".repeat(17)}${"y".repeat(48)}`.slice(0, 200)}-tcfihq`,
+    );
+  });
+
   test("Claude Code's project folder names, and which of them are this project's", () => {
     expect(projectFolderName("/work/my-app")).toBe("-work-my-app");
     expect(projectFolderName("C:\\work\\my-app")).toBe("C--work-my-app");

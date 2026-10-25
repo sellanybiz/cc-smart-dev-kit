@@ -10,7 +10,9 @@
  *   FAKE_RM           `fail` (exit 1, "could not delete").
  *   FAKE_WORKTREE     a folder: `claude rm` refuses while it exists, in Claude Code's own words
  *                     (proved live, L1a.1: it refuses a worktree that is still there).
- *   FAKE_BG           `fail` (exit 4, "something broke"): a resume claude refuses.
+ *   FAKE_BG           `fail` (exit 4, "something broke"): a resume claude refuses; `noline`: one
+ *                     that prints no `backgrounded` line.
+ *   FAKE_RESUME, FAKE_COPY_AS  how `--bg --resume` answers (`FAKE_RESUME_SH`, `crew-world.ts`).
  */
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +26,7 @@ import {
   writeStoreFile,
 } from "../crew/store";
 import type { CrewKind } from "../models/launch-policy";
-import { type CrewWorld, crewWorld, LEAD_SESSION, SHORT_ID } from "./crew-world";
+import { type CrewWorld, crewWorld, FAKE_RESUME_SH, LEAD_SESSION, SHORT_ID } from "./crew-world";
 import { git } from "./temp";
 
 /** The moment every command of the world sees as now. */
@@ -45,7 +47,9 @@ printf -- '----\\n' >> "$FAKE_CLAUDE_LOG"
 printf '%s\\n' "$(pwd -P)" >> "$FAKE_CLAUDE_CWD_LOG"
 case "$1" in
   --bg)
-    if [ "$FAKE_BG" = fail ]; then echo "something broke" >&2; exit 4; fi ;;
+    if [ "$FAKE_BG" = fail ]; then echo "something broke" >&2; exit 4; fi
+    if [ "$FAKE_BG" = noline ]; then echo "started something"; exit 0; fi
+${FAKE_RESUME_SH}    ;;
   agents)
     if [ -z "$FAKE_AGENTS_JSON" ]; then echo "[]"; else printf '%s\\n' "$FAKE_AGENTS_JSON"; fi ;;
   stop)
@@ -67,6 +71,10 @@ exit 0
 export interface AddCrew {
   /** When it was recorded, in milliseconds. Default: 12 minutes before `NOW`. */
   atMs?: number;
+  /** The branch it was cut from; default "main". */
+  baseRef?: string;
+  /** The base commit; default the branch's HEAD when a worktree is made. */
+  base?: null | { ref: string; sha: string };
   effort?: string;
   files?: string[];
   kind?: CrewKind;
@@ -78,6 +86,8 @@ export interface AddCrew {
   model?: CrewRecord["model"];
   name?: string;
   phase?: string;
+  /** The plan file its run record is written beside (PL1); default none: no run record. */
+  planFile?: string;
   /** The repository the record is for, with no branch or worktree on disk. Default: the world's. */
   repo?: string;
   /** Its session's short id; null: it has no session. Default: the fake `claude`'s. */
@@ -136,8 +146,8 @@ export async function boardWorld(): Promise<BoardWorld> {
     return await createCrew(
       world.paths.stateDir,
       {
-        base: made ? { ref: "main", sha } : null,
-        baseRef: "main",
+        base: change.base ?? (made ? { ref: "main", sha } : null),
+        baseRef: change.baseRef ?? "main",
         branch,
         effort: change.effort ?? "high",
         files: change.files ?? [],
@@ -152,6 +162,7 @@ export async function boardWorld(): Promise<BoardWorld> {
         permissionMode: "auto",
         phase,
         plan: "master-plan",
+        ...(change.planFile === undefined ? {} : { planFile: change.planFile }),
         pr: null,
         questions: [],
         repo,
