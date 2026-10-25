@@ -14,9 +14,15 @@ function menuClasses(html: string): string[][] {
   return lists;
 }
 
+/** A Tailwind gap class's step (4px each), or null when it is not a numbered step. */
+function gapStep(name: string): number | null {
+  const step = name.match(/^gap-(\d+(?:\.\d+)?)$/)?.[1];
+  return step === undefined ? null : Number(step);
+}
+
 describe("the sidebar's menus", () => {
-  // UI1: with no gap, a hovered item's background, the active item's background and the
-  // keyboard focus ring (2px, drawn outside the item) ran into the next item.
+  // UI1: with no gap, a hovered item's background met the active item's, and the 2px focus
+  // outline, drawn outside the item, covered the next item. One step (4px) clears the outline.
   test("every menu leaves room between its items, so a hovered item never meets the next", () => {
     const html = renderToStaticMarkup(
       <TooltipProvider>
@@ -28,9 +34,9 @@ describe("the sidebar's menus", () => {
     const menus = menuClasses(html);
     expect(menus.length).toBeGreaterThan(0);
     for (const classes of menus) {
-      const gaps = classes.filter((name) => /^gap-/.test(name));
+      const gaps = classes.filter((name) => name.startsWith("gap-"));
       expect(gaps).toHaveLength(1);
-      expect(gaps[0]).not.toBe("gap-0");
+      expect(gapStep(gaps[0] ?? "")).toBeGreaterThanOrEqual(1);
     }
   });
 });

@@ -442,9 +442,9 @@ function SidebarGroupContent({
   )
 }
 
-// The portal's menus keep a gap between their items, not radix-nova's gap-0: with none, a
-// hovered item's background met the active item's, and the 2px focus ring, drawn outside the
-// item, covered the next item's edge.
+// The portal's menus keep a 4px gap between their items, where radix-nova has none: without
+// it, a hovered item's background met the active item's, and the 2px focus outline, drawn
+// outside the item, covered the next item's edge.
 function SidebarMenu({ className, ...props }: React.ComponentProps<"ul">) {
   return (
     <ul
