@@ -191,7 +191,11 @@ recommends, and the crew session goes on with what the question does not block.
   first, and which crew session asks. Several crew sessions' questions go in one call. Never answer one of
   these for the person.
 - **Send the answer:** `cc-smart-dev-kit crew answer <name> "<answer>"`. A running crew session
-  gets it as a message; a stopped one is resumed with it.
+  gets it by itself, through its monitor, even when it sits blocked; the command says
+  `delivered`, or `recorded, not delivered` and prints the one `SendMessage` line you then send
+  yourself. A stopped one is resumed with it. **A wrong answer is corrected by answering the same
+  question again**: the crew session hears that it replaces the first. A finished crew session takes
+  neither.
 - **A permission prompt in a crew session** only the person answers. Name the crew session and give the
   line `claude attach <name>`.
 

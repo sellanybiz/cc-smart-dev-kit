@@ -11,7 +11,16 @@
  *   stands (a `crew step` with a `--note`, which the lead's watch says), or hand off;
  * - at `workflow.crew.maxHours` (4): **hand off** again, now because the time is up.
  *
- * **Nothing else is printed.** A crew session that is fine sees nothing. The line is repeated every
+ * - **the lead's answer** to its question (AN1): the monitor looks every few seconds
+ *   (`ANSWER_WATCH_POLL_MS`) and prints an answer that is on record and not yet delivered, as one
+ *   line (`deliveryLine`), once. The line is a notification, which wakes an idle crew session, so a
+ *   blocked one needs nobody to send it anything. The answer is marked delivered *before* the line
+ *   is printed, under the store's lock (`markAnswerDelivered`): two monitors of one crew session
+ *   (the original and a copy a resume started) never both print it. The monitor also writes a
+ *   heartbeat, which `crew answer` reads to know the answer will arrive. It looks at the crew
+ *   record only when its file changed (a stat, never a re-read each tick).
+ *
+ * **Nothing else is printed.** A crew session with no answer waiting and room to work sees nothing. The line is repeated every
  * 15 minutes while it is ignored, so a crew session that missed it sees it again.
  *
  * **The window.** The model that wrote the last reply decides it (`context-window.ts`): Claude
@@ -19,18 +28,36 @@
  * otherwise, and a backend's own model list for a bare backend model. A model whose window the
  * kit cannot know has no window, and so no context line — the time lines still apply.
  */
+import { statSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
+import { deliveryLine } from "./answer";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
 import { windowWatch } from "./context-window";
 import { runningCrew } from "./places";
-import { readCrew, readSelfWatchState, writeSelfWatchState } from "./store";
+import {
+  ANSWER_BEAT_EVERY_MS,
+  ANSWER_WATCH_POLL_MS,
+  type CrewRecord,
+  crewFile,
+  lastHeardAnswer,
+  markAnswerDelivered,
+  readCrew,
+  readSelfWatchState,
+  undeliveredAnswerIndexes,
+  writeAnswerWatchBeat,
+  writeSelfWatchState,
+} from "./store";
 import { contextPercent, contextUseOf, transcriptFile } from "./transcript";
 
 /** How long the crew session waits before it says the same line again. */
 export const SELF_WATCH_REPEAT_MS = 15 * 60_000;
 
-/** How often the self-watch looks: a transcript tail and a clock cost almost nothing. */
+/**
+ * How often the self-watch looks at the context and the clock: a transcript tail costs almost
+ * nothing, but nothing needs it more often. (The answer is looked for every
+ * `ANSWER_WATCH_POLL_MS`, a stat of the record's file.)
+ */
 export const SELF_WATCH_POLL_MS = 60_000;
 
 /** What the crew session should hear, or null when it should hear nothing. */
@@ -119,39 +146,112 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
   // A line that is ignored is said again when its time is up, and the watch keeps looking —
   // until the crew session's phase is over: a crew session that hands off or reports ends its work, and
   // its monitor has nothing more to say.
+  const file = crewFile(ctx.paths.stateDir, repo, record.id);
+  let seen: null | string = null;
+  let lastBeat = Number.NEGATIVE_INFINITY;
+  let lastAdvice = Number.NEGATIVE_INFINITY;
   for (;;) {
     const now = ctx.now();
-    const usage =
-      record.sessionId === null
-        ? null
-        : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
-    // The model that wrote the last reply is the truth about the window (a fallback target may
-    // have answered); the record's own model stands in before there is a reply.
-    const window = await windows.of(usage?.model ?? record.model.resolved, now);
-    const percent = usage === null ? null : contextPercent(usage, window);
-    const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
-    const advice = adviceFor(percent, hours, thresholds);
-    if (advice !== null) {
-      // The same advice is said again only after its time is up: a crew session that ignored it sees
-      // it again, and a crew session that acted does not.
-      const said = readSelfWatchState(ctx.paths.stateDir, repo, record.id);
-      if (said === null || said.kind !== advice.kind || now - said.at >= SELF_WATCH_REPEAT_MS) {
-        try {
-          writeSelfWatchState(ctx.paths.stateDir, repo, record.id, { at: now, kind: advice.kind });
-        } catch (error) {
-          ctx.error(`crew self-watch: the store could not record the line: ${reasonOf(error)}`);
-        }
-        ctx.print(advice.line);
+    // The record is read when its file changed, and that read also ends the watch with the phase.
+    const changed = mtimeOf(file);
+    if (changed !== seen) {
+      seen = changed;
+      try {
+        const fresh = readCrew(ctx.paths.stateDir, repo, record.id);
+        if (fresh === null || runningCrew([fresh]).length === 0) return 0;
+        record = fresh;
+      } catch {
+        // The record cannot be read this round: keep the one we have, and look again.
       }
     }
-    if (once) return 0;
-    await ctx.sleep(SELF_WATCH_POLL_MS);
-    try {
-      const fresh = readCrew(ctx.paths.stateDir, repo, record.id);
-      if (fresh === null || runningCrew([fresh]).length === 0) return 0;
-      record = fresh;
-    } catch {
-      // The record cannot be read this round: keep the one we have, and look again.
+    // A one-shot run is no monitor: its heartbeat would tell `crew answer` an answer will be delivered.
+    if (!once && now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
+      lastBeat = now;
+      try {
+        writeAnswerWatchBeat(ctx.paths.stateDir, repo, record.id, now);
+      } catch (error) {
+        ctx.error(`crew self-watch: the store could not record the heartbeat: ${reasonOf(error)}`);
+      }
     }
+    await deliverAnswer(ctx, repo, record, now);
+    if (now - lastAdvice >= SELF_WATCH_POLL_MS) {
+      lastAdvice = now;
+      await adviseOnce(ctx, repo, record, thresholds, windows, now);
+    }
+    if (once) return 0;
+    await ctx.sleep(ANSWER_WATCH_POLL_MS);
   }
+}
+
+/**
+ * A stamp of the file's last change: its mtime, size and inode (a write is an atomic rename, so the
+ * inode moves even where two writes share one timestamp); null when it cannot be read (the record
+ * read says why).
+ */
+function mtimeOf(file: string): null | string {
+  try {
+    const stat = statSync(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prints the lead's answers that are on record and not delivered yet (AN1), oldest first: the claim
+ * comes first (`markAnswerDelivered`, atomic), so only the monitor that wins it prints — and an
+ * answer is printed at most once, even when the line then fails to print. The words say when the
+ * answer replaces an earlier one the session heard.
+ */
+async function deliverAnswer(
+  ctx: CrewContext,
+  repo: string,
+  record: CrewRecord,
+  now: number,
+): Promise<void> {
+  for (const index of undeliveredAnswerIndexes(record)) {
+    let claimed: Awaited<ReturnType<typeof markAnswerDelivered>>;
+    try {
+      claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+    } catch (error) {
+      // Not claimed, so the next tick tries again: an answer is never lost to a busy lock.
+      ctx.error(`crew self-watch: the store could not claim the answer: ${reasonOf(error)}`);
+      continue;
+    }
+    if (claimed === null || claimed.answer === null) continue;
+    // The claim came first, so a line that fails to print is not printed again: at most once.
+    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
+  }
+}
+
+/** The context and time advice for this look (the same lines as ever), said once per its time. */
+async function adviseOnce(
+  ctx: CrewContext,
+  repo: string,
+  record: CrewRecord,
+  thresholds: SelfThresholds,
+  windows: ReturnType<typeof windowWatch>,
+  now: number,
+): Promise<void> {
+  const usage =
+    record.sessionId === null
+      ? null
+      : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+  // The model that wrote the last reply is the truth about the window (a fallback target may
+  // have answered); the record's own model stands in before there is a reply.
+  const window = await windows.of(usage?.model ?? record.model.resolved, now);
+  const percent = usage === null ? null : contextPercent(usage, window);
+  const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
+  const advice = adviceFor(percent, hours, thresholds);
+  if (advice === null) return;
+  // The same advice is said again only after its time is up: a crew session that ignored it sees
+  // it again, and a crew session that acted does not.
+  const said = readSelfWatchState(ctx.paths.stateDir, repo, record.id);
+  if (said !== null && said.kind === advice.kind && now - said.at < SELF_WATCH_REPEAT_MS) return;
+  try {
+    writeSelfWatchState(ctx.paths.stateDir, repo, record.id, { at: now, kind: advice.kind });
+  } catch (error) {
+    ctx.error(`crew self-watch: the store could not record the line: ${reasonOf(error)}`);
+  }
+  ctx.print(advice.line);
 }

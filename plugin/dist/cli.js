@@ -28,7 +28,7 @@ __export(exports_iso, {
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync81, statSync as statSync30 } from "fs";
+import { existsSync as existsSync81, statSync as statSync31 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join94, resolve as resolve18 } from "path";
 
@@ -14631,6 +14631,11 @@ var version2 = number2().int().min(1);
 var sha = string2().regex(COMMIT_SHA, "a full commit sha");
 var count = number2().int().min(0);
 var word = () => text.transform((value) => value);
+var supersededAnswer = looseObject({
+  answer: text,
+  answeredAt: text,
+  deliveredAt: text.nullable().optional()
+});
 var crewQuestionFields = looseObject({
   question: text,
   options: array(text).min(2),
@@ -14638,7 +14643,9 @@ var crewQuestionFields = looseObject({
   askedAt: text,
   answeredAt: text.nullable(),
   answer: text.nullable(),
-  supersededBy: number2().int().min(0).nullable().optional()
+  supersededBy: number2().int().min(0).nullable().optional(),
+  deliveredAt: text.nullable().optional(),
+  superseded: array(supersededAnswer).optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -14988,14 +14995,11 @@ async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   }));
   return record2;
 }
-async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null, session = null) {
+async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null, session = null, how = {}) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined)
       throw new CrewStoreError(`crew "${id}" has no question ${index}`);
-    if (asked.answer !== null) {
-      throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
-    }
     if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
       let newest = asked.supersededBy;
       for (let next = before.questions[newest]?.supersededBy;next !== undefined && next !== null; next = before.questions[newest]?.supersededBy) {
@@ -15003,7 +15007,33 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       }
       throw new CrewStoreError(`question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`);
     }
-    const questions = before.questions.map((one, which) => which === index ? { ...one, answer, answeredAt: at } : one);
+    if (how.correction === true) {
+      if (asked.answer === null || asked.answeredAt === null) {
+        throw new CrewStoreError(`question ${index} of crew session "${id}" has no answer to correct`);
+      }
+    } else if (asked.answer !== null) {
+      throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
+    }
+    const questions = before.questions.map((one, which) => {
+      if (which !== index)
+        return one;
+      const { deliveredAt: _earlier, ...rest } = one;
+      const kept = how.correction === true && one.answer !== null && one.answeredAt !== null ? [
+        ...one.superseded ?? [],
+        {
+          answer: one.answer,
+          answeredAt: one.answeredAt,
+          ...one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }
+        }
+      ] : one.superseded;
+      return {
+        ...rest,
+        answer,
+        answeredAt: at,
+        deliveredAt: how.delivered === true ? at : null,
+        ...kept === undefined ? {} : { superseded: kept }
+      };
+    });
     const waiting = before.state === "blocked" || before.state === "stopped";
     const state = resumes !== null && waiting ? resumes : null;
     return {
@@ -15016,6 +15046,36 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
     };
   });
   return record2;
+}
+async function markAnswerDelivered(stateDir, repo, id, index, atMs) {
+  const { changed, record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const asked = before.questions[index];
+    if (asked === undefined || asked.answer === null)
+      return null;
+    if (!answerWaitsForDelivery(asked))
+      return null;
+    const questions = before.questions.map((one, which) => which === index ? { ...one, deliveredAt: at } : one);
+    return { change: { questions }, event: () => null };
+  });
+  return changed ? record2.questions[index] ?? null : null;
+}
+function undeliveredAnswerIndexes(record2) {
+  const waiting = [];
+  record2.questions.forEach((asked, index) => {
+    if (answerWaitsForDelivery(asked))
+      waiting.push(index);
+  });
+  return waiting;
+}
+function answerWaitsForDelivery(asked) {
+  return asked.answer !== null && asked.deliveredAt === null && (asked.supersededBy ?? null) === null;
+}
+function lastHeardAnswer(asked, withCurrent) {
+  const answers = [
+    ...(asked.superseded ?? []).map((one) => ({ answer: one.answer, at: one.deliveredAt })),
+    ...withCurrent && asked.answer !== null ? [{ answer: asked.answer, at: asked.deliveredAt }] : []
+  ];
+  return answers.filter((one) => one.at !== null).at(-1)?.answer ?? null;
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -15366,6 +15426,26 @@ function readSelfWatchState(stateDir, repo, id) {
   } catch {
     return null;
   }
+}
+var ANSWER_WATCH_POLL_MS = 3000;
+var ANSWER_BEAT_EVERY_MS = 15000;
+var ANSWER_BEAT_STALE_MS = 60000;
+function answerWatchFile(stateDir, repo, id) {
+  return join23(crewStoreDir(stateDir, repo), "answer-watch", `${fileId(id, "crew id")}.json`);
+}
+var answerWatchFields = object({ at: number2().int().min(0) });
+function readAnswerWatchBeat(stateDir, repo, id) {
+  try {
+    const raw = readFileSync23(answerWatchFile(stateDir, repo, id), "utf8");
+    const parsed = answerWatchFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data.at : null;
+  } catch {
+    return null;
+  }
+}
+function writeAnswerWatchBeat(stateDir, repo, id, atMs) {
+  writeStoreFile(answerWatchFile(stateDir, repo, id), `${JSON.stringify({ at: atMs })}
+`);
 }
 function writeSelfWatchState(stateDir, repo, id, state) {
   writeStoreFile(selfWatchStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}
@@ -28438,6 +28518,18 @@ var REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"];
 function isReachable(state) {
   return REACHABLE_STATES.includes(state);
 }
+var CONFIRM_LOOKS = 10;
+var CONFIRM_WAIT_MS = 1000;
+function deliveryHead(question, earlier) {
+  return earlier === null ? `Your lead answers your question ${JSON.stringify(question)}:` : `Your lead CORRECTS its earlier answer to your question ${JSON.stringify(question)}: this REPLACES the earlier answer (${JSON.stringify(earlier)}). Follow this one instead:`;
+}
+function deliveryLine(question, answer, earlier) {
+  return `${deliveryHead(question, earlier)} ${JSON.stringify(answer)}`;
+}
+function deliveryText(question, answer, earlier) {
+  return earlier === null ? answer : `${deliveryHead(question, earlier)}
+${answer}`;
+}
 function sendMessageLine(name, text) {
   return `SendMessage ${JSON.stringify({ to: name, message: text })}`;
 }
@@ -28478,7 +28570,19 @@ async function runCrewAnswer(args, ctx) {
     ctx.error(`crew answer: ${pending}`);
     return 1;
   }
-  const index = openQuestionIndex(record);
+  let index = openQuestionIndex(record);
+  let correcting = false;
+  if (index === null) {
+    const last = record.questions.length - 1;
+    if (last >= 0 && record.questions[last]?.answer !== null) {
+      if (questionClosed(record.state)) {
+        ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its answer cannot be corrected`);
+        return 1;
+      }
+      index = last;
+      correcting = true;
+    }
+  }
   if (index === null) {
     if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
       ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`);
@@ -28487,7 +28591,10 @@ async function runCrewAnswer(args, ctx) {
     ctx.error(`crew answer: ${record.name} has no question waiting for an answer${record.questions.length === 0 ? " (it never asked one)" : ""}`);
     return 1;
   }
-  const question = record.questions[index]?.question ?? "";
+  const asked = record.questions[index];
+  const question = asked?.question ?? "";
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
+  const text = deliveryText(question, args.text, earlier);
   let way = "message";
   if (record.state === "stopped") {
     if (endedItsPhase(record)) {
@@ -28507,7 +28614,7 @@ async function runCrewAnswer(args, ctx) {
   }
   let session = null;
   if (way === "resume") {
-    const resumed = await resumeSession(ctx, record, args.text);
+    const resumed = await resumeSession(ctx, record, text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
@@ -28515,19 +28622,50 @@ async function runCrewAnswer(args, ctx) {
     session = resumed.session;
   }
   try {
-    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session);
+    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session, { correction: correcting, delivered: session !== null });
   } catch (error) {
     const as = session === null ? "" : resumedAs(record, session.shortId);
     ctx.error(`crew answer: the store could not record the answer: ${reasonOf2(error)}${as === "" ? "" : `; it was resumed${as}`}`);
     return 1;
   }
   if (session !== null) {
-    ctx.print(`answered ${record.name}: resumed with your answer${resumedAs(record, session.shortId)} \xB7 ${question}`);
-  } else {
-    ctx.print(`answered ${record.name}: ${question}`);
-    ctx.print(sendMessageLine(record.name, args.text));
+    ctx.print(`answered ${record.name}: resumed with your ${correcting ? "correction" : "answer"}${resumedAs(record, session.shortId)} \xB7 ${question}`);
+    return 0;
+  }
+  ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
+    ctx.print(line);
   }
   return 0;
+}
+async function deliveryReport(ctx, repo, record, index, how, text) {
+  const { stateDir } = ctx.paths;
+  const beat = readAnswerWatchBeat(stateDir, repo, record.id);
+  const age = beat === null ? null : Math.max(0, ctx.now() - beat);
+  if (age === null || age > ANSWER_BEAT_STALE_MS) {
+    const why = age === null ? "no heartbeat from its monitor" : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
+    return how.asPerson ? [
+      `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`
+    ] : [
+      `recorded, not delivered: ${why}, so send it yourself:`,
+      sendMessageLine(record.name, text)
+    ];
+  }
+  for (let look = 0;look < CONFIRM_LOOKS; look += 1) {
+    await ctx.sleep(CONFIRM_WAIT_MS);
+    const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
+    if (now !== null) {
+      return [
+        how.replaces ? "delivered: its monitor gave the session your correction, which replaces your earlier answer" : "delivered: its monitor gave it to the session"
+      ];
+    }
+  }
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${CONFIRM_LOOKS * CONFIRM_WAIT_MS / 1000} s;`;
+  return how.asPerson ? [`${late} it still will`] : [
+    `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+    sendMessageLine(record.name, text)
+  ];
 }
 function resumedAs(record, shortId) {
   if (shortId === record.shortId)
@@ -29466,6 +29604,9 @@ async function runCrewReport(args, ctx) {
   }
 }
 
+// src/crew/self-watch.ts
+import { statSync as statSync20 } from "fs";
+
 // src/crew/context-window.ts
 import { existsSync as existsSync39, readFileSync as readFileSync47 } from "fs";
 import { join as join50 } from "path";
@@ -29716,34 +29857,79 @@ async function runCrewSelfWatch(ctx, once = false) {
   let { record } = self.self;
   const thresholds = thresholdsOf(resolved);
   const windows = windowWatch({ paths: ctx.paths });
+  const file = crewFile(ctx.paths.stateDir, repo, record.id);
+  let seen = null;
+  let lastBeat = Number.NEGATIVE_INFINITY;
+  let lastAdvice = Number.NEGATIVE_INFINITY;
   for (;; ) {
     const now = ctx.now();
-    const usage = record.sessionId === null ? null : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
-    const window = await windows.of(usage?.model ?? record.model.resolved, now);
-    const percent = usage === null ? null : contextPercent(usage, window);
-    const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
-    const advice = adviceFor(percent, hours, thresholds);
-    if (advice !== null) {
-      const said = readSelfWatchState(ctx.paths.stateDir, repo, record.id);
-      if (said === null || said.kind !== advice.kind || now - said.at >= SELF_WATCH_REPEAT_MS) {
-        try {
-          writeSelfWatchState(ctx.paths.stateDir, repo, record.id, { at: now, kind: advice.kind });
-        } catch (error) {
-          ctx.error(`crew self-watch: the store could not record the line: ${reasonOf2(error)}`);
-        }
-        ctx.print(advice.line);
+    const changed = mtimeOf(file);
+    if (changed !== seen) {
+      seen = changed;
+      try {
+        const fresh = readCrew(ctx.paths.stateDir, repo, record.id);
+        if (fresh === null || runningCrew([fresh]).length === 0)
+          return 0;
+        record = fresh;
+      } catch {}
+    }
+    if (!once && now - lastBeat >= ANSWER_BEAT_EVERY_MS) {
+      lastBeat = now;
+      try {
+        writeAnswerWatchBeat(ctx.paths.stateDir, repo, record.id, now);
+      } catch (error) {
+        ctx.error(`crew self-watch: the store could not record the heartbeat: ${reasonOf2(error)}`);
       }
+    }
+    await deliverAnswer(ctx, repo, record, now);
+    if (now - lastAdvice >= SELF_WATCH_POLL_MS) {
+      lastAdvice = now;
+      await adviseOnce(ctx, repo, record, thresholds, windows, now);
     }
     if (once)
       return 0;
-    await ctx.sleep(SELF_WATCH_POLL_MS);
-    try {
-      const fresh = readCrew(ctx.paths.stateDir, repo, record.id);
-      if (fresh === null || runningCrew([fresh]).length === 0)
-        return 0;
-      record = fresh;
-    } catch {}
+    await ctx.sleep(ANSWER_WATCH_POLL_MS);
   }
+}
+function mtimeOf(file) {
+  try {
+    const stat = statSync20(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+async function deliverAnswer(ctx, repo, record, now) {
+  for (const index of undeliveredAnswerIndexes(record)) {
+    let claimed;
+    try {
+      claimed = await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+    } catch (error) {
+      ctx.error(`crew self-watch: the store could not claim the answer: ${reasonOf2(error)}`);
+      continue;
+    }
+    if (claimed === null || claimed.answer === null)
+      continue;
+    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
+  }
+}
+async function adviseOnce(ctx, repo, record, thresholds, windows, now) {
+  const usage = record.sessionId === null ? null : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+  const window = await windows.of(usage?.model ?? record.model.resolved, now);
+  const percent = usage === null ? null : contextPercent(usage, window);
+  const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
+  const advice = adviceFor(percent, hours, thresholds);
+  if (advice === null)
+    return;
+  const said = readSelfWatchState(ctx.paths.stateDir, repo, record.id);
+  if (said !== null && said.kind === advice.kind && now - said.at < SELF_WATCH_REPEAT_MS)
+    return;
+  try {
+    writeSelfWatchState(ctx.paths.stateDir, repo, record.id, { at: now, kind: advice.kind });
+  } catch (error) {
+    ctx.error(`crew self-watch: the store could not record the line: ${reasonOf2(error)}`);
+  }
+  ctx.print(advice.line);
 }
 
 // src/crew/tell.ts
@@ -30068,8 +30254,10 @@ Commands:
                  everything the question does not block.
   answer <crew session> "<the answer>"
                  The lead's answer to a crew session's question. A running crew session
-                 gets it as a message (the command prints the line the lead
-                 sends); a stopped one is resumed with it.
+                 gets it from its own monitor, even when idle (the command says
+                 delivered, or recorded and prints the line the lead sends by hand);
+                 a stopped one is resumed with it. A second answer to the same
+                 question is a correction that says it replaces the first.
   tell ${TELL_ARGS}
                  ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for your lead, and prints one SendMessage
@@ -30084,9 +30272,11 @@ Commands:
                  each event. --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
-                 at the context share, a note when the phase runs long. It says
-                 nothing else, and repeats its line every 15 minutes while it is
-                 ignored. --once checks once and exits.
+                 at the context share, a note when the phase runs long; it repeats
+                 its line every 15 minutes while it is ignored. It also prints
+                 the lead's answer to the crew session's question, once, and
+                 writes the heartbeat crew answer reads. --once checks once and
+                 exits (no heartbeat).
 
 The board and the end of a crew session (a command's own help: crew <command> --help):
 ${OTHER_COMMANDS}
@@ -35272,7 +35462,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { readdirSync as readdirSync22, statSync as statSync21 } from "fs";
+import { readdirSync as readdirSync22, statSync as statSync22 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
 
 // src/jobs/classify.ts
@@ -37096,7 +37286,7 @@ async function runJob(request, deps) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync21, readdirSync as readdirSync21, statSync as statSync20 } from "fs";
+import { mkdirSync as mkdirSync21, readdirSync as readdirSync21, statSync as statSync21 } from "fs";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -37293,7 +37483,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync21(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync22(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -41735,7 +41925,7 @@ ${PROJECT_INIT_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync11, mkdirSync as mkdirSync25, openSync as openSync11, readFileSync as readFileSync65, readSync as readSync6, statSync as statSync23 } from "fs";
+import { closeSync as closeSync11, mkdirSync as mkdirSync25, openSync as openSync11, readFileSync as readFileSync65, readSync as readSync6, statSync as statSync24 } from "fs";
 import { dirname as dirname21, join as join68 } from "path";
 
 // src/cli/usage.ts
@@ -41756,12 +41946,12 @@ import { readFileSync as readFileSync64 } from "fs";
 import { join as join67 } from "path";
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync24, readFileSync as readFileSync63, statSync as statSync22 } from "fs";
+import { appendFileSync as appendFileSync4, mkdirSync as mkdirSync24, readFileSync as readFileSync63, statSync as statSync23 } from "fs";
 import { dirname as dirname20 } from "path";
 function cutBack(file) {
   let size;
   try {
-    size = statSync22(file).size;
+    size = statSync23(file).size;
   } catch {
     return;
   }
@@ -42845,7 +43035,7 @@ function replaced(ref, transcript) {
     return false;
   let stat;
   try {
-    stat = statSync23(ref.path);
+    stat = statSync24(ref.path);
   } catch {
     return false;
   }
@@ -42876,7 +43066,7 @@ function readTranscriptFile(ref, session, transcript, subagent, context) {
   const file = ref.path;
   let stat;
   try {
-    stat = statSync23(file);
+    stat = statSync24(file);
   } catch {
     return false;
   }
@@ -43591,14 +43781,14 @@ import {
   readFileSync as readFileSync67,
   readSync as readSync7,
   rmSync as rmSync16,
-  statSync as statSync25,
+  statSync as statSync26,
   writeFileSync as writeFileSync10
 } from "fs";
 import { platform as platform2 } from "os";
 import { dirname as dirname22, join as join70, resolve as resolve12 } from "path";
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync66, statSync as statSync24 } from "fs";
+import { readFileSync as readFileSync66, statSync as statSync25 } from "fs";
 import { join as join69 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -43765,7 +43955,7 @@ function readCrewLeftovers(paths, deps) {
         continue;
       }
       const removedAt = removals.at(record);
-      const newest = Math.max(...found.files.map((file) => statSync24(join69(found.projectDir, file)).mtimeMs));
+      const newest = Math.max(...found.files.map((file) => statSync25(join69(found.projectDir, file)).mtimeMs));
       if (newest > removedAt) {
         out.kept.push({ record, why: "it was written after its crew session was removed" });
         continue;
@@ -43827,7 +44017,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join70(projectsDir, folder, name);
-    const stat = statSync25(path, { throwIfNoEntry: false });
+    const stat = statSync26(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -46257,7 +46447,7 @@ import {
   readFileSync as readFileSync73,
   rmdirSync as rmdirSync2,
   rmSync as rmSync18,
-  statSync as statSync26
+  statSync as statSync27
 } from "fs";
 import { join as join75 } from "path";
 
@@ -46436,7 +46626,7 @@ function removeEmptyFolders(dir) {
     rmdirSync2(dir);
 }
 function isFile2(path) {
-  return existsSync64(path) && statSync26(path).isFile();
+  return existsSync64(path) && statSync27(path).isFile();
 }
 function isFolder2(path) {
   return existsSync64(path) && lstatSync6(path).isDirectory();
@@ -53012,7 +53202,7 @@ async function runDoctor(paths, env, options, out, print = { json: false, verbos
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync74, readdirSync as readdirSync29, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync21, statSync as statSync27 } from "fs";
+import { existsSync as existsSync74, readdirSync as readdirSync29, readFileSync as readFileSync84, renameSync as renameSync7, rmSync as rmSync21, statSync as statSync28 } from "fs";
 import { basename as basename16, dirname as dirname29, join as join84 } from "path";
 var MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 var OLD = {
@@ -53282,7 +53472,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync7(source, target);
       continue;
     }
-    if (statSync27(source).isDirectory() && statSync27(target).isDirectory()) {
+    if (statSync28(source).isDirectory() && statSync28(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync21(source, { recursive: true, force: true });
@@ -53392,7 +53582,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync27(file).mode;
+  const mode = statSync28(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -53460,7 +53650,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync27(file).mode & 4095;
+    const mode = statSync28(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -55065,7 +55255,7 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync77, readFileSync as readFileSync86, rmSync as rmSync24, statSync as statSync28, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync77, readFileSync as readFileSync86, rmSync as rmSync24, statSync as statSync29, writeFileSync as writeFileSync15 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
 import { basename as basename19, join as join89 } from "path";
 
@@ -55140,7 +55330,7 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync28(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync29(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -55551,7 +55741,7 @@ import { existsSync as existsSync78 } from "fs";
 import { join as join91 } from "path";
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync29, writeSync as writeSync2 } from "fs";
+import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync30, writeSync as writeSync2 } from "fs";
 import { join as join90 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
@@ -55608,7 +55798,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync29(path).uid;
+        return statSync30(path).uid;
       } catch {
         return null;
       }
@@ -56193,7 +56383,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync81(project) || !statSync30(project).isDirectory()) {
+      if (!existsSync81(project) || !statSync31(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;

@@ -8865,6 +8865,11 @@ var version2 = number2().int().min(1);
 var sha = string2().regex(COMMIT_SHA, "a full commit sha");
 var count = number2().int().min(0);
 var word = () => text.transform((value) => value);
+var supersededAnswer = looseObject({
+  answer: text,
+  answeredAt: text,
+  deliveredAt: text.nullable().optional()
+});
 var crewQuestionFields = looseObject({
   question: text,
   options: array(text).min(2),
@@ -8872,7 +8877,9 @@ var crewQuestionFields = looseObject({
   askedAt: text,
   answeredAt: text.nullable(),
   answer: text.nullable(),
-  supersededBy: number2().int().min(0).nullable().optional()
+  supersededBy: number2().int().min(0).nullable().optional(),
+  deliveredAt: text.nullable().optional(),
+  superseded: array(supersededAnswer).optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -9344,6 +9351,7 @@ function writeStopState(stateDir, repo, id, state) {
 `);
 }
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
+var answerWatchFields = object({ at: number2().int().min(0) });
 
 // src/worktrees/auto-start.ts
 import { basename as basename4, join as join14 } from "path";

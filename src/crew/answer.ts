@@ -4,10 +4,19 @@
  *
  * **Two ways the answer reaches the crew session.**
  *
- * - A **running** crew session gets it as a message. The CLI cannot send one itself — Claude Code's
- *   `SendMessage` is a tool only a session holds — so the command prints the one line the lead
- *   sends it with (the crew session's name and the text), and records the answer, so the question is
- *   answered once and never asked again.
+ * - A **running** crew session gets it from its own monitor (AN1). The CLI cannot send a message
+ *   itself — Claude Code's `SendMessage` is a tool only a session holds — so the command records
+ *   the answer, and `crew self-watch`, the monitor every crew session runs, prints it into the
+ *   session as one line and marks it delivered (`deliveryLine`, `markAnswerDelivered`). A line
+ *   from a monitor wakes an idle session, so a blocked crew session needs no one to send it
+ *   anything (proved live, `docs/claude-code-contract.md`). The monitor writes a heartbeat; the
+ *   command waits a few seconds for the delivery and says which happened — delivered, or only
+ *   recorded. **When it can only record** (no heartbeat, an old one, or a monitor that did not
+ *   pass it on in time), it prints the one line the lead sends it with by hand (the crew
+ *   session's name and the text), so the lead is never left without a way.
+ * - **A second answer to the same question is a correction.** The first is kept in `superseded`,
+ *   the new one is delivered the same way, with words that say it replaces the earlier answer.
+ *   A question closed by the phase's end takes none.
  * - A **stopped** crew session (D35: the watch stops a blocked crew session that idles past
  *   `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
  *   `claude --bg --resume <session id> "<text>"` — the form `claude --help` gives in 2.1.306
@@ -45,16 +54,20 @@ import {
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
 import {
+  ANSWER_BEAT_STALE_MS,
   answerCrewQuestion,
   type CrewRecord,
   claimResume,
   crewMcpFile,
   crewSettingsFile,
   isQuestionOpen,
+  lastHeardAnswer,
   listCrew,
   openQuestionIndex,
   questionClosed,
   RESUME_CLAIM_MS,
+  readAnswerWatchBeat,
+  readCrew,
   readReport,
   releaseResume,
 } from "./store";
@@ -82,6 +95,37 @@ const REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"] a
 /** True when `state` is one a crew session can still take an answer in. */
 function isReachable(state: string): boolean {
   return (REACHABLE_STATES as readonly string[]).includes(state);
+}
+
+/** How many times `crew answer` looks for the delivery, and how long it waits between looks. */
+const CONFIRM_LOOKS = 10;
+const CONFIRM_WAIT_MS = 1000;
+
+/**
+ * The words that open what a crew session hears: its lead's answer, or — for a correction — that
+ * the answer replaces the earlier one (`earlier`). Question and earlier answer go in as JSON
+ * strings, so the head is one line whatever they hold.
+ */
+function deliveryHead(question: string, earlier: null | string): string {
+  return earlier === null
+    ? `Your lead answers your question ${JSON.stringify(question)}:`
+    : `Your lead CORRECTS its earlier answer to your question ${JSON.stringify(question)}: this REPLACES the earlier answer (${JSON.stringify(earlier)}). Follow this one instead:`;
+}
+
+/**
+ * The one line the crew session's monitor prints for an answer (AN1): a monitor line is one
+ * notification, so the answer goes in as a JSON string and is never changed.
+ */
+export function deliveryLine(question: string, answer: string, earlier: null | string): string {
+  return `${deliveryHead(question, earlier)} ${JSON.stringify(answer)}`;
+}
+
+/**
+ * The text a message or a resume carries: the answer as the lead typed it, and for a correction
+ * the words that say it replaces the earlier one, then the answer on its own line.
+ */
+export function deliveryText(question: string, answer: string, earlier: null | string): string {
+  return earlier === null ? answer : `${deliveryHead(question, earlier)}\n${answer}`;
 }
 
 /**
@@ -138,7 +182,22 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     ctx.error(`crew answer: ${pending}`);
     return 1;
   }
-  const index = openQuestionIndex(record);
+  let index = openQuestionIndex(record);
+  // The answer to the newest question, given again, is a correction (AN1) — while the phase runs.
+  let correcting = false;
+  if (index === null) {
+    const last = record.questions.length - 1;
+    if (last >= 0 && record.questions[last]?.answer !== null) {
+      if (questionClosed(record.state)) {
+        ctx.error(
+          `crew answer: ${record.name} is finished (${record.state}), so its answer cannot be corrected`,
+        );
+        return 1;
+      }
+      index = last;
+      correcting = true;
+    }
+  }
   if (index === null) {
     // A question left behind at the end of the phase needs no answer: the crew session is
     // finished, and nothing would read one (one rule for every reader, `openQuestionIndex`).
@@ -156,7 +215,12 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 1;
   }
 
-  const question = record.questions[index]?.question ?? "";
+  const asked = record.questions[index];
+  const question = asked?.question ?? "";
+  // What the answer replaces: the answer on record now.
+  // Only an answer the session heard is replaced: the monitor may not have printed the one on record.
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
+  const text = deliveryText(question, args.text, earlier);
   // How the answer reaches the crew session: a message, or a resume of a session that is gone.
   let way: "message" | "resume" = "message";
   if (record.state === "stopped") {
@@ -181,7 +245,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   }
   let session: null | ResumedSession = null;
   if (way === "resume") {
-    const resumed = await resumeSession(ctx, record, args.text);
+    const resumed = await resumeSession(ctx, record, text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
@@ -202,6 +266,8 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       ctx.now(),
       "working",
       session,
+      // A resume carries the answer as its prompt: that is its delivery.
+      { correction: correcting, delivered: session !== null },
     );
   } catch (error) {
     // A copy that runs while the record still names the old session: the line names the copy.
@@ -213,13 +279,69 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   }
   if (session !== null) {
     ctx.print(
-      `answered ${record.name}: resumed with your answer${resumedAs(record, session.shortId)} · ${question}`,
+      `answered ${record.name}: resumed with your ${correcting ? "correction" : "answer"}${resumedAs(record, session.shortId)} · ${question}`,
     );
-  } else {
-    ctx.print(`answered ${record.name}: ${question}`);
-    ctx.print(sendMessageLine(record.name, args.text));
+    return 0;
+  }
+  ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
+    ctx.print(line);
   }
   return 0;
+}
+
+/**
+ * What `crew answer` says about the delivery to a running crew session (AN1): the monitor's
+ * heartbeat decides. A live one is given a few seconds to pass the answer on, and the command says
+ * which happened; with no live monitor, or one that did not pass it on in time, the answer is
+ * only recorded, and the line says why and carries the `SendMessage` line the lead sends it with.
+ * The person's click (`asPerson`) gets no such line — they cannot send it — and is told when the
+ * session will hear it instead.
+ */
+async function deliveryReport(
+  ctx: CrewContext,
+  repo: string,
+  record: CrewRecord,
+  index: number,
+  how: { asPerson: boolean; replaces: boolean },
+  text: string,
+): Promise<string[]> {
+  const { stateDir } = ctx.paths;
+  const beat = readAnswerWatchBeat(stateDir, repo, record.id);
+  const age = beat === null ? null : Math.max(0, ctx.now() - beat);
+  if (age === null || age > ANSWER_BEAT_STALE_MS) {
+    const why =
+      age === null
+        ? "no heartbeat from its monitor"
+        : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
+    return how.asPerson
+      ? [
+          `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`,
+        ]
+      : [
+          `recorded, not delivered: ${why}, so send it yourself:`,
+          sendMessageLine(record.name, text),
+        ];
+  }
+  for (let look = 0; look < CONFIRM_LOOKS; look += 1) {
+    await ctx.sleep(CONFIRM_WAIT_MS);
+    const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
+    if (now !== null) {
+      return [
+        how.replaces
+          ? "delivered: its monitor gave the session your correction, which replaces your earlier answer"
+          : "delivered: its monitor gave it to the session",
+      ];
+    }
+  }
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${(CONFIRM_LOOKS * CONFIRM_WAIT_MS) / 1000} s;`;
+  return how.asPerson
+    ? [`${late} it still will`]
+    : [
+        `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+        sendMessageLine(record.name, text),
+      ];
 }
 
 /** The session a resume brought back: the same one, or the copy Claude Code started instead. */

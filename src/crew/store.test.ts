@@ -34,6 +34,7 @@ import {
   listAllLeads,
   listCrew,
   listLeads,
+  markAnswerDelivered,
   type NewCrew,
   openQuestionIndex,
   questionClosed,
@@ -449,6 +450,99 @@ describe("D36: a crew session's questions", () => {
     await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "a", T1)).rejects.toThrow(
       'crew "crew-K-contracts" has no question 1',
     );
+  });
+
+  test("AN1: an answer is recorded, not delivered, until a delivery marks it — once", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "b", T1);
+    expect(answered.questions[0]?.deliveredAt ?? null).toBeNull();
+    // The first delivery claims it; a second finds it taken.
+    const claimed = await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000);
+    expect(claimed).toMatchObject({ answer: "b", deliveredAt: "2026-10-21T10:05:01.000Z" });
+    expect(await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 2000)).toBeNull();
+    const [record] = listCrew(state, REPO).records;
+    expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:05:01.000Z");
+  });
+
+  test("AN1: an answer given as a resume's prompt is delivered in the same write", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    const answered = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "b",
+      T1,
+      null,
+      null,
+      {
+        delivered: true,
+      },
+    );
+    expect(answered.questions[0]).toMatchObject({
+      answer: "b",
+      deliveredAt: "2026-10-21T10:05:00.000Z",
+    });
+  });
+
+  test("AN1: a correction keeps the first answer as superseded and needs a delivery of its own", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T0);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1);
+    await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000);
+    const corrected = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "b",
+      T1 + 5000,
+      null,
+      null,
+      { correction: true },
+    );
+    expect(corrected.questions[0]).toMatchObject({
+      answer: "b",
+      answeredAt: "2026-10-21T10:05:05.000Z",
+      superseded: [
+        {
+          answer: "a",
+          answeredAt: "2026-10-21T10:05:00.000Z",
+          deliveredAt: "2026-10-21T10:05:01.000Z",
+        },
+      ],
+    });
+    expect(corrected.questions[0]?.deliveredAt ?? null).toBeNull();
+    // A second correction stacks: nothing is ever dropped.
+    const again = await answerCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      0,
+      "c",
+      T1 + 9000,
+      null,
+      null,
+      {
+        correction: true,
+      },
+    );
+    expect(again.questions[0]?.superseded?.map((one) => one.answer)).toEqual(["a", "b"]);
+    // A correction of a question that has no answer yet is no correction.
+    await addCrewQuestion(state, REPO, "crew-K-contracts", asked, T1 + 10_000);
+    await expect(
+      answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "x", T1 + 11_000, null, null, {
+        correction: true,
+      }),
+    ).rejects.toThrow('question 1 of crew session "crew-K-contracts" has no answer to correct');
   });
 
   test("D62: a question is open while its phase is, and closed when the phase is over", async () => {
@@ -1050,7 +1144,7 @@ describe("the events log", () => {
     );
     const file = crewEventsFile(state, REPO);
     // A writer that stopped half way: the reader leaves that line for later.
-    const torn = '{"version":1,"at":"2026-10-21T10:06:00.000Z"';
+    const torn = '{"version":1,"at":"2026-10-21T10:05:01.000Z"';
     appendFileSync(file, torn);
     const next = readCrewEvents(state, REPO, first.offset);
     expect(next.events).toEqual([
