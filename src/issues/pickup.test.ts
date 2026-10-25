@@ -88,6 +88,36 @@ describe("an issue the person labelled", () => {
     expect((await pickIssue(world, "12")).ok).toBe(true);
   });
 
+  test("IX2-2: a ready label set only in the working copy does not count; the committed one does", async () => {
+    const issueGo = issue({
+      events: [{ actor: "maintainer", at: LABELED, event: "labeled", label: "go" }],
+      labels: ["go"],
+    });
+    const { world } = setup({
+      issues: [issueGo],
+      world: {
+        workingCopy: {
+          worktrees: { base: "main" },
+          workflow: { issues: { enabled: true, readyLabel: "go" } },
+        },
+      },
+    });
+    expect(why(await pickIssue(world, "12"))).toContain("does not carry the label kit:ready");
+  });
+
+  test("IX2-2: the person's own file picks the ready label", async () => {
+    const { world } = setup({
+      issues: [
+        issue({
+          events: [{ actor: "maintainer", at: LABELED, event: "labeled", label: "go" }],
+          labels: ["go"],
+        }),
+      ],
+      world: { personal: { issues: { readyLabel: "go" } } },
+    });
+    expect((await pickIssue(world, "12")).ok).toBe(true);
+  });
+
   test("every call names the project's own repository and github.com, and reads only", async () => {
     const { github, world } = setup();
     await pickIssue(world, "12");

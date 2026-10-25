@@ -532,6 +532,16 @@ export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
  */
 export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.allowPublic"];
 
+/**
+ * The settings that decide what text from GitHub reaches a session (`issues.readyLabel`: which
+ * issues count as chosen, D67; `issues.watch`: the feed that puts new issues into the lead's
+ * context). `workflow set` and `unset` refuse them inside Claude Code, like `OUTBOUND_KEYS`: a
+ * session must never pick which issues are ready, nor open the channel for outside text. Both
+ * are read from the person's file and the project's file as committed on the base, never from a
+ * working copy. `propose` stays open: a person reviews its pull request.
+ */
+export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel", "issues.watch"];
+
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
   (name) => `switches.${name}` as WorkflowKey,
