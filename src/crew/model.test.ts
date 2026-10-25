@@ -4,12 +4,17 @@
  * Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
-import { type BoardWorld, boardWorld, NOW } from "../testing/board-world";
+import { type BoardWorld, boardWorld, LEAD_NAME, NOW } from "../testing/board-world";
+import { LEAD_SESSION } from "../testing/crew-world";
+import { tempDir } from "../testing/temp";
 import { resolveWorkflow } from "../workflow/resolve";
 import { parseModelArgs, runCrew } from "./command";
 import { applyPendingModels } from "./model";
+import { readRunFile, runFile } from "./runs";
 import {
   crewMcpFile,
   crewSettingsFile,
@@ -485,5 +490,126 @@ describe("crew model: events", () => {
       (one) => one.crew === record.id && one.type === "state",
     );
     expect(states).toEqual([]);
+  });
+});
+
+describe("IN1: crew model and the plan's run record", () => {
+  const LEAD = { name: LEAD_NAME, sessionId: LEAD_SESSION };
+
+  /** A plan file in a temp folder: the run record of a crew session that names it is written beside it. */
+  function planFileOf(): string {
+    const plans = tempDir("plans");
+    mkdirSync(plans, { recursive: true });
+    const file = join(plans, "2026-10-21-master-plan.md");
+    writeFileSync(file, "# the plan\n");
+    return file;
+  }
+
+  /** The `note` lines of a crew session's run record. */
+  function notesOf(planFile: string, id: string) {
+    const run = readRunFile(runFile(planFile, id));
+    return (run?.events ?? [])
+      .filter((one) => one.kind === "note")
+      .map((one) => ({ by: one.by, detail: one.detail, text: one.text }));
+  }
+
+  test("a change that lands is one line in the run: who changed it, from what and to what", async () => {
+    const world = await boardWorld();
+    const planFile = planFileOf();
+    const record = await world.addCrew({ effort: "xhigh", model: OPUS, planFile });
+    const code = await runCrew(
+      ["model", NAME, "--model", "sonnet"],
+      world.ctx({}, { FAKE_AGENTS_JSON: liveView(world) }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(notesOf(planFile, record.id)).toEqual([
+      {
+        by: LEAD,
+        detail: {
+          from: { effort: "xhigh", model: "opus" },
+          to: { effort: "high", model: "sonnet" },
+        },
+        text: "model changed: opus xhigh → sonnet high",
+      },
+    ]);
+  });
+
+  test("an effort change alone is a line too, for a session with no process to move", async () => {
+    const world = await boardWorld();
+    const planFile = planFileOf();
+    const record = await world.addCrew({ planFile, state: "stopped" });
+    expect(await runCrew(["model", NAME, "--effort", "xhigh"], world.ctx())).toBe(0);
+    expect(notesOf(planFile, record.id)).toEqual([
+      {
+        by: LEAD,
+        detail: {
+          from: { effort: "high", model: "sonnet" },
+          to: { effort: "xhigh", model: "sonnet" },
+        },
+        text: "model changed: sonnet high → sonnet xhigh",
+      },
+    ]);
+  });
+
+  test("a stop that fails puts the record back, and the run says the change was undone", async () => {
+    const world = await boardWorld();
+    const planFile = planFileOf();
+    const record = await world.addCrew({ effort: "xhigh", model: OPUS, planFile });
+    const code = await runCrew(
+      ["model", NAME, "--model", "sonnet"],
+      world.ctx({}, { FAKE_AGENTS_JSON: liveView(world), FAKE_STOP: "fail" }),
+    );
+    expect(code).toBe(1);
+    // Never a history that says it runs on sonnet when the record, and the process, say opus.
+    expect(notesOf(planFile, record.id).map((one) => one.text)).toEqual([
+      "model changed: opus xhigh → sonnet high",
+      "model change undone: sonnet high → opus xhigh (the session could not be stopped)",
+    ]);
+  });
+
+  test("a change an opus cap holds is no change yet: the run has no line until the watch applies it", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ perLeadOpus: 1 });
+    const planFile = planFileOf();
+    const other = await world.addCrew({
+      model: OPUS,
+      phase: "B2",
+      slug: "other",
+      suffix: "2b2b2b",
+    });
+    const record = await world.addCrew({ planFile });
+    expect(await runCrew(["model", NAME, "--model", "opus"], world.ctx())).toBe(0);
+    expect(notesOf(planFile, record.id)).toEqual([]);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("no checkout");
+    const resolved = resolveWorkflow(world.paths, loadProjectConfig(checkout).config);
+    await updateCrew(world.paths.stateDir, world.repo, other.id, { state: "done" }, NOW);
+    await applyPendingModels(
+      listCrew(world.paths.stateDir, world.repo).records,
+      world.ctx(),
+      resolved,
+      () => undefined,
+    );
+    expect(notesOf(planFile, record.id).map((one) => one.text)).toEqual([
+      "model changed: sonnet high → opus high",
+    ]);
+  });
+
+  test("asking for what it runs on changes nothing and writes no line", async () => {
+    const world = await boardWorld();
+    const planFile = planFileOf();
+    const record = await world.addCrew({ planFile });
+    expect(await runCrew(["model", NAME, "--effort", "high"], world.ctx())).toBe(0);
+    expect(notesOf(planFile, record.id)).toEqual([]);
+  });
+
+  test("a crew session with no plan file has no run record, and the change goes on", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["model", NAME, "--effort", "xhigh"], world.ctx())).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      effort: "xhigh",
+    });
   });
 });

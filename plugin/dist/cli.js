@@ -14977,6 +14977,36 @@ function linkContinuation(planFile, oldId, newId, at) {
     return;
   writeRunFile(file, { ...old, continuedBy: newId, updatedAt: at });
 }
+function recordRunNote(record2, at, note) {
+  const planFile = record2.planFile;
+  if (typeof planFile !== "string" || planFile === "")
+    return;
+  const file = runFile(planFile, record2.id);
+  const previous = readRunFile(file);
+  if (previous === null)
+    return;
+  const events = [
+    ...previous.events,
+    {
+      at,
+      by: note.by ?? null,
+      ...note.detail === undefined ? {} : { detail: note.detail },
+      kind: "note",
+      state: record2.state,
+      text: note.text
+    }
+  ];
+  writeRunFile(file, {
+    ...previous,
+    events,
+    times: deriveTimes({
+      createdAt: previous.createdAt,
+      events,
+      startedAt: previous.times.startedAt
+    }),
+    updatedAt: at
+  });
+}
 function readRuns(planFile) {
   const folder = join23(livePlanFolder(planFile), RUNS_DIR);
   const result = {
@@ -15701,6 +15731,20 @@ async function setCrewMemory(stateDir, repo, id, memoryMb) {
     const after = checked(crewRecordSchema, { ...before, memoryMb }, file);
     writeJsonFile(file, after);
     return after;
+  });
+}
+async function noteCrewRun(stateDir, repo, id, atMs, note) {
+  const file = crewFile(stateDir, repo, id);
+  await underStoreLock(stateDir, repo, () => {
+    const record2 = readRecord(crewRecordSchema, file);
+    if (record2 === null) {
+      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+    }
+    try {
+      recordRunNote(record2, iso(atMs), note);
+    } catch (error) {
+      reportRunFailure(`crew: the run record of ${record2.name} was not written: ${reasonOf(error)}`);
+    }
   });
 }
 function stateForReport(status) {
@@ -24293,6 +24337,14 @@ var LIVE_STATES = ["working", "quiet"];
 function runsOn(model, effort) {
   return `${model} ${effort}`;
 }
+async function noteChange(record, from, to, ctx, undone) {
+  const line = `${runsOn(from.model, from.effort)} \u2192 ${runsOn(to.model, to.effort)}`;
+  await noteCrewRun(ctx.paths.stateDir, record.repo, record.id, ctx.now(), {
+    by: actorOfCaller(ctx, record.repo),
+    detail: { from, to },
+    text: undone ? `model change undone: ${line} (the session could not be stopped)` : `model changed: ${line}`
+  });
+}
 function changePrompt(from, to) {
   const parts = [];
   if (from.model !== to.model)
@@ -24339,6 +24391,7 @@ async function changeModel(record, to, effort, ctx, crew, retry) {
       return why;
     }
     await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort, model: to, pendingLaunch: undefined }, ctx.now());
+    await noteChange(record, { effort: record.effort, model: record.model.named }, { effort, model: to.named }, ctx, false);
     return null;
   });
   if (decided === "stale")
@@ -24361,6 +24414,7 @@ async function moveSession(record, to, effort, head, live, ctx) {
       const now = readCrew(ctx.paths.stateDir, record.repo, record.id);
       if (now?.model.named === to.named && now.effort === effort) {
         await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort: record.effort, model: record.model }, ctx.now());
+        await noteChange(record, { effort, model: to.named }, { effort: record.effort, model: record.model.named }, ctx, true);
       }
       return { line: `${head} \xB7 ${stopped.why}; nothing changed`, ok: false };
     }
