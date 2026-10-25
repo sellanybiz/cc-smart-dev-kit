@@ -28,9 +28,12 @@ const PORT = 20999;
 /**
  * A temp machine whose config holds one profile, and a fake model list for its backend.
  * `profiles: false` leaves the config without a `profiles` key at all (the High the review
- * found: the first chain must make the profile).
+ * found: the first chain must make the profile). `fallback: true` turns the machine's worker
+ * fallback switch on (every switch is off by default, D66).
  */
-function machine(options: { config?: boolean; judgeProof?: boolean; profiles?: boolean } = {}) {
+function machine(
+  options: { config?: boolean; fallback?: boolean; judgeProof?: boolean; profiles?: boolean } = {},
+) {
   const home = tempDir("gp2-profile");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -41,6 +44,7 @@ function machine(options: { config?: boolean; judgeProof?: boolean; profiles?: b
       aliases: {},
       anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
       backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
+      ...(options.fallback === true ? { fallback: { "cc-smart-dev-kit-worker": true } } : {}),
       port: PORT,
       ...(options.profiles === false ? {} : { profiles: { team: {} } }),
       ...(options.judgeProof === true
@@ -144,11 +148,17 @@ describe("gateway profile <name> slot", () => {
   });
 
   test("a slot's fallback switch of a profile is shown in the profile's view", () => {
-    const m = machine();
+    const m = machine({ fallback: true });
     const view = profileView(m.config(), "team");
     // The machine's worker chain is what the profile uses until it names one.
     expect(view?.slots["cc-smart-dev-kit-worker"]).toEqual(["omniroute:glm-5.3-flash"]);
     expect(fallbackOn(view ?? {}, "cc-smart-dev-kit-worker")).toBe(true);
+  });
+
+  test("D66: a profile's view shows the switch off when neither the machine nor the profile turned it on", () => {
+    const m = machine();
+    const view = profileView(m.config(), "team");
+    expect(fallbackOn(view ?? {}, "cc-smart-dev-kit-worker")).toBe(false);
   });
 
   test("off (or claude) turns that slot off in the profile only, and drops its switches", async () => {
@@ -203,18 +213,28 @@ describe("gateway profile <name> slot", () => {
 
 describe("gateway profile <name> fallback", () => {
   test("sets the profile's switch, over the machine's", async () => {
-    const m = machine();
+    const m = machine({ fallback: true });
     expect(await m.run(["profile", "team", "fallback", "worker", "off"])).toBe(0);
     const config = m.config();
     expect(config.profiles?.team?.fallback?.["cc-smart-dev-kit-worker"]).toBe(false);
-    expect(config.fallback).toBeUndefined();
+    // The machine's own switch is left as it was.
+    expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
     expect(m.output()).toContain("team: cc-smart-dev-kit-worker: fallback on → off");
   });
 
   test("a value equal to the profile's own default is written as no entry", async () => {
-    const m = machine();
+    const m = machine({ fallback: true });
     await m.run(["profile", "team", "fallback", "worker", "off"]);
     expect(await m.run(["profile", "team", "fallback", "worker", "on"])).toBe(0);
+    expect(m.config().profiles?.team?.fallback).toBeUndefined();
+  });
+
+  test("D66: the default is off, so on is saved as true and off is written as no entry", async () => {
+    const m = machine();
+    expect(await m.run(["profile", "team", "fallback", "worker", "on"])).toBe(0);
+    expect(m.config().profiles?.team?.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
+    expect(m.output()).toContain("team: cc-smart-dev-kit-worker: fallback off → on");
+    expect(await m.run(["profile", "team", "fallback", "worker", "off"])).toBe(0);
     expect(m.config().profiles?.team?.fallback).toBeUndefined();
   });
 
@@ -237,7 +257,7 @@ describe("gateway profile <name> fallback", () => {
 
 describe("a profile's switch on the machine's chain does not block the machine's own change (review: M5)", () => {
   test("slot worker claude drops the profile's fallback switch that had only the machine's chain", async () => {
-    const m = machine();
+    const m = machine({ fallback: true });
     // The profile names no worker chain: its switch is on the machine's.
     expect(await m.run(["profile", "team", "fallback", "worker", "off"])).toBe(0);
     expect(m.config().profiles?.team?.fallback?.["cc-smart-dev-kit-worker"]).toBe(false);
@@ -252,7 +272,7 @@ describe("a profile's switch on the machine's chain does not block the machine's
   });
 
   test("clear does the same, and a profile with a chain of its own keeps its switch", async () => {
-    const m = machine();
+    const m = machine({ fallback: true });
     await m.run(["profile", "team", "fallback", "worker", "off"]);
     await m.run(["profile", "keeper", "slot", "worker", "omniroute:m1"]);
     await m.run(["profile", "keeper", "fallback", "worker", "off"]);

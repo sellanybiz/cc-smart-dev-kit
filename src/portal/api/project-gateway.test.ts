@@ -52,7 +52,7 @@ function config(): GatewayConfig {
     aliases: {},
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
     backends: { omniroute: { apiKey: "k-1234567890", baseUrl: "http://omni.test" } },
-    fallback: { "cc-smart-dev-kit-opus": false },
+    fallback: { "cc-smart-dev-kit-opus": false, "cc-smart-dev-kit-worker": true },
     port: PORT,
     profiles: {
       cheap: {
@@ -193,7 +193,7 @@ describe("a project's gateway answer (GP4b)", () => {
           name: "worker",
           own: null,
         },
-        { fallback: true, key: "cc-smart-dev-kit-judge", machine: null, name: "judge", own: null },
+        { fallback: false, key: "cc-smart-dev-kit-judge", machine: null, name: "judge", own: null },
         { fallback: false, key: "cc-smart-dev-kit-fable", machine: null, name: "fable", own: null },
         {
           fallback: false,

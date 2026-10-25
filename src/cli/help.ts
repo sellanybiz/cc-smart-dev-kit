@@ -93,8 +93,10 @@ Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-updat
 kit's background update is the one updater, so a major version waits for you), installs the
 plugin's instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported
 by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem
-at the scout slot's affordable model (when its chain starts with one), and copies the
-project's auto-mode entries into your settings. The entries are trust rules: they are shown
+at the scout slot's first model (when its chain starts with a backend model), and copies the
+project's auto-mode entries into your settings. Once per machine, a gateway set up before the
+Claude defaults moves to them: every slot on Claude, every fallback off, the gateway off, a
+backup first and one line per change. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
 with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
 prints a section per part, one verdict line, and the next steps to run, in order.
@@ -301,7 +303,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   },
   {
     name: "gateway setup",
-    summary: "Optional: more affordable models, through a local gateway",
+    summary: "Optional: set up the local AI gateway",
     listed: "start",
     help: GATEWAY_USAGE,
   },

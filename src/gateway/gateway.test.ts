@@ -90,6 +90,20 @@ const NO_POSIX_MODES = process.platform === "win32";
 const TOKEN = "sk-ant-oat01-TESTTOKEN";
 const CONFIG_PATH = "/home/someone/.config/cc-smart-dev-kit/gateway.json";
 
+/**
+ * The slots of `config()`, and the judge. The fallback switch is OFF by default for every slot
+ * (D66), and most of this file tests a chain that moves on to its next target, so its config
+ * switches each one on, the judge's too (its worker stand-ins). A test of the default builds
+ * its own config without this record.
+ */
+const FALLBACK_ON_SLOTS = [
+  "cc-smart-dev-kit-affordable",
+  "cc-smart-dev-kit-mixed",
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker",
+  "cc-smart-dev-kit-judge",
+];
+
 function config(firstByteMs = 1000): GatewayConfig {
   return {
     aliases: {},
@@ -98,6 +112,7 @@ function config(firstByteMs = 1000): GatewayConfig {
       ollama: { apiKey: "ollama-key-abcdef", baseUrl: "https://ollama.test" },
       omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" },
     },
+    fallback: Object.fromEntries(FALLBACK_ON_SLOTS.map((slot) => [slot, true])),
     port: PORT,
     slots: {
       "cc-smart-dev-kit-affordable": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
@@ -765,6 +780,18 @@ describe("fallback", () => {
     ]);
     expect(await (await handle(scout())).text()).toBe("ok");
     expect(calls).toHaveLength(2);
+  });
+
+  it("D66: with no fallback setting a chain's first target alone is asked; its failure is the answer", async () => {
+    const { fallback: _on, ...noSwitch } = config();
+    const { calls, handle } = router(
+      [() => new Response("busy", { status: 429 }), () => new Response("never asked")],
+      { config: noSwitch },
+    );
+    const res = await handle(scout());
+    expect(res.status).toBe(429);
+    expect(await res.text()).toBe("busy");
+    expect(calls.map((c) => c.url)).toEqual(["http://omni.test/v1/messages"]);
   });
 
   it("an affordable backend that is not last: 400 and 401 move on, with a warning", async () => {
@@ -4317,7 +4344,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     );
   });
 
-  it("each slot's fallback switch: its own setting, else on for scout, worker and judge, off for opus and fable", () => {
+  it("each slot's fallback switch (D66): its own setting, else off for every slot, the judge's too", () => {
     const slots = {
       "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
@@ -4329,21 +4356,21 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
     expect(states({})).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", true],
+      ["cc-smart-dev-kit-judge", false],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", true],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", false],
     ]);
     expect(
       states({
-        fallback: { "cc-smart-dev-kit-judge": false, "cc-smart-dev-kit-worker": false },
+        fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": true },
       }),
     ).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", false],
+      ["cc-smart-dev-kit-judge", true],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", false],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", true],
     ]);
   });
 

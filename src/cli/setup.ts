@@ -8,7 +8,13 @@ import {
   PLUGIN_INSTALL_COMMAND,
   VERSION,
 } from "../build-info";
-import { messageOf } from "../gateway/config";
+import {
+  applyClaudeDefaultsStep,
+  type ClaudeDefaultsStep,
+  gatewayAfterStep,
+  planClaudeDefaultsStep,
+} from "../gateway/claude-defaults";
+import { type GatewayConfig, messageOf } from "../gateway/config";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,
@@ -238,6 +244,7 @@ interface Managed {
 export const SETUP_SECTIONS = [
   { id: "command", title: "The command" },
   { id: "settings", title: "Claude Code settings" },
+  { id: "gateway", title: groupTitle("gateway") },
   { id: "instructions", title: "Instructions" },
   { id: "companions", title: groupTitle("companions") },
   { id: "mcp", title: groupTitle("mcp") },
@@ -772,8 +779,9 @@ async function decideClaudeMem(
   dryRun: boolean,
   report: Report,
   out: Out,
+  gatewayAfter: GatewayConfig | undefined,
 ): Promise<ClaudeMemPlan | null | "not-installed"> {
-  const planned = claudeMemPlan(paths);
+  const planned = claudeMemPlan(paths, gatewayAfter);
   if ("notInstalled" in planned) return "not-installed";
   if ("note" in planned) {
     if (planned.note !== null) report.push(reportLine("companions", planned.note));
@@ -951,6 +959,7 @@ function restartStep(claudeMemChanged: boolean): string {
 /** The sections whose changes a running Claude Code session does not see until it restarts. */
 const RESTART_SECTIONS: ReadonlySet<SetupSection> = new Set<SetupSection>([
   "settings",
+  "gateway",
   "instructions",
   "companions",
   "mcp",
@@ -1003,7 +1012,12 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     claudeSteps = [];
     ok = false;
   }
-  const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out);
+  // D66: a machine set up before the Claude defaults moves to them once. Planned here, read-only,
+  // so claude-mem is planned from the gateway as the move leaves it (the dry run and the real
+  // run plan the same keys). Written below, inside the lock; setup is the only caller.
+  const claudeDefaults: ClaudeDefaultsStep = planClaudeDefaultsStep(paths);
+  const gatewayAfter = gatewayAfterStep(claudeDefaults);
+  const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out, gatewayAfter);
   const autoMode = planAutoMode(paths, options, report);
   // tmux's passthrough line is for a person who uses tmux: it goes in only when tmux is
   // installed. A running server keeps its own value until the line is applied to it, which
@@ -1120,6 +1134,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       ...claudeSteps.map((step) => reportLine(stepSection(step), step.line)),
       ...reportLines("terminal", warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []),
       ...reportLines("mcp", wouldRegister.wouldRun),
+      ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)),
       ...planned.lines,
       ...reportLines("terminal", warp.info),
       ...reportLines("mcp", wouldRegister.notes),
@@ -1221,7 +1236,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // The first run: claude-mem came with a companion step just now, so plan it again. Before
   // the lock: it asks the backend over the network.
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
-    const again = await decideClaudeMem(paths, false, report, out);
+    const again = await decideClaudeMem(paths, false, report, out, gatewayAfter);
     if (again !== "not-installed") managed.claudeMem = again;
   }
 
@@ -1239,6 +1254,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         });
         const shortcuts =
           warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
+        // D66: the move to the Claude defaults, planned again under the lock (a setup that held
+        // it first has written its marker, and this one then does nothing), before the files
+        // below: the gateway's address goes to Anthropic's own, then the other settings follow.
+        const gateway = applyClaudeDefaultsStep(paths, planClaudeDefaultsStep(paths), false);
         // Only what was really taken out counts: a `claude mcp remove` that failed leaves the
         // registration, and whatever it names, where it was.
         const files = applySetup(paths, managed, false, mcp.removed, machine.platform);
@@ -1256,6 +1275,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
           rmSync(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
         }
         return {
+          gateway: reportLines("gateway", gateway),
           mcp,
           files: { ...files, lines: [...reportLines("terminal", shortcuts), ...files.lines] },
         };
@@ -1266,13 +1286,16 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   report.push(
     ...reportLines("mcp", written.mcp.changes),
     ...reportLines("mcp", written.mcp.notes),
+    ...written.gateway,
     ...written.files.lines,
   );
   if (!written.mcp.ok) ok = false;
 
   const counts = printSections(out, report, false);
   // A file was written: each one has its backup (the MCP registrations are Claude Code's own).
-  const filesWritten = written.files.lines.some((line) => CHANGE_MARKS.has(line.mark));
+  const filesWritten = [...written.gateway, ...written.files.lines].some((line) =>
+    CHANGE_MARKS.has(line.mark),
+  );
   out.blank();
   const verdict = setupVerdict(counts, {
     dryRun: false,

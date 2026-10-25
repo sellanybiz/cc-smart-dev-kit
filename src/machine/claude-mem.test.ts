@@ -3,9 +3,10 @@
  * tested here; `setup`, `doctor` and `restore` have their own tests.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { type GatewayConfig, parseConfig } from "../gateway/config";
 import { restore } from "../setup/restore";
 import { tempDir } from "../testing/temp";
 import { applyClaudeMem, claudeMemPlan, readStartBlocks } from "./claude-mem";
@@ -328,5 +329,130 @@ describe("D23: what doctor reads", () => {
       problem:
         "~/.claude-mem/settings.json cannot be read (it is not valid JSON, or not a JSON object). Fix it by hand, then run cc-smart-dev-kit setup again.",
     });
+  });
+});
+
+const PROVIDER_PATHS = [
+  ["CLAUDE_MEM_PROVIDER"],
+  ["CLAUDE_MEM_OPENAI_COMPAT_PRESET"],
+  ["CLAUDE_MEM_OPENAI_COMPAT_BASE_URL"],
+  ["CLAUDE_MEM_OPENAI_COMPAT_MODEL"],
+  ["CLAUDE_MEM_OPENAI_COMPAT_API_KEY"],
+];
+
+describe("D66: claude-mem follows the scout back to Claude", () => {
+  /** gateway.json as the machine has it, with these slots. */
+  function writeSlots(w: ReturnType<typeof machine>, slots: Record<string, string[]>) {
+    mkdirSync(dirname(w.paths.gatewayConfigFile), { recursive: true });
+    writeFileSync(
+      w.paths.gatewayConfigFile,
+      JSON.stringify({
+        version: 1,
+        backends: {
+          omniroute: { apiKey: "sk-test-000000000000", baseUrl: "http://127.0.0.1:18434" },
+        },
+        slots,
+      }),
+      { mode: 0o600 },
+    );
+  }
+
+  /** claude-mem pointed at the scout by an older setup: the five provider keys are setup's. */
+  function pointedAtTheScout() {
+    const w = machine({ settings: SEEDED, gateway: true });
+    const first = w.plan();
+    if (!("plan" in first)) throw new Error("expected a plan");
+    applyClaudeMem(w.paths, first.plan, false);
+    expect(readJson(w.paths.claudeMemSettingsFile).CLAUDE_MEM_PROVIDER).toBe("openai-compatible");
+    return w;
+  }
+
+  const planOf = (w: ReturnType<typeof machine>, after?: GatewayConfig) => {
+    const planned = claudeMemPlan(w.paths, after);
+    if (!("plan" in planned)) throw new Error("expected a plan");
+    return planned.plan;
+  };
+
+  test("the scout has no chain now: the five keys setup owns are planned out, and no provider is set", () => {
+    const w = pointedAtTheScout();
+    writeSlots(w, { "cc-smart-dev-kit-worker": ["omniroute:w1"] });
+    const plan = planOf(w);
+    expect(plan.provider).toBeNull();
+    expect(plan.remove).toEqual([...RETIRED, ...PROVIDER_PATHS]);
+    expect(plan.notes).toEqual([
+      "  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys cc-smart-dev-kit set are taken out",
+    ]);
+    const changes = applyClaudeMem(w.paths, plan, false).changes;
+    // The start blocks were written by the first plan: only the provider keys change now.
+    expect(changes.map((change) => change.path[0])).toEqual(PROVIDER_PATHS.map((path) => path[0]));
+    const written = readJson(w.paths.claudeMemSettingsFile);
+    expect(written.CLAUDE_MEM_MODEL).toBe("claude-haiku-4-5-20251001");
+    for (const [key] of PROVIDER_PATHS) expect(written[key as string]).toBeUndefined();
+  });
+
+  test("the scout starts with a Claude model: the same", () => {
+    const w = pointedAtTheScout();
+    writeSlots(w, { "cc-smart-dev-kit-scout": ["claude-haiku-4-5-20251001", "omniroute:m"] });
+    expect(planOf(w).remove).toEqual([...RETIRED, ...PROVIDER_PATHS]);
+  });
+
+  test("the config after the move decides, not the file on disk (a dry run plans the same removal)", () => {
+    const w = pointedAtTheScout();
+    // On disk the scout still has its chain; the move will take it away.
+    const parsed = parseConfig({
+      version: 1,
+      backends: {
+        omniroute: { apiKey: "sk-test-000000000000", baseUrl: "http://127.0.0.1:18434" },
+      },
+      slots: {},
+    });
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(planOf(w).provider).not.toBeNull();
+    const plan = planOf(w, parsed.config);
+    expect(plan.provider).toBeNull();
+    expect(plan.remove).toEqual([...RETIRED, ...PROVIDER_PATHS]);
+  });
+
+  test("a provider key the person changed: all five stay, one line names it", () => {
+    const w = pointedAtTheScout();
+    const edited = readJson(w.paths.claudeMemSettingsFile);
+    edited.CLAUDE_MEM_OPENAI_COMPAT_MODEL = "by-hand";
+    writeFileSync(w.paths.claudeMemSettingsFile, JSON.stringify(edited, null, 2));
+    writeSlots(w, {});
+    const plan = planOf(w);
+    expect(plan.remove).toEqual(RETIRED);
+    expect(plan.notes).toEqual([
+      '  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "by-hand" in ~/.claude-mem/settings.json (your choice)',
+    ]);
+  });
+
+  test("claude-mem's own defaults, set by nobody: nothing to take out, nothing said", () => {
+    const w = machine({ settings: SEEDED });
+    writeSlots(w, {});
+    const plan = planOf(w);
+    expect(plan.remove).toEqual(RETIRED);
+    expect(plan.notes).toEqual([]);
+  });
+
+  test("the person's own provider, none of it setup's: nothing to take out, so nothing is said on every run", () => {
+    const w = machine({
+      settings: {
+        ...SEEDED,
+        CLAUDE_MEM_PROVIDER: "gemini",
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL: "by-hand",
+      },
+    });
+    writeSlots(w, {});
+    const plan = planOf(w);
+    expect(plan.remove).toEqual(RETIRED);
+    expect(plan.notes).toEqual([]);
+  });
+
+  test("no gateway.json at all: the old note stays (the gateway is not set up), nothing is taken out", () => {
+    const w = pointedAtTheScout();
+    rmSync(w.paths.gatewayConfigFile);
+    const plan = planOf(w);
+    expect(plan.remove).toEqual(RETIRED);
+    expect(plan.notes[0]).toStartWith("! claude-mem still uses the backend");
   });
 });

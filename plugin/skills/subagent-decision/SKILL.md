@@ -74,8 +74,9 @@ work yourself. Treat it as a smart colleague who just walked in:
 
 ### Briefing an affordable model
 
-An affordable slot (`haiku`, `sonnet` while the gateway is on) reasons less than Claude, so carry
-the judgment for it in the brief:
+An affordable slot (one the person gave a chain of their own, so a `haiku` or `sonnet` request
+is answered by a gateway model, not by Claude) reasons less than Claude, so carry the judgment
+for it in the brief:
 
 - **One job, small scope.** A big phase becomes two or three agents, each with one clear
   outcome — never "figure out the codebase".

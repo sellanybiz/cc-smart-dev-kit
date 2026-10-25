@@ -24,7 +24,7 @@
  * `<backend>:<model>` works as a model name too, for a one-off try):
  *   - `claude-sonnet-5-5`  → Anthropic, the body's model set to that id;
  *   - `<backend>:<model>`  → that backend (its own API key), e.g.
- *                            `omniroute:glm-5.3-flash`. The model part may hold `:` or
+ *                            `omniroute:<model>`. The model part may hold `:` or
  *                            `/` itself: only the first `:` splits.
  *
  * The functions here are pure, so they can be tested. The router is `router.ts`; the
@@ -449,15 +449,6 @@ export function familySlotFor(model: unknown): null | { model: string; slot: str
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-
-/**
- * The slots whose fallback switch is off until the person turns it on: the model slots,
- * whose next targets stand in for a premium model. Every other slot (scout, worker, the
- * judge, a machine's own) starts with it on. The judge is on so that, with no judge chain of
- * the person's own, the worker's tested targets answer while Claude cannot (D44); `gateway
- * fallback judge off` keeps Claude alone.
- */
-export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS)];
 
 /**
  * The targets a slot's request may use: the whole chain while its fallback switch is on, its

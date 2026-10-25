@@ -60,6 +60,12 @@ export function routerBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * The only host Claude Code allows Remote Control with, when `ANTHROPIC_BASE_URL` is set
+ * (`docs/claude-code-contract.md` § The gateway). Read from Anthropic's own address, never typed.
+ */
+export const REMOTE_CONTROL_HOST: string = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
+
 /** A base URL as it is compared: a trailing slash is the same address (`…/`). */
 export function normalizedBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
@@ -401,6 +407,30 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
     switched:
       address.kind === "write" && result.changes.some((change) => change.after !== undefined),
   };
+}
+
+/**
+ * Which of the `foreign` keys `turnOff` returned still send a session away from Anthropic. A key
+ * of the person's own that already holds Anthropic's address sends every session exactly where
+ * `off` would: it routes nothing, and "the gateway is not all off" would be untrue
+ * (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
+ * `ENABLE_TOOL_SEARCH` routes nothing either, and many people set it themselves. One home:
+ * `gateway off` and the setup step that turns the gateway off both ask it.
+ */
+export function foreignRouting(
+  foreign: readonly string[],
+  settingsFile: string,
+): { routing: string[]; ownAddressRoutes: boolean } {
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter(
+    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+  );
+  return { routing, ownAddressRoutes };
 }
 
 /**
