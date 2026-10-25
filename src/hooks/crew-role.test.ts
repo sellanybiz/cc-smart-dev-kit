@@ -1202,6 +1202,60 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     );
   });
 
+  test("the name's record cannot be written (TMPDIR is a file): the person's event is recorded, the prompt goes on, one line says why", async () => {
+    // `titleToSet` writes the name it sets into `<TMPDIR>/cc-smart-dev-kit-session-names` before
+    // the event is appended. A throw there crashed the hook; `onCrash` is silent on
+    // UserPromptSubmit, so the lead never heard the person and the session never read that its
+    // brief was overruled.
+    const world = await crewWorld();
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(world.repo, "Stop after the guard.", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
+      { ...world.env, TMPDIR: notAFolder },
+    );
+    expect(result.stdout).toBe(
+      addContext(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+      ).stdout,
+    );
+    // The name is not set: the kit cannot remember it set it, and setting it every turn would
+    // override a `/rename` the person gives later.
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
+    );
+    const events = personEvents(world.stateDir, world.repo);
+    expect(events.map((event) => event.text)).toEqual(["Stop after the guard."]);
+  });
+
+  test("the name's record cannot be written, on a turn that is not the person's: silent, and no title", async () => {
+    const world = await crewWorld();
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(
+          world.repo,
+          '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+          SESSION_UUID,
+        ),
+        session_title: "Fix the login page",
+      },
+      { ...world.env, TMPDIR: notAFolder },
+    );
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
+    );
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
   test("the lead's own delivery, with a title that is not the record's: the name alone", async () => {
     // A crew session its lead drives gets no person prompt at all, so the name comes back on
     // the turns that are the lead's too — one answer, the title and nothing else.

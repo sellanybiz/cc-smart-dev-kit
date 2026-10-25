@@ -27,13 +27,13 @@
  * The tier is read the Agent guard's way (`resolveLaunchModel`: the family name, a Claude id,
  * the fable slot's chain while the gateway is on, `ANTHROPIC_DEFAULT_FABLE_MODEL`), so there is
  * no second list of what counts as Fable — and a `fable` tier a backend answers warns the same,
- * naming the model that answers it.
+ * naming the model that answers it. The gateway is the session's own (`sessionGatewayOf`: its
+ * `ANTHROPIC_BASE_URL`, a profile's chains), as in the Agent guard — never the machine's file.
  *
  * **What it costs.** A session that was told stops at the mark. A session on anything else pays
- * one `existsSync` and — at Stop — the transcript's tail; the gateway config and Claude Code's
- * settings (is the gateway on?) are read only when the model text could be Fable at all
- * (`couldBeFable`). A
- * session nobody watches (`claude -p`) is told nothing and keeps no mark.
+ * one `existsSync` and — at Stop — the transcript's tail; the gateway config (the session's
+ * address is in its environment) is read only when the model text could be Fable at all
+ * (`couldBeFable`). A session nobody watches (`claude -p`) is told nothing and keeps no mark.
  *
  * **Once a session**, the mark is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`,
  * beside the session's own name files (`namesDir`, one home), so the OS clears it. It is made
@@ -48,7 +48,7 @@ import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { claudeFamily, familyEnv, MODEL_SLOTS, withoutContextSuffix } from "../gateway/targets";
 import { type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
-import { gatewayFactsOf, sessionModelOf } from "./agent-guard";
+import { sessionGatewayOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
 import type { Env } from "./run";
 import { isSessionId, namesDir } from "./session-name";
@@ -116,7 +116,9 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   else if (event === "PostModelSwitch") model = stringField(input.to_model);
   else model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env)) return SILENT;
-  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
+  // The gateway THIS session runs on (its own `ANTHROPIC_BASE_URL`, a profile's chains), never
+  // the machine's file: a project set to `off` is on the login, a profile has its own chains.
+  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
   if (real.tier !== "fable") return SILENT;
   if (!firstTime(mark)) return SILENT;
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));

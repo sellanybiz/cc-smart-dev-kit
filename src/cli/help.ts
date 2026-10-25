@@ -248,9 +248,8 @@ Print the version.`;
 
 const ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
 
-Waits for a click on the desktop alert, then brings the alert's window back. The notify and
-stop-failure hooks start it, detached, through the launcher. It is not a command to run by
-hand.`;
+Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
+starts it, detached, through the launcher. It is not a command to run by hand.`;
 
 /**
  * Every command, in the order the top-level help shows them. A command the dispatcher knows and

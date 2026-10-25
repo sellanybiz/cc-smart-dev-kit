@@ -6622,8 +6622,34 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+function checkoutFailure(error) {
+  if (error instanceof GitTimedOutError)
+    return GIT_TIMED_OUT;
+  return error instanceof Error ? error.message : String(error);
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -6631,21 +6657,25 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       return {
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
-        stderr: result.stderr.toString()
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
       };
     } catch (error) {
       throw gitNotFound(error);
     }
   };
 }
-function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const child = Bun.spawn(["git", ...args], {
         cwd,
@@ -6653,7 +6683,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       const [stdout, stderr, code] = await Promise.all([
@@ -6661,7 +6691,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         new Response(child.stderr).text(),
         child.exited
       ]);
-      return { ok: code === 0, stdout, stderr };
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
     } catch (error) {
       throw gitNotFound(error);
     }
@@ -6680,6 +6710,8 @@ function requireGitVersion(git) {
   requireGitVersionText(git(["--version"]).stdout);
 }
 function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -6719,7 +6751,7 @@ function locateCheckout(cwd, options = {}) {
   if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -6727,6 +6759,8 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -6765,17 +6799,26 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function refNotKnown(where, ref) {
+function gitTimedOut(where) {
+  return { found: false, where, why: GIT_TIMED_OUT };
+}
+function refNotKnown(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return {
     found: false,
     where,
     why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
   };
 }
-function noCommittedFile(where, ref) {
+function noCommittedFile(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
-function unreadableCommitted(where) {
+function unreadableCommitted(where, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
 function committedOf(text, where, options) {
@@ -6788,25 +6831,25 @@ function committedOf(text, where, options) {
 function readCommittedConfig(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
     "--verify",
@@ -6814,10 +6857,10 @@ async function readCommittedConfigAsync(checkout, branch, options = {}) {
     `${commit.stdout.trim()}:${CONFIG_PATH}`
   ]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
@@ -9494,14 +9537,15 @@ function takeToldLine(context, repo) {
 
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
 var BUDGET_MARGIN_MS = 2000;
 var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env) {
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
   const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, GUARD_BUDGET_MS) : GUARD_BUDGET_MS;
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
 }
-function startBudget(env, now = Date.now) {
-  const budgetAt = now() + budgetMs(env);
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
@@ -10017,6 +10061,17 @@ function titleToSet(env, sessionId, wanted, current) {
     return null;
   rememberAppliedName(env, sessionId, wanted);
   return wanted === current ? null : wanted;
+}
+function titleToSetOrProblem(env, sessionId, wanted, current) {
+  try {
+    return { problem: null, title: titleToSet(env, sessionId, wanted, current) };
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      problem: `the session name could not be recorded (${why})`,
+      title: null
+    };
+  }
 }
 function recordedLead(context, sessionId) {
   try {
@@ -14892,8 +14947,16 @@ function roleCard(record, briefFile) {
   ].join(`
 `);
 }
+function problemLine(why) {
+  return `cc-smart-dev-kit crew-role: ${why}`;
+}
 function storeProblem(why) {
-  return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
+  return { stderr: problemLine(why) };
+}
+function withProblem(result, why) {
+  const line = problemLine(why);
+  return { ...result, stderr: result.stderr === undefined ? line : `${result.stderr}
+${line}` };
 }
 function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
@@ -14992,8 +15055,8 @@ async function stopAnswer(input, id, repo, paths) {
 function titleAnswer(input, record, env) {
   const sessionId = stringField(input.session_id);
   if (!isSessionId(sessionId))
-    return null;
-  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+    return { problem: null, title: null };
+  return titleToSetOrProblem(env, sessionId, record.name, stringField(input.session_title));
 }
 function titleOnly(title) {
   return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
@@ -15003,17 +15066,18 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   if (!found.ok)
     return found.result;
   const record = found.record;
-  const title = titleAnswer(input, record, env);
+  const { problem: nameProblem, title } = titleAnswer(input, record, env);
+  const said = (result) => nameProblem === null ? result : withProblem(result, nameProblem);
   const prompt = stringField(input.prompt);
   if (prompt === null)
-    return titleOnly(title);
+    return said(titleOnly(title));
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
   if (!isPersonPrompt(record, prompt, briefFile, nowMs))
-    return titleOnly(title);
+    return said(titleOnly(title));
   const line = personLine(prompt);
   if (line === "")
-    return titleOnly(title);
+    return said(titleOnly(title));
   try {
     await appendCrewEvent(paths.stateDir, repo, {
       crew: record.id,
@@ -15026,9 +15090,9 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   } catch (error) {
     const problem = storeProblem(reasonOf2(error));
     const only = titleOnly(title);
-    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
+    return said(only.stdout === undefined ? problem : { ...problem, stdout: only.stdout });
   }
-  return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
+  return said(title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title));
 }
 function taskListGate(input, id, repo, paths, env) {
   const listId = taskListId(env, stringField(input.session_id));
@@ -15148,7 +15212,7 @@ function fableSession(input, env, paths) {
     model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env))
     return SILENT;
-  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
+  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
   if (real.tier !== "fable")
     return SILENT;
   if (!firstTime(mark))
@@ -15555,6 +15619,11 @@ var INERT = new Set([
   "which"
 ]);
 var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
 function isKitWord(word) {
   return programName(word) === COMMAND || KIT_BUNDLE.test(word);
 }
@@ -15682,7 +15751,7 @@ function crewNeverRunOf(step) {
   const sub = words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : words[at + 1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
-function isWorkflowPropose(step) {
+function isWorkflowPropose(step, lineNamesKit) {
   const words = kitWordsOf(step);
   if (words === null)
     return false;
@@ -15690,7 +15759,11 @@ function isWorkflowPropose(step) {
   if (at === -1 || asksHelp(words.slice(at + 1)))
     return false;
   const sub = words[at + 1];
-  return sub === "propose" || sub === undefined || isComputedWord(sub);
+  if (sub === "propose")
+    return true;
+  if (sub !== undefined && !isComputedWord(sub))
+    return false;
+  return !step.computed || lineNamesKit;
 }
 function proposalOf(step, moved) {
   if (step.computed)
@@ -15819,12 +15892,13 @@ function readBash(command, dialect = "bash") {
   let workflowPropose = false;
   const proposals = [];
   const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
-    if (isWorkflowPropose(step)) {
+    if (isWorkflowPropose(step, lineNamesKit)) {
       workflowPropose = true;
       proposals.push(proposalOf(step, moved));
     }
@@ -15909,21 +15983,22 @@ function cannotTellProject(why) {
   return `${proposeActs(null)}
 ${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
 }
-function proposeQuestion(folder, context) {
+function proposeQuestion(folder, context, timeFor) {
   let checkout;
   let base;
   try {
-    checkout = locateCheckout(folder, { env: context.env });
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
     if (checkout === null)
       return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    return cannotTellProject(checkoutFailure(error));
   }
   const acts = proposeActs(base);
   try {
     const read = resolveGate(context.paths, checkout, base, {
       env: context.env,
+      timeFor,
       timeoutMs: GUARD_GIT_TIMEOUT_MS
     });
     if (!read.ok) {
@@ -15949,6 +16024,7 @@ ${COMMAND} cannot tell whether the push and the pull request are allowed: the wo
 }
 function judgeProposals(proposals, context) {
   const cwd = stringField(context.input.cwd);
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.startedAtMs);
   let question = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -15956,7 +16032,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve6(cwd, proposal.folder), context);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve6(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -16144,7 +16220,8 @@ function judgeCommandAnswer(input, context) {
   const verdict = judgeBash(readBash(command, inputDialect(input)), {
     env: context.env,
     input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   return verdict === null ? null : judgeAnswer(verdict);
 }
@@ -16161,7 +16238,8 @@ function jobRoute(context) {
   const verdict = judgeBash(reading, {
     env: context.env,
     input: context.input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   if (verdict !== null)
     return judgeAnswer(verdict);
@@ -16207,7 +16285,12 @@ function routeFacts(input, context) {
   if (command === null)
     return {};
   const reading = readBash(command, inputDialect(input));
-  const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
+  const verdict = judgeBash(reading, {
+    env: context.env,
+    input,
+    paths: context.paths,
+    startedAtMs: context.nowMs
+  });
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);
@@ -16851,7 +16934,7 @@ function notesLine(lines) {
   return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
 }
 function leadTitle(input, event, env, sessionId, name) {
-  return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
+  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
 }
 function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
@@ -16870,12 +16953,12 @@ function reminderFor(paths, env, sessionId, event) {
     return null;
   return read.state === "read" && read.files > 0 ? null : taskListReminder();
 }
-function answered(event, lines, title) {
+function answered(event, lines, name) {
   const text = lines.length === 0 ? null : lines.join(`
 `);
-  if (title === null)
-    return text === null ? SILENT : addContext(event, text);
-  return addContextAndTitle(event, text, title);
+  const { problem, title } = name;
+  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
+  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;
@@ -17992,7 +18075,6 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -18092,7 +18174,7 @@ function judgeShell(input, paths, platform, crew) {
   const found = { denials: new Set, asks: new Set };
   const ctx = {
     cwd: stringField(input.cwd),
-    namesKit: KIT_WORD.test(command),
+    namesKit: namesKit(command),
     paths,
     platform,
     text: command

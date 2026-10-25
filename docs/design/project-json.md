@@ -47,7 +47,13 @@ accepts: a project file that sets a retired field fails closed until `project in
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
   worktree. A worktree's own `cc-smart-dev-kit.json` wins; else the main checkout's is used. A moved
-  or deleted main checkout, and git older than 2.31, each give a clear error.
+  or deleted main checkout, and git older than 2.31, each give a clear error. **So does a git
+  that does not answer** (5 s a call): `GitTimedOutError`, never "outside git", because a hung
+  git says nothing about the folder. Its message is one plain line with its fix ("git did not
+  answer in time: run `git status` in this folder; …"). Every command that finds the checkout
+  prints it that way and no stack (`project init`, `workflow`, `worktrees`, `crew`); `doctor`
+  says the reason alone and prints the fix on its own line; a guard's question names the
+  reason alone (`checkoutFailure`, `src/project/resolve.ts`).
 - **`requires` is checked before the strict parse.** A project may use a field newer
   than a user's plugin; that user is told to update, not that the field is unknown.
 - **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay

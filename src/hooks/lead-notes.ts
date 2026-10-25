@@ -3,7 +3,7 @@
  * (`src/crew/store.ts` › `readNotesState`). A lead hears its crew through `crew watch`, but a
  * monitor line can land while the lead is busy, and a compaction takes the lead's context with it.
  * So each turn the lead starts (UserPromptSubmit, which also fires on a hand-back turn, and
- * SessionStart: a start, a resume after a restart, a clear, a compaction) this hook reads the
+ * SessionStart: a start, a resume after a restart, a compaction) this hook reads the
  * crew store's events log from a per-lead cursor and adds the newest line it has not said yet —
  * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
@@ -23,10 +23,13 @@
  * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
- * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume, a clear or
- *   a compaction, each of which builds the lead's context again — the answer also holds the one
- *   line saying the crew builds the work. Nothing at a prompt and nothing on an edit: the owner
- *   chose words, not a guard. An ordinary session and a crew session hear neither line.
+ * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume or a
+ *   compaction, each of which builds the lead's context again — the answer also holds the one
+ *   line saying the crew builds the work. Those are the three sources `hooks.json` wires the
+ *   hook for (`startup|resume|compact`, kept by `entries.test.ts`); a `clear` is a new
+ *   conversation, which `crew-role` reads the same way. Nothing at a prompt and nothing on an
+ *   edit: the owner chose words, not a guard. An ordinary session and a crew session hear
+ *   neither line.
  *
  * The review mark on a report line is judged with the built-in review agents
  * (`workflowDefaults.reviewAgents`): this hook reads no project file, so its answer is the same
@@ -55,7 +58,7 @@ import {
   stringField,
 } from "./io";
 import type { Env } from "./run";
-import { isSessionId, titleToSet } from "./session-name";
+import { isSessionId, titleToSetOrProblem } from "./session-name";
 
 /** The one note: the newest line, and how many older ones this turn did not print. */
 export function notesLine(lines: readonly string[]): string | null {
@@ -68,6 +71,8 @@ export function notesLine(lines: readonly string[]): string | null {
 /**
  * The lead's name to set at this turn, or null: a prompt only, and only through `titleToSet`
  * (`session-name.ts`), so a person's own `/rename` stays and the same name is never set twice.
+ * A name whose record cannot be written is not set, and the turn goes on with its news:
+ * `problem` is the line for stderr (`titleToSetOrProblem`).
  */
 function leadTitle(
   input: HookInput,
@@ -75,14 +80,14 @@ function leadTitle(
   env: Env,
   sessionId: string,
   name: string,
-): null | string {
+): { problem: null | string; title: null | string } {
   return event === "UserPromptSubmit"
-    ? titleToSet(env, sessionId, name, stringField(input.session_title))
-    : null;
+    ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title))
+    : { problem: null, title: null };
 }
 
 /**
- * The line a lead gets at a start, a resume, a clear and a compaction (D61): the lead skill's
+ * The line a lead gets at a start, a resume and a compaction (D61): the lead skill's
  * "Your crew builds" in one line. A lead plans, briefs, starts, answers and merges; the building
  * goes to its crew sessions, because the lead's context is re-read on every turn and every file
  * it reads or writes costs on every later one. Words only: never at a prompt, never on an edit,
@@ -115,11 +120,26 @@ function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string
   return read.state === "read" && read.files > 0 ? null : taskListReminder();
 }
 
-/** The answer for this turn: its lines for Claude, the lead's name, both, or silence. */
-function answered(event: string, lines: readonly string[], title: null | string): HookResult {
+/**
+ * The answer for this turn: its lines for Claude, the lead's name, both, or silence — and one
+ * line on stderr when the name's record could not be written (the lines still go out).
+ */
+function answered(
+  event: string,
+  lines: readonly string[],
+  name: { problem: null | string; title: null | string },
+): HookResult {
   const text = lines.length === 0 ? null : lines.join("\n");
-  if (title === null) return text === null ? SILENT : addContext(event, text);
-  return addContextAndTitle(event, text, title);
+  const { problem, title } = name;
+  const result =
+    title === null
+      ? text === null
+        ? SILENT
+        : addContext(event, text)
+      : addContextAndTitle(event, text, title);
+  return problem === null
+    ? result
+    : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 
 /**

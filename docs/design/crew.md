@@ -184,13 +184,21 @@ puts `record.name` back on the title when the title says something else, through
 It is the fix for a session 1.1.1 renamed after its task and 1.1.2 left renamed, which lost the
 address its lead, `crew answer` and the message guard reach it by. A session id no naming record
 can be made for (not a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
+**A name whose record cannot be written is not set, and the turn goes on.** `titleToSet` writes
+its record into the temp folder before it answers, and that write can fail (a `TMPDIR` that is
+not a folder, a full disk). `titleToSetOrProblem` then sets no title — setting a name the kit
+cannot remember setting would set it again every turn and override a `/rename` — and returns the
+reason, which `crew-role` and `lead-notes` say as one stderr line beside the rest of their
+answer: the person's `person` event and prompt context, a lead's news. The throw it replaces
+crashed `crew-role` before the event was written (its `onCrash` is silent on a prompt) and
+lost a lead's news after the cursor had passed it.
 
 **The lead's role** (D61): a lead plans, writes the briefs, starts the phases, answers the
 questions, merges each branch with one full check after it, keeps the plan file true and talks to
 the person. The building — code, tests, research across many files, long debugging — goes to a
 crew session, and the reading a brief needs to a scout subagent. The rule is **words only**: the
 lead skill's "Your crew builds" section, and one line in the lead's start note from this hook at
-a start, a resume, a clear and a compaction — never at a prompt, never on an edit, and no block.
+a start, a resume and a compaction — never at a prompt, never on an edit, and no block.
 Why: the lead's context is re-read on the premium model every turn, so every file it reads or
 writes costs on every later turn, while the crew session that does the same work ends.
 
@@ -853,5 +861,5 @@ each is silent unless its own session is the one it is about, and neither reads
   person's asks and the lead's open work on the list, and keep it true as they move — said before
   the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
   (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
-  turn — at a start, a resume, a clear and a compaction, never at a prompt and never on an edit.
+  turn — at a start, a resume and a compaction, never at a prompt and never on an edit.
   **Never a block**: a lead is reminded, never held.

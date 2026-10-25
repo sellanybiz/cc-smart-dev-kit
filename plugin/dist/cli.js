@@ -12994,8 +12994,34 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+function checkoutFailure(error) {
+  if (error instanceof GitTimedOutError)
+    return GIT_TIMED_OUT;
+  return error instanceof Error ? error.message : String(error);
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -13003,21 +13029,25 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       return {
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
-        stderr: result.stderr.toString()
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
       };
     } catch (error) {
       throw gitNotFound(error);
     }
   };
 }
-function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const child = Bun.spawn(["git", ...args], {
         cwd,
@@ -13025,7 +13055,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       const [stdout, stderr, code] = await Promise.all([
@@ -13033,7 +13063,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         new Response(child.stderr).text(),
         child.exited
       ]);
-      return { ok: code === 0, stdout, stderr };
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
     } catch (error) {
       throw gitNotFound(error);
     }
@@ -13055,6 +13085,8 @@ async function requireGitVersionAsync(git) {
   requireGitVersionText((await git(["--version"])).stdout);
 }
 function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -13097,7 +13129,7 @@ function locateCheckout(cwd, options = {}) {
   if (!existsSync16(cwd) || !statSync8(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -13105,6 +13137,8 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -13125,7 +13159,7 @@ async function locateCheckoutAsync(cwd, options = {}) {
   if (!existsSync16(cwd) || !statSync8(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = await git([
     "rev-parse",
     "--path-format=absolute",
@@ -13133,6 +13167,8 @@ async function locateCheckoutAsync(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     await requireGitVersionAsync(git);
@@ -13171,17 +13207,26 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function refNotKnown(where, ref) {
+function gitTimedOut(where) {
+  return { found: false, where, why: GIT_TIMED_OUT };
+}
+function refNotKnown(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return {
     found: false,
     where,
     why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
   };
 }
-function noCommittedFile(where, ref) {
+function noCommittedFile(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
-function unreadableCommitted(where) {
+function unreadableCommitted(where, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
 function committedOf(text, where, options) {
@@ -13194,25 +13239,25 @@ function committedOf(text, where, options) {
 function readCommittedConfig(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
     "--verify",
@@ -13220,10 +13265,10 @@ async function readCommittedConfigAsync(checkout, branch, options = {}) {
     `${commit.stdout.trim()}:${CONFIG_PATH}`
   ]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 function resolveProject(cwd, options = {}) {
@@ -16856,6 +16901,17 @@ function titleToSet(env, sessionId, wanted, current) {
     return null;
   rememberAppliedName(env, sessionId, wanted);
   return wanted === current ? null : wanted;
+}
+function titleToSetOrProblem(env, sessionId, wanted, current) {
+  try {
+    return { problem: null, title: titleToSet(env, sessionId, wanted, current) };
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      problem: `the session name could not be recorded (${why})`,
+      title: null
+    };
+  }
 }
 function recordedLead(context, sessionId) {
   try {
@@ -31783,85 +31839,22 @@ var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function slotOf(model) {
-  const found = familySlotFor(model);
-  const family = claudeFamily(model);
-  if (found === null || family === null)
-    return null;
-  return { family, key: found.slot, name: found.slot.slice(SLOT_PREFIX.length) };
+function slotKeyOf(model) {
+  return familySlotFor(model)?.slot ?? null;
 }
-function standInChains(config, own) {
-  const first = ["sonnet", "haiku"].map(familySlotKey).filter((key) => key !== null);
-  const keys = [...new Set([...first, ...Object.keys(config.slots)])];
-  return keys.filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key)).map((key) => config.slots[key] ?? []);
-}
-function backendTargets(chains) {
-  return [
-    ...new Set(chains.filter((text) => {
-      const parsed = parseTarget(text);
-      return "target" in parsed && parsed.target.kind === "backend";
-    }))
-  ];
-}
-function suggestedTargets(config, first, slot, claim) {
-  const chains = standInChains(config, slot.key).flat();
-  const backends = backendTargets(chains);
-  if (backends.length === 0)
-    return null;
-  const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
-  const otherClaude = modelOnly ? chains.find((text) => {
-    const family = claudeFamily(text);
-    return text.startsWith("claude-") && family !== null && family !== slot.family;
-  }) : undefined;
-  return [...new Set([first, ...otherClaude === undefined ? [] : [otherClaude], ...backends])];
-}
-function shortName(target) {
-  return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
-}
-function typed(commands) {
-  return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
-}
-function offerFor(config, slot, model, claim, profile) {
-  const chain = config.slots[slot.key] ?? [];
-  const fallback = chainCommand(profile, ["fallback", slot.name, "on"]);
+function slotFact(config, slot) {
+  const chain = config.slots[slot] ?? [];
   const head = chain[0];
   if (head !== undefined) {
     const parsed = parseTarget(head);
     if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-      return {
-        kind: "none",
-        words: `${slot.key} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
+      return `${slot} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`;
     }
   }
-  if (chain.length > 1) {
-    if (fallbackOn(config, slot.key)) {
-      return {
-        kind: "none",
-        words: `The ${slot.key} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
-    }
-    return { commands: [fallback], kind: "commands", targets: chain };
+  if (chain.length > 1 && fallbackOn(config, slot)) {
+    return `The ${slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`;
   }
-  const targets = suggestedTargets(config, head ?? model, slot, claim);
-  if (targets === null) {
-    const shown = typed([
-      chainCommand(profile, ["slot", slot.name, `${head ?? model},<backend>:<model>`]),
-      fallback
-    ]);
-    return {
-      kind: "no-target",
-      words: `To use a more affordable model until it resets: ${shown} (${COMMAND} gateway models lists the models).`
-    };
-  }
-  return {
-    commands: [chainCommand(profile, ["slot", slot.name, targets.join(",")]), fallback],
-    kind: "commands",
-    targets
-  };
-}
-function chainCommand(profile, words) {
-  return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
+  return null;
 }
 function breakerOpening(input, ctx) {
   if (!isJsonObject14(input) || input.error !== "rate_limit")
@@ -31895,53 +31888,24 @@ function planAlert(input, ctx) {
   if (!ctx.gatewaySetUp)
     return null;
   const own = ctx.sessionModel === null ? undefined : limits.find(([model]) => model === withoutContextSuffix(ctx.sessionModel ?? ""));
-  const slotted = limits.filter((entry) => slotOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+  const slotted = limits.filter((entry) => slotKeyOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
   const chosen = own ?? slotted;
   const model = chosen?.[0] ?? null;
   const record = chosen?.[1] ?? null;
   const reset = record?.resetsAt !== null && record?.resetsAt !== undefined ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}` : /resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known";
-  const title = "Claude usage limit reached";
   const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
-  if (ctx.config === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: ${COMMAND} doctor says why.`,
-      title
-    };
-  }
-  const slot = model === null ? null : slotOf(model);
-  if (slot === null || model === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset.`,
-      title
-    };
-  }
-  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null, ctx.profile);
-  if (offer.kind !== "commands")
-    return { action: null, body: `${head} ${offer.words}`, title };
-  const shown = typed(offer.commands);
-  if (!ctx.gatewayOn) {
-    return {
-      action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
-      title
-    };
-  }
+  const slot = model === null ? null : slotKeyOf(model);
+  const fact = slot === null || ctx.config === null || !ctx.gatewayOn ? null : slotFact(ctx.config, slot);
   return {
-    action: {
-      commands: offer.commands,
-      label: `Use ${shortName(offer.targets[1] ?? "")} until it resets`
-    },
-    body: `${head} A more affordable model until it resets: ${shown} (Claude takes over again by itself once it answers).`,
-    title
+    body: `${head} ${fact ?? "Claude Code continues by itself after the reset."}`,
+    title: "Claude usage limit reached"
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject14(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync43(paths.gatewayConfigFile);
-  const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
     state = parseLimitState(readFileSync48(paths.gatewayStateFile, "utf8"));
@@ -31965,7 +31929,6 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     gatewayOn,
     gatewaySetUp,
     nowMs,
-    profile,
     sessionModel,
     state,
     watchdogOn
@@ -32012,7 +31975,6 @@ var spawnRunner = ({ argv, timeoutMs }) => {
     return { exitCode: null, stdout: "", timedOut: false };
   }
 };
-var ACTION_WAIT_MS = 30 * 60000;
 function parseAlert(text) {
   let raw;
   try {
@@ -32023,20 +31985,7 @@ function parseAlert(text) {
   if (!isJsonObject14(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
     return null;
   }
-  const action = raw.action;
-  if (action === null)
-    return { action: null, body: raw.body, title: raw.title };
-  if (!isJsonObject14(action) || typeof action.label !== "string")
-    return null;
-  const commands = action.commands;
-  if (!Array.isArray(commands) || commands.length === 0 || !commands.every((args) => Array.isArray(args) && args.length > 0 && args.every((arg) => typeof arg === "string"))) {
-    return null;
-  }
-  return {
-    action: { commands, label: action.label },
-    body: raw.body,
-    title: raw.title
-  };
+  return { body: raw.body, title: raw.title };
 }
 function appleString(text) {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
@@ -32064,37 +32013,7 @@ function plainNotification(alert, platform) {
   }
   return null;
 }
-function runAlert(alert, platform, launcher, run) {
-  if (platform === "linux" && alert.action !== null) {
-    const asked = run({
-      argv: [
-        "notify-send",
-        "--app-name=cc-smart-dev-kit",
-        `--action=use=${alert.action.label}`,
-        "--action=wait=Wait",
-        alert.title,
-        alert.body
-      ],
-      timeoutMs: ACTION_WAIT_MS
-    });
-    if (asked.timedOut)
-      return "no answer";
-    if (asked.exitCode === 0) {
-      if (asked.stdout.trim() !== "use")
-        return "waited";
-      const done = alert.action.commands.every((args) => run({ argv: [launcher, ...args], timeoutMs: 60000 }).exitCode === 0);
-      run({
-        argv: [
-          "notify-send",
-          "--app-name=cc-smart-dev-kit",
-          done ? "Fallback on" : "Fallback not turned on",
-          done ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.` : `Run it yourself to see why: ${typed(alert.action.commands)}`
-        ],
-        timeoutMs: 1e4
-      });
-      return done ? "used" : "use failed";
-    }
-  }
+function runAlert(alert, platform, run) {
   const plain = plainNotification(alert, platform);
   if (plain === null)
     return "no notifier";
@@ -40915,9 +40834,8 @@ var VERSION_HELP = `Usage: ${COMMAND} version
 Print the version.`;
 var ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
 
-Waits for a click on the desktop alert, then brings the alert's window back. The notify and
-stop-failure hooks start it, detached, through the launcher. It is not a command to run by
-hand.`;
+Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
+starts it, detached, through the launcher. It is not a command to run by hand.`;
 var CLAUDE_MEM_HELP = `Usage: ${COMMAND} claude-mem [status]
        ${COMMAND} claude-mem route claude|<backend>:<model>
        ${COMMAND} claude-mem key [--gateway]
@@ -43830,14 +43748,15 @@ import { join as join76 } from "path";
 
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
 var BUDGET_MARGIN_MS = 2000;
 var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env) {
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
   const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, GUARD_BUDGET_MS) : GUARD_BUDGET_MS;
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
 }
-function startBudget(env, now = Date.now) {
-  const budgetAt = now() + budgetMs(env);
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
@@ -45450,8 +45369,16 @@ function roleCard(record, briefFile) {
   ].join(`
 `);
 }
+function problemLine(why) {
+  return `cc-smart-dev-kit crew-role: ${why}`;
+}
 function storeProblem(why) {
-  return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
+  return { stderr: problemLine(why) };
+}
+function withProblem(result, why) {
+  const line = problemLine(why);
+  return { ...result, stderr: result.stderr === undefined ? line : `${result.stderr}
+${line}` };
 }
 function reasonOf6(error) {
   return error instanceof Error ? error.message : String(error);
@@ -45550,8 +45477,8 @@ async function stopAnswer(input, id, repo, paths) {
 function titleAnswer(input, record, env) {
   const sessionId = stringField(input.session_id);
   if (!isSessionId(sessionId))
-    return null;
-  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+    return { problem: null, title: null };
+  return titleToSetOrProblem(env, sessionId, record.name, stringField(input.session_title));
 }
 function titleOnly(title) {
   return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
@@ -45561,17 +45488,18 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   if (!found.ok)
     return found.result;
   const record = found.record;
-  const title = titleAnswer(input, record, env);
+  const { problem: nameProblem, title } = titleAnswer(input, record, env);
+  const said = (result) => nameProblem === null ? result : withProblem(result, nameProblem);
   const prompt2 = stringField(input.prompt);
   if (prompt2 === null)
-    return titleOnly(title);
+    return said(titleOnly(title));
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
   if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
-    return titleOnly(title);
+    return said(titleOnly(title));
   const line = personLine(prompt2);
   if (line === "")
-    return titleOnly(title);
+    return said(titleOnly(title));
   try {
     await appendCrewEvent(paths.stateDir, repo, {
       crew: record.id,
@@ -45584,9 +45512,9 @@ async function personPromptAnswer(input, id, repo, paths, env, options) {
   } catch (error) {
     const problem = storeProblem(reasonOf6(error));
     const only = titleOnly(title);
-    return only.stdout === undefined ? problem : { ...problem, stdout: only.stdout };
+    return said(only.stdout === undefined ? problem : { ...problem, stdout: only.stdout });
   }
-  return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
+  return said(title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title));
 }
 function taskListGate(input, id, repo, paths, env) {
   const listId = taskListId(env, stringField(input.session_id));
@@ -45706,7 +45634,7 @@ function fableSession(input, env, paths) {
     model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env))
     return SILENT;
-  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
+  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
   if (real.tier !== "fable")
     return SILENT;
   if (!firstTime(mark))
@@ -45783,6 +45711,11 @@ var INERT = new Set([
   "which"
 ]);
 var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
 function isKitWord(word) {
   return programName(word) === COMMAND || KIT_BUNDLE.test(word);
 }
@@ -45910,7 +45843,7 @@ function crewNeverRunOf(step) {
   const sub = words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : words[at + 1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
-function isWorkflowPropose(step) {
+function isWorkflowPropose(step, lineNamesKit) {
   const words = kitWordsOf(step);
   if (words === null)
     return false;
@@ -45918,7 +45851,11 @@ function isWorkflowPropose(step) {
   if (at === -1 || asksHelp(words.slice(at + 1)))
     return false;
   const sub = words[at + 1];
-  return sub === "propose" || sub === undefined || isComputedWord(sub);
+  if (sub === "propose")
+    return true;
+  if (sub !== undefined && !isComputedWord(sub))
+    return false;
+  return !step.computed || lineNamesKit;
 }
 function proposalOf(step, moved) {
   if (step.computed)
@@ -46047,12 +45984,13 @@ function readBash(command, dialect = "bash") {
   let workflowPropose = false;
   const proposals = [];
   const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null)
       crewNeverRuns.push(never);
-    if (isWorkflowPropose(step)) {
+    if (isWorkflowPropose(step, lineNamesKit)) {
       workflowPropose = true;
       proposals.push(proposalOf(step, moved));
     }
@@ -46137,21 +46075,22 @@ function cannotTellProject(why) {
   return `${proposeActs(null)}
 ${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
 }
-function proposeQuestion(folder, context) {
+function proposeQuestion(folder, context, timeFor) {
   let checkout;
   let base;
   try {
-    checkout = locateCheckout(folder, { env: context.env });
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
     if (checkout === null)
       return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    return cannotTellProject(checkoutFailure(error));
   }
   const acts = proposeActs(base);
   try {
     const read = resolveGate(context.paths, checkout, base, {
       env: context.env,
+      timeFor,
       timeoutMs: GUARD_GIT_TIMEOUT_MS
     });
     if (!read.ok) {
@@ -46177,6 +46116,7 @@ ${COMMAND} cannot tell whether the push and the pull request are allowed: the wo
 }
 function judgeProposals(proposals, context) {
   const cwd = stringField(context.input.cwd);
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.startedAtMs);
   let question = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -46184,7 +46124,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve14(cwd, proposal.folder), context);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve14(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -46372,7 +46312,8 @@ function judgeCommandAnswer(input, context) {
   const verdict = judgeBash(readBash(command, inputDialect(input)), {
     env: context.env,
     input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   return verdict === null ? null : judgeAnswer(verdict);
 }
@@ -46389,7 +46330,8 @@ function jobRoute(context) {
   const verdict = judgeBash(reading, {
     env: context.env,
     input: context.input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   if (verdict !== null)
     return judgeAnswer(verdict);
@@ -46435,7 +46377,12 @@ function routeFacts(input, context) {
   if (command === null)
     return {};
   const reading = readBash(command, inputDialect(input));
-  const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
+  const verdict = judgeBash(reading, {
+    env: context.env,
+    input,
+    paths: context.paths,
+    startedAtMs: context.nowMs
+  });
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);
@@ -46463,7 +46410,7 @@ function notesLine(lines) {
   return more === 0 ? newest : `${newest} (and ${more} more\u2026)`;
 }
 function leadTitle(input, event, env, sessionId, name) {
-  return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
+  return event === "UserPromptSubmit" ? titleToSetOrProblem(env, sessionId, name, stringField(input.session_title)) : { problem: null, title: null };
 }
 function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
@@ -46482,12 +46429,12 @@ function reminderFor(paths, env, sessionId, event) {
     return null;
   return read.state === "read" && read.files > 0 ? null : taskListReminder();
 }
-function answered(event, lines, title) {
+function answered(event, lines, name) {
   const text = lines.length === 0 ? null : lines.join(`
 `);
-  if (title === null)
-    return text === null ? SILENT : addContext(event, text);
-  return addContextAndTitle(event, text, title);
+  const { problem, title } = name;
+  const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
+  return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 function leadNotesAnswer(input, event, paths, repo, env) {
   const sessionId = input.session_id;
@@ -47273,7 +47220,6 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -47373,7 +47319,7 @@ function judgeShell(input, paths, platform, crew) {
   const found = { denials: new Set, asks: new Set };
   const ctx = {
     cwd: stringField(input.cwd),
-    namesKit: KIT_WORD.test(command),
+    namesKit: namesKit(command),
     paths,
     platform,
     text: command
@@ -48197,7 +48143,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   try {
     checkout = existsSync71(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
-    return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
+    return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
   if (checkout === null)
     return [];
@@ -51203,7 +51149,7 @@ function statusTasks(input) {
   }
   return out;
 }
-function slotOf2(model) {
+function slotOf(model) {
   const found = familySlotFor(model);
   if (found === null)
     return null;
@@ -51211,7 +51157,7 @@ function slotOf2(model) {
   return found.slot.startsWith(prefix) ? found.slot.slice(prefix.length) : found.slot;
 }
 function rowContent(task, columns = DEFAULT_COLUMNS) {
-  const slot = slotOf2(task.model) ?? "?";
+  const slot = slotOf(task.model) ?? "?";
   const model = task.model ?? "model not resolved yet";
   const effort = task.effort ?? "default effort";
   const route = `${slot} \u2192 ${model} \u2192 ${effort}`;
@@ -51720,7 +51666,7 @@ function notifyHook(input, event, deps) {
   if (!here.alerts.events.value.includes(alert.moment)) {
     if (event === "PreToolUse")
       forget(mark);
-    return withProblem(SILENT, here.problem);
+    return withProblem2(SILENT, here.problem);
   }
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
   const type = typeof input.notification_type === "string" ? input.notification_type : "";
@@ -51731,16 +51677,16 @@ function notifyHook(input, event, deps) {
     if (warpShowsIt(event, input)) {
       if (argv !== null)
         playSound(alert, deps, config, here.alerts);
-      return withProblem(SILENT, here.problem);
+      return withProblem2(SILENT, here.problem);
     }
   }
   if (argv !== null) {
     playSound(alert, deps, config, here.alerts);
     deps.run(argv);
-    return withProblem(SILENT, here.problem);
+    return withProblem2(SILENT, here.problem);
   }
   if (!isSsh(deps.env))
-    return withProblem(SILENT, here.problem);
+    return withProblem2(SILENT, here.problem);
   let sequence;
   if (farEndIsWarp(deps.env, config)) {
     sequence = warpAgentSequence(alert, input);
@@ -51750,21 +51696,21 @@ function notifyHook(input, event, deps) {
   }
   const route = terminalRoute(event, deps.env, type);
   if (route === "field")
-    return withProblem(fieldAnswer(sequence), here.problem);
+    return withProblem2(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
   if (route === "tty" || route === "device-then-field") {
     if (deps.writeTerminal(onTty))
-      return withProblem(SILENT, here.problem);
+      return withProblem2(SILENT, here.problem);
     if (deps.writeSessionTerminal(onTty))
-      return withProblem(SILENT, here.problem);
-    return route === "device-then-field" ? withProblem(fieldAnswer(sequence), here.problem) : withProblem(SILENT, here.problem);
+      return withProblem2(SILENT, here.problem);
+    return route === "device-then-field" ? withProblem2(fieldAnswer(sequence), here.problem) : withProblem2(SILENT, here.problem);
   }
-  return deps.writeTerminal(onTty) ? withProblem(SILENT, here.problem) : withProblem(fieldAnswer(sequence), here.problem);
+  return deps.writeTerminal(onTty) ? withProblem2(SILENT, here.problem) : withProblem2(fieldAnswer(sequence), here.problem);
 }
 function fieldAnswer(sequence) {
   return { stdout: JSON.stringify({ terminalSequence: sequence }) };
 }
-function withProblem(result, problem) {
+function withProblem2(result, problem) {
   if (problem === null || result.stderr !== undefined)
     return result;
   return { ...result, stderr: problem };
@@ -52755,8 +52701,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join91(paths.binDir, LAUNCHER_NAME);
-      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+      if (runAlert(alert, process.platform, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;

@@ -61,8 +61,7 @@ An optional local router between Claude Code and the model providers
   to Claude, which refuses a signature it did not issue, and given back its own signature on a
   request to a backend (D6); the router writes the plan limits it saw, its open breakers and
   the Claude ids Claude Code sent (`seenClaude`) to a small state file that the status line,
-  the StopFailure alert and the portal read. The alert's worker runs through the launcher,
-  never from the plugin's version folder. The health answer also lists the last 200 routed
+  the StopFailure alert and the portal read. The health answer also lists the last 200 routed
   requests (`recent`: metadata only), which the portal's activity feed reads (B6b).
 - **The request history (D51): one row per routed `/v1/messages` request** — time, session
   id, model, slot, target, status, latency, tokens, an estimated cost — and never a prompt,
@@ -80,8 +79,9 @@ An optional local router between Claude Code and the model providers
   `retry-after` it relays at 60 (Claude Code fails the request at once above it) and relays a
   backend's refusal as a 424 (Claude Code sends an unknown 400 or 422 again without its deferred
   tools): `gateway.md` § The breaker. What the person hears comes from BR2: the status line
-  names an open breaker, and the StopFailure alert says so once per opening, with the person's
-  own other backend targets as the way out (`src/hooks/stop-failure.ts`, `breakerAlert`).
+  names an open breaker, and the StopFailure alert says so once per opening — the slot, since when and
+  each target with why it rests, facts only and no button (`src/hooks/stop-failure.ts`,
+  `breakerAlert`).
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through

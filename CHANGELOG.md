@@ -54,10 +54,40 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   `CLAUDE_CONFIG_DIR`.
 - **Two guard fixes:** a crew session's text that starts with `-` is passed safely, and the
   escape guard no longer flags a computed command because its path holds the kit's name.
-- **The Agent guard and the usage-limit alert judge your session's own gateway** — the address
-  the session really runs with, so a project turned off or on, a profile and `launch` each count —
-  never the machine's settings file alone. A session on a profile is offered that profile's own
-  commands.
+- **The Agent guard judges your session's own gateway** — the address the session really runs
+  with, so a project turned off or on, a profile and `launch` each count — never the machine's
+  settings file alone.
+- **The usage-limit and gateway-slot alerts say what happened and offer nothing.** The usage-limit
+  alert names the limit that was hit and when it resets; the gateway-slot alert names the slot,
+  since when it is limited, and why each target rests. Neither offers a model, a chain, a fallback
+  switch or `gateway on`, and neither has a button, whatever the session runs on: the hook shows
+  the plain notification itself and starts no background worker. Only when a stop should not have
+  happened (the slot starts with a backend, or its fallback is on) does the usage-limit alert add
+  that one fact and point at `gateway status`.
+- **The Fable-session line names what answers this session.** In a session whose project is
+  turned off, or that runs on a profile, it used the machine's settings; it now reads the
+  session's own gateway, as the Agent guard does.
+- **A test run, or another program's `workflow` word, is no longer taken for `workflow
+  propose`.** A program a line works out when it runs (`$RUNNER … workflow`) was read as the
+  kit's `workflow propose` whenever its last word was `workflow`, so a crew session was denied
+  commands such as a test run of a `workflow` folder. The line now has to name the kit: by its
+  name, a path to its launcher, or its bundle behind another program. The same holds when the
+  word after `workflow` is also worked out at run time (`$RUNNER … workflow $ARG`); the words
+  `workflow propose` are still refused on any line.
+- **The escape guard still asks when the kit's bundle path is bound in a variable** and run by a
+  computed program (`C=…/dist/cli.js; $(which bun) $C …`), though it no longer asks for a path
+  that only passes through a folder named like the kit.
+- **The `workflow propose` question answers in time.** It finds the project and reads its
+  committed policy inside one budget of 8 of its hook's 10 seconds. On a git that hangs or is
+  slow it asks and says that git did not answer in time, where the hook was cut off before.
+- **A command run where git does not answer says what to do.** `project init`, `workflow`,
+  `worktrees` and `crew` print one plain line, "git did not answer in time: run `git status` in
+  this folder; …", where they printed the bare reason; `doctor` prints the same fix on its own
+  line.
+- **A session name that cannot be recorded no longer loses a message.** When the temp folder is
+  not usable, the person's own prompt typed into a crew session (and the lead's line about it)
+  and a lead's news about its crew sessions were lost with the name. They now go through, the
+  hook says why on stderr, and the name is set on a later turn.
 
 - **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when
@@ -135,7 +165,7 @@ you open it.
   the tests, research across many files and long debugging go to a crew session, and the lead
   keeps the plan, the briefs, the starts, the questions, the merges, the plan file and the
   person. The `lead-notes` hook adds the same rule in one line when a lead's context is built
-  again — a start, a resume, a clear, a compaction — and never at a prompt or on an edit. Words
+  again — a start, a resume, a compaction — and never at a prompt or on an edit. Words
   only (D61): the lead's context is re-read on the premium model every turn, so every file it
   reads or writes costs on every later turn.
 - **A lead never routes a phase around the crew queue.** The queue exists for the machine and for
@@ -143,9 +173,10 @@ you open it.
   none of a crew phase's worktree, review, report gate or to-do list. So in a session registered
   as a lead, the agent guard refuses a launch that can change files while a `crew start` from it
   would queue right now, and names the cap that holds and the `crew start` step. Read-only work
-  is never held: the kit's own reviewer, auditor and ui-verifier, the built-in Explore, Plan,
-  claude-code-guide and statusline-setup, and the kit's read-only Workflows — a project's own
-  read-only agent is exempt only when its `cc-smart-dev-kit.json` lists it. An ordinary session
+  is never held: the kit's own reviewer, auditor and ui-verifier, the built-in Explore, Plan and
+  claude-code-guide, the kit's read-only Workflows, and statusline-setup (which edits only the
+  status line setting) — a project's own read-only agent is exempt only when its
+  `cc-smart-dev-kit.json` lists it. An ordinary session
   or a crew session is judged exactly as before.
 - **A heavy job that waited says when it started and how it ended.** A job whose output went
   down a pipe (`bun run tsc --noEmit | tail -20`) reported the pipe's own status, so a session

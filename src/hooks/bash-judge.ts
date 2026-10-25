@@ -71,7 +71,12 @@ import {
 } from "../crew/brief";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import {
+  checkoutFailure,
+  loadProjectConfig,
+  locateCheckout,
+  type TimeFor,
+} from "../project/resolve";
 import {
   CHANGE_DIR,
   type Dialect,
@@ -88,9 +93,10 @@ import {
 import { resolveGate, sourceLabel } from "../workflow/resolve";
 import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
+import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
-import { kitArguments } from "./kit-invocation";
+import { kitArguments, namesKit } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -325,14 +331,27 @@ function crewNeverRunOf(step: Step): CrewNeverRun | null {
  * read — a word the line works out when it runs (`workflow $SUB`), or none at all (`echo propose
  * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
  * than let through.
+ *
+ * **A computed program is the kit's only when the line names the kit** (`namesKit`, the test
+ * `session-escape-guard` makes too), unless the words say `workflow propose`. Its words are all
+ * the judge has, and `workflow` at their end, or followed by a word the line works out, is as
+ * likely a test filter or another program's subcommand and argument (`"$PY" -m pytest -k
+ * workflow $EXTRA`, `$(which gh) workflow $SUB`) as the kit's: a line that does not name the
+ * kit proposes nothing there. The words `workflow propose` are the kit's own domain words and
+ * keep their reading on any line.
  */
-function isWorkflowPropose(step: Step): boolean {
+function isWorkflowPropose(step: Step, lineNamesKit: boolean): boolean {
   const words = kitWordsOf(step);
   if (words === null) return false;
   const at = kitWordAt(words, step, "workflow");
   if (at === -1 || asksHelp(words.slice(at + 1))) return false;
   const sub = words[at + 1];
-  return sub === "propose" || sub === undefined || isComputedWord(sub);
+  if (sub === "propose") return true;
+  // Not `propose`: a word the kit would read as another subcommand is no proposal, so only a
+  // missing or a computed one is open, and a computed program's open word is the kit's only
+  // when the line names the kit.
+  if (sub !== undefined && !isComputedWord(sub)) return false;
+  return !step.computed || lineNamesKit;
 }
 
 /**
@@ -523,11 +542,12 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   let workflowPropose = false;
   const proposals: Proposal[] = [];
   const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null) crewNeverRuns.push(never);
-    if (isWorkflowPropose(step)) {
+    if (isWorkflowPropose(step, lineNamesKit)) {
       workflowPropose = true;
       proposals.push(proposalOf(step, moved));
     }
@@ -601,6 +621,12 @@ export interface JudgeContext {
   env: Env;
   input: HookInput;
   paths: CliPaths;
+  /**
+   * When the hook started (ms since the epoch: the frame's `nowMs`). The time budget of the
+   * git calls a question makes counts from there, so the frame's own project lookup, which
+   * runs first, is already spent from it. Unset: from the judge's own start.
+   */
+  startedAtMs?: number;
 }
 
 /** The `crew start` line a raw background launch is told to use instead. */
@@ -658,20 +684,26 @@ function cannotTellProject(why: string): string {
  * person's own file, and the project's file as committed on `origin/<worktrees.base>`, never a
  * checkout's working copy. Anything it cannot read is a question with its reason, never a guess.
  */
-function proposeQuestion(folder: string, context: JudgeContext): string | null {
+function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor): string | null {
   let checkout: ReturnType<typeof locateCheckout>;
   let base: null | string;
   try {
-    checkout = locateCheckout(folder, { env: context.env });
+    // `job-route` has 10 s in `hooks.json`, and Claude Code kills a hook that overruns: the git
+    // calls here share one budget (`budget.ts`). A call that timed out, or was not made for want of
+    // time, is an error saying git did not answer (`GIT_TIMED_OUT`), never "not in a git project".
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
     if (checkout === null) return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    // The reason alone: the question names it in a sentence, and a timeout's own fix ("run this
+    // again") is for a command the person ran, not for a line they are asked to approve.
+    return cannotTellProject(checkoutFailure(error));
   }
   const acts = proposeActs(base);
   try {
     const read = resolveGate(context.paths, checkout, base, {
       env: context.env,
+      timeFor,
       timeoutMs: GUARD_GIT_TIMEOUT_MS,
     });
     if (!read.ok) {
@@ -699,6 +731,14 @@ function proposeQuestion(folder: string, context: JudgeContext): string | null {
  */
 function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): BashVerdict | null {
   const cwd = stringField(context.input.cwd);
+  // One deadline for every git call the questions make, whatever the number of proposals,
+  // counted from the hook's start.
+  const { timeFor } = startBudget(
+    context.env,
+    Date.now,
+    SHORT_GUARD_BUDGET_MS,
+    context.startedAtMs,
+  );
   let question: null | string = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -710,6 +750,7 @@ function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): 
       question = proposeQuestion(
         proposal.folder === null ? cwd : resolve(cwd, proposal.folder),
         context,
+        timeFor,
       );
     }
     if (question !== null) break;

@@ -233,10 +233,13 @@ export function agentKey(type: string): string {
 }
 
 /**
- * The subagent types that only read and report (D59): a lead may launch them whatever the crew
- * queue holds, because they change no file. Every other type — a `fork`, an unknown one, a
- * custom one, a project's own agent — can change files, and so can a launch that asks for
- * `isolation: "worktree"`, whatever its type.
+ * The subagent types that build no phase's work (D59): a lead may launch them whatever the crew
+ * queue holds. `Explore`, `Plan` and `claude-code-guide` only read and report. `statusline-setup`
+ * is not read-only — Claude Code gives it `Edit` (the Agent tool lists its tools as `Read,
+ * Edit`) and it writes the status line setting in the person's settings file — but it edits
+ * nothing of the project, and a crew phase would not build that either. Every other type — a
+ * `fork`, an unknown one, a custom one, a project's own agent — can change the project's
+ * files, and so can a launch that asks for `isolation: "worktree"`, whatever its type.
  *
  * The two lists are separate because the ids are not the same kind. Claude Code's own four are
  * built in and carry no plugin prefix. The kit's three are plugin agents, and Claude Code

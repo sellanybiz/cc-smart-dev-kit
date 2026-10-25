@@ -1,8 +1,4 @@
 // @bun
-// src/entries/stop-failure.ts
-import { existsSync as existsSync8 } from "fs";
-import { join as join10 } from "path";
-
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
 
@@ -203,6 +199,9 @@ function startDetached(platform, argv, options) {
 // src/hooks/stop-failure.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "fs";
 import { join as join9 } from "path";
+
+// src/gateway/config.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6139,90 +6138,63 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  seenClaude: record(string2(), number2()).optional(),
-  version: literal(1)
-});
-function stateKeyFor(slot, profile) {
-  return profile === null ? slot : `${profile}/${slot}`;
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
 }
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
+var MAX_LINKS = 40;
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join4(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
   }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  throw new Error(`${file}: too many symlinks (a loop?)`);
 }
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentBreakers(state, nowMs) {
-  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
+
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/targets.ts
 var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_PREFIX = "cc-smart-dev-kit-";
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
@@ -6296,72 +6268,6 @@ function familySlotFor(model) {
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
-
-// src/gateway/breaker.ts
-var BREAKER_REMINDER_MS = 10 * 60000;
-function slotShortName(slot) {
-  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
-}
-function breakerChangeHint(slot, profile = null) {
-  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
-}
-
-// src/gateway/config.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
-
-// src/setup/file-mode.ts
-function isOwnerOnly(mode, platform = hostPlatform()) {
-  return platform === "win32" || (mode & 63) === 0;
-}
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
-var MAX_LINKS = 40;
-function realTarget(file) {
-  let path = resolve(file);
-  for (let links = 0;links <= MAX_LINKS; links += 1) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    if (!isLink) {
-      const parent = dirname(path);
-      return parent === path ? path : join4(realTarget(parent), basename(path));
-    }
-    path = resolve(dirname(path), readlinkSync(path));
-  }
-  throw new Error(`${file}: too many symlinks (a loop?)`);
-}
-
-// src/gateway/history.ts
-var HISTORY_MAX_RETENTION_DAYS = 3650;
-var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
-var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
@@ -6678,6 +6584,86 @@ function loadConfigFile(path, platform = hostPlatform()) {
     throw new ConfigError(`${path} is not a valid gateway config:
 ${parsed.error}`);
   return parsed.config;
+}
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
+  version: literal(1)
+});
+function stateKeyFor(slot, profile) {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 
 // src/build-info/index.ts
@@ -7246,8 +7232,29 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -7255,13 +7262,14 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true
       });
       return {
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
-        stderr: result.stderr.toString()
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
       };
     } catch (error) {
       throw gitNotFound(error);
@@ -7281,6 +7289,8 @@ function requireGitVersion(git) {
   requireGitVersionText(git(["--version"]).stdout);
 }
 function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -7320,7 +7330,7 @@ function locateCheckout(cwd, options = {}) {
   if (!existsSync4(cwd) || !statSync3(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -7328,6 +7338,8 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -8091,89 +8103,25 @@ var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in profile (\\S+))? is limited or down since `);
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
-var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function slotOf(model) {
-  const found = familySlotFor(model);
-  const family = claudeFamily(model);
-  if (found === null || family === null)
-    return null;
-  return { family, key: found.slot, name: found.slot.slice(SLOT_PREFIX.length) };
+function slotKeyOf(model) {
+  return familySlotFor(model)?.slot ?? null;
 }
-function standInChains(config, own) {
-  const first = ["sonnet", "haiku"].map(familySlotKey).filter((key) => key !== null);
-  const keys = [...new Set([...first, ...Object.keys(config.slots)])];
-  return keys.filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key)).map((key) => config.slots[key] ?? []);
-}
-function backendTargets(chains) {
-  return [
-    ...new Set(chains.filter((text) => {
-      const parsed = parseTarget(text);
-      return "target" in parsed && parsed.target.kind === "backend";
-    }))
-  ];
-}
-function suggestedTargets(config, first, slot, claim) {
-  const chains = standInChains(config, slot.key).flat();
-  const backends = backendTargets(chains);
-  if (backends.length === 0)
-    return null;
-  const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
-  const otherClaude = modelOnly ? chains.find((text) => {
-    const family = claudeFamily(text);
-    return text.startsWith("claude-") && family !== null && family !== slot.family;
-  }) : undefined;
-  return [...new Set([first, ...otherClaude === undefined ? [] : [otherClaude], ...backends])];
-}
-function shortName(target) {
-  return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
-}
-function typed(commands) {
-  return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
-}
-function offerFor(config, slot, model, claim, profile) {
-  const chain = config.slots[slot.key] ?? [];
-  const fallback = chainCommand(profile, ["fallback", slot.name, "on"]);
+function slotFact(config, slot) {
+  const chain = config.slots[slot] ?? [];
   const head = chain[0];
   if (head !== undefined) {
     const parsed = parseTarget(head);
     if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-      return {
-        kind: "none",
-        words: `${slot.key} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
+      return `${slot} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`;
     }
   }
-  if (chain.length > 1) {
-    if (fallbackOn(config, slot.key)) {
-      return {
-        kind: "none",
-        words: `The ${slot.key} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`
-      };
-    }
-    return { commands: [fallback], kind: "commands", targets: chain };
+  if (chain.length > 1 && fallbackOn(config, slot)) {
+    return `The ${slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`;
   }
-  const targets = suggestedTargets(config, head ?? model, slot, claim);
-  if (targets === null) {
-    const shown = typed([
-      chainCommand(profile, ["slot", slot.name, `${head ?? model},<backend>:<model>`]),
-      fallback
-    ]);
-    return {
-      kind: "no-target",
-      words: `To use a more affordable model until it resets: ${shown} (${COMMAND} gateway models lists the models).`
-    };
-  }
-  return {
-    commands: [chainCommand(profile, ["slot", slot.name, targets.join(",")]), fallback],
-    kind: "commands",
-    targets
-  };
-}
-function chainCommand(profile, words) {
-  return profile === null ? ["gateway", ...words] : ["gateway", "profile", profile, ...words];
+  return null;
 }
 function breakerOpening(input, ctx) {
   if (!isJsonObject2(input) || input.error !== "rate_limit")
@@ -8206,73 +8154,13 @@ function breakerAlert(input, ctx) {
   if (ctx.breakerAlerted[mark] === opening.record.since)
     return null;
   const { profile, record, slot } = opening;
-  const short = slotShortName(slot);
   const since = formatClock(Math.floor(record.since / 1000), ctx.nowMs, ctx.timeZone);
   const failures = failedTargets(record, ctx.nowMs, ctx.timeZone);
   const where = profile === null ? slot : `${slot} in profile ${profile}`;
   const head = `${where}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
   const goOn = ctx.watchdogOn ? "Claude Code goes on by itself." : "Then send a message to go on.";
-  const title = "Gateway slot limited";
-  if (profile !== null) {
-    return {
-      alert: {
-        action: null,
-        body: `${head} Change it: ${breakerChangeHint(slot, profile)}. ${goOn}`,
-        title
-      },
-      mark,
-      since: record.since,
-      slot
-    };
-  }
-  if (ctx.config === null) {
-    return {
-      alert: {
-        action: null,
-        body: `${head} The gateway config cannot be read, so no other target is offered: ${COMMAND} doctor says why. ${goOn}`,
-        title
-      },
-      mark,
-      since: record.since,
-      slot
-    };
-  }
-  const targets = backendTargets(standInChains(ctx.config, slot).flat());
-  if (targets.length === 0) {
-    return {
-      alert: {
-        action: null,
-        body: `${head} To use another model, pick one: ${COMMAND} gateway models lists them. ${goOn}`,
-        title
-      },
-      mark,
-      since: record.since,
-      slot
-    };
-  }
-  const chain = targets.join(",");
-  const shown = typed([["gateway", "slot", short, chain]]);
-  if (!ctx.gatewayOn) {
-    return {
-      alert: {
-        action: null,
-        body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
-        title
-      },
-      mark,
-      since: record.since,
-      slot
-    };
-  }
   return {
-    alert: {
-      action: {
-        commands: [["gateway", "slot", short, chain]],
-        label: `Use ${shortName(targets[0] ?? "")}`
-      },
-      body: `${head} To use another model: ${shown}. ${goOn}`,
-      title
-    },
+    alert: { body: `${head} ${goOn}`, title: "Gateway slot limited" },
     mark,
     since: record.since,
     slot
@@ -8302,53 +8190,24 @@ function planAlert(input, ctx) {
   if (!ctx.gatewaySetUp)
     return null;
   const own = ctx.sessionModel === null ? undefined : limits.find(([model]) => model === withoutContextSuffix(ctx.sessionModel ?? ""));
-  const slotted = limits.filter((entry) => slotOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+  const slotted = limits.filter((entry) => slotKeyOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
   const chosen = own ?? slotted;
   const model = chosen?.[0] ?? null;
   const record = chosen?.[1] ?? null;
   const reset = record?.resetsAt !== null && record?.resetsAt !== undefined ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}` : /resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known";
-  const title = "Claude usage limit reached";
   const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
-  if (ctx.config === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: ${COMMAND} doctor says why.`,
-      title
-    };
-  }
-  const slot = model === null ? null : slotOf(model);
-  if (slot === null || model === null) {
-    return {
-      action: null,
-      body: `${head} Claude Code continues by itself after the reset.`,
-      title
-    };
-  }
-  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null, ctx.profile);
-  if (offer.kind !== "commands")
-    return { action: null, body: `${head} ${offer.words}`, title };
-  const shown = typed(offer.commands);
-  if (!ctx.gatewayOn) {
-    return {
-      action: null,
-      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
-      title
-    };
-  }
+  const slot = model === null ? null : slotKeyOf(model);
+  const fact = slot === null || ctx.config === null || !ctx.gatewayOn ? null : slotFact(ctx.config, slot);
   return {
-    action: {
-      commands: offer.commands,
-      label: `Use ${shortName(offer.targets[1] ?? "")} until it resets`
-    },
-    body: `${head} A more affordable model until it resets: ${shown} (Claude takes over again by itself once it answers).`,
-    title
+    body: `${head} ${fact ?? "Claude Code continues by itself after the reset."}`,
+    title: "Claude usage limit reached"
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
-  const { config, gatewayOn, profile } = sessionGatewayOf(paths, env);
+  const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
     state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
@@ -8372,7 +8231,6 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
     gatewayOn,
     gatewaySetUp,
     nowMs,
-    profile,
     sessionModel,
     state,
     watchdogOn
@@ -8388,7 +8246,6 @@ function readBreakerAlerted(stateDir) {
     return {};
   }
 }
-var ACTION_WAIT_MS = 30 * 60000;
 function appleString(text) {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
 }
@@ -8414,9 +8271,6 @@ function plainNotification(alert, platform) {
     return { argv: windowsToastArgvFor(alert.title, body), timeoutMs: 1e4 };
   }
   return null;
-}
-function usesAlertWorker(platform, launcherExists) {
-  return platform !== "win32" && launcherExists;
 }
 
 // src/entries/stop-failure.ts
@@ -8450,12 +8304,7 @@ async function hook() {
     if (argv !== null)
       detached(argv);
   }
-  const launcher = join10(paths.binDir, LAUNCHER_NAME);
-  if (usesAlertWorker(process.platform, existsSync8(launcher))) {
-    detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
-    return;
-  }
-  const plain = plainNotification({ ...alert, action: null }, process.platform);
+  const plain = plainNotification(alert, process.platform);
   if (plain === null)
     console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
   else

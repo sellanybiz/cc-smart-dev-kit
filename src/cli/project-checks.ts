@@ -48,7 +48,12 @@ import {
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
-import { type Checkout, loadProjectConfig, locateCheckoutAsync } from "../project/resolve";
+import {
+  type Checkout,
+  checkoutFailure,
+  loadProjectConfig,
+  locateCheckoutAsync,
+} from "../project/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
@@ -395,7 +400,8 @@ export async function projectChecks(
   try {
     checkout = existsSync(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
-    return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
+    // The check prints its fix on its own line: the reason alone, not a timeout's whole message.
+    return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
   if (checkout === null) return [];
   // Where Claude Code reads the project's settings: the folder the session started in.
