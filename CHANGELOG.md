@@ -3,6 +3,29 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.2.1
+
+The lead and its crew, made dependable: a resume that keeps track of its session, a watch that
+says each piece of news once, and a removed crew session's conversation kept out of your way.
+
+- **A crew resume keeps track of the session it brings back.** Claude Code starts every crew
+  resume as a copy with a new id; the record used to keep the old one, so the watch called a
+  working session `stopped` a few seconds later. The record now takes the new session in the
+  same write that marks it `working`, and the line says it (`resumed … as session <new> (a copy
+  of <old>)`). Two resumes of one record at once are refused instead of starting two copies; a
+  resume that printed no session line keeps the record as it was and is never tried again by
+  itself. The watch also survives a closed pipe and a busy store.
+- **A removed crew session's conversation moves to the crew archive.** `crew rm` (and the watch's
+  removal after a merge) moves the conversation Claude Code keeps after `claude rm` to
+  `<state>/crew-archive/`, so `/resume` no longer lists every crew session ever removed; it is
+  deleted after `crew.archiveDays`. Two archives at once, a moved project folder, a linked
+  session folder and a project folder name over 200 characters are handled.
+- **The lead hears each piece of news once.** "quiet" is said when a quiet stretch starts and once
+  more when it grows long, not every minute; a clash between two leads' phases once for its life;
+  "going again — the wait is answered" once when a needs-you wait ends; a merge note never names
+  the lead that made it. A `--files` pattern that matches more than a quarter of the repository
+  gets one warning.
+
 ## 1.2.0
 
 The gateway per project and per session, a project's workflow from the portal, claude-mem from the
