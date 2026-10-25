@@ -100,6 +100,7 @@ describe("the command table", () => {
       "rm",
       "resume",
       "attach",
+      "history",
       "kinds",
     ]) {
       expect(usage).toMatch(new RegExp(`^  ${name}\\b`, "m"));
@@ -118,6 +119,7 @@ describe("the command table", () => {
       "resume",
       "model",
       "attach",
+      "history",
       "kinds",
     ]);
     // The commands that are not in the table still print the whole usage.

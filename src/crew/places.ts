@@ -27,6 +27,10 @@
  * - **The memory** (`workflow.crew.memoryGb`): the memory free now, less what heavy jobs
  *   reserved and have not used yet (the job queue's own reading, `notYetUsedGb`), must be at least
  *   that much. Where free memory cannot be read (macOS), only the caps count.
+ * - **The CPU** (`workflow.crew.loadPerCore`): while the 1-minute load average is above that
+ *   many for each core (`src/machine/load.ts`), a start waits — 24 crew sessions once drove a
+ *   16-core machine to a load of 85 with plenty of memory free. Where the platform gives no load
+ *   average (native Windows), the hold does not apply.
  *
  * The store alone decides, so a start never waits on a `claude agents` read; `crew watch` keeps
  * the states true from agent view. A crew session that finds a free place takes it, also while
@@ -45,6 +49,7 @@ import { DEFAULT_SLICE, jobsPaths, loadJobsConfig } from "../jobs/config";
 import { GIB, type MemoryFacts, machineMemory, sliceBytes } from "../jobs/memory";
 import { notYetUsedGb, oneDecimal } from "../jobs/queue";
 import { leaseStore } from "../jobs/store";
+import { type LoadFacts, type LoadReading, loadLimit, machineLoad } from "../machine/load";
 import { type Checkout, loadProjectConfig } from "../project/resolve";
 import { withLock } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
@@ -182,6 +187,10 @@ export interface PlaceInput {
   freeGb: null | number;
   /** `workflow.crew.memoryGb`. */
   needGb: number;
+  /** The 1-minute load average and the cores now; null where the platform gives none. */
+  load: LoadReading | null;
+  /** `workflow.crew.loadPerCore`: a start waits while the load is above this for each core. */
+  loadPerCore: number;
   /** The 5-hour usage window's share used now, in percent; null when it cannot be read (D54). */
   usagePercent: null | number;
   /** `workflow.crew.usagePercent`: past this share, a new opus crew session waits (D54). */
@@ -194,7 +203,7 @@ export interface PlaceInput {
 
 /**
  * The decision, pure, in the order the line names it: its phases first, then its lead's caps,
- * the machine's ceiling and optional opus ceiling, the memory, and the usage window.
+ * the machine's ceiling and optional opus ceiling, the memory, the load, and the usage window.
  */
 export function placeFor(input: PlaceInput): Place {
   if (input.unmet.length > 0) {
@@ -233,6 +242,15 @@ export function placeFor(input: PlaceInput): Place {
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`,
     };
   }
+  if (input.load !== null) {
+    const limit = loadLimit(input.load, input.loadPerCore);
+    if (input.load.oneMinute > limit) {
+      return {
+        start: false,
+        why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`,
+      };
+    }
+  }
   if (
     input.opus &&
     !input.opusFallback &&
@@ -266,6 +284,9 @@ export function placeInputOf(
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
+    // Read last, with the memory, and only when nothing else holds: a model change never reads it.
+    load: null,
+    loadPerCore: crew.loadPerCore.value,
     max: crew.max.value,
     maxOpus: crew.maxOpus.value,
     needGb: crew.memoryGb.value,
@@ -332,6 +353,8 @@ export interface LeadStartInput {
   checkout: Checkout;
   /** The lead's Claude Code session id. */
   leadSessionId: string;
+  /** The CPU load now, as the machine reads it (`realLoadFacts()`). */
+  load: LoadFacts;
   /** The memory free now, as the machine reads it (`realMemoryFacts()`). */
   memory: MemoryFacts;
   nowMs: number;
@@ -344,7 +367,7 @@ export interface LeadStartInput {
  * What a `crew start` from this lead would do now: start, or wait in the queue and why. It builds
  * the same input `startPlanned` builds — with **no phases waited for**, because `--waits-for`
  * waits for a merge and a merge is never a place — and asks `placeFor`, the one decision rule.
- * The memory is read only when nothing else holds, as `crew start` reads it.
+ * The memory and the load are read only when nothing else holds, as `crew start` reads them.
  *
  * Null when no start would queue: crew sessions are off in this project (a start is refused then,
  * never queued), or the store, the project's file or the caps cannot be read. The caller lets the
@@ -385,5 +408,5 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
   } catch {
     return null;
   }
-  return placeFor({ ...held, freeGb });
+  return placeFor({ ...held, freeGb, load: machineLoad(input.load) });
 }

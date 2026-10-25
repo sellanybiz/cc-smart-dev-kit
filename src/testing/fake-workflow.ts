@@ -56,6 +56,7 @@ export function defaultResolved(): ResolvedWorkflow {
       handoffTokens: at(400_000),
       idleStopMinutes: at(10),
       keep: at<string[]>([]),
+      loadPerCore: at(3),
       max: at(24),
       maxOpus: at<null | number>(null),
       maxHours: at(4),

@@ -40,7 +40,11 @@ the work) is an ordinary session's rule. A lead follows this section instead.
   the person's asks and your open work — each phase to start, each question to answer, each
   branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
   so it never goes stale unseen; you are never held back by it.
-- **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
+- **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug> --plan-file <plan file>`.
+  The plan file is the one the plan-task skill wrote; its folder, beside it, holds the briefs and the
+  record of each crew run (§ 3). Leave the flag out only when the plan is the one file
+  `<plans dir>/*-<plan slug>.md`: the first line it prints says which file it took, or that it found
+  none. It
   names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
   itself (no setting; it replaces the name the session had, and a name the person gives it
   with `/rename` after that stays), so there is nothing for the person to type. Only a session
@@ -74,7 +78,7 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 ## 3. Start each phase
 
 ```sh
-cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
+cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   --files <glob,...> [--effort <effort>] [--waits-for <phase,...>] [--base <ref>]
 ```
 
@@ -85,7 +89,7 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   the reason (an opus start with no usage-window reading adds one note line). Your reply names
   each crew session with the model and effort its line shows (the core instructions' "say it
   when you launch").
-- **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
+- **`queued` is not an error.** A cap, the free memory, the CPU load, the 5-hour usage window or `--waits-for`
   holds it, and it starts by itself when its place frees. Never start it a second time.
 - **A `clash:` line after the start is a warning, not a failure.** Another lead's crew session in
   this repository lists some of the same files: the line names that lead, its crew session and the
@@ -112,7 +116,12 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 
-**The brief** is a file (`--brief <file>`, or `-` for stdin). `crew start` adds a frame after
+**The brief** is a file in the plan's own folder: `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`,
+beside the plan file `<plans dir>/<plan stem>.md` and named as the crew branch `crew/<PHASE>-<slug>`.
+Write it there before the start; `crew start` with no `--brief` takes it and its first line says
+which file (none there: refused, with the path). `--brief <file>`, or `-` for stdin, still names
+another. The folder is the plan's, never one per lead: the plan outlives its leads. `crew start` adds
+a frame after
 it — who the crew session is, its worktree and branch, the git rule, how it reports and asks — so the
 brief carries only the phase:
 
@@ -191,7 +200,11 @@ recommends, and the crew session goes on with what the question does not block.
   first, and which crew session asks. Several crew sessions' questions go in one call. Never answer one of
   these for the person.
 - **Send the answer:** `cc-smart-dev-kit crew answer <name> "<answer>"`. A running crew session
-  gets it as a message; a stopped one is resumed with it.
+  gets it by itself, through its monitor, even when it sits blocked; the command says
+  `delivered`, or `recorded, not delivered` and prints the one `SendMessage` line you then send
+  yourself. A stopped one is resumed with it. **A wrong answer is corrected by answering the same
+  question again**: the crew session hears that it replaces the first. A finished crew session takes
+  neither.
 - **A permission prompt in a crew session** only the person answers. Name the crew session and give the
   line `claude attach <name>`.
 
@@ -213,6 +226,10 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
    to a new crew session.
 5. **In the same turn,** check that the watch started the phases that waited for this merge,
    and start any phase it unblocked that was never started (§ 3).
+
+**The kit records the run itself**: the merge (its commit, and the lead session that made it) and the
+removal go into `<plan folder>/runs/<crew id>.json` with the sessions, pauses and times. Never write or
+edit a run file by hand, and never delete one; `cc-smart-dev-kit crew history` reads them.
 
 **Read the diff only when something does not add up** — a red line in the report, a file
 outside the brief, a failed check after the merge, a report that contradicts itself — and then
@@ -241,7 +258,9 @@ and `crew.perLeadOpus` of them on the opus tier (2), counted in every repository
 an optional machine-wide opus count (unset by default), and a new **opus-tier** phase waits while
 the plan's 5-hour usage window is past `crew.usagePercent` (85) — unless the gateway's opus slot
 has a fallback chain on, which answers past it. The window comes from Claude Code's status line,
-and with no reading the guard does not hold (`crew start` and `crew list` say so once).
+and with no reading the guard does not hold (`crew start` and `crew list` say so once). Any start
+also waits while the 1-minute CPU load is past `crew.loadPerCore` (3) for each core, and while too
+little memory is free.
 
 Routine phases on the worker slot run wide; the opus phases — the kinds that run on opus — queue,
 so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
@@ -264,7 +283,10 @@ again is too big: split what is left.
 
 ## 9. Restart and compaction
 
-The plan file and the crew store hold the state, not your context. After a compaction: read
+The plan file and the crew store hold the state, not your context. **The record of each run
+survives a restart, a new lead and `crew rm`**: `<plan folder>/runs/<crew id>.json` keeps the
+session ids, the times and who answered, merged and removed; `cc-smart-dev-kit crew history`
+reads it. Commit the plan's folder with the plan. After a compaction: read
 the plan, then one `crew list`. After this session restarts: the same, and run this skill
 again so its monitor runs. After the machine restarts: `cc-smart-dev-kit crew resume <name>`
 for each stopped crew session — never `claude respawn --all`, never `claude daemon stop`.

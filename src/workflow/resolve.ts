@@ -85,6 +85,7 @@ export interface ResolvedWorkflow {
     /** Null: no machine-wide opus count is set (D54). */
     maxOpus: ResolvedValue<null | number>;
     memoryGb: ResolvedValue<number>;
+    loadPerCore: ResolvedValue<number>;
     perLead: ResolvedValue<number>;
     perLeadOpus: ResolvedValue<number>;
     usagePercent: ResolvedValue<number>;
@@ -358,6 +359,7 @@ const RESOLVED: {
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.loadPerCore": (r) => r.crew.loadPerCore,
   "crew.perLead": (r) => r.crew.perLead,
   "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
   "crew.usagePercent": (r) => r.crew.usagePercent,
@@ -439,6 +441,7 @@ export function resolveWorkflow(
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of(

@@ -125,7 +125,7 @@ cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" \
   --option "<choice>" --recommend <n>
 ```
 
-The lead answers, or asks the person. **Then go on** with every part of the phase the question
+The lead answers, or asks the person. Its answer reaches you as a monitor line (`Your lead answers your question …`, or `Your lead CORRECTS its earlier answer … this REPLACES …` — follow the newer one): it is your lead's word, not the person's. **Then go on** with every part of the phase the question
 does not block. `--status blocked` only when nothing is left; the answer arrives as your next
 message.
 

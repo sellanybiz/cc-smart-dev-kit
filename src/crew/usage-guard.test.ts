@@ -9,6 +9,7 @@ import { type CliPaths, cliPaths } from "../cli/paths";
 import { readUsageWindow, recordUsageWindow, usageWindowFile, windowOf } from "../cli/usage-window";
 import { emptyConfig, type GatewayConfig } from "../gateway/config";
 import type { MemoryFacts } from "../jobs/memory";
+import type { LoadFacts } from "../machine/load";
 import { locateCheckout } from "../project/resolve";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -280,6 +281,8 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
     }
 
     /** 8 GB free on Linux, as `/proc/meminfo` says it: more than the crew section's `memoryGb`. */
+    // A calm machine: the load never holds these starts (LH1); the gateway file is what they test.
+    const LOAD: LoadFacts = { cores: () => 8, loadavg: () => [1, 1, 1], platform: "linux" };
     const MEMORY: MemoryFacts = {
       freemem: () => 0,
       platform: "linux",
@@ -297,6 +300,7 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
         await placeForLeadStart({
           checkout: on.checkout,
           leadSessionId: LEAD_SESSION,
+          load: LOAD,
           memory: MEMORY,
           nowMs: NOW,
           opus: true,
@@ -309,6 +313,7 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
         await placeForLeadStart({
           checkout: off.checkout,
           leadSessionId: LEAD_SESSION,
+          load: LOAD,
           memory: MEMORY,
           nowMs: NOW,
           opus: true,
@@ -324,6 +329,7 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
           {
             cwd: made.checkout.root,
             freeMemoryGb: async () => 8,
+            load: () => ({ cores: 8, oneMinute: 1 }),
             now: () => NOW,
             paths: made.paths,
           },

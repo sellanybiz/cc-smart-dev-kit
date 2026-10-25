@@ -24,10 +24,15 @@
  * caps (`crew.perLeadOpus`, `crew.maxOpus`, the usage window — `placeFor`, the one rule). When
  * one holds, the change is queued with its reason on the record (`pendingLaunch`): the session
  * runs on as it is, and the lead's watch applies the change once the caps allow
- * (`applyPendingModels`). A change adds no place, so the total caps never hold it.
+ * (`applyPendingModels`). A change adds no place, so the total caps, the memory and the CPU
+ * load (`crew.loadPerCore`) never hold it.
  *
  * The values are written to the record before the session is touched (under the places lock, so
  * a second change counts them): a resume that fails leaves them stored for the next one.
+ *
+ * **The plan's run record** (PL1) gets one `note` line when the values change, and a second when
+ * a change is put back (`noteChange`). A change a cap holds is no change yet: it has no line
+ * until the watch applies it.
  */
 import { COMMAND } from "../build-info/names";
 import { isCrewKind } from "../models/launch-policy";
@@ -39,8 +44,9 @@ import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
 import { stopSession } from "./end";
 import { OPUS_TIER, placeFor, placeInputOf, RUNNING_STATES, withPlacesLock } from "./places";
+import { actorOfCaller } from "./runs-actor";
 import { changedLaunch, chooseLaunch } from "./start";
-import { type CrewRecord, listAllCrew, listCrew, readCrew, updateCrew } from "./store";
+import { type CrewRecord, listAllCrew, listCrew, noteCrewRun, readCrew, updateCrew } from "./store";
 import { usageFacts } from "./usage-guard";
 
 /** What `crew model` was asked, already checked to be well formed. */
@@ -73,6 +79,35 @@ interface Changed {
 /** `named effort`: how a line shows what a crew session runs on. */
 function runsOn(model: string, effort: string): string {
   return `${model} ${effort}`;
+}
+
+/** A model and an effort, as a run record keeps them. */
+interface Runs {
+  effort: string;
+  model: string;
+}
+
+/**
+ * Says in the plan's run record (PL1) that the values a crew session runs on changed: who changed
+ * them, from what and to what. `undone` is a change put back because the session could not be
+ * stopped (`moveSession`): the history never says it runs on values the record and the process
+ * do not. A crew session with no plan file has no run record, and `noteCrewRun` writes nothing.
+ */
+async function noteChange(
+  record: CrewRecord,
+  from: Runs,
+  to: Runs,
+  ctx: CrewContext,
+  undone: boolean,
+): Promise<void> {
+  const line = `${runsOn(from.model, from.effort)} → ${runsOn(to.model, to.effort)}`;
+  await noteCrewRun(ctx.paths.stateDir, record.repo, record.id, ctx.now(), {
+    by: actorOfCaller(ctx, record.repo),
+    detail: { from, to },
+    text: undone
+      ? `model change undone: ${line} (the session could not be stopped)`
+      : `model changed: ${line}`,
+  });
 }
 
 /** The prompt a resumed crew session gets: what changed, and to go on. */
@@ -180,6 +215,13 @@ async function changeModel(
       { effort, model: to, pendingLaunch: undefined },
       ctx.now(),
     );
+    await noteChange(
+      record,
+      { effort: record.effort, model: record.model.named },
+      { effort, model: to.named },
+      ctx,
+      false,
+    );
     return null;
   });
   if (decided === "stale") return null;
@@ -215,6 +257,13 @@ async function moveSession(
           record.id,
           { effort: record.effort, model: record.model },
           ctx.now(),
+        );
+        await noteChange(
+          record,
+          { effort, model: to.named },
+          { effort: record.effort, model: record.model.named },
+          ctx,
+          true,
         );
       }
       return { line: `${head} · ${stopped.why}; nothing changed`, ok: false };

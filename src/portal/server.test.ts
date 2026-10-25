@@ -5776,9 +5776,11 @@ describe("the new actions (D52)", () => {
       expect(answered.status).toBe(200);
       const body = JSON.parse(answered.body) as { lines: string[]; ok: boolean };
       expect(body.ok).toBe(true);
-      // The CLI's own line, with the message the lead sends the crew session.
+      // The CLI's own lines: the answer is recorded, and with no monitor running the person is told
+      // when the crew session hears it — never a SendMessage line they cannot send (AN1).
       expect(body.lines.join("\n")).toContain("answered C my-app K contracts");
-      expect(body.lines.join("\n")).toContain("SendMessage");
+      expect(body.lines.join("\n")).toContain("recorded, not delivered");
+      expect(body.lines.join("\n")).not.toContain("SendMessage");
       const after = readCrew(world.paths.stateDir, world.cwd, "crew-K-contracts");
       expect(after?.questions[0]?.answer).toBe("Use SQLite");
     } finally {

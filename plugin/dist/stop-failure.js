@@ -6910,6 +6910,7 @@ var NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.loadPerCore": ABOVE_ZERO,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -6967,6 +6968,7 @@ var workflowSchema = strictObject({
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
+    loadPerCore: numberField("crew.loadPerCore"),
     perLead: numberField("crew.perLead"),
     perLeadOpus: numberField("crew.perLeadOpus"),
     usagePercent: numberField("crew.usagePercent"),
@@ -7006,6 +7008,7 @@ var workflowDefaults = {
     max: 24,
     maxOpus: null,
     memoryGb: 2,
+    loadPerCore: 3,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -7041,6 +7044,7 @@ var POLICY_KEYS = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.loadPerCore",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -7586,21 +7590,87 @@ var IGNORE_CASE = process.platform === "win32";
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 
+// src/crew/runs.ts
+var text = string2().min(1);
+var actor = looseObject({ name: text, sessionId: text });
+var runEventSchema = looseObject({
+  at: text,
+  kind: text,
+  by: actor.nullable(),
+  state: text,
+  text: string2().nullable(),
+  detail: record(string2(), unknown()).optional()
+});
+var runTimesSchema = looseObject({
+  createdAt: text,
+  startedAt: text.nullable(),
+  finishedAt: text.nullable(),
+  mergedAt: text.nullable(),
+  removedAt: text.nullable(),
+  wallMs: number2().nullable(),
+  workingMs: number2().nullable(),
+  queuedMs: number2().nullable(),
+  pausedMs: number2(),
+  pauses: array(looseObject({ from: text, to: text.nullable(), reason: text }))
+});
+var runRecordSchema = looseObject({
+  version: number2().int().min(1),
+  id: text,
+  name: text,
+  plan: text,
+  phase: text,
+  slug: text,
+  kind: text,
+  model: looseObject({
+    named: text,
+    resolved: text,
+    slot: string2().nullable()
+  }),
+  effort: text,
+  branch: text,
+  baseRef: text,
+  base: looseObject({ ref: text, sha: text }).nullable(),
+  brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
+  lead: actor,
+  continues: string2().nullable(),
+  continuedBy: string2().nullable(),
+  sessions: array(looseObject({
+    at: text,
+    by: actor.nullable(),
+    sessionId: text,
+    shortId: string2().nullable()
+  })),
+  state: text,
+  events: array(runEventSchema),
+  times: runTimesSchema,
+  contextTokens: number2().int().min(0).nullable().optional(),
+  backfilled: array(text).optional(),
+  createdAt: text,
+  updatedAt: text
+});
+
 // src/crew/store.ts
 var FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-var text = string2().min(1);
+var text2 = string2().min(1);
 var version2 = number2().int().min(1);
 var sha = string2().regex(COMMIT_SHA, "a full commit sha");
 var count = number2().int().min(0);
-var word = () => text.transform((value) => value);
+var word = () => text2.transform((value) => value);
+var supersededAnswer = looseObject({
+  answer: text2,
+  answeredAt: text2,
+  deliveredAt: text2.nullable().optional()
+});
 var crewQuestionFields = looseObject({
-  question: text,
-  options: array(text).min(2),
+  question: text2,
+  options: array(text2).min(2),
   recommended: number2().int().min(1).nullable(),
-  askedAt: text,
-  answeredAt: text.nullable(),
-  answer: text.nullable(),
-  supersededBy: number2().int().min(0).nullable().optional()
+  askedAt: text2,
+  answeredAt: text2.nullable(),
+  answer: text2.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional(),
+  deliveredAt: text2.nullable().optional(),
+  superseded: array(supersededAnswer).optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -7621,151 +7691,154 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
-    since: text,
-    slot: text
+    since: text2,
+    slot: text2
   }),
   looseObject({
     kind: literal("claude-limit"),
-    model: text,
-    resetsAt: text.nullable()
+    model: text2,
+    resetsAt: text2.nullable()
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text,
-    slot: text.exactOptional()
+    since: text2,
+    slot: text2.exactOptional()
   })
 ]);
 var discardArchiveSchema = looseObject({
-  ref: text,
+  ref: text2,
   head: sha,
-  at: text,
-  prunedAt: text.optional()
+  at: text2,
+  prunedAt: text2.optional()
 });
 var crewFields = object({
   version: version2,
   id: string2().regex(FILE_ID, "a plain file name"),
-  name: text,
-  sessionId: text.nullable(),
-  shortId: text.nullable(),
-  leadSessionId: text,
-  leadName: text,
-  repo: text,
-  plan: text,
-  phase: text,
-  slug: text,
+  name: text2,
+  sessionId: text2.nullable(),
+  shortId: text2.nullable(),
+  leadSessionId: text2,
+  leadName: text2,
+  repo: text2,
+  plan: text2,
+  phase: text2,
+  slug: text2,
   kind: word(),
   model: looseObject({
-    named: text,
-    slot: text.nullable(),
-    resolved: text,
-    tier: text.nullable()
+    named: text2,
+    slot: text2.nullable(),
+    resolved: text2,
+    tier: text2.nullable()
   }),
-  effort: text,
-  permissionMode: text,
-  worktree: text,
-  branch: text,
-  baseRef: text,
+  effort: text2,
+  permissionMode: text2,
+  worktree: text2,
+  branch: text2,
+  baseRef: text2,
   baseCommit: sha.optional(),
-  base: looseObject({ ref: text, sha }).nullable(),
-  waitsFor: array(text),
-  files: array(text),
+  base: looseObject({ ref: text2, sha }).nullable(),
+  waitsFor: array(text2),
+  files: array(text2),
   questions: array(crewQuestion),
   state: word(),
   lastLine: string2().nullable(),
-  reportPath: text.nullable(),
+  reportPath: text2.nullable(),
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
-  resumeClaim: looseObject({ at: text, token: text }).optional(),
+  resumeClaim: looseObject({ at: text2, token: text2 }).optional(),
   pendingLaunch: looseObject({
-    at: text,
-    effort: text,
+    at: text2,
+    effort: text2,
     model: looseObject({
-      named: text,
-      slot: text.nullable(),
-      resolved: text,
-      tier: text.nullable()
+      named: text2,
+      slot: text2.nullable(),
+      resolved: text2,
+      tier: text2.nullable()
     }),
-    why: text
+    why: text2
   }).optional(),
-  lastPause: looseObject({ backoffMs: count, since: text }).optional(),
-  startedAt: text.nullable().optional(),
-  continues: text.nullable().optional(),
+  lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
+  startedAt: text2.nullable().optional(),
+  continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
-  mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
   archive: discardArchiveSchema.optional(),
   archiveHistory: array(discardArchiveSchema).optional(),
   discardPending: looseObject({
     head: sha,
     archivedHead: sha,
-    indexPath: text,
-    indexBackup: text,
-    indexArchived: text
+    indexPath: text2,
+    indexBackup: text2,
+    indexArchived: text2
   }).optional(),
-  createdAt: text,
-  updatedAt: text
+  planFile: text2.nullable().optional(),
+  briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
+  createdAt: text2,
+  updatedAt: text2
 });
 var crewRecordSchema = crewFields.loose();
 var leadFields = object({
   version: version2,
   sessionId: string2().regex(FILE_ID, "a plain file name"),
-  name: text,
-  repo: text,
-  plan: text,
-  tag: text,
-  cwd: text,
-  endedAt: text.nullable().optional(),
-  sessionUnknownSince: text.nullable().optional(),
-  pausedAgents: array(text).optional(),
-  createdAt: text,
-  updatedAt: text
+  name: text2,
+  repo: text2,
+  plan: text2,
+  tag: text2,
+  cwd: text2,
+  planFile: text2.nullable().optional(),
+  endedAt: text2.nullable().optional(),
+  sessionUnknownSince: text2.nullable().optional(),
+  pausedAgents: array(text2).optional(),
+  createdAt: text2,
+  updatedAt: text2
 });
 var leadRecordSchema = leadFields.loose();
 var eventFields = object({
   version: version2,
-  at: text,
+  at: text2,
   type: word(),
   crew: string2().regex(FILE_ID, "a plain file name"),
-  name: text,
-  lead: text.nullable(),
+  name: text2,
+  lead: text2.nullable(),
   state: word(),
   text: string2().nullable(),
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
   memoryMb: number2().min(0).nullable().optional(),
-  pair: text.optional(),
-  tell: looseObject({ kind: text, to: array(text) }).nullable().optional()
+  pair: text2.optional(),
+  tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
 });
 var crewEventSchema = eventFields.loose();
-var testRun = looseObject({ command: text, passed: count, failed: count, ok: boolean2() });
+var testRun = looseObject({ command: text2, passed: count, failed: count, ok: boolean2() });
 var reportFields = object({
   version: version2,
   status: word(),
-  phase: text,
-  branch: looseObject({ name: text, sha }),
-  base: looseObject({ ref: text, sha }),
+  phase: text2,
+  branch: looseObject({ name: text2, sha }),
+  base: looseObject({ ref: text2, sha }),
   pr: number2().int().positive().nullable(),
   changed: looseObject({ files: count, insertions: count, deletions: count }),
-  outsideBrief: array(text),
+  outsideBrief: array(text2),
   tests: looseObject({ targeted: array(testRun), full: testRun.nullable() }),
-  checks: array(looseObject({ name: text, ok: boolean2(), note: string2().nullable() })),
+  checks: array(looseObject({ name: text2, ok: boolean2(), note: string2().nullable() })),
   review: looseObject({
-    agent: text,
-    model: text,
-    effort: text,
+    agent: text2,
+    model: text2,
+    effort: text2,
     sha,
-    findings: array(looseObject({ finding: text, fix: text }))
+    findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable(),
   ownReview: looseObject({
-    reason: text,
-    findings: array(looseObject({ finding: text, fix: text }))
+    reason: text2,
+    findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
-  docs: array(text),
-  needsLead: array(text),
-  open: array(text),
-  question: text.nullable(),
-  summary: text.nullable().optional(),
+  docs: array(text2),
+  needsLead: array(text2),
+  open: array(text2),
+  question: text2.nullable(),
+  summary: text2.nullable().optional(),
   extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
@@ -7794,14 +7867,15 @@ var watchLeaseFields = object({
   pid: number2().int().positive(),
   pidns: string2().nullable().default(null),
   startTime: string2().nullable(),
-  token: text
+  token: text2
 });
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
   last: _enum(["report", "step"]).nullable(),
   offset: count
 });
-var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
+var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
+var answerWatchFields = object({ at: number2().int().min(0) });
 
 // src/cli/usage-window.ts
 var WINDOW_SPAN_MS = 5 * 60 * 60000;

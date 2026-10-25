@@ -444,7 +444,7 @@ it ran; an `ask` names every launch of the script that asks, not only the first.
 **A lead's building launch waits for the crew queue** (the owner's decision D59, 2026-10-23). A
 lead that finds its crew sessions queued may be tempted to hand a phase to a builder subagent
 instead, and that launch runs outside every count the queue enforces — the machine's `crew.max`,
-the lead's `crew.perLead`, the free memory, the 5-hour window — and has none of a crew phase's
+the lead's `crew.perLead`, the free memory, the CPU load, the 5-hour window — and has none of a crew phase's
 worktree, review, report gate or to-do list. So in a session with a **lead record** for this
 repository and this `session_id` (`readLead`), the guard refuses a launch that can change files
 while a `crew start` from that lead would queue now, and names the cap that holds and the
