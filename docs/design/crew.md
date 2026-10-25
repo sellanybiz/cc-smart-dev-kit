@@ -201,6 +201,10 @@ repository, under the state folder:
   the newest (`question 0 … was superseded by question 1 ("…"): answer that one`): `crew answer`
   always answers the open question, so the refusal guards a question that arrives while the lead
   is answering. An answered question is never superseded: a question after it is a new one.
+  **A correction (AN1) goes to the newest question, once it has its answer** — never to a
+  superseded one: the store checks the pointer first, so a correction aimed at a superseded
+  question gets the same line that names the newest. The monitor's delivery skips a superseded
+  question too (`answerWaitsForDelivery`), whatever the record holds.
 - **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
@@ -317,11 +321,20 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    does not hold, and `crew start` and `crew list` say so once; **the memory** — the memory free
    now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
-   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The queued line
+   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS); **the CPU** — a
+   start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (3) times the
+   cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
+   The one reader is `src/machine/load.ts`, handed to the commands as `CrewContext.load`; native
+   Windows has no load average, so no hold applies there and `crew list` says so once. The load is
+   read, like the memory, only when nothing else holds. The queued line
    names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
+   queued ones, oldest first, so no lead starves another. The start itself is a compare-and-set
+   under the places lock (`startQueued`): it re-reads the record there and goes on only while the
+   store still says `queued`, so two starters of one record after a watch takeover (the lease, WF1)
+   start it once, and it starts on the model, effort and start commit the store holds at that
+   moment (a `crew model` that landed while it waited for the lock is used). A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
    **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
@@ -378,7 +391,9 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    is not read: a kept plugin that does that may still not load in a crew session.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
-   a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
+   a dependency install, is the crew session's own first step: the brief's frame says to install
+   in its own worktree and never to link another checkout's dependency folder, because undoing
+   such a link is a path outside the worktree, which Claude Code asks the person about), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <plan> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
@@ -471,8 +486,13 @@ Code session id with its time (the start, and each resume that brought a new id)
 checks, review), `merged` (the lead commit from the merge proof), `removed`, and `note`. Each
 event has `by`: the lead session that made it, so a plan with three leads says who answered,
 merged and removed: `by` is set on `answer`, `merged`, `removed` and a discard, and is null on the
-crew session's own changes (its report, its session, its pause). The acting lead comes from the
-session above the command (`actorOfCaller`, `runs-actor.ts`, used by `crew answer` and by
+crew session's own changes (its report, its session, its pause). A correction of an answer (AN1)
+is a second `answer` event with `detail.correction`, so the history keeps both answers in order.
+`crew model` writes a `note` when the model or effort a crew session runs on changes (`detail`:
+`from` and `to`, each with the model and the effort), and a second one when the change is put
+back because the session could not be stopped; a change an opus cap holds writes none until the
+watch applies it (`noteCrewRun`). The acting lead comes from the
+session above the command (`actorOfCaller`, `runs-actor.ts`, used by `crew answer`, `crew model` and by
 `markState`, which `stop`, `resume` and `rm` share); where no recorded lead is above it (the
 watch's merge, the portal's click, a script) the event names the lead the crew session belongs to,
 which after a hand-over is the lead that started it, not necessarily the one that acted.
@@ -650,8 +670,8 @@ and the record kept naming the old model, so the caps and `crew list` were wrong
   changed and to go on from where it stopped. A **stopped** or **paused** one keeps its state
   and its wait: the record holds the values, and its next resume reads them (`resumeArgs`, from
   the record) — the opus caps are judged once, when the values are stored, and `crew resume`
-  judges none. A **queued** one starts on them (`startQueued` re-reads the record, so a change
-  made after the watch listed it is used). A session that ended its phase, a removed or
+  judges none. A **queued** one starts on them (`startQueued` re-reads the record under the places lock, so a
+  change made after the watch listed it, or while it waited for the lock, is used). A session that ended its phase, a removed or
   discarded one, one still `starting` and a `blocked` one (it waits for the lead's answer, and a
   resume that says "go on" would tell it to continue without it) take no change.
 - **The record is the truth.** The model, the tier and the effort are written under the places
@@ -661,7 +681,8 @@ and the record kept naming the old model, so the caps and `crew list` were wrong
   back).
 - **The caps.** A move onto the opus tier is judged as a new opus session by `placeFor` (the
   per-lead and machine opus caps, the usage window), with the session itself left out of the
-  counts and the total caps left out too, since a change adds no place. When one holds, the
+  counts and the total caps, the memory and the CPU load (`crew.loadPerCore`) left out too, since
+  a change adds no place. When one holds, the
   change waits on the record (`pendingLaunch`: the model, the effort, the reason, when): the
   session runs on as it is, the line says `queued (<reason>)`, and the lead's watch applies it on
   a pass where the caps allow (`applyPendingModels`, under the lease like a start). A later

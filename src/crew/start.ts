@@ -1337,7 +1337,9 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
       });
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
-      const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+      const place = first.start
+        ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+        : first;
       const record = await createCrew(
         ctx.paths.stateDir,
         {
@@ -1469,12 +1471,21 @@ export async function startQueued(
 ): Promise<void> {
   // The record as it is now, not as the watch listed it a moment ago: the lead may have changed
   // its model or effort since (`crew model`), or the crew session may have left the queue.
-  const record = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
-  if (record === null || record.state !== "queued") return;
+  const early = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
+  if (early === null || early.state !== "queued") return;
+  // Read again under the places lock, where the start is decided: a change that lands while this
+  // start waits for it is the one the session starts on.
+  let record: CrewRecord = early;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
   const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
+    // A compare-and-set: the copy the caller holds may be stale (a watch takeover leaves two
+    // starters of one record, WF1), so the store says whether it is still queued. Only the starter
+    // that finds it queued moves it to `starting`; the other leaves it alone.
+    const now = readCrew(ctx.paths.stateDir, early.repo, early.id);
+    if (now === null || now.state !== "queued") return null;
+    record = now;
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const input = placeInputOf(all, record.leadSessionId, crew, usage, {
@@ -1482,7 +1493,9 @@ export async function startQueued(
       unmet: unmetWaits(record.waitsFor, here),
     });
     const first = placeFor(input);
-    const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+    const place = first.start
+      ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+      : first;
     if (!place.start) return null;
     // A continuation's pinned commit first; a record from before it holds only the branch name.
     const base = commitOf(record.repo, record.baseCommit ?? record.baseRef, ctx.env);

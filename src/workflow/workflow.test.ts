@@ -73,6 +73,7 @@ describe("the workflow schema", () => {
         handoffPercent: 70,
         idleStopMinutes: 10,
         keep: ["plugin:acme-tools@acme", "server:sequential-thinking"],
+        loadPerCore: 2.5,
         max: 4,
         maxOpus: 2,
         maxHours: 4,
@@ -115,6 +116,8 @@ describe("the workflow schema", () => {
       ["archiveDays", 0],
       ["archiveDays", 1.5],
       ["memoryGb", 0],
+      ["loadPerCore", 0],
+      ["loadPerCore", -1],
       ["tag", "My App"],
       ["tag", "a-very-long-tag"],
       ["tag", "kit]"],
@@ -207,6 +210,11 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("crew.perLead", "0")).toEqual({
       ok: false,
       why: "crew.perLead is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.loadPerCore", "2.5")).toEqual({ ok: true, value: 2.5 });
+    expect(parseWorkflowValue("crew.loadPerCore", "0")).toEqual({
+      ok: false,
+      why: "crew.loadPerCore is a number above 0",
     });
     expect(parseWorkflowValue("crew.perLeadOpus", "2")).toEqual({ ok: true, value: 2 });
     expect(parseWorkflowValue("crew.usagePercent", "85")).toEqual({ ok: true, value: 85 });
@@ -352,6 +360,7 @@ describe("resolveWorkflow: the order", () => {
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
       keep: { value: [], source: "default" },
+      loadPerCore: { value: 3, source: "default" },
       max: { value: 24, source: "default" },
       maxOpus: { value: null, source: "default" },
       maxHours: { value: 4, source: "default" },
@@ -374,7 +383,13 @@ describe("resolveWorkflow: the order", () => {
     const env = hookEnv();
     writePersonal(env, {
       fixesAfterReview: { lines: 50 },
-      crew: { enabled: true, keep: ["server:sequential-thinking"], max: 2, tag: "mine" },
+      crew: {
+        enabled: true,
+        keep: ["server:sequential-thinking"],
+        loadPerCore: 4,
+        max: 2,
+        tag: "mine",
+      },
     });
     const config = ccSmartDevKitConfigSchema.parse({
       workflow: {
@@ -386,6 +401,7 @@ describe("resolveWorkflow: the order", () => {
     expect(resolved.crew.archiveDays).toEqual({ value: 14, source: "project" });
     expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
     expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
+    expect(resolved.crew.loadPerCore).toEqual({ value: 4, source: "personal" });
     // A list is one value: the project's list wins whole, never merged entry by entry.
     expect(resolved.crew.keep).toEqual({
       value: ["plugin:acme-tools@acme"],

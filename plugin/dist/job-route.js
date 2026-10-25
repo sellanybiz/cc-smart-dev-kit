@@ -6278,6 +6278,7 @@ var NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.loadPerCore": ABOVE_ZERO,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -6334,6 +6335,7 @@ var workflowSchema = strictObject({
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
+    loadPerCore: numberField("crew.loadPerCore"),
     perLead: numberField("crew.perLead"),
     perLeadOpus: numberField("crew.perLeadOpus"),
     usagePercent: numberField("crew.usagePercent"),
@@ -6372,6 +6374,7 @@ var workflowDefaults = {
     max: 24,
     maxOpus: null,
     memoryGb: 2,
+    loadPerCore: 3,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -6406,6 +6409,7 @@ var POLICY_KEYS = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.loadPerCore",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -12076,6 +12080,24 @@ var realSharedFolderFacts = {
   }
 };
 
+// src/machine/load.ts
+import { availableParallelism, loadavg } from "os";
+function realLoadFacts() {
+  return { cores: availableParallelism, loadavg, platform: process.platform };
+}
+function machineLoad(facts) {
+  if (facts.platform === "win32")
+    return null;
+  const oneMinute = facts.loadavg()[0];
+  const cores = facts.cores();
+  if (oneMinute === undefined || !Number.isFinite(oneMinute) || !(cores >= 1))
+    return null;
+  return { cores, oneMinute };
+}
+function loadLimit(reading, loadPerCore) {
+  return reading.cores * loadPerCore;
+}
+
 // src/workflow/resolve.ts
 import { existsSync as existsSync12, readFileSync as readFileSync16 } from "fs";
 
@@ -12229,6 +12251,7 @@ function resolveWorkflow(paths, projectConfig) {
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of("crew.usagePercent", crew.usagePercent ?? workflowDefaults.crew.usagePercent),
@@ -12776,6 +12799,15 @@ function placeFor(input) {
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`
     };
   }
+  if (input.load !== null) {
+    const limit = loadLimit(input.load, input.loadPerCore);
+    if (input.load.oneMinute > limit) {
+      return {
+        start: false,
+        why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`
+      };
+    }
+  }
   if (input.opus && !input.opusFallback && input.usagePercent !== null && input.usagePercent > input.usageHoldPercent) {
     return {
       start: false,
@@ -12791,6 +12823,8 @@ function placeInputOf(records, leadSessionId, crew, usage, more) {
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
+    load: null,
+    loadPerCore: crew.loadPerCore.value,
     max: crew.max.value,
     maxOpus: crew.maxOpus.value,
     needGb: crew.memoryGb.value,
@@ -12853,7 +12887,7 @@ async function placeForLeadStart(input) {
   } catch {
     return null;
   }
-  return placeFor({ ...held, freeGb });
+  return placeFor({ ...held, freeGb, load: machineLoad(input.load) });
 }
 
 // src/gateway/settings.ts
@@ -14597,7 +14631,7 @@ function queueRefusal(what, why) {
   ].join(`
 `);
 }
-async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) {
+async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load) {
   if (inCrew(env))
     return null;
   if (checkout === null)
@@ -14621,6 +14655,7 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) 
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
+      load,
       memory,
       nowMs,
       opus,
@@ -14633,14 +14668,14 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) 
     return null;
   return queueRefusal(queueSubject(judged, input), place.why);
 }
-async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null, memory = realMemoryFacts()) {
+async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null, memory = realMemoryFacts(), load = realLoadFacts()) {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null)
     return SILENT;
   const ran = afterTheCall(input);
   const judgedDeny = judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load);
     if (queued !== null)
       return toolDecision("deny", queued);
   }

@@ -15,6 +15,7 @@ import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { createCrew, type NewCrew, writeLead } from "../crew/store";
 import type { GatewayConfig } from "../gateway/config";
 import type { MemoryFacts } from "../jobs/memory";
+import type { LoadFacts } from "../machine/load";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
 import { locateCheckout } from "../project/resolve";
 import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
@@ -2951,6 +2952,9 @@ describe("D59: a recorded lead never routes a building phase around the crew que
     totalmem: () => 32 * 1024 ** 3,
   };
 
+  /** A calm CPU, for the same reason: the host's load never decides a test. */
+  const LOAD: LoadFacts = { cores: () => 8, loadavg: () => [1, 1, 1], platform: "linux" };
+
   /** The guard's answer for `input`, with the frame's own checkout and this test's memory. */
   async function answer(input: HookInput, made: Awaited<ReturnType<typeof leadWorld>>) {
     return await agentGuard(
@@ -2961,6 +2965,7 @@ describe("D59: a recorded lead never routes a building phase around the crew que
       NOW,
       made.checkout,
       MEMORY,
+      LOAD,
     );
   }
 

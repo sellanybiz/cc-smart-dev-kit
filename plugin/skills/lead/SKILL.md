@@ -89,7 +89,7 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   the reason (an opus start with no usage-window reading adds one note line). Your reply names
   each crew session with the model and effort its line shows (the core instructions' "say it
   when you launch").
-- **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
+- **`queued` is not an error.** A cap, the free memory, the CPU load, the 5-hour usage window or `--waits-for`
   holds it, and it starts by itself when its place frees. Never start it a second time.
 - **A `clash:` line after the start is a warning, not a failure.** Another lead's crew session in
   this repository lists some of the same files: the line names that lead, its crew session and the
@@ -258,7 +258,9 @@ and `crew.perLeadOpus` of them on the opus tier (2), counted in every repository
 an optional machine-wide opus count (unset by default), and a new **opus-tier** phase waits while
 the plan's 5-hour usage window is past `crew.usagePercent` (85) — unless the gateway's opus slot
 has a fallback chain on, which answers past it. The window comes from Claude Code's status line,
-and with no reading the guard does not hold (`crew start` and `crew list` say so once).
+and with no reading the guard does not hold (`crew start` and `crew list` say so once). Any start
+also waits while the 1-minute CPU load is past `crew.loadPerCore` (3) for each core, and while too
+little memory is free.
 
 Routine phases on the worker slot run wide; the opus phases — the kinds that run on opus — queue,
 so put those that unblock the most first. A queued crew session says what holds it on `crew list`.

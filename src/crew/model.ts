@@ -24,7 +24,8 @@
  * caps (`crew.perLeadOpus`, `crew.maxOpus`, the usage window — `placeFor`, the one rule). When
  * one holds, the change is queued with its reason on the record (`pendingLaunch`): the session
  * runs on as it is, and the lead's watch applies the change once the caps allow
- * (`applyPendingModels`). A change adds no place, so the total caps never hold it.
+ * (`applyPendingModels`). A change adds no place, so the total caps, the memory and the CPU
+ * load (`crew.loadPerCore`) never hold it.
  *
  * The values are written to the record before the session is touched (under the places lock, so
  * a second change counts them): a resume that fails leaves them stored for the next one.

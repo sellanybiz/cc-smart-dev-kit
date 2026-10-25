@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow, usageWindowFile } from "../cli/usage-window";
+import { loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { boardWorld, MINUTE, NOW } from "../testing/board-world";
 import { LEAD_SESSION } from "../testing/crew-world";
@@ -402,6 +403,29 @@ describe("crew list", () => {
     world.out.length = 0;
     expect(await runCrew(["list"], world.ctx())).toBe(0);
     expect(world.out[3]).toBe("  held: a place is free; its lead's watch starts it");
+  });
+
+  test("a load that is held says so, and no load average says so once", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ shortId: null, state: "queued", worktree: false });
+    await world.addCrew({
+      phase: "B2",
+      shortId: null,
+      slug: "api",
+      state: "queued",
+      worktree: false,
+    });
+    const busy = world.ctx({ load: () => ({ cores: 8, oneMinute: 50 }) });
+    expect(await runCrew(["list"], busy)).toBe(0);
+    expect(world.out).toContain(
+      "  held: the load is 50 on 8 cores, past 24 (3 for each core); it starts when the load falls",
+    );
+    expect(world.out).not.toContain(loadUnreadLine());
+
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx({ load: () => null }))).toBe(0);
+    expect(world.out.filter((line) => line === loadUnreadLine())).toHaveLength(1);
+    expect(world.out).toContain("  held: a place is free; its lead's watch starts it");
   });
 
   test("another repository's crew sessions are left out, and `--all` brings them in with their folder", async () => {

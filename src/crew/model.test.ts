@@ -366,6 +366,18 @@ describe("crew model: the caps", () => {
     expect(after?.model).toEqual(SONNET);
   });
 
+  test("IN1: a busy machine does not hold a change: it adds no place, so the load is not asked", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    // Load 40 on 4 cores is far past the limit that holds a start (`crew.loadPerCore`).
+    const busy = world.ctx({ load: () => ({ cores: 4, oneMinute: 40 }) });
+    expect(await runCrew(["model", NAME, "--model", "opus"], busy)).toBe(0);
+    expect(world.err).toEqual([]);
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after).toMatchObject({ effort: "high", model: OPUS, state: "working" });
+    expect(after?.pendingLaunch).toBeUndefined();
+  });
+
   test("a change that moves off opus is never held by a cap", async () => {
     const world = await boardWorld();
     world.writeConfig({ perLeadOpus: 1 });

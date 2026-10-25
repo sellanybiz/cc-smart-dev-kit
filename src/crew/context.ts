@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
+import { type LoadReading, machineLoad, realLoadFacts } from "../machine/load";
 import type { CleanLock } from "../worktrees/clean";
 import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
@@ -33,6 +34,8 @@ export interface CrewContext {
   readStdin: () => Promise<string>;
   /** The memory a new crew session may use now, in GB; null where it cannot be read. */
   freeMemoryGb: () => Promise<null | number>;
+  /** The CPU load now (`src/machine/load.ts`); null where the platform gives no load average. */
+  load: () => LoadReading | null;
   runProgram: RunProgram;
   /** The full path of a command on PATH (`env.PATH`), or null. */
   which: (command: string) => null | string;
@@ -102,6 +105,7 @@ export function realCrewContext(paths: CliPaths): CrewContext {
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
+    load: () => machineLoad(realLoadFacts()),
     now: () => Date.now(),
     outputClosed: stdout.closed,
     parentPid: () => process.ppid,
