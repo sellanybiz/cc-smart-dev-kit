@@ -25,6 +25,7 @@ describe("the brief", () => {
         "",
         "- You are the crew session `C kit B6b portal-live`, for the lead `LEAD kit master-plan`. You run in the background: nobody watches this session.",
         "- Your worktree is `/home/user/kit/.claude/worktrees/crew-B6b-portal-live`, on the branch `crew/B6b-portal-live`, cut from `release-1.0.0`. Work only there. Anything slow it needs first (a dependency install) is your first step.",
+        "- Setup, your first step: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session.",
         "- The files this phase owns: `src/portal/server.ts`, `src/portal/views.ts`. Say in your report why you changed any other file.",
         "- Work by `/cc-smart-dev-kit:crew`: it says how to build the phase, how to mark each step, and how to hand it back.",
         "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
@@ -35,6 +36,12 @@ describe("the brief", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("the frame says to install the dependencies in the worktree, and never to link another checkout's", () => {
+    const frame = briefText("Do it.", { ...FACTS, files: [] });
+    expect(frame).toContain("install the project's dependencies in your own worktree");
+    expect(frame).toContain("Never link or reuse another checkout's dependency folder");
   });
 
   test("no files named: no files line", () => {

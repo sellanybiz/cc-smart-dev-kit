@@ -364,7 +364,9 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    is not read: a kept plugin that does that may still not load in a crew session.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
-   a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
+   a dependency install, is the crew session's own first step: the brief's frame says to install
+   in its own worktree and never to link another checkout's dependency folder, because undoing
+   such a link is a path outside the worktree, which Claude Code asks the person about), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <plan> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
