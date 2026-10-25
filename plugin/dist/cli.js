@@ -36170,7 +36170,7 @@ async function fileIssue(world, request) {
       "--repo",
       repo,
       "--description",
-      "Filed by cc-smart-dev-kit"
+      `Filed by ${COMMAND}`
     ]);
     if (made.kind !== "ok")
       return refuse3(ghProblem(`created the label ${label}`, made));

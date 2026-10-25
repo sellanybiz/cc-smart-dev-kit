@@ -27,6 +27,8 @@
  * Two calls with one fingerprint at the same moment can both find nothing and open two issues
  * (no lock spans GitHub).
  */
+
+import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -318,7 +320,7 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
       "--repo",
       repo,
       "--description",
-      "Filed by cc-smart-dev-kit",
+      `Filed by ${COMMAND}`,
     ]);
     if (made.kind !== "ok") return refuse(ghProblem(`created the label ${label}`, made));
   }
