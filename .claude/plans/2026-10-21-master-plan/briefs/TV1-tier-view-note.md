@@ -2,8 +2,8 @@
 
 ## Goal, and why
 
-Your branch starts from `release-1.2.1` (main after 1.2.0, with 1.1.3, CL2, CL2B, EF2 and WF1
-merged). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
+Your branch starts from `release-1.2.1` with all of 1.2.0 merged into it (RV3–RV6, DF1, HO1, UI1)
+and these 1.2.1 phases: CL2B, EF2, WF1, AR1, WN1, RG1, MC1, NM1, JW1, RS1, SW1, LT1. The plan: `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1.
 
 **The owner's ask (2026-10-25):** the instructions must let Claude Code know whether the models
 behind the worker and scout slots are Claude models right now, so it picks the effort the task
