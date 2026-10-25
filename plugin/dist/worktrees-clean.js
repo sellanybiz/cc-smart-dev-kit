@@ -10708,7 +10708,7 @@ async function archiveAfterRemoval(record, ctx, options = {}) {
   }
 }
 async function finishParkedWorktrees(repo, ctx, base, say, facts = ctx.scanFacts) {
-  const lock = await holdCleanLock();
+  const lock = await (ctx.holdCleanLock ?? holdCleanLock)();
   if (lock === null)
     return { kept: [{ path: repo, why: "another worktree clean is running" }], removed: [] };
   try {

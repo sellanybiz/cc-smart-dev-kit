@@ -13,7 +13,6 @@ import { OTHER_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { repoKey } from "../workflow/reviews";
-import { holdCleanLock } from "../worktrees/clean";
 import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses } from "./end";
@@ -1033,7 +1032,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     leadMerges(world.repo, record.branch);
     const parked = `${record.worktree}-removing-${String(PARKED_AT)}`;
     git(world.repo, "worktree", "move", record.worktree, parked);
-    const lock = await holdCleanLock();
+    const lock = await world.cleanLock.hold();
     expect(lock).not.toBeNull();
     try {
       expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
@@ -1046,7 +1045,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       expect(world.claudeVerbs()).not.toContain("rm");
       expect(git(world.repo, "branch", "--list", record.branch)).not.toBe("");
     } finally {
-      await new Promise<void>((resolve) => lock?.close(() => resolve()));
+      lock?.close();
     }
     expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
     expect(existsSync(parked)).toBe(false);
