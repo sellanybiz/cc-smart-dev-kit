@@ -45,6 +45,7 @@ import {
   watchLeaseFile,
   writeLead,
   writeStoreFile,
+  writeWatchState,
 } from "./store";
 import type { GatewayNow } from "./wait";
 import { eventLine, PARKED_PASS_MS, WatchEnd, type WatchScope, watchPass } from "./watch";
@@ -675,12 +676,74 @@ describe("crew watch", () => {
     // The person answered: agent view says it works again.
     const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], going);
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: going again — the wait is answered",
-    ]);
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], going);
     expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a quiet stretch first seen past 3x is said once, as the long one", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    writeTranscriptAgo(world, 90);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual(["C my-app B6b portal-live: quiet — nothing written for 90 minutes"]);
+    world.out.length = 0;
+    writeTranscriptAgo(world, 120);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a watch state from before the key (the alert's whole line) says nothing again", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    writeTranscriptAgo(world, 25);
+    // The state an older watch wrote: the line it said, minutes included.
+    writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [ID]: "C my-app B6b portal-live: quiet — nothing written for 24 minutes" },
+    });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a wait begun before the key is still said going again when it ends", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [ID]: "C my-app B6b portal-live: needs you — permission prompt" },
+    });
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+  });
+
+  test("WN1: a start-time wait of a starting record is said going again too", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "starting");
+    const waiting = world.ctx(
+      {},
+      {
+        FAKE_AGENTS_JSON: agentsJson([
+          agentRowOf({ state: "blocked", status: "waiting", waitingFor: "trust prompt" }),
+        ]),
+      },
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual(["C my-app B6b portal-live: needs you — trust prompt"]);
+    world.out.length = 0;
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
   });
 
   test("WN1: a session that was never waiting is not said going again", async () => {

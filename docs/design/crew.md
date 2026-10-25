@@ -1001,7 +1001,9 @@ step 3 — prints one line at the start and records one `clash` event, which tha
 **Each pair is said once, for its whole life** (WN1): the event carries the pair's key
 (`clashPairKey`: the two leads' session ids and phases, sorted, so it is the same from either
 side), and a start that meets a pair already in the events log says nothing. The key names the
-phase, not the crew session, so a phase started again under a new slug is the same pair. A
+phase, not the crew session, so a phase started again under a new slug is the same pair (and a
+second session of that phase with other files is silent too). The key holds the lead's session
+id, so a lead that restarts in a new session starts its pairs over. A
 `--files` pattern that matches more than a quarter of the tracked files (in a repository of at
 least 20) gets one `warning:` line at the start, naming the glob; it never refuses, because a
 glob that wide makes every other lead's session clash with it.

@@ -1018,8 +1018,8 @@ function trackedFiles(repo: string, env: Env): string[] {
 /**
  * A `--files` glob that matches more than this share of the tracked files is warned about, once
  * the repository has `BROAD_GLOB_MIN_FILES` of them. One phase rarely changes a quarter of a
- * repository; a glob that wide makes every other lead's session clash with it (2026-10:
- * `docs/claude/**` + `*.md` matched nearly everything, and 17 clash lines followed).
+ * repository; a glob that wide (`docs/**`, in a repository that is mostly docs) makes every other
+ * lead's session clash with it, and each start says the clash again.
  */
 const BROAD_GLOB_SHARE = 0.25;
 
@@ -1103,6 +1103,8 @@ export function fileClashSessions(
  * at most: the start goes on.
  */
 async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
+  // The glob warning needs no store: it is said even when the store cannot be read.
+  const warnings = broadGlobLines(record.files, record.repo, ctx.env);
   let records: CrewRecord[];
   let said: Set<string>;
   try {
@@ -1113,10 +1115,10 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
         .flatMap((event) => (typeof event.pair === "string" ? [event.pair] : [])),
     );
   } catch {
-    // No store, no warning: a clash is never worth failing a start.
-    return [];
+    // No store, no clash line: a clash is never worth failing a start.
+    return warnings;
   }
-  const lines = broadGlobLines(record.files, record.repo, ctx.env);
+  const lines = warnings;
   for (const { other, shared } of fileClashSessions(
     record.repo,
     ctx.env,

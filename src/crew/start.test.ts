@@ -1521,11 +1521,7 @@ describe("WN1: a clash pair is said once, and a glob that matches too much is wa
   }
 
   /** A start of `phase` holding `files`. */
-  function startPhase(
-    world: Awaited<ReturnType<typeof ledWorld>>,
-    phase: string,
-    files: string,
-  ) {
+  function startPhase(world: Awaited<ReturnType<typeof ledWorld>>, phase: string, files: string) {
     return runCrew(
       ["start", phase, "--slug", "x", "--kind", "build", "--brief", world.brief, "--files", files],
       world.ctx(),
@@ -1593,6 +1589,19 @@ describe("WN1: a clash pair is said once, and a glob that matches too much is wa
     expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([
       `warning: --files "docs/**/*.md" matches 30 of ${tracked} tracked files (${Math.round((30 / tracked) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
     ]);
+  });
+
+  test("a repository under 20 tracked files has no broad glob", async () => {
+    const world = await ledWorld();
+    expect(await startSlug(world, "small", "**/*")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([]);
+  });
+
+  test("a bare folder that holds most of the repository is warned", async () => {
+    const world = await ledWorld();
+    trackDocs(world);
+    expect(await startSlug(world, "folder", "docs/")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toHaveLength(1);
   });
 
   test("a narrow glob and a path are not warned", async () => {

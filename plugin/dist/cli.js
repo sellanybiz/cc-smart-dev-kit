@@ -24961,15 +24961,16 @@ function fileClashSessions(repo, env, leadSessionId, files, records) {
   return clashes;
 }
 async function sayClashes(record, ctx) {
+  const warnings = broadGlobLines(record.files, record.repo, ctx.env);
   let records;
   let said;
   try {
     records = listCrew(ctx.paths.stateDir, record.repo).records;
     said = new Set(readCrewEvents(ctx.paths.stateDir, record.repo).events.filter((event) => event.type === "clash").flatMap((event) => typeof event.pair === "string" ? [event.pair] : []));
   } catch {
-    return [];
+    return warnings;
   }
-  const lines = broadGlobLines(record.files, record.repo, ctx.env);
+  const lines = warnings;
   for (const { other, shared } of fileClashSessions(record.repo, ctx.env, record.leadSessionId, record.files, records)) {
     const pair = clashPairKey({ lead: record.leadSessionId, phase: record.phase }, { lead: other.leadSessionId, phase: other.phase });
     if (said.has(pair))
@@ -25343,6 +25344,14 @@ function isRunning3(record) {
 }
 var QUIET_LONG_FACTOR = 3;
 var NEEDS_YOU_KEY = "needs-you:";
+function wasNeedsYou(said) {
+  return said !== undefined && (said.startsWith(NEEDS_YOU_KEY) || said.includes(": needs you \u2014 "));
+}
+function isLegacySaid(said, alert) {
+  if (said === undefined)
+    return false;
+  return said === alert.line || alert.key.startsWith("quiet") && said.includes(": quiet \u2014 nothing written for ");
+}
 function crewAlert(record, row, now, quietMinutes, projectsDir) {
   if (row === null || !isRunning3(record))
     return null;
@@ -25514,10 +25523,12 @@ async function watchPass(state, ctx, scope) {
   for (const record of mine) {
     const row = agents === null ? null : rowOf(agents, record);
     const alert = crewAlert(record, row, ctx.now(), resolved.crew.quietMinutes.value, ctx.paths.projectsDir);
-    if (said[record.id]?.startsWith(NEEDS_YOU_KEY) === true && alert?.key.startsWith(NEEDS_YOU_KEY) !== true && row?.state === "working" && record.state === "working") {
+    if (wasNeedsYou(said[record.id]) && alert?.key.startsWith(NEEDS_YOU_KEY) !== true && row?.state === "working" && (record.state === "working" || record.state === "starting")) {
       say(`${record.name}: going again \u2014 the wait is answered`);
     }
-    if (alert !== null && said[record.id] !== alert.key) {
+    if (alert !== null && isLegacySaid(said[record.id], alert)) {
+      said[record.id] = alert.key;
+    } else if (alert !== null && said[record.id] !== alert.key) {
       say(alert.line);
       said[record.id] = alert.key;
     } else if (alert === null) {
