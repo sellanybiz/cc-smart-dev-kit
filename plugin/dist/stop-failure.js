@@ -6971,6 +6971,8 @@ var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ONE = { kind: "whole", min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
 var ABOVE_ZERO = { kind: "positive" };
+var WATCH_MINUTES_FLOOR = 2;
+var WATCH_MINUTES = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
 function numberSchema(rule) {
   if (rule.kind === "positive")
     return number2().positive();
@@ -6993,6 +6995,7 @@ var NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -7050,6 +7053,8 @@ var workflowSchema = strictObject({
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
+    watch: boolean2().optional(),
+    watchMinutes: numberField("issues.watchMinutes"),
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
@@ -7105,6 +7110,8 @@ var workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready"
@@ -7150,6 +7157,8 @@ var POLICY_KEYS = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",

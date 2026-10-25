@@ -342,7 +342,35 @@ describe("resolveWorkflow: the order", () => {
       fixedLabel: { source: "default", value: "fixed-unreleased" },
       foundLabel: { source: "default", value: "kit:found" },
       readyLabel: { source: "default", value: "kit:ready" },
+      watch: { source: "default", value: false },
+      watchMinutes: { source: "default", value: 5 },
     });
+  });
+
+  test("GI4: the watch is off by default, even with the issue switch on", () => {
+    const env = hookEnv();
+    const file = pathsFor(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ issues: { enabled: true } }));
+    const { issues } = resolveWorkflow(pathsFor(env), null);
+    expect(issues.enabled.value).toBe(true);
+    expect(issues.watch).toEqual({ source: "default", value: false });
+  });
+
+  test("GI4: watch and watchMinutes resolve field by field; the minutes have a floor of 2", () => {
+    const project = ccSmartDevKitConfigSchema.parse({
+      workflow: { issues: { watch: true, watchMinutes: 2 } },
+    });
+    const { issues } = resolveWorkflow(pathsFor(hookEnv()), project);
+    expect(issues.watch).toEqual({ source: "project", value: true });
+    expect(issues.watchMinutes).toEqual({ source: "project", value: 2 });
+    const parse = (watchMinutes: unknown) =>
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { issues: { watchMinutes } } }).success;
+    expect(parse(1)).toBe(false);
+    expect(parse(0)).toBe(false);
+    expect(parse(2.5)).toBe(false);
+    expect(parse(1441)).toBe(false);
+    expect(parse(1440)).toBe(true);
   });
 
   test("D67: the project's issues fields win field by field over the person's", () => {

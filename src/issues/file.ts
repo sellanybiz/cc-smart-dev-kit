@@ -153,6 +153,28 @@ export function ghProblem(
   return `gh failed while it ${what} (${last.slice(0, 200)})`;
 }
 
+/**
+ * The login the kit's own `gh` posts as (`gh api user`). A marker the kit left in a comment counts
+ * only when this account wrote the comment: the marker is plain text, so a stranger who copies a
+ * hand-off's or a mark's line could otherwise silence the kit or fake its mark (`sameAccount`).
+ */
+export async function kitAccount(
+  read: (args: string[]) => Promise<GhResult>,
+): Promise<{ login: string } | { why: string }> {
+  const result = await read(["api", "--hostname", "github.com", "user", "--jq", ".login"]);
+  if (result.kind !== "ok")
+    return { why: ghProblem("read which account the kit posts as", result) };
+  const login = result.out.trim();
+  return login === ""
+    ? { why: "gh did not say which account the kit posts as, so no marker can be trusted" }
+    : { login };
+}
+
+/** True when `author` is the account `login` (GitHub logins are case-insensitive). */
+export function sameAccount(author: unknown, login: string): boolean {
+  return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
+}
+
 /** What `gh repo view --json` (`REPO_FIELDS`) says, or why it could not be read. */
 export type RepoFacts =
   | { hasIssues: boolean; isPublic: boolean; permission: string | null }

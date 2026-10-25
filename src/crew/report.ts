@@ -23,7 +23,7 @@
  */
 import { z } from "zod";
 import { commentHandBack } from "../issues/handback";
-import { phaseIssues } from "../issues/phase-issues";
+import { MAX_PHASE_ISSUES, phaseIssues } from "../issues/phase-issues";
 import { runGh } from "../workflow/merge-check";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
@@ -103,7 +103,10 @@ const ownReviewFields = z.looseObject({
  */
 export const modelReportSchema = z.looseObject({
   /** The numbers of the GitHub issues the phase fixes (D67); `crew report --issue` adds to them. */
-  issues: z.array(issueNumber).default([]),
+  issues: z
+    .array(issueNumber)
+    .max(MAX_PHASE_ISSUES, `a phase fixes at most ${MAX_PHASE_ISSUES} issues: split it`)
+    .default([]),
   tests: z
     .looseObject({
       targeted: z.array(testRunFields).default([]),
@@ -399,6 +402,13 @@ export function buildReport(
     );
   }
   const review = model.review === null ? null : { ...model.review, sha: facts.reviewSha ?? "" };
+  const issueList = phaseIssues(record, { issues: [...model.issues, ...issues] });
+  if (issueList.length > MAX_PHASE_ISSUES) {
+    throw refusal(
+      `the phase names ${issueList.length} issues it fixes (the JSON part, --issue and the issue it started from together), and a phase fixes at most ${MAX_PHASE_ISSUES}`,
+      "report the ones this phase fixes; the lead files the rest for another phase",
+    );
+  }
   return {
     base: facts.base,
     branch: facts.branch,
@@ -406,7 +416,7 @@ export function buildReport(
     checks: model.checks,
     docs: model.docs,
     // The model's list, `--issue`, and the issue `crew start --issue` stored on the record.
-    issues: phaseIssues(record, { issues: [...model.issues, ...issues] }),
+    issues: issueList,
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,

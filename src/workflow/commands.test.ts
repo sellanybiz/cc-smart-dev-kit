@@ -78,6 +78,8 @@ describe("workflow show", () => {
       "clearWorktreeAfterMerge = false (default)",
       "issues.enabled = false (default)",
       "issues.allowPublic = false (default)",
+      "issues.watch = false (default)",
+      "issues.watchMinutes = 5 (default)",
       "issues.foundLabel = kit:found (default)",
       "issues.fixedLabel = fixed-unreleased (default)",
       "issues.readyLabel = kit:ready (default)",
@@ -748,6 +750,17 @@ describe("the review gate (CM-1)", () => {
     );
     const ok = context(tempDir("not-git"));
     expect(await runWorkflow(["set", "issues.readyLabel", "ready-to-build"], ok.context)).toBe(0);
+  });
+
+  test("GI4: issues.watchMinutes has a floor of 2 and a ceiling of a day, said when typed", async () => {
+    for (const value of ["1", "0", "1441", "2.5", "often"]) {
+      const run = context(tempDir("not-git"));
+      expect(await runWorkflow(["set", "issues.watchMinutes", value], run.context)).toBe(2);
+      expect(run.errors[0]).toContain("issues.watchMinutes is a whole number 2-1440");
+    }
+    const ok = context(tempDir("not-git"));
+    expect(await runWorkflow(["set", "issues.watchMinutes", "2"], ok.context)).toBe(0);
+    expect(await runWorkflow(["set", "issues.watch", "true"], ok.context)).toBe(0);
   });
 
   test("GI4: set refuses a label that is another issue label, and writes nothing", async () => {

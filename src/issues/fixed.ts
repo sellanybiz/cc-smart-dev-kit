@@ -28,11 +28,13 @@ import {
   createLabel,
   ghProblem,
   type IssueWorld,
+  kitAccount,
   labelsProblem,
   ownRepository,
   parseRepoFacts,
   REPO_FIELDS,
   resolveSwitch,
+  sameAccount,
 } from "./file";
 import { screenText } from "./screen";
 
@@ -106,6 +108,8 @@ export type Gate =
       fixedLabel: string;
       home: string | null;
       kind: "ready";
+      /** The account the kit posts as: only its comments carry a marker that counts. */
+      login: string;
       read: (args: string[]) => Promise<GhResult>;
       repo: string;
       write: (args: string[], input?: string) => Promise<GhResult>;
@@ -151,12 +155,15 @@ export async function openGate(world: IssueWorld): Promise<Gate> {
     const publicOff = publicIssuesOff(policy.resolved, policy.base);
     if (publicOff !== null) return { kind: "off", why: publicOff };
   }
+  const account = await kitAccount(read);
+  if ("why" in account) return { kind: "failed", why: account.why };
   return {
     cwd: world.cwd,
     env: world.env,
     fixedLabel: policy.resolved.issues.fixedLabel.value,
     home: world.home,
     kind: "ready",
+    login: account.login,
     read,
     repo: own.repo,
     write,
@@ -172,13 +179,26 @@ export type MarkOutcome =
   /** The text would not pass the screen: nothing was sent, and a retry would say the same. */
   | { kind: "refused"; why: string };
 
+/** A comment as `gh issue view|list --json comments` prints it. */
+type RawComment = { author?: { login?: unknown } | null; body?: unknown };
+
+/**
+ * The bodies of the comments `login` wrote. A marker counts only in these (`kitAccount`): it is
+ * plain text, so a stranger can copy it.
+ */
+function ownBodies(comments: readonly RawComment[], login: string): string[] {
+  return comments.flatMap((one) =>
+    typeof one.body === "string" && sameAccount(one.author?.login, login) ? [one.body] : [],
+  );
+}
+
 /** What `gh issue view --json state,labels,comments` says, or why it could not be read. */
-type Viewed = { closed: boolean; comments: string[]; labels: string[] } | { why: string };
+type Viewed = { closed: boolean; comments: RawComment[]; labels: string[] } | { why: string };
 
 function parseViewed(out: string): Viewed {
   try {
     const view = JSON.parse(out) as {
-      comments?: { body?: unknown }[];
+      comments?: RawComment[];
       labels?: { name?: unknown }[];
       state?: unknown;
     };
@@ -187,9 +207,7 @@ function parseViewed(out: string): Viewed {
     }
     return {
       closed: view.state.toUpperCase() === "CLOSED",
-      comments: (view.comments ?? []).flatMap((one) =>
-        typeof one.body === "string" ? [one.body] : [],
-      ),
+      comments: view.comments ?? [],
       labels: view.labels.flatMap((one) => (typeof one.name === "string" ? [one.name] : [])),
     };
   } catch {
@@ -225,12 +243,14 @@ export async function markFixed(
   if ("why" in issue) return { kind: "failed", why: issue.why };
   if (issue.closed) return { kind: "closed" };
 
-  const done = issue.comments.flatMap(fixedMarkers).some(
-    (one) =>
-      (one.branch === mark.branch && one.tip === mark.tip) ||
-      // A hand-off chain: an earlier branch of the phase comes in with the same merge.
-      (mark.merge !== null && one.merge === mark.merge),
-  );
+  const done = ownBodies(issue.comments, gate.login)
+    .flatMap(fixedMarkers)
+    .some(
+      (one) =>
+        (one.branch === mark.branch && one.tip === mark.tip) ||
+        // A hand-off chain: an earlier branch of the phase comes in with the same merge.
+        (mark.merge !== null && one.merge === mark.merge),
+    );
   let commented = false;
   if (!done) {
     const text = fixedComment(mark);
@@ -339,7 +359,7 @@ export async function listFixed(
     "number,comments",
   ]);
   if (listed.kind !== "ok") return { kind: "failed", why: ghProblem("listed the issues", listed) };
-  let rows: { comments?: { body?: unknown }[]; number?: unknown }[];
+  let rows: { comments?: RawComment[]; number?: unknown }[];
   try {
     rows = JSON.parse(listed.out) as typeof rows;
     if (!Array.isArray(rows)) throw new Error("not a list");
@@ -357,9 +377,7 @@ export async function listFixed(
     if (typeof row.number !== "number") {
       return { kind: "failed", why: "gh answered something this command cannot read" };
     }
-    let bodies = (row.comments ?? []).flatMap((one) =>
-      typeof one.body === "string" ? [one.body] : [],
-    );
+    let bodies = ownBodies(row.comments ?? [], gate.login);
     // `gh issue list` returns the first COMMENT_PAGE comments of an issue; a longer thread is
     // read whole with `issue view`, so a marker after the page is never missed.
     if ((row.comments?.length ?? 0) >= COMMENT_PAGE) {
@@ -377,7 +395,7 @@ export async function listFixed(
       }
       const viewed = parseViewed(whole.out);
       if ("why" in viewed) return { kind: "failed", why: viewed.why };
-      bodies = viewed.comments;
+      bodies = ownBodies(viewed.comments, gate.login);
     }
     const commits = bodies
       .flatMap((body) => fixedMarkers(body))

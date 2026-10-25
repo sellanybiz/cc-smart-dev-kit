@@ -12153,6 +12153,19 @@ function currentTerminal(env = process.env, platform = process.platform) {
   });
 }
 
+// src/issues/phase-issues.ts
+function recordIssueNumbers(record) {
+  const issue = "issue" in record ? record.issue : undefined;
+  if (typeof issue !== "object" || issue === null || !("number" in issue))
+    return [];
+  const { number } = issue;
+  return typeof number === "number" && Number.isInteger(number) && number > 0 ? [number] : [];
+}
+function phaseIssues(record, report) {
+  return [...new Set([...report?.issues ?? [], ...recordIssueNumbers(record)])].sort((a, b) => a - b);
+}
+var MAX_PHASE_ISSUES = 10;
+
 // src/hooks/git.ts
 import { realpathSync as realpathSync2 } from "fs";
 import { basename as basename3, dirname as dirname5, join as join14, resolve as resolve3 } from "path";
@@ -12551,6 +12564,8 @@ var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ONE = { kind: "whole", min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
 var ABOVE_ZERO = { kind: "positive" };
+var WATCH_MINUTES_FLOOR = 2;
+var WATCH_MINUTES = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
 function numberSchema(rule) {
   if (rule.kind === "positive")
     return number2().positive();
@@ -12573,6 +12588,7 @@ var NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -12630,6 +12646,8 @@ var workflowSchema = strictObject({
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
+    watch: boolean2().optional(),
+    watchMinutes: numberField("issues.watchMinutes"),
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
@@ -12685,6 +12703,8 @@ var workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready"
@@ -12732,6 +12752,8 @@ var POLICY_KEYS = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
@@ -13705,6 +13727,8 @@ var RESOLVED = {
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
   "issues.enabled": (r) => r.issues.enabled,
   "issues.allowPublic": (r) => r.issues.allowPublic,
+  "issues.watch": (r) => r.issues.watch,
+  "issues.watchMinutes": (r) => r.issues.watchMinutes,
   "issues.foundLabel": (r) => r.issues.foundLabel,
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
@@ -13765,6 +13789,8 @@ function resolveWorkflow(paths, projectConfig) {
     issues: {
       enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
       allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      watch: of("issues.watch", issues.watch ?? workflowDefaults.issues.watch),
+      watchMinutes: of("issues.watchMinutes", issues.watchMinutes ?? workflowDefaults.issues.watchMinutes),
       foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
       fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
@@ -14829,6 +14855,16 @@ function ghProblem(what, result, words = FILING) {
   const last = result.err.split(`
 `).filter((line) => line.trim() !== "").at(-1) ?? "no message";
   return `gh failed while it ${what} (${last.slice(0, 200)})`;
+}
+async function kitAccount(read) {
+  const result = await read(["api", "--hostname", "github.com", "user", "--jq", ".login"]);
+  if (result.kind !== "ok")
+    return { why: ghProblem("read which account the kit posts as", result) };
+  const login = result.out.trim();
+  return login === "" ? { why: "gh did not say which account the kit posts as, so no marker can be trusted" } : { login };
+}
+function sameAccount(author, login) {
+  return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
 }
 var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
 function parseRepoFacts(out) {
@@ -24889,16 +24925,23 @@ async function openGate(world) {
     if (publicOff !== null)
       return { kind: "off", why: publicOff };
   }
+  const account = await kitAccount(read);
+  if ("why" in account)
+    return { kind: "failed", why: account.why };
   return {
     cwd: world.cwd,
     env: world.env,
     fixedLabel: policy.resolved.issues.fixedLabel.value,
     home: world.home,
     kind: "ready",
+    login: account.login,
     read,
     repo: own.repo,
     write
   };
+}
+function ownBodies(comments, login) {
+  return comments.flatMap((one) => typeof one.body === "string" && sameAccount(one.author?.login, login) ? [one.body] : []);
 }
 function parseViewed(out) {
   try {
@@ -24908,7 +24951,7 @@ function parseViewed(out) {
     }
     return {
       closed: view.state.toUpperCase() === "CLOSED",
-      comments: (view.comments ?? []).flatMap((one) => typeof one.body === "string" ? [one.body] : []),
+      comments: view.comments ?? [],
       labels: view.labels.flatMap((one) => typeof one.name === "string" ? [one.name] : [])
     };
   } catch {
@@ -24934,7 +24977,7 @@ async function markFixed(gate, mark) {
     return { kind: "failed", why: issue.why };
   if (issue.closed)
     return { kind: "closed" };
-  const done = issue.comments.flatMap(fixedMarkers).some((one) => one.branch === mark.branch && one.tip === mark.tip || mark.merge !== null && one.merge === mark.merge);
+  const done = ownBodies(issue.comments, gate.login).flatMap(fixedMarkers).some((one) => one.branch === mark.branch && one.tip === mark.tip || mark.merge !== null && one.merge === mark.merge);
   let commented = false;
   if (!done) {
     const text = fixedComment(mark);
@@ -25042,7 +25085,7 @@ async function listFixed(gate, range) {
     if (typeof row.number !== "number") {
       return { kind: "failed", why: "gh answered something this command cannot read" };
     }
-    let bodies = (row.comments ?? []).flatMap((one) => typeof one.body === "string" ? [one.body] : []);
+    let bodies = ownBodies(row.comments ?? [], gate.login);
     if ((row.comments?.length ?? 0) >= COMMENT_PAGE) {
       const whole = await gate.read([
         "issue",
@@ -25059,7 +25102,7 @@ async function listFixed(gate, range) {
       const viewed = parseViewed(whole.out);
       if ("why" in viewed)
         return { kind: "failed", why: viewed.why };
-      bodies = viewed.comments;
+      bodies = ownBodies(viewed.comments, gate.login);
     }
     const commits = bodies.flatMap((body) => fixedMarkers(body)).flatMap((one) => one.merge === null ? [one.tip] : [one.tip, one.merge]);
     const inHead = commits.some((commit) => isAncestor(gate.cwd, gate.env, commit, range.head));
@@ -25114,12 +25157,25 @@ function queueMarks(file, marks) {
     return;
   writePending(file, [...queued, ...added.map((mark) => ({ ...mark, told: false }))]);
 }
+var MARKS_PER_PASS = 3;
+var ISSUE_WORK_MS = 45000;
+function passBudget(clock, limits = {}) {
+  return {
+    clock,
+    deadline: clock() + (limits.ms ?? ISSUE_WORK_MS),
+    marks: limits.marks ?? MARKS_PER_PASS
+  };
+}
+function hasTime(budget) {
+  return budget.clock() < budget.deadline;
+}
 var where = (mark) => `#${mark.issue} (${mark.branch})`;
-async function settleMarks(file, world, now) {
+async function settleMarks(file, world, now, budget = passBudget(() => now)) {
   const queued = readPending(file);
-  const due = queued.filter((mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS);
-  if (due.length === 0)
+  const allDue = queued.filter((mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS);
+  if (allDue.length === 0 || budget.marks <= 0 || !hasTime(budget))
     return [];
+  const due = allDue.slice(0, budget.marks);
   const lines = [];
   const gate = await openGate(world);
   const left = queued.filter((mark) => !due.includes(mark));
@@ -25138,6 +25194,11 @@ async function settleMarks(file, world, now) {
     return lines;
   }
   for (const mark of due) {
+    if (!hasTime(budget)) {
+      left.push(mark);
+      continue;
+    }
+    budget.marks -= 1;
     const done = await markFixed(gate, mark);
     if (done.kind === "failed") {
       left.push({ ...mark, told: true, triedAt: now });
@@ -25154,18 +25215,6 @@ async function settleMarks(file, world, now) {
   }
   writePending(file, left);
   return lines;
-}
-
-// src/issues/phase-issues.ts
-function recordIssueNumbers(record) {
-  const issue = "issue" in record ? record.issue : undefined;
-  if (typeof issue !== "object" || issue === null || !("number" in issue))
-    return [];
-  const { number } = issue;
-  return typeof number === "number" && Number.isInteger(number) && number > 0 ? [number] : [];
-}
-function phaseIssues(record, report) {
-  return [...new Set([...report?.issues ?? [], ...recordIssueNumbers(record)])].sort((a, b) => a - b);
 }
 
 // src/crew/bypass.ts
@@ -28808,6 +28857,7 @@ async function watchPass(state, ctx, scope) {
   }
   const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), scope.goesOn ?? (() => Promise.resolve(true)), agents, say);
   if (await scope.goesOn?.() !== false) {
+    const budget = passBudget(ctx.now);
     const settleKey = "issues:settle";
     try {
       const marks = await settleMarks(issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId), {
@@ -28816,7 +28866,7 @@ async function watchPass(state, ctx, scope) {
         gh: scope.gh ?? runGh,
         home: ctx.paths.home,
         paths: ctx.paths
-      }, ctx.now());
+      }, ctx.now(), budget);
       for (const line of marks)
         say(line);
       delete said[settleKey];
@@ -31866,7 +31916,10 @@ async function commentHandBack(world, issue, report, crewId) {
     if (!Array.isArray(comments)) {
       return failed("gh answered something this command cannot read about the comments");
     }
-    const said = comments.flat().some((one) => typeof one.body === "string" && one.body.split(/\r?\n/).some((line) => line.trim() === marker));
+    const account = await kitAccount((args) => run(args, GH_TIMEOUT_MS));
+    if ("why" in account)
+      return failed(account.why);
+    const said = comments.flat().some((one) => typeof one.body === "string" && sameAccount(one.user?.login, account.login) && one.body.split(/\r?\n/).some((line) => line.trim() === marker));
     if (said)
       return { kind: "already" };
     const body = handBackComment(report, crewId);
@@ -32058,7 +32111,7 @@ var ownReviewFields = looseObject({
   reason: string2().min(1)
 });
 var modelReportSchema = looseObject({
-  issues: array(issueNumber).default([]),
+  issues: array(issueNumber).max(MAX_PHASE_ISSUES, `a phase fixes at most ${MAX_PHASE_ISSUES} issues: split it`).default([]),
   tests: looseObject({
     targeted: array(testRunFields).default([]),
     full: testRunFields.nullable().default(null)
@@ -32207,13 +32260,17 @@ function buildReport(model, facts, status, record, summary = null, extra = {}, i
     throw refusal2("the review record holds no review of this branch, so the report cannot claim one", "record the review (workflow review-done), or report no review");
   }
   const review = model.review === null ? null : { ...model.review, sha: facts.reviewSha ?? "" };
+  const issueList = phaseIssues(record, { issues: [...model.issues, ...issues] });
+  if (issueList.length > MAX_PHASE_ISSUES) {
+    throw refusal2(`the phase names ${issueList.length} issues it fixes (the JSON part, --issue and the issue it started from together), and a phase fixes at most ${MAX_PHASE_ISSUES}`, "report the ones this phase fixes; the lead files the rest for another phase");
+  }
   return {
     base: facts.base,
     branch: facts.branch,
     changed: facts.changed,
     checks: model.checks,
     docs: model.docs,
-    issues: phaseIssues(record, { issues: [...model.issues, ...issues] }),
+    issues: issueList,
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
@@ -33909,6 +33966,11 @@ function parseReportArgs(argv) {
       return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
     }
     issues.push(Number(raw));
+  }
+  if (issues.length > MAX_PHASE_ISSUES) {
+    return {
+      error: `--issue names at most ${MAX_PHASE_ISSUES} issues (a phase that fixes more is split), not ${issues.length}`
+    };
   }
   const recommendRaw = options.get("--recommend") ?? null;
   let recommend = null;

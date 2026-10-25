@@ -12,6 +12,7 @@
 import { COMMAND } from "../build-info/names";
 import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
+import { MAX_PHASE_ISSUES } from "../issues/phase-issues";
 import { parseIssueRef } from "../issues/pickup";
 import { ALLOWED_EFFORTS, CREW_KIND_NAMES, CREW_KINDS, isCrewKind } from "../models/launch-policy";
 import { type AnswerArgs, runCrewAnswer } from "./answer";
@@ -658,6 +659,11 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
       return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
     }
     issues.push(Number(raw));
+  }
+  if (issues.length > MAX_PHASE_ISSUES) {
+    return {
+      error: `--issue names at most ${MAX_PHASE_ISSUES} issues (a phase that fixes more is split), not ${issues.length}`,
+    };
   }
   const recommendRaw = options.get("--recommend") ?? null;
   let recommend: null | number = null;

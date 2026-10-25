@@ -46,6 +46,16 @@ const AT_LEAST_ONE: NumberRule = { kind: "whole", min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
 const ABOVE_ZERO: NumberRule = { kind: "positive" };
 
+/**
+ * The fewest minutes between two looks at GitHub (`issues.watchMinutes`). One look is two
+ * requests, so 2 minutes is at most 60 requests an hour for a repository, against the 5 000 an
+ * authenticated account has; a look that finds nothing new is a `304`, which is free against that
+ * limit (`.claude/research/2026-10-25-gi4-conditional.md`). A lower floor would only raise the
+ * chance of a secondary limit. At most a day, so a typo cannot silence the watch for good.
+ */
+export const WATCH_MINUTES_FLOOR = 2;
+const WATCH_MINUTES: NumberRule = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
+
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
   if (rule.kind === "positive") return z.number().positive();
@@ -70,6 +80,7 @@ const NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -227,6 +238,14 @@ export const workflowSchema = z.strictObject({
       enabled: z.boolean().optional(),
       /** It may file them in a public repository, where everyone reads them. Default: false. */
       allowPublic: z.boolean().optional(),
+      /**
+       * The lead's watch looks at the project's issues and comments now and then and prints a
+       * line for each new one (1.4.0, `src/issues/feed.ts`). A second switch, off by default even
+       * with `enabled` on: it needs `enabled`, and reads only. Default: false.
+       */
+      watch: z.boolean().optional(),
+      /** Minutes between two looks, 2 or more (`WATCH_MINUTES_FLOOR`). Default: 5. */
+      watchMinutes: numberField("issues.watchMinutes"),
       /** The label on every issue the kit files. Default: kit:found. */
       foundLabel: labelSchema.optional(),
       /** The label of an issue whose fix is merged and not yet released. Default: fixed-unreleased. */
@@ -354,6 +373,8 @@ export const workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready",
@@ -418,6 +439,8 @@ export type WorkflowKey =
   | "clearWorktreeAfterMerge"
   | "issues.enabled"
   | "issues.allowPublic"
+  | "issues.watch"
+  | "issues.watchMinutes"
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
@@ -459,6 +482,8 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",

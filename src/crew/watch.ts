@@ -53,7 +53,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
-import { queueMarks, settleMarks } from "../issues/pending";
+import { passBudget, queueMarks, settleMarks } from "../issues/pending";
 import { phaseIssues } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
 import { type GhExec, runGh } from "../workflow/merge-check";
@@ -487,7 +487,7 @@ export function issueMarksFile(stateDir: string, repo: string, leadSessionId: st
 
 /**
  * A crew session's merge is known (the one place: the watch marking its record merged): queue one
- * mark for each issue its phase fixes. The marks are sent by `settleIssueMarks`, in this pass and
+ * mark for each issue its phase fixes. The marks are sent by `settleMarks`, in this pass and
  * every later one until GitHub has taken them. A report that cannot be read has no issues to
  * name; the record's own issue (`crew start --issue`) still counts.
  */
@@ -1165,6 +1165,9 @@ export async function watchPass(
   // takes them. Only the watch that holds its lead's lease talks to GitHub (WF1). A failure is
   // one line to the lead, never a failed merge; the queue is the memory.
   if ((await scope.goesOn?.()) !== false) {
+    // One budget for all the pass's work on GitHub (`passBudget`), after the lines the pass has
+    // already said: a slow `gh` never holds the crew's news.
+    const budget = passBudget(ctx.now);
     const settleKey = "issues:settle";
     try {
       const marks = await settleMarks(
@@ -1177,6 +1180,7 @@ export async function watchPass(
           paths: ctx.paths,
         },
         ctx.now(),
+        budget,
       );
       for (const line of marks) say(line);
       delete said[settleKey];

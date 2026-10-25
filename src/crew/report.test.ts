@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeIssueGh } from "../issues/fake-github";
+import { MAX_PHASE_ISSUES } from "../issues/phase-issues";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { commitConfig } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -615,6 +616,40 @@ describe("crew report", () => {
       },
     );
 
+    test("GI4: a phase fixes at most MAX_PHASE_ISSUES issues: more --issue repeats are refused", async () => {
+      const world = await crewWorld1();
+      const repeats = (count: number) =>
+        Array.from({ length: count }, (_, at) => ["--issue", String(at + 1)]).flat();
+      expect(await runCrew([...doneArgs(), ...repeats(MAX_PHASE_ISSUES + 1)], ctxOf(world))).toBe(
+        2,
+      );
+      expect(world.err[0]).toContain(`--issue names at most ${MAX_PHASE_ISSUES} issues`);
+      expect(stored(world)).toBeNull();
+    });
+
+    test("GI4: the JSON part's list, and the two together, stay within the cap", async () => {
+      const world = await crewWorld1();
+      const many = (count: number) => Array.from({ length: count }, (_, at) => at + 1);
+      expect(
+        await runCrew(doneArgs(modelPart({ issues: many(MAX_PHASE_ISSUES + 1) })), ctxOf(world)),
+      ).toBe(1);
+      expect(world.err[0]).toContain(`at most ${MAX_PHASE_ISSUES}`);
+      world.err.length = 0;
+      const together = [
+        ...doneArgs(modelPart({ issues: many(MAX_PHASE_ISSUES) })),
+        "--issue",
+        "99",
+      ];
+      expect(await runCrew(together, ctxOf(world))).toBe(1);
+      expect(world.err[0]).toContain(`at most ${MAX_PHASE_ISSUES}`);
+      expect(stored(world)).toBeNull();
+      world.err.length = 0;
+      expect(
+        await runCrew(doneArgs(modelPart({ issues: many(MAX_PHASE_ISSUES) })), ctxOf(world)),
+      ).toBe(0);
+      expect(stored(world)?.issues).toEqual(many(MAX_PHASE_ISSUES));
+    });
+
     test("--issue belongs to a report, not a question", async () => {
       const world = await crewWorld1();
       const args = ["report", "--question", "q?", "--option", "a", "--option", "b", "--issue", "3"];
@@ -976,6 +1011,31 @@ ${MARKER("handoff")}
     });
     expect(code).toBe(0);
     expect(fake.posted).toEqual([]);
+  });
+
+  test("GI4: a stranger's copy of the marker does not silence the hand-back", async () => {
+    const { code, fake } = await issueReport("done", {
+      comments: { 12: [{ author: "stranger", body: `copied\n\n${MARKER("done")}\n` }] },
+    });
+    expect(code).toBe(0);
+    expect(fake.posted).toHaveLength(1);
+  });
+
+  test("GI4: the account the kit posts as cannot be read: no comment, one line to the lead", async () => {
+    const world = await crewWorld1({ issue: true });
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {} });
+    const noUser: typeof fake.exec = async (args, call) =>
+      args.includes("user")
+        ? { code: 1, err: "gh: HTTP 500", kind: "failed", out: "" }
+        : await fake.exec(args, call);
+    const code = await runCrew(
+      doneArgs(),
+      world.ctx({ cwd: world.worktree, gh: noUser }, CREW_ENV),
+    );
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+    const line = world.out.find((one) => one.startsWith("note: the hand-back comment")) ?? "";
+    expect(line).toContain("which account");
   });
 
   test("another session's comment on the same issue does not stop this one", async () => {
