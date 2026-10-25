@@ -28,9 +28,9 @@ __export(exports_iso, {
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync86, statSync as statSync32 } from "fs";
+import { existsSync as existsSync87, statSync as statSync32 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join100, resolve as resolve20 } from "path";
+import { join as join101, resolve as resolve20 } from "path";
 
 // src/browser/check.ts
 import { existsSync as existsSync4, mkdtempSync, readdirSync as readdirSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -56267,8 +56267,8 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync81, mkdirSync as mkdirSync34, rmSync as rmSync23 } from "fs";
-import { basename as basename20, delimiter, dirname as dirname35, isAbsolute as isAbsolute9, join as join93, relative as relative10 } from "path";
+import { existsSync as existsSync82, mkdirSync as mkdirSync34, rmSync as rmSync23 } from "fs";
+import { basename as basename20, delimiter, dirname as dirname35, isAbsolute as isAbsolute9, join as join94, relative as relative10 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join92 } from "path";
@@ -56310,16 +56310,23 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/setup/remote-control.ts
+import { existsSync as existsSync81 } from "fs";
+import { join as join93 } from "path";
 var REMOTE_CONTROL_KEY = ["remoteControlAtStartup"];
 var REMOTE_CONTROL_VALUE = true;
+function remoteControlReleasedFile(stateDir) {
+  return join93(stateDir, "remote-control-released");
+}
 function planRemoteControl(paths) {
   const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
   const whose = ownership(records, REMOTE_CONTROL_KEY, current);
   if (whose === "changed")
     return "drop";
-  if (whose === "ours" || !current.found)
+  if (whose === "ours")
     return "set";
+  if (!current.found)
+    return existsSync81(remoteControlReleasedFile(paths.stateDir)) ? "leave" : "set";
   return "leave";
 }
 
@@ -56333,7 +56340,7 @@ function shownValue2(path, value) {
   return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync81(settingsFile))
+  if (!existsSync82(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -56344,10 +56351,10 @@ function marketplaceKnown(settingsFile) {
   }
 }
 function statuslineDeclinedFile(stateDir) {
-  return join93(stateDir, "statusline-declined");
+  return join94(stateDir, "statusline-declined");
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync81(settingsFile))
+  if (!existsSync82(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -56404,7 +56411,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync81(paths.tavilyKeyFile) ? "changed" : "created";
+    const mark = existsSync82(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
       mkdirSync34(dirname35(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
@@ -56416,6 +56423,10 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   const remoteControl = planRemoteControl(paths);
   if (remoteControl === "set")
     set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
+  if (remoteControl === "drop" && !dryRun) {
+    atomicWrite(remoteControlReleasedFile(paths.stateDir), `released
+`, 384);
+  }
   if (managed.statusline)
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on")
@@ -56619,7 +56630,7 @@ function askAutoMode(paths, options, planned, out, screen, report) {
   return wanted;
 }
 function askStatusline(paths, machine, managed, yes) {
-  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync81(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync82(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
@@ -57336,12 +57347,12 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync82, readFileSync as readFileSync90, rmSync as rmSync24, statSync as statSync30, writeFileSync as writeFileSync16 } from "fs";
+import { existsSync as existsSync83, readFileSync as readFileSync90, rmSync as rmSync24, statSync as statSync30, writeFileSync as writeFileSync16 } from "fs";
 import { tmpdir as tmpdir11 } from "os";
-import { basename as basename21, join as join95 } from "path";
+import { basename as basename21, join as join96 } from "path";
 
 // src/hooks/alert-sound.ts
-import { join as join94 } from "path";
+import { join as join95 } from "path";
 var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
 var MACOS_SOUNDS = {
   "dialog-warning": "Basso",
@@ -57352,13 +57363,13 @@ function soundArgv(moment, platform, which) {
   if (platform === "linux") {
     const paplay = which("paplay");
     if (paplay !== null)
-      return [paplay, join94(SOUND_DIR, `${moment}.oga`)];
+      return [paplay, join95(SOUND_DIR, `${moment}.oga`)];
     const canberra = which("canberra-gtk-play");
     return canberra === null ? null : [canberra, "-i", moment];
   }
   if (platform === "darwin") {
     const afplay = which("afplay");
-    return afplay === null ? null : [afplay, join94("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+    return afplay === null ? null : [afplay, join95("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
 }
@@ -57438,7 +57449,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync90(join95(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync90(join96(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject22(settings) || !isJsonObject22(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -57447,7 +57458,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync90(join95(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync90(join96(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject22(installed) || !isJsonObject22(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -57567,7 +57578,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync82(ctx.finished))
+      if (input.stop_hook_active === true && existsSync83(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -57741,9 +57752,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join95(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join95(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join95(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join96(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join96(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join96(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -57828,12 +57839,12 @@ function withProblem2(result, problem) {
 }
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync83 } from "fs";
-import { join as join97 } from "path";
+import { existsSync as existsSync84 } from "fs";
+import { join as join98 } from "path";
 
 // src/hooks/terminal.ts
 import { closeSync as closeSync13, constants as constants4, openSync as openSync13, readlinkSync as readlinkSync7, statSync as statSync31, writeSync as writeSync2 } from "fs";
-import { join as join96 } from "path";
+import { join as join97 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -57852,7 +57863,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join96(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join97(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -57915,11 +57926,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join97(paths.binDir, LAUNCHER_NAME);
+    const launcher = join98(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync83(launcher) ? launcher : null,
+      launcher: existsSync84(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,
@@ -57942,14 +57953,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync84, readFileSync as readFileSync91 } from "fs";
+import { existsSync as existsSync85, readFileSync as readFileSync91 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
-    exists: (path) => existsSync84(path),
+    exists: (path) => existsSync85(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync84("/etc/os-release") ? readFileSync91("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync85("/etc/os-release") ? readFileSync91("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -58030,17 +58041,17 @@ function realMachine(env, confirm) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync85, mkdirSync as mkdirSync35, readFileSync as readFileSync92 } from "fs";
-import { basename as basename23, dirname as dirname36, join as join99, relative as relative11 } from "path";
+import { existsSync as existsSync86, mkdirSync as mkdirSync35, readFileSync as readFileSync92 } from "fs";
+import { basename as basename23, dirname as dirname36, join as join100, relative as relative11 } from "path";
 
 // src/portal/facts.ts
-import { basename as basename22, join as join98 } from "path";
+import { basename as basename22, join as join99 } from "path";
 var SLOT_ORDER = ["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)];
 function projectFiles(root) {
   return {
-    config: join98(root, ".claude", "cc-smart-dev-kit.json"),
-    localSettings: join98(root, ".claude", "settings.local.json"),
-    settings: join98(root, ".claude", "settings.json")
+    config: join99(root, ".claude", "cc-smart-dev-kit.json"),
+    localSettings: join99(root, ".claude", "settings.local.json"),
+    settings: join99(root, ".claude", "settings.json")
   };
 }
 
@@ -58215,7 +58226,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync85(files.config);
+  const set = existsSync86(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -58600,8 +58611,8 @@ async function runUser(args, ctx) {
 
 // src/entries/cli.ts
 function distBundle(name) {
-  const beside = join100(import.meta.dir, name);
-  return existsSync86(beside) ? beside : join100(import.meta.dir, "..", "..", "plugin", "dist", name);
+  const beside = join101(import.meta.dir, name);
+  return existsSync87(beside) ? beside : join101(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -58780,7 +58791,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync86(project) || !statSync32(project).isDirectory()) {
+      if (!existsSync87(project) || !statSync32(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
@@ -58868,7 +58879,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         portal: () => testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
         project: {
           cwd: process.cwd(),
-          pluginHooksFile: join100(pluginDir(), "hooks", "hooks.json")
+          pluginHooksFile: join101(pluginDir(), "hooks", "hooks.json")
         },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),

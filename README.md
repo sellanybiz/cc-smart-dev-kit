@@ -992,7 +992,7 @@ routed by its model name until the router is updated (see
 `~/.claude/settings.json`, so a session connects to claude.ai/code and the Claude app when it
 starts. It writes the key only while it is absent, with no question. A `true` or `false` you set is
 yours: setup leaves it and does not mention it. A key setup wrote and you changed or deleted since
-is yours too (setup says so once). `restore` removes the key only while it still holds the `true`
+is yours too (setup says so once, and never writes the key again). `restore` removes the key only while it still holds the `true`
 setup wrote. You can switch it in `/config` ("Enable Remote Control for all sessions") at any time.
 Claude Code reads the key from your user settings (or a `--settings` file, or managed settings),
 never from a project's files, and Remote Control needs a claude.ai subscription login (an API key does not work).

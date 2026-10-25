@@ -60,7 +60,9 @@ The guarantees:
   it). A value of the person's own (`true` or `false`) is theirs: setup neither writes nor
   names it. A key setup wrote and the person changed or deleted since is theirs too: setup
   gives up its claim in the record (one quiet `·` line, once), so a `true` they write later is
-  never taken for setup's. A second setup changes nothing, and `restore` removes the key only
+  never taken for setup's. The release is a lasting record too, `remote-control-released` in
+  the state folder (like the status line's "no"): an absent key is then left absent on every
+  later run, and `restore` leaves the record, as it leaves that "no". A second setup changes nothing, and `restore` removes the key only
   while it still holds the `true` setup wrote.
 - **`--dry-run`** shows every change and writes nothing at all: no state folder, no
   lock. Every setup runs this read-only pass first, outside the lock.
