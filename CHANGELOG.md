@@ -91,15 +91,15 @@ it is a minor version.
   target and the idle time; a backend's target rests like any failure, a Claude target rests
   nothing. `timeouts.firstByteMs` and `streamIdleMs` are capped at 2147483647 ms. `router.js`
   changes, so run `cc-smart-dev-kit gateway setup` on every machine that uses the gateway.
-- **When you cannot answer: `cc-smart-dev-kit user unavailable [--until <time>]`.** While it is
-  on, every session follows the `user-unavailable` skill: it never stops to ask, takes the
-  reversible, recommended choice and parks it as a decision, and parks your questions and every
-  action that needs a yes, with its exact command. The hooks hold the line: `AskUserQuestion`,
-  `ExitPlanMode` and Claude Code's own permission prompt are denied and parked, and every other
-  hook's question becomes a deny that parks the call, never an allow. `user available` ends it;
-  `/cc-smart-dev-kit:user-available` goes through the list (`user list`, `user status`, `user
-  clear`). In Claude Code's default permission mode, allow `Bash(cc-smart-dev-kit user park:*)`
-  once.
+- **When you cannot answer: `cc-smart-dev-kit user unavailable [--until <time>]`.** While it is on,
+  every session follows the `user-unavailable` skill: it never stops to ask, takes the reversible,
+  recommended choice and parks it as a decision, and parks your questions and every action that
+  needs a yes, with its exact command. The hooks hold the line: `AskUserQuestion` and
+  `ExitPlanMode` are denied with the step that parks the question, Claude Code's own permission
+  prompt is denied and parked, and every other hook's question becomes a deny that parks the call,
+  never an allow. `user available` ends it; `/cc-smart-dev-kit:user-available` goes through the
+  list (`user list`, `user status`, `user clear`). In Claude Code's default permission mode, allow
+  `Bash(cc-smart-dev-kit user park:*)` once.
 - **Every session knows which tier is Claude.** A note at each session start, and once when a
   slot changes mid-session, says what Haiku, Sonnet, Opus and Fable run for this session (the
   agent guard's reading, the session's own gateway) and the effort rule. The usage-limit alert
