@@ -696,8 +696,12 @@ nothing else**, from two readers:
   (`crew lead`), so the lines before it are history the lead already saw.
 - **agent view** (`claude agents --json --all`), read on every pass. It raises four alerts, each
   said once while it lasts and none of them an action: a crew session that **needs the person** (a
-  permission prompt or an input), one whose transcript has not moved for
-  `workflow.crew.quietMinutes` (**quiet**), one whose turn **ended with no report**, and one that
+  permission prompt or an input; when the wait ends and the record is still at work, one more
+  line, `<name>: going again — the wait is answered`, so the lead stops naming it as waiting), one
+  whose transcript has not moved for `workflow.crew.quietMinutes` (**quiet**: one line when the
+  stretch starts, one more at three times the quiet minutes, then nothing until the crew session
+  writes again — the line carries the minutes, so the watch remembers the alert's key, not its
+  text; WN1), one whose turn **ended with no report**, and one that
   **never confirmed its worktree** — its session is listed and alive, but its own start hook has
   not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (3 minutes: the hook
   may have crashed, been silenced by `ownHooks`, or run outside git). It
@@ -985,11 +989,24 @@ sessions, never a crew session**: a crew session follows its own lead's branch, 
 lead's work, and merging the base into it would be wrong. Each other lead also gets one `merge`
 event, so its watch says the line (who merged, what number and title, and to merge
 `origin/<base>` at its next stop) without waiting for the message the merging session sends. The
-lead that merged is never told to message itself.
+lead that merged is never told to message itself, nor is its record from before a restart: a
+restart runs `crew lead` in a new session, which writes a second record, so the hook drops a
+record that agrees with the merging lead's own in repository, plan, name and folder (the name
+alone would drop another lead of the same name in another folder). A name is listed once, though
+another lead that restarted has two records (WN1).
 
 **A file clash reaches the other lead** (D55, `src/crew/start.ts`): a new phase's `--files`
 compared with a running or queued crew session of another lead — see § The lead and the launch,
 step 3 — prints one line at the start and records one `clash` event, which that lead's watch says.
+**Each pair is said once, for its whole life** (WN1): the event carries the pair's key
+(`clashPairKey`: the two leads' session ids and phases, sorted, so it is the same from either
+side), and a start that meets a pair already in the events log says nothing. The key names the
+phase, not the crew session, so a phase started again under a new slug is the same pair (and a
+second session of that phase with other files is silent too). The key holds the lead's session
+id, so a lead that restarts in a new session starts its pairs over. A
+`--files` pattern that matches more than a quarter of the tracked files (in a repository of at
+least 20) gets one `warning:` line at the start, naming the glob; it never refuses, because a
+glob that wide makes every other lead's session clash with it.
 
 **The message guard** (`src/hooks/message-guard.ts`, PreToolUse on `SendMessage`) is the
 enforcement. Its other-repo rule is unchanged and runs first (§ The hooks): a message to a session

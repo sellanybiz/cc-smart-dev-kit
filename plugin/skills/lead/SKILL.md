@@ -127,13 +127,15 @@ merge it made into the base, and a file clash of its phase with yours. So after 
 | `question`, a technical one | answer it (§ 5) |
 | `question`, one that is the person's | `AskUserQuestion` (§ 5) |
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
+| `going again — the wait is answered` | the person answered that wait: nothing to do, and stop naming it as waiting |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
 | the person wrote to a crew session | read its next report against the brief before you merge it. Their word wins over the brief, so the phase it hands back may no longer be the phase it started (§ 6) |
 | `contract from another lead` (a note from another lead of this repository) | read it; a contract note needs no reply. If it changes your plan, act in this turn |
 | `question from another lead` | answer it: `cc-smart-dev-kit crew lead tell "<that lead>" --kind contract "<your answer>"` |
 | `merged #<n> … into <base>` (another lead merged into the base) | at your next stop, merge `origin/<base>` into the branch your folder is on, and run your install if a lock file changed. A crew session's branch never takes the base in: its lead's branch already has it |
-| `clash: …` (a crew session of yours and another lead's phase may change the same files) | nothing: both starts go on. If the two phases must not share, tell that lead with `crew lead tell` (§ 3) |
-| `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
+| `clash: …` (a crew session of yours and another lead's phase may change the same files) | nothing: both starts go on. If the two phases must not share, tell that lead with `crew lead tell` (§ 3). Each pair of phases is said once. |
+| `warning: --files "<glob>" matches …` (at your `crew start`) | the glob names far more files than one phase owns, so other leads' sessions will clash with it: narrow it for the next start |
+| `failed`, `blocked`, `quiet`, a turn ended with no report | § 6. A `quiet` line comes once when a stretch starts and once more at three times `crew.quietMinutes`; it does not repeat each minute |
 | `paused` (a model limit) | nothing: the watch resumes it once the gateway answers again, one first and the others 30 s apart; after `/login` on another account, `cc-smart-dev-kit crew resume --paused` |
 
 **Between lines:** the integration work that is yours — the merges, the full check after each,
@@ -144,7 +146,10 @@ phase whose waits are met runs or is queued.
 **Where monitors do not run** (telemetry off: `DISABLE_TELEMETRY` in the environment or in a
 settings file's `env`), run `cc-smart-dev-kit crew watch --once` with
 `run_in_background: true`. It ends on the next change, and its end starts your next turn. Act
-on the line, then start the next `--once` in the same turn. **On native Windows** the plugin's
+on the line, then start the next `--once` in the same turn — except after `crew watch: a newer
+watch of this lead runs (pid …); this one ends`: nothing to do, and start no other `--once`. One
+watch acts for a lead, the newest: a second `--once` takes the lease from the first, and the
+first's exit would otherwise start yet another. **On native Windows** the plugin's
 monitors need Git Bash, and whether Claude Code starts one through it there is not yet proved:
 until it is, treat `--once` as the way you hear, and the `lead-notes` hook as the safety net
 (`docs/windows-setup.md`).

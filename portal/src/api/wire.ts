@@ -1237,6 +1237,7 @@ export interface CrewEvent {
   sha?: string | null | undefined;
   note?: string | null | undefined;
   memoryMb?: number | null | undefined;
+  pair?: string | undefined;
   tell?: { [key: string]: unknown; kind: string; to: string[] } | null | undefined;
 }
 

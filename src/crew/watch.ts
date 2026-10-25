@@ -11,8 +11,9 @@
  *   nowhere else**: the watch's own acts write events too, so a change it makes is said once, in
  *   the same pass, and never twice.
  * - **agent view** (`claude agents --json --all`), read on every pass: what the sessions are doing
- *   now. It raises three alerts, each said once while it lasts, and none of them an action: a
- *   crew session that waits on a permission prompt or an input ("needs you"), one whose transcript has
+ *   now. It raises alerts, each said once while it lasts, and none of them an action: a
+ *   crew session that waits on a permission prompt or an input ("needs you", and one line when
+ *   the wait is answered), one whose transcript has
  *   not moved for `workflow.crew.quietMinutes` ("quiet"), and one whose turn ended with no
  *   report. It also keeps the store true: a session that failed is `failed`, one that was stopped
  *   by hand is `stopped` — a crew session that is neither running nor reported must not hold a place
@@ -304,6 +305,42 @@ function isRunning(record: CrewRecord): boolean {
 }
 
 /**
+ * How many times `crew.quietMinutes` a quiet stretch lasts before the watch says it a second time.
+ * One reminder at three times the quiet limit tells the lead a stretch is long (the crew session
+ * may be stuck); a line a minute, as it was, cost the lead a turn each time.
+ */
+const QUIET_LONG_FACTOR = 3;
+
+/** The start of the `said` key of a "needs you" alert: the watch looks for it when the wait ends. */
+const NEEDS_YOU_KEY = "needs-you:";
+
+/**
+ * True when what the watch last said for a crew session was a "needs you": a key (WN1), or the
+ * whole line a watch state written before the key held.
+ */
+function wasNeedsYou(said: string | undefined): boolean {
+  return said !== undefined && (said.startsWith(NEEDS_YOU_KEY) || said.includes(": needs you — "));
+}
+
+/**
+ * True when `said` is what a watch state written before WN1 held for the same alert: the alert's
+ * whole line, or (for a quiet alert, whose line carried the minutes) an older quiet line.
+ */
+function isLegacySaid(said: string | undefined, alert: CrewAlert): boolean {
+  if (said === undefined) return false;
+  return (
+    said === alert.line ||
+    (alert.key.startsWith("quiet") && said.includes(": quiet — nothing written for "))
+  );
+}
+
+/** An alert for a crew session: its `line`, and the `key` the watch compares to say it once. */
+export interface CrewAlert {
+  key: string;
+  line: string;
+}
+
+/**
  * The alert for a running crew session, from agent view; null when there is nothing to say. Each is
  * said once while it lasts, and none is an action:
  *
@@ -313,7 +350,12 @@ function isRunning(record: CrewRecord): boolean {
  *   has not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (H101: the hook
  *   may have crashed, been silenced by `ownHooks`, or run outside git);
  * - it is **quiet**: agent view says working, but its transcript has not been written for
- *   `quietMinutes`.
+ *   `quietMinutes`. The minutes are in the line, so the line is not what is remembered: the
+ *   alert's `key` is. A quiet stretch is said when it starts and once more at `QUIET_LONG_FACTOR`
+ *   times `quietMinutes`, and never again until the crew session writes (WN1).
+ *
+ * The watch says an alert when its `key` differs from the one it said last, and forgets the key
+ * when there is no alert.
  */
 export function crewAlert(
   record: CrewRecord,
@@ -321,26 +363,33 @@ export function crewAlert(
   now: number,
   quietMinutes: number,
   projectsDir: string,
-): null | string {
+): CrewAlert | null {
   if (row === null || !isRunning(record)) return null;
   if (row.state === "blocked" || row.status === "waiting") {
-    return `${record.name}: needs you — ${row.waitingFor ?? "it is waiting"}`;
+    const line = `${record.name}: needs you — ${row.waitingFor ?? "it is waiting"}`;
+    return { key: `${NEEDS_YOU_KEY}${line}`, line };
   }
   if (row.state === "done" && (record.state === "working" || record.state === "starting")) {
-    return `${record.name}: ended its turn with no report`;
+    const line = `${record.name}: ended its turn with no report`;
+    return { key: line, line };
   }
   if (record.state === "starting" && isLiveRow(row)) {
     const since = Date.parse(record.startedAt ?? record.createdAt);
     if (Number.isFinite(since) && now - since > WORKTREE_CONFIRM_MS) {
       // One stable line, so it is said once while the record stays `starting` (the map in the
       // watch's state keeps it from repeating).
-      return `${record.name}: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      const line = `${record.name}: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      return { key: line, line };
     }
   }
   if (row.state === "working" && record.sessionId !== null) {
     const last = changedAt(transcriptFile(projectsDir, record.worktree, record.sessionId));
     if (last !== null && now - last > quietMinutes * 60_000) {
-      return `${record.name}: quiet — nothing written for ${Math.round((now - last) / 60_000)} minutes`;
+      const long = now - last >= QUIET_LONG_FACTOR * quietMinutes * 60_000;
+      return {
+        key: long ? "quiet:long" : "quiet",
+        line: `${record.name}: quiet — nothing written for ${Math.round((now - last) / 60_000)} minutes`,
+      };
     }
   }
   return null;
@@ -720,9 +769,25 @@ export async function watchPass(
       resolved.crew.quietMinutes.value,
       ctx.paths.projectsDir,
     );
-    if (alert !== null && said[record.id] !== alert) {
-      say(alert);
-      said[record.id] = alert;
+    // A wait that ended while the record is still at work: the lead holds the "needs you" it
+    // heard, so it hears once that the person answered it (WN1). A start-time prompt (trust,
+    // permission) is a wait of a `starting` record too.
+    if (
+      wasNeedsYou(said[record.id]) &&
+      alert?.key.startsWith(NEEDS_YOU_KEY) !== true &&
+      row?.state === "working" &&
+      (record.state === "working" || record.state === "starting")
+    ) {
+      say(`${record.name}: going again — the wait is answered`);
+    }
+    // A watch state written before WN1 holds the alert's whole line, not its key: the same alert
+    // is already said, so its key is taken in silently (one repeated line per open alert on the
+    // first pass after an update is what the key exists to stop).
+    if (alert !== null && isLegacySaid(said[record.id], alert)) {
+      said[record.id] = alert.key;
+    } else if (alert !== null && said[record.id] !== alert.key) {
+      say(alert.line);
+      said[record.id] = alert.key;
     } else if (alert === null) {
       delete said[record.id];
     }
