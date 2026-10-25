@@ -782,4 +782,67 @@ describe("the hook", () => {
       }),
     ]);
   });
+
+  /** A session id of an earlier run of the merging lead (before its restart). */
+  const OLD_MERGING_SESSION = "99999999-2222-3333-4444-555555555555";
+  const THIRD_SESSION = "77777777-2222-3333-4444-555555555555";
+
+  test("WN1: a merge by a restarted lead leaves out its own earlier record", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const paths = cliPaths(env);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", OLD_MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
+    expect(note).not.toContain("LEAD my-app master-plan");
+    // Its own earlier record is not told either: one event, for the real other lead.
+    expect(
+      readCrewEvents(paths.stateDir, repo)
+        .events.filter((one) => one.type === "merge")
+        .map((one) => one.lead),
+    ).toEqual([OTHER_SESSION]);
+  });
+
+  test("WN1: two other leads are both named, once each", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    await recordLead(env, repo, "LEAD my-app beta-plan", "beta-plan", THIRD_SESSION);
+    // The docs lead restarted: its earlier record is the same lead, so its name is said once.
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OLD_MERGING_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan, LEAD my-app beta-plan.");
+  });
+
+  test("WN1: a lead of the same name in another folder is another lead, not a restart", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: join(repo, ".claude", "worktrees", "elsewhere"),
+        name: "LEAD my-app master-plan",
+        plan: "master-plan",
+        repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      Date.now(),
+    );
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app master-plan.");
+  });
+
+  test("WN1: no other lead but its own earlier record says none", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", OLD_MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("No other lead is recorded in this repo.");
+  });
 });

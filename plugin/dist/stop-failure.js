@@ -7705,6 +7705,7 @@ var eventFields = object({
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
   memoryMb: number2().min(0).nullable().optional(),
+  pair: text.optional(),
   tell: looseObject({ kind: text, to: array(text) }).nullable().optional()
 });
 var crewEventSchema = eventFields.loose();

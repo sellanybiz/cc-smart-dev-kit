@@ -14787,6 +14787,7 @@ var eventFields = object({
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
   memoryMb: number2().min(0).nullable().optional(),
+  pair: text.optional(),
   tell: looseObject({ kind: text, to: array(text) }).nullable().optional()
 });
 var crewEventSchema = eventFields.loose();
@@ -24917,6 +24918,27 @@ function trackedFiles(repo, env) {
   const run = runGit(repo, ["ls-files", "-z"], env, GIT_TIMEOUT_MS3);
   return run.ok ? run.out.split("\x00").filter((path) => path !== "") : [];
 }
+var BROAD_GLOB_SHARE = 0.25;
+var BROAD_GLOB_MIN_FILES = 20;
+function broadGlobLines(files, repo, env) {
+  if (files.length === 0)
+    return [];
+  const tracked = trackedFiles(repo, env);
+  if (tracked.length < BROAD_GLOB_MIN_FILES)
+    return [];
+  const lines = [];
+  for (const entry of files) {
+    const { glob, pattern } = filePattern(entry);
+    const matched = tracked.filter((path) => matchesFilePattern(path, pattern, glob)).length;
+    if (matched <= tracked.length * BROAD_GLOB_SHARE)
+      continue;
+    lines.push(`warning: --files "${pattern}" matches ${matched} of ${tracked.length} tracked files (${Math.round(matched / tracked.length * 100)}%), far more than one phase usually changes \u2014 it makes every other crew session that holds a file under it clash with this one; name the files the phase owns \u2014 not blocked`);
+  }
+  return lines;
+}
+function clashPairKey(one, two) {
+  return [one, two].map((side) => `${side.lead}/${side.phase}`).sort().join(" ~ ");
+}
 function clashLine(other, shared) {
   const what = shared.files.length === 0 ? `${shared.patterns?.[0] ?? ""} and ${shared.patterns?.[1] ?? ""} (no file matches both yet)` : shared.files.length <= CLASH_FILES_SHOWN ? shared.files.join(", ") : `${shared.files.slice(0, CLASH_FILES_SHOWN).join(", ")} and ${shared.files.length - CLASH_FILES_SHOWN} more`;
   return `clash: ${other.name} (${other.leadName}) may change the same files: ${what} \u2014 not blocked; two leads may mean to share a file`;
@@ -24940,13 +24962,19 @@ function fileClashSessions(repo, env, leadSessionId, files, records) {
 }
 async function sayClashes(record, ctx) {
   let records;
+  let said;
   try {
     records = listCrew(ctx.paths.stateDir, record.repo).records;
+    said = new Set(readCrewEvents(ctx.paths.stateDir, record.repo).events.filter((event) => event.type === "clash").flatMap((event) => typeof event.pair === "string" ? [event.pair] : []));
   } catch {
     return [];
   }
-  const lines = [];
+  const lines = broadGlobLines(record.files, record.repo, ctx.env);
   for (const { other, shared } of fileClashSessions(record.repo, ctx.env, record.leadSessionId, record.files, records)) {
+    const pair = clashPairKey({ lead: record.leadSessionId, phase: record.phase }, { lead: other.leadSessionId, phase: other.phase });
+    if (said.has(pair))
+      continue;
+    said.add(pair);
     const line = clashLine(other, shared);
     lines.push(line);
     try {
@@ -24954,6 +24982,7 @@ async function sayClashes(record, ctx) {
         crew: other.id,
         lead: other.leadSessionId,
         name: other.name,
+        pair,
         state: other.state,
         text: line,
         type: "clash"
@@ -25312,25 +25341,34 @@ function stuckWaitLine(record, records) {
 function isRunning3(record) {
   return runningCrew([record]).length === 1;
 }
+var QUIET_LONG_FACTOR = 3;
+var NEEDS_YOU_KEY = "needs-you:";
 function crewAlert(record, row, now, quietMinutes, projectsDir) {
   if (row === null || !isRunning3(record))
     return null;
   if (row.state === "blocked" || row.status === "waiting") {
-    return `${record.name}: needs you \u2014 ${row.waitingFor ?? "it is waiting"}`;
+    const line = `${record.name}: needs you \u2014 ${row.waitingFor ?? "it is waiting"}`;
+    return { key: `${NEEDS_YOU_KEY}${line}`, line };
   }
   if (row.state === "done" && (record.state === "working" || record.state === "starting")) {
-    return `${record.name}: ended its turn with no report`;
+    const line = `${record.name}: ended its turn with no report`;
+    return { key: line, line };
   }
   if (record.state === "starting" && isLiveRow(row)) {
     const since = Date.parse(record.startedAt ?? record.createdAt);
     if (Number.isFinite(since) && now - since > WORKTREE_CONFIRM_MS) {
-      return `${record.name}: never confirmed its worktree \u2014 its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      const line = `${record.name}: never confirmed its worktree \u2014 its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+      return { key: line, line };
     }
   }
   if (row.state === "working" && record.sessionId !== null) {
     const last = changedAt(transcriptFile(projectsDir, record.worktree, record.sessionId));
     if (last !== null && now - last > quietMinutes * 60000) {
-      return `${record.name}: quiet \u2014 nothing written for ${Math.round((now - last) / 60000)} minutes`;
+      const long = now - last >= QUIET_LONG_FACTOR * quietMinutes * 60000;
+      return {
+        key: long ? "quiet:long" : "quiet",
+        line: `${record.name}: quiet \u2014 nothing written for ${Math.round((now - last) / 60000)} minutes`
+      };
     }
   }
   return null;
@@ -25476,9 +25514,12 @@ async function watchPass(state, ctx, scope) {
   for (const record of mine) {
     const row = agents === null ? null : rowOf(agents, record);
     const alert = crewAlert(record, row, ctx.now(), resolved.crew.quietMinutes.value, ctx.paths.projectsDir);
-    if (alert !== null && said[record.id] !== alert) {
-      say(alert);
-      said[record.id] = alert;
+    if (said[record.id]?.startsWith(NEEDS_YOU_KEY) === true && alert?.key.startsWith(NEEDS_YOU_KEY) !== true && row?.state === "working" && record.state === "working") {
+      say(`${record.name}: going again \u2014 the wait is answered`);
+    }
+    if (alert !== null && said[record.id] !== alert.key) {
+      say(alert.line);
+      said[record.id] = alert.key;
     } else if (alert === null) {
       delete said[record.id];
     }
@@ -48412,10 +48453,17 @@ function leadsOf(stateDir, repo, sessionId) {
   const leads = listLeads(stateDir, repo).records;
   if (sessionId === null)
     return { merger: null, others: leads };
+  const merger = leads.find((one) => one.sessionId === sessionId) ?? null;
   return {
-    merger: leads.find((one) => one.sessionId === sessionId) ?? null,
-    others: leads.filter((one) => one.sessionId !== sessionId)
+    merger,
+    others: leads.filter((one) => one.sessionId !== sessionId && !sameLead(one, merger))
   };
+}
+function sameLead(one, merger) {
+  return merger !== null && one.repo === merger.repo && one.plan === merger.plan && one.name === merger.name && one.cwd === merger.cwd;
+}
+function leadNames(leads) {
+  return [...new Set(leads.map((one) => one.name))];
 }
 async function recordMerged(context, repo, pr, base, sessionId, found, timeFor) {
   const who = found.merger?.name ?? "a session";
@@ -48518,7 +48566,7 @@ async function afterMerge(context) {
     try {
       found = leadsOf(context.paths.stateDir, repo, mergedBy);
     } catch {}
-    notes.push(tellSessionsNote(pr, base, project.config?.worktrees?.bases ?? {}, found?.others.map((one) => one.name) ?? null));
+    notes.push(tellSessionsNote(pr, base, project.config?.worktrees?.bases ?? {}, found === null ? null : leadNames(found.others)));
     mkdirSync29(join79(record, ".."), { recursive: true });
     writeFileSync13(record, "");
     if (mergedBy !== null && found !== null)

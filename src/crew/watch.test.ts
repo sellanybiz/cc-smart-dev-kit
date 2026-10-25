@@ -599,6 +599,99 @@ describe("crew watch", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
   });
 
+  /** Set the crew session's transcript to be last written `minutes` before the tests' clock. */
+  function writeTranscriptAgo(world: Awaited<ReturnType<typeof leadWorld>>, minutes: number): void {
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    mkdirSync(worktree, { recursive: true });
+    const folder = join(world.paths.projectsDir, projectFolderName(worktree));
+    mkdirSync(folder, { recursive: true });
+    const transcript = join(folder, "aaaa1111-2222-3333-4444-555555555555.jsonl");
+    writeFileSync(transcript, "{}\n");
+    const at = new Date(T0 - minutes * 60_000);
+    utimesSync(transcript, at, at);
+  }
+
+  test("WN1: a quiet stretch is said once, again at 3x the quiet minutes, then not again", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const pass = async (minutes: number): Promise<string[]> => {
+      writeTranscriptAgo(world, minutes);
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      return [...world.out];
+    };
+    // `crew.quietMinutes` is 20: the first line at 21 minutes, the long step at 60.
+    expect(await pass(21)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 21 minutes",
+    ]);
+    for (const minutes of [22, 23, 40, 59]) expect(await pass(minutes)).toEqual([]);
+    expect(await pass(60)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 60 minutes",
+    ]);
+    for (const minutes of [61, 90, 300]) expect(await pass(minutes)).toEqual([]);
+  });
+
+  test("WN1: a write ends a quiet stretch, and a second stretch is said", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const pass = async (minutes: number): Promise<string[]> => {
+      writeTranscriptAgo(world, minutes);
+      world.out.length = 0;
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      return [...world.out];
+    };
+    expect(await pass(25)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 25 minutes",
+    ]);
+    expect(await pass(26)).toEqual([]);
+    // The crew session writes again: the stretch is over.
+    expect(await pass(1)).toEqual([]);
+    // A new stretch starts later.
+    expect(await pass(30)).toEqual([
+      "C my-app B6b portal-live: quiet — nothing written for 30 minutes",
+    ]);
+    expect(await pass(31)).toEqual([]);
+  });
+
+  test("WN1: a wait the person answered is said once as going again, then nothing while it works", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const waiting = world.ctx(
+      {},
+      {
+        FAKE_AGENTS_JSON: agentsJson([
+          agentRowOf({ state: "blocked", status: "waiting", waitingFor: "permission prompt" }),
+        ]),
+      },
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual(["C my-app B6b portal-live: needs you — permission prompt"]);
+    world.out.length = 0;
+    // Still waiting: nothing more.
+    await runCrew(["watch", "--once", "--timeout", "0"], waiting);
+    expect(world.out).toEqual([]);
+    // The person answered: agent view says it works again.
+    const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: going again — the wait is answered",
+    ]);
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual([]);
+  });
+
+  test("WN1: a session that was never waiting is not said going again", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    await runCrew(["watch", "--once", "--timeout", "0"], going);
+    expect(world.out).toEqual([]);
+  });
+
   test("D35: a crew session whose turn ended is stopped once, and the record keeps done", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");

@@ -569,6 +569,11 @@ const eventFields = z.object({
   note: z.string().nullable().optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
+  /**
+   * A `clash` event: the pair it was said for (`clashPairKey`), so a start says each pair once
+   * for its whole life; absent on an event an older kit wrote.
+   */
+  pair: text.optional(),
   /** A `tell` or `lead-tell` event: the kind of the note and the names told (crew sessions, or leads). */
   tell: z
     .looseObject({ kind: text, to: z.array(text) })

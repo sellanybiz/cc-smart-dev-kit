@@ -13453,6 +13453,7 @@ var eventFields = object({
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
   memoryMb: number2().min(0).nullable().optional(),
+  pair: text.optional(),
   tell: looseObject({ kind: text, to: array(text) }).nullable().optional()
 });
 var crewEventSchema = eventFields.loose();
@@ -32107,10 +32108,17 @@ function leadsOf(stateDir, repo, sessionId) {
   const leads = listLeads(stateDir, repo).records;
   if (sessionId === null)
     return { merger: null, others: leads };
+  const merger = leads.find((one) => one.sessionId === sessionId) ?? null;
   return {
-    merger: leads.find((one) => one.sessionId === sessionId) ?? null,
-    others: leads.filter((one) => one.sessionId !== sessionId)
+    merger,
+    others: leads.filter((one) => one.sessionId !== sessionId && !sameLead(one, merger))
   };
+}
+function sameLead(one, merger) {
+  return merger !== null && one.repo === merger.repo && one.plan === merger.plan && one.name === merger.name && one.cwd === merger.cwd;
+}
+function leadNames(leads) {
+  return [...new Set(leads.map((one) => one.name))];
 }
 async function recordMerged(context, repo, pr, base, sessionId, found, timeFor) {
   const who = found.merger?.name ?? "a session";
@@ -32213,7 +32221,7 @@ async function afterMerge(context) {
     try {
       found = leadsOf(context.paths.stateDir, repo, mergedBy);
     } catch {}
-    notes.push(tellSessionsNote(pr, base, project.config?.worktrees?.bases ?? {}, found?.others.map((one) => one.name) ?? null));
+    notes.push(tellSessionsNote(pr, base, project.config?.worktrees?.bases ?? {}, found === null ? null : leadNames(found.others)));
     mkdirSync20(join57(record, ".."), { recursive: true });
     writeFileSync8(record, "");
     if (mergedBy !== null && found !== null)

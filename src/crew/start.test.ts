@@ -19,7 +19,7 @@ import {
 import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
-import { filesOverlap, startQueued } from "./start";
+import { clashPairKey, filesOverlap, startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -1508,5 +1508,97 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
     ).toBe(0);
     expect(world.out).toEqual([]);
+  });
+});
+
+describe("WN1: a clash pair is said once, and a glob that matches too much is warned", () => {
+  /** A start of B6b under `slug`, holding `files`. */
+  function startSlug(world: Awaited<ReturnType<typeof ledWorld>>, slug: string, files: string) {
+    return runCrew(
+      ["start", "B6b", "--slug", slug, "--kind", "build", "--brief", world.brief, "--files", files],
+      world.ctx(),
+    );
+  }
+
+  /** A start of `phase` holding `files`. */
+  function startPhase(
+    world: Awaited<ReturnType<typeof ledWorld>>,
+    phase: string,
+    files: string,
+  ) {
+    return runCrew(
+      ["start", phase, "--slug", "x", "--kind", "build", "--brief", world.brief, "--files", files],
+      world.ctx(),
+    );
+  }
+
+  /** 30 tracked files under `docs/`. */
+  function trackDocs(world: Awaited<ReturnType<typeof ledWorld>>): number {
+    mkdirSync(join(world.repo, "docs"), { recursive: true });
+    for (let i = 0; i < 30; i += 1) writeFileSync(join(world.repo, "docs", `p${i}.md`), "x\n");
+    git(world.repo, "add", "-A");
+    git(world.repo, "commit", "-m", "docs");
+    return git(world.repo, "ls-files").trim().split("\n").length;
+  }
+
+  test("three starts of one phase that clash with one session say the pair once", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await startSlug(world, "first", "README.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([CLASH_LINE]);
+    for (const slug of ["second", "third"]) {
+      world.out.length = 0;
+      expect(await startSlug(world, slug, "README.md")).toBe(0);
+      expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([]);
+    }
+    // One event for the other lead's watch, not three.
+    expect(clashEvents(world)).toHaveLength(1);
+  });
+
+  test("a new pair is said", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await startPhase(world, "B6b", "README.md")).toBe(0);
+    world.out.length = 0;
+    // Another phase of this lead against the same session is another pair.
+    expect(await startPhase(world, "B6d", "README.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("clash:"))).toEqual([CLASH_LINE]);
+    expect(clashEvents(world)).toHaveLength(2);
+  });
+
+  test("the pair is the same from either lead", () => {
+    expect(clashPairKey({ lead: "s1", phase: "B6b" }, { lead: "s2", phase: "C5b" })).toBe(
+      clashPairKey({ lead: "s2", phase: "C5b" }, { lead: "s1", phase: "B6b" }),
+    );
+    expect(clashPairKey({ lead: "s1", phase: "B6b" }, { lead: "s2", phase: "C5b" })).not.toBe(
+      clashPairKey({ lead: "s1", phase: "B6c" }, { lead: "s2", phase: "C5b" }),
+    );
+  });
+
+  test("a glob that matches a large share of the tracked files is warned, never refused", async () => {
+    const world = await ledWorld();
+    const tracked = trackDocs(world);
+    expect(await startSlug(world, "wide", "docs/**/*.md")).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([
+      `warning: --files "docs/**/*.md" matches 30 of ${tracked} tracked files (${Math.round((30 / tracked) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
+    ]);
+  });
+
+  test("a narrow glob and a path are not warned", async () => {
+    const world = await ledWorld();
+    trackDocs(world);
+    expect(await startSlug(world, "narrow", "docs/p3*.md, docs/p2.md")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([]);
   });
 });

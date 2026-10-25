@@ -123,6 +123,7 @@ import {
   type LeadRecord,
   listAllCrew,
   listCrew,
+  readCrewEvents,
   readLead,
   readReport,
   updateCrew,
@@ -1014,6 +1015,52 @@ function trackedFiles(repo: string, env: Env): string[] {
   return run.ok ? run.out.split("\0").filter((path) => path !== "") : [];
 }
 
+/**
+ * A `--files` glob that matches more than this share of the tracked files is warned about, once
+ * the repository has `BROAD_GLOB_MIN_FILES` of them. One phase rarely changes a quarter of a
+ * repository; a glob that wide makes every other lead's session clash with it (2026-10:
+ * `docs/claude/**` + `*.md` matched nearly everything, and 17 clash lines followed).
+ */
+const BROAD_GLOB_SHARE = 0.25;
+
+/** A small repository has no broad glob: a quarter of ten files is two. */
+const BROAD_GLOB_MIN_FILES = 20;
+
+/** One warning line for each `--files` pattern that matches far more than a phase can mean. */
+function broadGlobLines(files: readonly string[], repo: string, env: Env): string[] {
+  if (files.length === 0) return [];
+  const tracked = trackedFiles(repo, env);
+  if (tracked.length < BROAD_GLOB_MIN_FILES) return [];
+  const lines: string[] = [];
+  for (const entry of files) {
+    const { glob, pattern } = filePattern(entry);
+    const matched = tracked.filter((path) => matchesFilePattern(path, pattern, glob)).length;
+    if (matched <= tracked.length * BROAD_GLOB_SHARE) continue;
+    lines.push(
+      `warning: --files "${pattern}" matches ${matched} of ${tracked.length} tracked files (${Math.round((matched / tracked.length) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
+    );
+  }
+  return lines;
+}
+
+/** One side of a clash: the lead's session and the phase it builds. */
+export interface ClashSide {
+  lead: string;
+  phase: string;
+}
+
+/**
+ * The identity of a clash between two phases of two leads, the same whichever side asks. It is
+ * the phase, not the crew session's id, so a phase that starts again under a new slug (a
+ * removed or replaced session) is the same pair, and the lead hears it once (WN1).
+ */
+export function clashPairKey(one: ClashSide, two: ClashSide): string {
+  return [one, two]
+    .map((side) => `${side.lead}/${side.phase}`)
+    .sort()
+    .join(" ~ ");
+}
+
 /** The line one start prints, and records for the other lead (D55). */
 function clashLine(other: CrewRecord, shared: FileOverlap): string {
   const what =
@@ -1057,13 +1104,19 @@ export function fileClashSessions(
  */
 async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
   let records: CrewRecord[];
+  let said: Set<string>;
   try {
     records = listCrew(ctx.paths.stateDir, record.repo).records;
+    said = new Set(
+      readCrewEvents(ctx.paths.stateDir, record.repo)
+        .events.filter((event) => event.type === "clash")
+        .flatMap((event) => (typeof event.pair === "string" ? [event.pair] : [])),
+    );
   } catch {
     // No store, no warning: a clash is never worth failing a start.
     return [];
   }
-  const lines: string[] = [];
+  const lines = broadGlobLines(record.files, record.repo, ctx.env);
   for (const { other, shared } of fileClashSessions(
     record.repo,
     ctx.env,
@@ -1071,6 +1124,13 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
     record.files,
     records,
   )) {
+    // Each pair is said once, whichever way round and however often a start meets it (WN1).
+    const pair = clashPairKey(
+      { lead: record.leadSessionId, phase: record.phase },
+      { lead: other.leadSessionId, phase: other.phase },
+    );
+    if (said.has(pair)) continue;
+    said.add(pair);
     const line = clashLine(other, shared);
     lines.push(line);
     try {
@@ -1081,6 +1141,7 @@ async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[
           crew: other.id,
           lead: other.leadSessionId,
           name: other.name,
+          pair,
           state: other.state,
           text: line,
           type: "clash",
