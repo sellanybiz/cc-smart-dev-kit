@@ -7934,7 +7934,8 @@ var reportFields = object({
   needsLead: array(text),
   open: array(text),
   question: text.nullable(),
-  summary: text.nullable().optional()
+  summary: text.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
   if (report.status === "blocked" && report.question === null) {

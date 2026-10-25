@@ -648,8 +648,13 @@ const reportFields = z.object({
   open: z.array(text),
   /** The question it is blocked on; null unless it is blocked. */
   question: text.nullable(),
-  /** The crew session's own words about the phase, when it wrote prose instead of the fields. */
+  /** The crew session's own words about the phase: its `summary` field, or its prose report. */
   summary: text.nullable().optional(),
+  /**
+   * Fields the crew session wrote that this shape does not know, kept as written (RG1): a
+   * `measurements` list is data for the lead, a misspelt `tests` is a clue. Absent when none.
+   */
+  extra: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** A blocked report must say what it waits on: the lead cannot answer a question it never saw. */

@@ -14822,7 +14822,8 @@ var reportFields = object({
   needsLead: array(text),
   open: array(text),
   question: text.nullable(),
-  summary: text.nullable().optional()
+  summary: text.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
   if (report.status === "blocked" && report.question === null) {
@@ -28953,17 +28954,18 @@ var modelReportSchema = looseObject({
   docs: array(string2().min(1)).default([]),
   needsLead: array(string2().min(1)).default([]),
   open: array(string2().min(1)).default([]),
-  question: string2().nullable().default(null)
+  question: string2().nullable().default(null),
+  summary: string2().nullable().default(null).transform((value) => value === null || value.trim() === "" ? null : value.trim())
 });
 function modelPartOf(raw) {
   if (raw.trim() === "") {
-    return { part: modelReportSchema.parse({}), summary: null };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { part: modelReportSchema.parse({}), summary: raw.trim() };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: raw.trim() };
   }
   const model = modelReportSchema.safeParse(parsed);
   if (!model.success) {
@@ -28971,7 +28973,11 @@ function modelPartOf(raw) {
       error: `the report does not read as the report shape: ${model.error.issues.map((issue) => `${issue.path.join(".") || "the report"}: ${issue.message}`).join("; ")}`
     };
   }
-  return { part: model.data, summary: null };
+  return { extra: unknownFieldsOf(model.data), part: model.data, summary: null };
+}
+function unknownFieldsOf(part) {
+  const known = new Set(Object.keys(modelReportSchema.shape));
+  return Object.fromEntries(Object.entries(part).filter(([name]) => !known.has(name)));
 }
 
 class ReportRefusal extends Error {
@@ -29040,7 +29046,7 @@ function taskLine(task) {
 function runLine(run) {
   return `\`${run.command}\`: ${run.failed > 0 ? `${run.failed} failed` : "not ok"}`;
 }
-function doneReportRefusal(model) {
+function doneReportRefusal(model, extra = {}) {
   const red = [];
   const full = model.tests.full;
   if (full !== null && (!full.ok || full.failed > 0)) {
@@ -29067,6 +29073,9 @@ function doneReportRefusal(model) {
   }
   if (lines.length === 0)
     return null;
+  if (Object.keys(extra).length > 0) {
+    lines.push(`crew report: the part holds fields the report shape does not know (kept under \`extra\`): ${Object.keys(extra).join(", ")}`);
+  }
   lines.push(`Fix: fix it and run the whole suite and the checks again, then report \`done\` with the JSON part (\`crew report --status done --file -\`: tests, checks, review); report \`failed\` or \`blocked\` instead when the phase cannot be finished`);
   return new ReportRefusal(lines, 1);
 }
@@ -29078,7 +29087,7 @@ function openQuestion(record) {
   }
   return null;
 }
-function buildReport(model, facts, status, record, summary = null) {
+function buildReport(model, facts, status, record, summary = null, extra = {}) {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal2("the review record holds no review of this branch, so the report cannot claim one", "record the review (workflow review-done), or report no review");
   }
@@ -29098,9 +29107,10 @@ function buildReport(model, facts, status, record, summary = null) {
     question: status === "blocked" ? model.question ?? openQuestion(record) : null,
     review,
     status,
-    summary,
+    summary: summary ?? model.summary,
     tests: model.tests,
-    version: 1
+    version: 1,
+    ...Object.keys(extra).length === 0 ? {} : { extra }
   };
 }
 function say(ctx, refused) {
@@ -29166,14 +29176,14 @@ async function runCrewReport(args, ctx) {
     return say(ctx, refusal2(model.error, "the report is JSON: the tests, the checks, the review, the docs, what the lead must do, and what is open"));
   }
   if (args.status === "done") {
-    const held = doneReportRefusal(model.part);
+    const held = doneReportRefusal(model.part, model.extra);
     if (held !== null)
       return say(ctx, held);
   }
   let report;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary);
+    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
   } catch (error) {
     if (!(error instanceof ReportRefusal))
       throw error;

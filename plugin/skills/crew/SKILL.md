@@ -78,6 +78,7 @@ report with an empty field is refused.
   "checks": [{ "name": "typecheck", "ok": true, "note": null }],
   "review": { "agent": "cc-smart-dev-kit:reviewer", "model": "sonnet", "effort": "high",
               "findings": [{ "finding": "…", "fix": "…" }] },
+  "summary": "what the phase did, in a few plain sentences",
   "docs": ["docs/design/crew.md"],
   "needsLead": ["the version bump"],
   "open": []
@@ -91,6 +92,8 @@ report with an empty field is refused.
   an empty `findings` list. The commit it read comes from the review record.
 - **No second opinion asked** (the brief says so): give your own pass as `"ownReview": {
   "reason": "…", "findings": [{ "finding": "…", "fix": "…" }] }` and `"review": null`.
+- `summary`: your own words about the phase. A field the shape does not know is kept under
+  `extra`; it is not dropped, but the lead reads the fields above first.
 - `docs`, `needsLead` (what only the lead may do: a version bump, the lockfile, a shared index),
   `open` (what is still open, and every file outside the brief with its reason).
 - Anything worth keeping in memory: the lead saves it; say it in `open`.

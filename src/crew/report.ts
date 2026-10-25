@@ -108,6 +108,12 @@ export const modelReportSchema = z.looseObject({
   needsLead: z.array(z.string().min(1)).default([]),
   open: z.array(z.string().min(1)).default([]),
   question: z.string().nullable().default(null),
+  /** The crew session's own words about the phase; an empty one is none. */
+  summary: z
+    .string()
+    .nullable()
+    .default(null)
+    .transform((value) => (value === null || value.trim() === "" ? null : value.trim())),
 });
 
 /** The part of the report the model writes. */
@@ -120,16 +126,18 @@ export type ModelReport = z.infer<typeof modelReportSchema>;
  */
 export function modelPartOf(
   raw: string,
-): { error: string } | { summary: null | string; part: ModelReport } {
+):
+  | { error: string }
+  | { extra: Record<string, unknown>; summary: null | string; part: ModelReport } {
   if (raw.trim() === "") {
-    return { part: modelReportSchema.parse({}), summary: null };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: null };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     // Not JSON: prose, kept as the summary.
-    return { part: modelReportSchema.parse({}), summary: raw.trim() };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: raw.trim() };
   }
   const model = modelReportSchema.safeParse(parsed);
   if (!model.success) {
@@ -139,7 +147,17 @@ export function modelPartOf(
         .join("; ")}`,
     };
   }
-  return { part: model.data, summary: null };
+  return { extra: unknownFieldsOf(model.data), part: model.data, summary: null };
+}
+
+/**
+ * The fields of the JSON part that the report shape does not know (a `measurements` list, a
+ * misspelt `tests`). The shape is loose on purpose, so they parse; they are kept under the
+ * report's `extra`, never dropped and never over a fact the command fills.
+ */
+function unknownFieldsOf(part: ModelReport): Record<string, unknown> {
+  const known = new Set(Object.keys(modelReportSchema.shape));
+  return Object.fromEntries(Object.entries(part).filter(([name]) => !known.has(name)));
 }
 
 /** What `crew report` was asked, already checked to be well formed. */
@@ -293,7 +311,10 @@ function runLine(run: { command: string; failed: number }): string {
  * reviewer is a clean review; an `ownReview` stands for the reviewer only with its reason.
  * Null when the report may go through.
  */
-export function doneReportRefusal(model: ModelReport): ReportRefusal | null {
+export function doneReportRefusal(
+  model: ModelReport,
+  extra: Record<string, unknown> = {},
+): ReportRefusal | null {
   const red: string[] = [];
   const full = model.tests.full;
   if (full !== null && (!full.ok || full.failed > 0)) {
@@ -322,6 +343,11 @@ export function doneReportRefusal(model: ModelReport): ReportRefusal | null {
     );
   }
   if (lines.length === 0) return null;
+  if (Object.keys(extra).length > 0) {
+    lines.push(
+      `crew report: the part holds fields the report shape does not know (kept under \`extra\`): ${Object.keys(extra).join(", ")}`,
+    );
+  }
   lines.push(
     `Fix: fix it and run the whole suite and the checks again, then report \`done\` with the JSON part (\`crew report --status done --file -\`: tests, checks, review); report \`failed\` or \`blocked\` instead when the phase cannot be finished`,
   );
@@ -352,6 +378,7 @@ export function buildReport(
   status: ReportStatusName,
   record: CrewRecord,
   summary: null | string = null,
+  extra: Record<string, unknown> = {},
 ): HandBackReport {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal(
@@ -375,9 +402,10 @@ export function buildReport(
     question: status === "blocked" ? (model.question ?? openQuestion(record)) : null,
     review,
     status,
-    summary,
+    summary: summary ?? model.summary,
     tests: model.tests,
     version: 1,
+    ...(Object.keys(extra).length === 0 ? {} : { extra }),
   };
 }
 
@@ -486,13 +514,13 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
   }
   // A done report is held for red or missing work; every other status carries it on purpose.
   if (args.status === "done") {
-    const held = doneReportRefusal(model.part);
+    const held = doneReportRefusal(model.part, model.extra);
     if (held !== null) return say(ctx, held);
   }
   let report: HandBackReport;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary);
+    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
   } catch (error) {
     if (!(error instanceof ReportRefusal)) throw error;
     return say(ctx, error);

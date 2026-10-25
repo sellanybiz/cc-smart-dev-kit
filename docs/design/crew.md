@@ -676,7 +676,16 @@ a green one, and a phase that truly cannot run the suite reports `failed` or `bl
 red work on purpose and are never held (`handoff` too). The empty fields of 2026-10-25 had one cause:
 the crew skill told a crew session what to give but never to pass it as JSON with `--file -`, so a
 `done` report came with prose and every field empty; the skill now shows the JSON, and the gate
-refuses the empty one with the step.
+refuses the empty one with the step. **Nothing the crew session wrote is silently dropped:** a `summary` in the JSON part is the report's
+`summary` (as a prose report is), and a field the shape does not know — a `measurements` list, a
+misspelt `tests` — is kept as written under the report's `extra`, never over a fact the command
+fills; a refused `done` report names such fields in its own line. **Limits, on purpose:** the gate reads fields, so a claim that was
+never run (`tests.full` with `ok: true`), or an `ownReview` where the brief asked for a second
+opinion, passes it; the lead's own check of the branch is what catches that. An `ownReview` is
+not in the review record, so the watch prints `review ✗` and the portal shows no review for it:
+the lead judges it from the report. The role card, the brief's frame and the Stop-hook line
+(`brief.ts`, `crew-role.ts`) still give `crew report --status done` without `--file -`; the
+refusal's `Fix:` line names it.
 
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the

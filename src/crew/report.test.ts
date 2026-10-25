@@ -741,4 +741,71 @@ describe("crew report", () => {
       expect(world.err[0]).toContain("question");
     });
   });
+
+  describe("RG1: nothing the crew session wrote in its JSON part is silently dropped", () => {
+    test("a `summary` in the JSON part is the report's summary", async () => {
+      const world = await crewWorld1();
+      const code = await runCrew(
+        doneArgs(modelPart({ summary: "The live stream works; both validates are green." })),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(world.err).toEqual([]);
+      expect(code).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.summary).toBe("The live stream works; both validates are green.");
+    });
+
+    test("a field the report shape does not know is kept under `extra`, never over a fact", async () => {
+      const world = await crewWorld1();
+      const code = await runCrew(
+        doneArgs(
+          modelPart({
+            branch: { name: "someone-else", sha: "c".repeat(40) },
+            measurements: [{ width: 390, overflow: false }],
+            screenshots: ["a.png"],
+          }),
+        ),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(world.err).toEqual([]);
+      expect(code).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.extra).toEqual({
+        branch: { name: "someone-else", sha: "c".repeat(40) },
+        measurements: [{ width: 390, overflow: false }],
+        screenshots: ["a.png"],
+      });
+      // The command's own facts are untouched.
+      expect(report?.branch.name).toBe("crew/B6b-portal-live");
+    });
+
+    test("a report with only known fields has no `extra`", async () => {
+      const world = await crewWorld1();
+      expect(
+        await runCrew(
+          doneArgs(),
+          world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+        ),
+      ).toBe(0);
+      const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+      expect(report?.extra).toBeUndefined();
+    });
+
+    test("tests written under a name the shape does not know are kept, and the gate still refuses the missing suite", async () => {
+      const world = await crewWorld1();
+      const part = JSON.parse(modelPart()) as Record<string, unknown>;
+      part.tests = undefined;
+      part.suite = { command: "bun test", failed: 0, ok: true, passed: 42 };
+      const code = await runCrew(
+        doneArgs(JSON.stringify(part)),
+        world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+      );
+      expect(code).toBe(1);
+      expect(world.err[0]).toContain("a done report needs the whole suite");
+      // The refusal names the field it does not know, so a misspelt `tests` is found at once.
+      expect(world.err.join("\n")).toContain(
+        "crew report: the part holds fields the report shape does not know (kept under `extra`): suite",
+      );
+    });
+  });
 });
