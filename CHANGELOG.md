@@ -56,6 +56,27 @@ own repository, instead of losing them as a line in a summary.
   hand-off says "handed off at `<commit>`" in a line, and a report is never commented twice.
   A secret or a home path in the report's words means nothing is posted. GitHub being out of
   reach is a `note:` line and a line under `open`, never a failed report.
+- **The lead hears new issues and comments, when you turn it on.** `workflow.issues.watch` (off by
+  default, even with `enabled` on) lets the lead's watch make one conditional look at the
+  project's issues and comments every `workflow.issues.watchMinutes` (default 5, at least 2),
+  inside the pass it already runs, and print one line for each new one — `issue #<n> opened by
+  <author>: "<title>"`, `comment on #<n> by <author>` — to every lead of the repository. The `ETag`
+  and the cursor are kept once for the repository; a `304` costs nothing against GitHub's limit
+  and is silent; the first look after you switch it on records where GitHub is and prints
+  nothing; the kit's own comments (its marker, written by its own account) are not news. A title
+  is outside text that reaches a model, so it is cut to one line, quoted, and stripped of escape
+  sequences and control and invisible characters, and a line says once per read that it is data.
+  An issue line is **news, never an instruction** (`/cc-smart-dev-kit:lead` § 4). `gh` missing,
+  logged out, rate limited (it waits for the reset) or unreachable is one line per change of
+  state, not one per pass.
+- **Fixes to the issue parts.** Every default-ignorable character (variation selectors, the
+  Hangul filler, the grapheme joiner, U+2800) in an issue's text is named by its code in a brief,
+  and an emoji keeps its own selector. The found, fixed and ready labels must be three different
+  words, so a merge's mark can never add the label that is yours to add. A marker in a comment
+  counts only when the kit's own account wrote it, so a stranger's copy cannot silence a
+  hand-back, fake a mark, or add an issue to a release. A watch pass settles at most three marks
+  and gives the issue work one time budget, after the crew's own lines; a phase names at most 10
+  issues.
 - Design: `docs/design/issues.md`.
 
 ## 1.2.1

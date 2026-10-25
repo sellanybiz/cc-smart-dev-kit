@@ -140,7 +140,7 @@ import {
   readlinkSync as readlinkSync5,
   readSync as readSync2,
   renameSync as renameSync4,
-  rmSync as rmSync5,
+  rmSync as rmSync6,
   writeFileSync as writeFileSync4
 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
@@ -918,7 +918,7 @@ function mountPoints(on = platform()) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync15, mkdtempSync, readdirSync as readdirSync11, rmSync as rmSync4, statSync as statSync10 } from "fs";
+import { existsSync as existsSync15, mkdtempSync, readdirSync as readdirSync11, rmSync as rmSync5, statSync as statSync10 } from "fs";
 import { tmpdir } from "os";
 import { join as join23 } from "path";
 
@@ -1014,6 +1014,7 @@ import {
   readdirSync as readdirSync6,
   readFileSync as readFileSync7,
   readSync,
+  rmSync,
   statSync as statSync4
 } from "fs";
 import { dirname as dirname4, join as join9 } from "path";
@@ -7816,6 +7817,19 @@ var stopStateFields = object({
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  since: string2(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
 
 // src/crew/session.ts
 import { readFileSync as readFileSync9 } from "fs";
@@ -9397,7 +9411,7 @@ import {
   mkdirSync as mkdirSync7,
   readdirSync as readdirSync8,
   readFileSync as readFileSync16,
-  rmSync,
+  rmSync as rmSync2,
   statSync as statSync8,
   writeFileSync as writeFileSync3
 } from "fs";
@@ -10167,7 +10181,7 @@ function leadGone(lead, rows, now) {
 import { existsSync as existsSync13 } from "fs";
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync11, lstatSync as lstatSync3, readdirSync as readdirSync9, readFileSync as readFileSync18, rmSync as rmSync2 } from "fs";
+import { existsSync as existsSync11, lstatSync as lstatSync3, readdirSync as readdirSync9, readFileSync as readFileSync18, rmSync as rmSync3 } from "fs";
 import { dirname as dirname6, join as join18, relative } from "path";
 
 // src/worktrees/verdict.ts
@@ -10465,7 +10479,7 @@ function finishStrays(repo, options, say, strays = strayParkedFolders(repo, opti
       continue;
     }
     try {
-      rmSync2(stray.path, { recursive: true });
+      rmSync3(stray.path, { recursive: true });
     } catch (error) {
       pass.kept.push({
         path: stray.path,
@@ -10494,7 +10508,7 @@ import {
   readFileSync as readFileSync19,
   renameSync as renameSync3,
   rmdirSync,
-  rmSync as rmSync3,
+  rmSync as rmSync4,
   unlinkSync as unlinkSync4,
   utimesSync as utimesSync2
 } from "fs";
@@ -10655,7 +10669,7 @@ async function gzipInto(from, to) {
     }
     renameSync3(temporary, to);
   } catch (error) {
-    rmSync3(temporary, { force: true });
+    rmSync4(temporary, { force: true });
     throw error;
   }
 }
@@ -10773,7 +10787,7 @@ async function moveConversation(input, sessionId) {
       utimesSync2(to, before.atime, before.mtime);
       const verdict = sourceAfterCopy(lstatSync4(from, { throwIfNoEntry: false }), before);
       if (verdict === "changed") {
-        rmSync3(to, { force: true });
+        rmSync4(to, { force: true });
         return {
           kind: "failed",
           moved,
@@ -10825,7 +10839,7 @@ async function pruneCrewArchives(stateDir, daysOf, nowMs, options = {}) {
     const outcome = { kept: found.kept, pruned: [] };
     for (const one of found.pruned) {
       try {
-        rmSync3(one.dir, { force: true, recursive: true });
+        rmSync4(one.dir, { force: true, recursive: true });
         outcome.pruned.push(one);
       } catch (error) {
         outcome.kept.push({ dir: one.dir, why: reasonOf2(error) });
@@ -11551,7 +11565,7 @@ function replayOntoBase(repo, baseRef, head, env) {
       return "unknown";
     return tree === base.out ? "nothing" : "changes";
   } finally {
-    rmSync4(objects.dir, { recursive: true, force: true });
+    rmSync5(objects.dir, { recursive: true, force: true });
   }
 }
 function replayerFor(repo, env) {
@@ -12264,7 +12278,7 @@ async function rollbackCrewDiscard(record, ctx) {
         closeSync5(fd);
       } catch {}
       try {
-        rmSync5(lock, { force: true });
+        rmSync6(lock, { force: true });
       } catch {}
       throw error;
     }
@@ -12274,8 +12288,8 @@ async function rollbackCrewDiscard(record, ctx) {
     archiveHistory: [...record.archiveHistory ?? [], archive],
     discardPending: undefined
   }, ctx.now());
-  rmSync5(pending.indexBackup, { force: true });
-  rmSync5(pending.indexArchived, { force: true });
+  rmSync6(pending.indexBackup, { force: true });
+  rmSync6(pending.indexArchived, { force: true });
   return updated;
 }
 async function completeCrewDiscard(record, ctx) {
@@ -12283,8 +12297,8 @@ async function completeCrewDiscard(record, ctx) {
   if (pending === undefined)
     return record;
   const updated = await updateCrew(ctx.paths.stateDir, record.repo, record.id, { discardPending: undefined }, ctx.now());
-  rmSync5(pending.indexBackup, { force: true });
-  rmSync5(pending.indexArchived, { force: true });
+  rmSync6(pending.indexBackup, { force: true });
+  rmSync6(pending.indexArchived, { force: true });
   return updated;
 }
 var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
@@ -12520,8 +12534,8 @@ async function archiveCrewDiscard(record, facts, ctx) {
       await updateCrew(ctx.paths.stateDir, record.repo, record.id, { archive, discardPending: pending }, ctx.now());
     } catch (error) {
       checkedGit(record.repo, ["update-ref", "-d", facts.archiveRef, commit], ctx);
-      rmSync5(indexBackup, { force: true });
-      rmSync5(indexArchived, { force: true });
+      rmSync6(indexBackup, { force: true });
+      rmSync6(indexArchived, { force: true });
       throw error;
     }
     try {
@@ -12539,7 +12553,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
           closeSync5(fd);
         } catch {}
         try {
-          rmSync5(lock, { force: true });
+          rmSync6(lock, { force: true });
         } catch {}
         throw error;
       }
@@ -12556,7 +12570,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
       throw error;
     }
   } finally {
-    rmSync5(dir, { recursive: true, force: true });
+    rmSync6(dir, { recursive: true, force: true });
   }
 }
 async function pruneCrewDiscarded(repo, ctx) {

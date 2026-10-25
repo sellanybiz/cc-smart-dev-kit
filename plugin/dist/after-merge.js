@@ -9727,6 +9727,7 @@ import {
   readdirSync as readdirSync5,
   readFileSync as readFileSync11,
   readSync,
+  rmSync as rmSync2,
   statSync as statSync7
 } from "fs";
 import { dirname as dirname6, join as join13 } from "path";
@@ -10635,6 +10636,19 @@ function writeStopState(stateDir, repo, id, state) {
 }
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  since: string2(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
 
 // src/worktrees/auto-start.ts
 import { basename as basename5, join as join16 } from "path";
@@ -17971,7 +17985,7 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 }
 
 // src/workflow/review-cover.ts
-import { mkdtempSync, rmSync as rmSync2 } from "fs";
+import { mkdtempSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { join as join31 } from "path";
 var MIN_COVER_GIT = "2.40.0";
@@ -18087,7 +18101,7 @@ async function readCover(checkout, target, records, limits, git) {
     };
   } finally {
     if (objects !== null)
-      rmSync2(objects, { recursive: true, force: true });
+      rmSync3(objects, { recursive: true, force: true });
   }
 }
 async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
@@ -18990,6 +19004,8 @@ function eventLine(event, record, waits, reviewed) {
       const kind = event.tell?.kind ?? "note";
       return `${name}: ${kind} from another lead \xB7 ${clip(event.text ?? "")}`;
     }
+    case "issue":
+      return event.text;
     case "clash":
     case "merge":
       return event.text === null || event.text === "" ? null : event.text;

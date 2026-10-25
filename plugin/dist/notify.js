@@ -8276,6 +8276,19 @@ var stopStateFields = object({
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  since: string2(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
 
 // src/cli/usage-window.ts
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
