@@ -725,6 +725,15 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   merge` still pass the git and merge guards; it moves into `src/shell/command.ts`, opus xhigh
   review. Noted for a later fix: `claudeLimitHolds` compares exact Claude ids (TV1's review), so a
   chain that starts with another Claude id of the same family reads as "does not hold".
+  **FX1 and SC1 merged** into `release-1.2.1` (`6de130c`, `ef4759d`; full check 7,405 pass, 0 fail),
+  and `release-1.2.1` into `release-1.3.0` (`c68c632`; the portal export rebuilt to resolve it).
+  **The lead's folder is now on `release-1.3.0`** (the newest line, which holds 1.2.1): `crew rm`
+  and the watch judge "merged" against that branch, so every record merged into 1.2.1 or 1.3.0 could
+  go. **Cleaned at the owner's ask:** 36 crew records removed (worktree, branch, session), and three
+  copies Claude Code made at a resume (`claude rm`; their worktrees were gone). The installed 1.1.2
+  resumes the record's first session, not the copy that works, so a second resume of GI1 made a
+  stray copy (`24d8a075`, stopped, told to change nothing): `claude rm` it only after GI1's crew rm,
+  never before (it would take GI1's worktree). 1.2.1's resume fix ends this.
 
 ### For the owner in the morning
 
