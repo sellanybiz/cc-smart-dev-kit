@@ -15156,9 +15156,9 @@ async function pickIssue(world, ref) {
     "graphql",
     "-f",
     `query=${LAST_EDIT_QUERY}`,
-    "-F",
+    "-f",
     `owner=${owner}`,
-    "-F",
+    "-f",
     `name=${repoName}`,
     "-F",
     `number=${number}`

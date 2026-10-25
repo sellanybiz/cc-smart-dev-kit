@@ -174,7 +174,10 @@ repository only, and refuses unless **all** of this holds, each refusal naming w
 | **Nobody else changed the text after the label** | A `renamed` event after the label, and the body's `lastEditedAt`/`editor` (GraphQL; REST has no field for it) after the label, must be by an account that holds write access. Anyone else: refused, and the writer reads the change and labels it again. |
 
 Whatever cannot be read — the events, a role, the last edit, an answer in a shape this code does
-not know — is a refusal, never a guess. `--issue` and `--continue` do not go together: the
+not know — is a refusal, never a guess. GitHub answers the permission read only to an account with
+push access itself (`Must have push access to view collaborator permission`, proved with `gh`
+2.102), so the lead's own `gh` login needs write access to the repository; without it every
+issue is refused with "cannot be read". `--issue` and `--continue` do not go together: the
 hand-off's next session carries the record's issue (and the quoted block already in the brief).
 
 **Naming is labelling.** D67's "or named" is met this way (the owner, 2026-10-25): there is no
