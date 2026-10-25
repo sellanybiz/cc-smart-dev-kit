@@ -171,14 +171,31 @@ describe("the thresholds the crew session watches itself against", () => {
   });
 
   test("HO1: always before the point Claude Code compacts at, a margin early", () => {
-    // Compaction at 267k (a 300k window less the 33k reserve): the line is one more reserve early.
-    expect(handoffTokensOf(facts(null, 1_000_000, 267_000), THRESHOLDS)).toBe(234_000);
-    expect(adviceFor(facts(233_999, 1_000_000, 267_000), 0, THRESHOLDS)).toBeNull();
-    expect(adviceFor(facts(234_000, 1_000_000, 267_000), 0, THRESHOLDS)?.kind).toBe("context");
+    // Compaction at 267k (a 300k window less 20k for the reply and the 13k buffer): the line is
+    // one more 13k buffer early.
+    expect(handoffTokensOf(facts(null, 1_000_000, 267_000), THRESHOLDS)).toBe(254_000);
+    expect(adviceFor(facts(253_999, 1_000_000, 267_000), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(254_000, 1_000_000, 267_000), 0, THRESHOLDS)?.kind).toBe("context");
     // Unknown model window, known compaction point: the guard still holds.
-    expect(handoffTokensOf(facts(null, null, 267_000), THRESHOLDS)).toBe(234_000);
+    expect(handoffTokensOf(facts(null, null, 267_000), THRESHOLDS)).toBe(254_000);
     // A compaction point above both numbers changes nothing.
     expect(handoffTokensOf(facts(null, 1_000_000, 967_000), THRESHOLDS)).toBe(400_000);
+  });
+
+  test("HO1: the owner's numbers hold with the real compaction point: a 200k window hands off at 140k", () => {
+    // A 200k window compacts at 167k; 70 % (140k) is already before the 154k guard.
+    expect(handoffTokensOf(facts(null, 200_000, 167_000), THRESHOLDS)).toBe(140_000);
+    expect(adviceFor(facts(139_999, 200_000, 167_000), 0, THRESHOLDS)).toBeNull();
+    expect(adviceFor(facts(140_000, 200_000, 167_000), 0, THRESHOLDS)?.kind).toBe("context");
+  });
+
+  test("HO1: a small window is guarded by Claude Code's point while that leaves room, and by the share after", () => {
+    // 128k compacts at 95k: the guard (82k) comes before 70 % (89.6k).
+    expect(handoffTokensOf(facts(null, 128_000, 95_000), THRESHOLDS)).toBe(82_000);
+    // 32k leaves no room at all (-1k): the guard is dropped, and the share (22.4k) stands.
+    expect(handoffTokensOf(facts(null, 32_000, -1_000), THRESHOLDS)).toBe(22_400);
+    // Never a line at 1 token while the window or the cap gives a real one.
+    expect(handoffTokensOf(facts(null, null, 10_000), THRESHOLDS)).toBe(400_000);
   });
 
   test("the share of the window", () => {
@@ -291,12 +308,12 @@ describe("crew self-watch", () => {
       ["self-watch", "--once"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
-    // Were the setting in force, Claude Code would compact at 367k and the line would be 334k.
+    // Were the setting in force, Claude Code would compact at 367k and the line would be 354k.
     expect(world.out).toEqual([]);
   });
 
   test("HO1: an auto-compact window in the environment puts the hand-off before it", async () => {
-    const world = await crewWorldWith(240_000);
+    const world = await crewWorldWith(260_000);
     mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
     writeFileSync(
       world.paths.settingsFile,
@@ -306,8 +323,49 @@ describe("crew self-watch", () => {
       ["self-watch", "--once"],
       world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
     );
-    // Compaction at 267k; the line is 234k.
-    expect(world.out).toEqual([`context at 240k tokens (24%): ${HAND_OFF}`]);
+    // Compaction at 267k; the line is 254k.
+    expect(world.out).toEqual([`context at 260k tokens (26%): ${HAND_OFF}`]);
+  });
+
+  test("HO1: the main checkout's settings.local.json counts: a worktree session reads it too", async () => {
+    const world = await crewWorldWith(260_000);
+    const local = join(world.repo, ".claude", "settings.local.json");
+    mkdirSync(dirname(local), { recursive: true });
+    writeFileSync(local, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300k" } }));
+    await runCrew(
+      ["self-watch", "--once"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    expect(world.out).toEqual([`context at 260k tokens (26%): ${HAND_OFF}`]);
+  });
+
+  test("HO1: a backend's small window measures the share, not Claude Code's compaction point", async () => {
+    // The session runs on a 1M Claude model; the router answered from a 128k backend model.
+    const world = await crewWorldWith(85_000, 0, "deepseek-v4.1-flash");
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { recursive: true });
+    writeFileSync(
+      world.paths.gatewayConfigFile,
+      JSON.stringify({
+        backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
+        slots: { "cc-smart-dev-kit-worker": ["omniroute:deepseek-v4.1-flash"] },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    mkdirSync(world.paths.stateDir, { recursive: true });
+    writeFileSync(
+      join(world.paths.stateDir, "backend-windows.json"),
+      JSON.stringify({
+        omniroute: { readAtMs: T0, windows: { "deepseek-v4.1-flash": 128_000 } },
+      }),
+    );
+    await runCrew(
+      ["self-watch", "--once"],
+      world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID }),
+    );
+    // 70 % of 128k is 89.6k. Claude Code compacts by its own 1M window, so no guard comes first.
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual([]);
   });
 
   test("D25: the same line is not said twice within a quarter of an hour", async () => {

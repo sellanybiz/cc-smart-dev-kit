@@ -22,8 +22,8 @@
  *      out: its last `/` segment names it too. The list is read once and kept, and only for the
  *      models a chain names (`<stateDir>/backend-windows.json`) — never one network call per poll.
  *
- * Anything else has an unknown window: no percentage, and so no context hand-off line (the
- * time lines still apply). `windowWatch` is what `crew self-watch` reads.
+ * Anything else has an unknown window: no percentage (the token cap and the time lines still
+ * apply). `windowWatch` is what `crew self-watch` reads.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -63,22 +63,22 @@ export const WINDOW_1M_SINCE: Readonly<Record<ClaudeFamily, { major: number; min
 };
 
 /**
- * The tokens Claude Code keeps free below its auto-compact window: it compacts at the window
- * less this. 20 000 are the room it keeps for the reply (the output reserve) and 13 000 its summary
- * buffer: the "Autocompact buffer" row of `/context` shows the 33 000 (`docs/claude-code-contract.md`,
- * proved live on 2.1.310). A model with a smaller output limit keeps less, so this is the larger
- * guess: the hand-off comes early, never late. The hand-off line stays one more of these below
- * that point: the room a crew session needs to commit and report, and for the minute between
- * two polls.
+ * What Claude Code keeps free below its auto-compact window, in tokens (the 2.1.310 binary;
+ * the "Autocompact buffer" row of `/context` shows the two together, 33 000, live,
+ * `docs/claude-code-contract.md`): room for the reply, then a summary buffer. A model with a
+ * smaller output limit keeps less room for the reply, so the sum is the larger guess: the
+ * hand-off comes early, never late.
  */
-export const COMPACT_RESERVE_TOKENS = 33_000;
+export const COMPACT_OUTPUT_RESERVE_TOKENS = 20_000;
+export const COMPACT_SUMMARY_BUFFER_TOKENS = 13_000;
 
 /**
  * The context size, in tokens, at which Claude Code compacts a crew session, or null when the
  * kit cannot tell. A crew session runs with `--autocompact auto`, so the window is the model's
- * own, held down by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set (`claude-settings.ts`);
- * the point is `COMPACT_RESERVE_TOKENS` below it, or lower when `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
- * puts it at a share of the window. With no model window the variable's own window stands in.
+ * own, held down by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when that is set (`claude-settings.ts`).
+ * The point is the window less the output reserve less the summary buffer; with
+ * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` it is that share of the window less the output reserve when
+ * that is lower. With no model window the variable's own window stands in.
  */
 export function compactPointOf(modelWindow: null | number, env: CompactEnv): null | number {
   const window =
@@ -88,8 +88,9 @@ export function compactPointOf(modelWindow: null | number, env: CompactEnv): nul
         ? env.window
         : Math.min(modelWindow, env.window);
   if (window === null) return null;
-  const point = window - COMPACT_RESERVE_TOKENS;
-  return env.percent === null ? point : Math.min(point, Math.floor((window * env.percent) / 100));
+  const room = window - COMPACT_OUTPUT_RESERVE_TOKENS;
+  const point = room - COMPACT_SUMMARY_BUFFER_TOKENS;
+  return env.percent === null ? point : Math.min(point, Math.floor((room * env.percent) / 100));
 }
 
 /**

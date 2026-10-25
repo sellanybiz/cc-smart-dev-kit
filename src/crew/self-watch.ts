@@ -30,7 +30,7 @@ import { COMMAND } from "../build-info/names";
 import { compactEnvOf } from "../machine/claude-settings";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
-import { COMPACT_RESERVE_TOKENS, compactPointOf, windowWatch } from "./context-window";
+import { COMPACT_SUMMARY_BUFFER_TOKENS, compactPointOf, windowWatch } from "./context-window";
 import { runningCrew } from "./places";
 import { readCrew, readSelfWatchState, writeSelfWatchState } from "./store";
 import { type ContextUse, contextPercent, contextUseOf, transcriptFile } from "./transcript";
@@ -66,8 +66,12 @@ export function hoursSince(startedAtMs: number, nowMs: number): number {
   return Math.max(0, (nowMs - startedAtMs) / 3_600_000);
 }
 
-/** How far below the point Claude Code compacts at the hand-off line stays: one more reserve. */
-export const HANDOFF_MARGIN_TOKENS = COMPACT_RESERVE_TOKENS;
+/**
+ * How far below the point Claude Code compacts at the hand-off line stays: one more summary
+ * buffer, the room a crew session needs to commit and report. (A 200k window then still hands
+ * off at its 70 %, 140k, and not earlier.)
+ */
+export const HANDOFF_MARGIN_TOKENS = COMPACT_SUMMARY_BUFFER_TOKENS;
 
 /** What one poll knows about the crew session's context. */
 export interface ContextFacts {
@@ -82,14 +86,16 @@ export interface ContextFacts {
 /**
  * The context size, in tokens, at which the crew session hands off: the smallest of the token
  * cap, the share of the window (when the window is known) and `HANDOFF_MARGIN_TOKENS` below the
- * point Claude Code compacts at (when that is known). Never below 1.
+ * point Claude Code compacts at (when that is known and leaves room for it). Never below 1.
  */
 export function handoffTokensOf(context: ContextFacts, thresholds: SelfThresholds): number {
   const lines = [thresholds.handoffTokens];
   if (context.window !== null) {
     lines.push(Math.floor((context.window * thresholds.handoffPercent) / 100));
   }
-  if (context.compactPoint !== null) lines.push(context.compactPoint - HANDOFF_MARGIN_TOKENS);
+  // A window so small that Claude Code's own reserve leaves nothing is judged by the other two.
+  const guard = context.compactPoint === null ? 0 : context.compactPoint - HANDOFF_MARGIN_TOKENS;
+  if (guard > 0) lines.push(guard);
   return Math.max(1, Math.min(...lines));
 }
 
@@ -174,12 +180,15 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
     // The model that wrote the last reply is the truth about the window (a fallback target may
     // have answered); the record's own model stands in before there is a reply.
     const window = await windows.of(usage?.model ?? record.model.resolved, now);
-    // Read at every poll: a few small files, and the person may change them while it runs.
+    // Claude Code compacts by the window of the model it was started on, not by a backend's that
+    // answered (`record.model.resolved`); the answering model's window measures the share above.
+    // The variables are read at every poll: a few small files, and the person may change them.
     const compactPoint = compactPointOf(
-      window,
+      await windows.of(record.model.resolved, now),
       compactEnvOf({
         configDir: ctx.paths.claudeConfigDir,
         env: ctx.env,
+        mainCheckout: repo,
         projectFolder: record.worktree,
       }),
     );

@@ -133,7 +133,7 @@ contract accepts.
 
 When the `crew-self` monitor says you reached the hand-off line (your context, or your time
 cap): your context line is `crew.handoffTokens` (400 000 tokens) or `crew.handoffPercent` (70 %) of
-your window, whichever comes first, and always a margin before Claude Code would auto-compact you —
+your window, whichever comes first, and before the point Claude Code would auto-compact you at —
 so a 1M window hands off at 400k and a 200k window at 140k. Commit your work in progress, step `handoff`, then `crew report --status handoff` —
 what is done, what is next, and what the next crew session must know. The lead starts it from your
 head.

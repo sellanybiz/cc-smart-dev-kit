@@ -371,7 +371,7 @@ test("CC4: the kept files live in the state folder", () => {
 describe("HO1: the point Claude Code compacts a crew session at", () => {
   const none = { percent: null, window: null };
 
-  test("--autocompact auto with nothing set: the model's window less the 33 000 reserve", () => {
+  test("--autocompact auto with nothing set: the model's window less the 20 000 for the reply and the 13 000 buffer", () => {
     expect(compactPointOf(1_000_000, none)).toBe(967_000);
     expect(compactPointOf(200_000, none)).toBe(167_000);
   });
@@ -388,7 +388,9 @@ describe("HO1: the point Claude Code compacts a crew session at", () => {
   });
 
   test("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE lowers the point to a share of the window, never raises it", () => {
-    expect(compactPointOf(1_000_000, { percent: 50, window: null })).toBe(500_000);
+    expect(compactPointOf(1_000_000, { percent: 50, window: null })).toBe(490_000);
+    expect(compactPointOf(1_000_000, { percent: 0.5, window: null })).toBe(4_900);
     expect(compactPointOf(200_000, { percent: 99, window: null })).toBe(167_000);
+    expect(compactPointOf(200_000, { percent: 50, window: null })).toBe(90_000);
   });
 });
