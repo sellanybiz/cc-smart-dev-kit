@@ -106,8 +106,8 @@ start: a string, `null`, an array, an unknown key or a wrong type throws one lin
 problem and the expected object, before any agent starts; no `args` at all still runs on the
 defaults, for a person starting the workflow by hand. Both scripts rank the distinct findings by
 severity (the order of the final list), then by track, and the budget refutes the first
-`budget` of them, so one busy track cannot take every refuter and starve a critical finding of
-the last one. A finding past the budget is never dropped: `review-split` returns it in an
+`budget` of them, so a busy track of lesser findings cannot take every refuter and starve a
+critical finding of the last one (equal severities still go in track order). A finding past the budget is never dropped: `review-split` returns it in an
 **Unchecked** section (severity, title, file and line), `audit-run` hands the same lines to the
 writer for an **Unchecked findings** section, and each run's log and summary line say how many
 were checked and how many were not. The two scripts carry the same argument check and the same

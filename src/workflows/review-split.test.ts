@@ -226,6 +226,17 @@ describe("the review-split workflow", () => {
     expect(String(run.result)).toContain("- [SUGGESTION] no line — src/n.ts\n");
   });
 
+  test("every checked finding refuted but some unchecked: the report does not read as clean", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A"), finding("B", "suggestion", "src/b.ts")], "refuted"),
+      args: { base: "main", budget: 1, tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain("No checked finding survived refutation");
+    expect(report).not.toContain("No finding survived refutation.");
+    expect(report).toContain("- [SUGGESTION] B — src/b.ts:1");
+  });
+
   test("nothing past the budget: no unchecked section", async () => {
     const run = await runScript(REVIEW_SPLIT, {
       answer: answers([finding("A")]),

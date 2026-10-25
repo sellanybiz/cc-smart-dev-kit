@@ -107,17 +107,18 @@ is cheaper.
 
 ```
 Workflow({ name: "cc-smart-dev-kit:review-split",
-  args: { base: "main", head: "HEAD", folder: "/path/to/this/checkout",
+  args: { base: "main", head: "HEAD", folder: "<the checkout's path, a worktree only>",
           intent: "what this change does", tracks: ["state and timing", "access and money"],
           risky: false, budget: 12 } })
 ```
 
 - `args` is one object, as shown — never a string of JSON. The run refuses a string, an unknown
   key or a wrong type with one line that names the expected object, and starts no agent; it
-  never falls back to defaults.
+  does not fall back to defaults for arguments it refuses.
 - `base` and `head` name the change (`git merge-base <base branch> HEAD`, then the branch
   head), and `intent` says what it is meant to do — the reviewers hold no context of their own.
-  `folder` is the checkout to read when it is not the session's own folder (a worktree).
+  `folder` is the checkout to read when it is not the session's own folder (a worktree); leave
+  the key out otherwise.
 - `budget` is how many findings the second reviewers refute, most severe first; the rest come
   back in an **Unchecked** section of the report. Read it: check those findings yourself, or run
   again with a larger budget.

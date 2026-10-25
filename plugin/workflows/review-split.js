@@ -230,7 +230,9 @@ return [
   `Tier: ${risky ? 'risky (`opus` at `xhigh`)' : 'ordinary (`sonnet` at `max`)'} · tracks: ${tracks.length} · written for: ${intent}`,
   '',
   verified.length === 0
-    ? 'No finding survived refutation.'
+    ? unchecked.length === 0
+      ? 'No finding survived refutation.'
+      : 'No checked finding survived refutation; the unchecked ones are listed below.'
     : `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`,
   '',
   dropped === 0
