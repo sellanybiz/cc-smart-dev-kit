@@ -592,6 +592,38 @@ describe("cc-smart-dev-kit gateway setup on a machine an older version set up", 
     expect(again.stdout).not.toContain("took out");
     expect(again.stdout).not.toContain("Restart every open Claude session now");
   });
+
+  test("a 0.5.x portal.json is no longer read: setup leaves it byte for byte and moves nothing", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1"] });
+    const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
+    // As a 0.5.x portal left it: the opus chain and a switch, in a layout of its own.
+    const portalFile = join(paths.stateDir, "portal.json");
+    const portalText = `${JSON.stringify(
+      {
+        fallback: { "cc-smart-dev-kit-opus": ["omniroute:m2"] },
+        futureField: "kept",
+        judge: ["omniroute:m3"],
+        switches: { "cc-smart-dev-kit-opus": true },
+        version: 1,
+      },
+      null,
+      4,
+    )}\n`;
+    mkdirSync(paths.stateDir, { recursive: true });
+    writeFileSync(portalFile, portalText);
+    const before = readFileSync(m.paths.config, "utf8");
+    const done = await m.run(["gateway", "setup"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).not.toContain("the portal remembered");
+    expect(readFileSync(portalFile, "utf8")).toBe(portalText);
+    // Nothing moved into the config: no `kept`, no opus chain.
+    expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    // And no backup of the portal's file, since nothing touched it.
+    expect(listBackups(paths.stateDir, portalFile)).toEqual([]);
+  });
 });
 
 describe("cc-smart-dev-kit gateway setup", () => {

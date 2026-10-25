@@ -46,8 +46,6 @@ export interface CliPaths extends RouterPaths {
    * installed version's `plugin/portal-ui/` and removed by `restore`.
    */
   portalUiFolder: string;
-  /** What the portal remembers between pages: `<stateDir>/portal.json`. */
-  portalStateFile: string;
   /**
    * The folders the person added to the Projects page: `<stateDir>/portal-projects.json`
    * (`src/portal/api/projects.ts`). A list of main checkout roots, nothing else.
@@ -136,7 +134,6 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
-    portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     portalProjectsFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),

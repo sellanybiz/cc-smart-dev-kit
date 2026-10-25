@@ -3,6 +3,14 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## Unreleased
+
+- **`gateway setup` no longer reads 0.5.x's `portal.json`.** 0.6.0 moved the opus, fable and
+  judge chains and their switches from that file into `gateway.json`, and kept the read for one
+  release; it ran for nine. Setup now leaves the file as it is, byte for byte, and moves nothing
+  from it. A machine still on 0.5.x updates with `migrate` and `setup`, which this does not
+  touch. `cliPaths()` no longer has `portalStateFile`.
+
 ## 1.4.0
 
 GitHub Issues, opt-in: the kit can file its follow-ups and findings as issues in your project's
