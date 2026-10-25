@@ -14730,6 +14730,7 @@ var crewFields = object({
   worktree: text,
   branch: text,
   baseRef: text,
+  baseCommit: sha.optional(),
   base: looseObject({ ref: text, sha }).nullable(),
   waitsFor: array(text),
   files: array(text),
@@ -24587,6 +24588,7 @@ async function plan(args, ctx) {
   return {
     baseRef,
     baseSha,
+    pinned: false,
     branch,
     briefGiven,
     caller,
@@ -24647,8 +24649,9 @@ async function planContinuation(args, ctx, caller, lead, claude) {
     throw refusal(`the branch ${old.branch} of ${old.name} is no commit here`, "the old crew session's branch must still be in this repository");
   }
   return {
-    baseRef: baseSha,
+    baseRef: old.branch,
     baseSha,
+    pinned: true,
     branch,
     briefGiven: continuationBrief(ctx, caller.repo, old),
     caller,
@@ -25038,6 +25041,7 @@ async function startPlanned(planned, ctx) {
       const record = await createCrew(ctx.paths.stateDir, {
         base: place.start ? { ref: planned.baseRef, sha: planned.baseSha } : null,
         baseRef: planned.baseRef,
+        ...planned.pinned ? { baseCommit: planned.baseSha } : {},
         branch: planned.branch,
         continues: planned.continues,
         effort: chosen.effort,
@@ -25159,7 +25163,7 @@ async function startQueued(record, ctx, resolved) {
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
     if (!place.start)
       return null;
-    const base = commitOf(record.repo, record.baseRef, ctx.env);
+    const base = commitOf(record.repo, record.baseCommit ?? record.baseRef, ctx.env);
     if (base === null) {
       await failed(record, `the base ${record.baseRef} is no commit here`, quiet);
       return null;

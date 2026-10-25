@@ -7648,6 +7648,7 @@ var crewFields = object({
   worktree: text,
   branch: text,
   baseRef: text,
+  baseCommit: sha.optional(),
   base: looseObject({ ref: text, sha }).nullable(),
   waitsFor: array(text),
   files: array(text),

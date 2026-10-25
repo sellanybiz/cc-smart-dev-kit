@@ -318,6 +318,12 @@ interface Plan {
   claude: string;
   baseRef: string;
   baseSha: string;
+  /**
+   * A continuation starts from this commit, never from the old branch's name: a queued one is cut
+   * when it starts, and `crew rm` of the old record deletes that branch (a branch reset moves it
+   * too). False for a start that is cut from `baseRef` when it starts.
+   */
+  pinned: boolean;
   /** The lean start: the plugins this session turns off, and the servers it keeps. */
   lean: LeanLaunch;
   name: string;
@@ -470,6 +476,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   return {
     baseRef,
     baseSha,
+    pinned: false,
     branch,
     briefGiven,
     caller,
@@ -563,10 +570,9 @@ async function planContinuation(
     );
   }
   return {
-    // The commit, never the old branch's name: a queued continuation is cut from its `baseRef` when
-    // it starts, and `crew rm` of the old record deletes that branch (a branch reset moves it too).
-    baseRef: baseSha,
+    baseRef: old.branch,
     baseSha,
+    pinned: true,
     branch,
     briefGiven: continuationBrief(ctx, caller.repo, old),
     caller,
@@ -1234,6 +1240,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         {
           base: place.start ? { ref: planned.baseRef, sha: planned.baseSha } : null,
           baseRef: planned.baseRef,
+          ...(planned.pinned ? { baseCommit: planned.baseSha } : {}),
           branch: planned.branch,
           continues: planned.continues,
           effort: chosen.effort,
@@ -1382,7 +1389,8 @@ export async function startQueued(
     const first = placeFor(input);
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
     if (!place.start) return null;
-    const base = commitOf(record.repo, record.baseRef, ctx.env);
+    // A continuation's pinned commit first; a record from before it holds only the branch name.
+    const base = commitOf(record.repo, record.baseCommit ?? record.baseRef, ctx.env);
     if (base === null) {
       await failed(record, `the base ${record.baseRef} is no commit here`, quiet);
       return null;

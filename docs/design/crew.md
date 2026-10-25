@@ -883,14 +883,15 @@ cannot be read is a refusal (a hand-off without it would lose what the next crew
 (`continues`), because a number at the end of a branch or a slug proves nothing — a phase whose
 slug is `step-2` has a branch that ends in `-2` too.
 
-**What a hand-off names, and counts (NM1).** The next crew session's `baseRef` is the old head's
-**commit**, never the old branch's name: a queued continuation is cut from its `baseRef` only when it
-starts, and `crew rm` of the old record deletes that branch (a branch reset would move it too), so
-a name could be gone by then. A record from before this holds a branch name and still starts the old
-way. `--continue <name>` finds the old record by the one finder every crew command uses (`findCrew`):
-a name shared with removed records means the live one — a handed-off record is live — and two live
-records of one name ask for an id. The number counts the phase's records that **started** (a record
-removed before it began never ran, and takes no number), plus one.
+**What a hand-off names, and counts (NM1).** The next crew session's record holds the old head's
+**commit** as `baseCommit`, next to `baseRef` (the old branch's name, which the board and the portal
+show). A queued continuation is cut when it starts, and `crew rm` of the old record deletes that
+branch (a branch reset would move it too), so it starts from `baseCommit` first and from `baseRef` only
+when the record has none — a record an older kit wrote. `--continue <name>` finds the old record by the
+one finder every crew command uses (`findCrew`): a name shared with removed records means the live
+one — a handed-off record is live — and two live records of one name ask for an id. The number counts
+the phase's records that **started** (a record removed before it began never ran, and takes no
+number), plus one.
 
 **The crew session's own line** — `cc-smart-dev-kit crew self-watch [--once]`
 (`src/crew/self-watch.ts`) — runs in the crew session's own monitor, and **keeps running**: it looks

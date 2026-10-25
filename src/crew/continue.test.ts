@@ -119,8 +119,7 @@ describe("crew start --continue", () => {
     expect(next).toBeDefined();
     expect(next?.branch).toBe("crew/B6b-portal-live-2");
     expect(next?.worktree).toBe(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"));
-    // The base is recorded as the commit: the old branch's name can go (`crew rm`) or move.
-    expect(next?.base).toEqual({ ref: world.head, sha: world.head });
+    expect(next?.base).toEqual({ ref: "crew/B6b-portal-live", sha: world.head });
     expect(next?.phase).toBe("B6b");
     expect(next?.slug).toBe("portal-live");
   });
@@ -467,9 +466,11 @@ describe("NM1: a continuation keeps the commit it starts from", () => {
     return { next: next as CrewRecord, world };
   }
 
-  test("it stores the commit, so `crew rm` of the old record cannot take its base away", async () => {
+  test("it pins the commit, so `crew rm` of the old record cannot take its base away", async () => {
     const { next, world } = await queuedContinuation();
-    expect(next.baseRef).toBe(world.head);
+    // The name stays readable (the portal and the board show it); the commit is what it starts from.
+    expect(next.baseRef).toBe("crew/B6b-portal-live");
+    expect(next.baseCommit).toBe(world.head);
     const { updateCrew } = await import("./store");
     expect(await runCrew(["rm", ID], world.ctx())).toBe(0);
     expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live").trim()).toBe("");
@@ -483,24 +484,16 @@ describe("NM1: a continuation keeps the commit it starts from", () => {
       (one) => one.id === next.id,
     );
     expect(after?.state).toBe("starting");
-    expect(after?.base?.sha).toBe(world.head);
+    expect(after?.base).toEqual({ ref: "crew/B6b-portal-live", sha: world.head });
   });
 
   test("a record from before the change, with only a branch name, still starts", async () => {
     const { next, world } = await queuedContinuation();
     const { updateCrew } = await import("./store");
-    await updateCrew(
-      world.paths.stateDir,
-      world.repo,
-      next.id,
-      { baseRef: "crew/B6b-portal-live" },
-      T0,
-    );
-    const legacy = listCrew(world.paths.stateDir, world.repo).records.find(
-      (one) => one.id === next.id,
-    ) as CrewRecord;
     const { startQueued } = await import("./start");
     const { defaultResolved } = await import("../testing/fake-workflow");
+    // As an older kit wrote it: no `baseCommit`.
+    const { baseCommit: _pinned, ...legacy } = next;
     await updateCrew(world.paths.stateDir, world.repo, next.id, { waitsFor: [] }, T0);
     await startQueued({ ...legacy, waitsFor: [] }, world.ctx(NEXT), defaultResolved());
     const after = listCrew(world.paths.stateDir, world.repo).records.find(
