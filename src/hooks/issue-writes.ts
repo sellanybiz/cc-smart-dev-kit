@@ -1,41 +1,75 @@
 /**
  * The reader of a raw WRITE to GitHub's issues (decision D67), for the merge guard: `gh issue
- * create | edit | comment | close | reopen | delete | transfer | lock | pin | develop …`, and `gh
- * api` with POST, PATCH, PUT or DELETE to a repository's `issues` endpoints or a GraphQL query
- * that names an issue mutation. An issue is text that leaves the machine, so a session's own
- * write is the person's yes; the kit's way is `cc-smart-dev-kit issue file`, which is not a
+ * create | edit | comment | close | reopen | delete | transfer | lock | pin | develop …`, `gh
+ * label create | edit | delete | clone`, and `gh api` with POST, PATCH, PUT or DELETE to a
+ * repository's `issues` or `labels` endpoints, or with a GraphQL mutation. An issue is text that
+ * leaves the machine, and a label can make an issue "ready" that nobody labelled, so a session's
+ * own write is the person's yes; the kit's way is `cc-smart-dev-kit issue file`, which is not a
  * `gh` command and is never read here. A crew session is denied (`merge-guard.ts`).
  *
  * Read with the one shell reader (`invocationsOf`, `src/shell/command.ts`): wrappers, `bash -c`
  * and the dialect of the tool are stepped through like every guard does. A read (`gh issue
  * list`, `view`, `status`, a GET) and `--help` are no write; a subcommand this reader does not
  * know counts as one (a guard fails closed). Flags are read the way gh reads them: before the
- * subcommand an option takes the next word, and a `-h` after an option is that option's value.
- * The runners (`find -exec`, `watch`, `su -c`, `parallel`, `xargs`) are the reader's own
- * (`nestedCommand`, `WRAPPERS`): `invocationsOf` already hands back the `gh` they run.
- * **Not read**, as for the merge guard: a `gh` alias and a script file. The program of a
- * line worked out when it runs (`$GH issue create`) is a risk of its own (`computedIssueRisk`).
+ * subcommand an option takes the next word, a `-h` after an option is that option's value, and
+ * `-X=POST` is `POST`. The runners (`find -exec`, `watch`, `su -c`, `parallel`, `xargs`) are the
+ * reader's own (`nestedCommand`, `WRAPPERS`): `invocationsOf` already hands back the `gh` they run.
+ *
+ * **Text it cannot read whole fails closed.** A write method to an endpoint that holds `$` or a
+ * backtick (the shell fills it in), a GraphQL query that does, a request body from a file
+ * (`--input`, `query=@file`), and a `gh` alias that runs a shell command or expands too deep all
+ * count as a write. A `gh <word>` is looked up in the person's aliases when the caller gives the
+ * list (`issueWritesWithAliases`, like the merge reader); a word that is neither a gh command nor
+ * an alias is handed back (`unnamedGhWords`) for a crew session's part to refuse.
+ * **Not read:** a script file. The program of a line worked out when it runs (`$GH issue create`)
+ * is a risk of its own (`computedIssueRisk`).
  */
-import { type Dialect, invocationsOf, isShort, shortFlags } from "../shell/command";
+import {
+  type Dialect,
+  invocationsOf,
+  isShort,
+  MAX_NESTING,
+  shortFlags,
+  wordsOf,
+} from "../shell/command";
 import {
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
   API_VALUE_LETTERS,
+  type AliasReader,
   computedInvocationRisk,
+  GH_COMMANDS,
 } from "./after-merge";
 
 /** `gh issue` subcommands that only read (or print help). Every other subcommand writes. */
 const ISSUE_READS: ReadonlySet<string> = new Set(["help", "list", "ls", "status", "view"]);
 
+/** `gh label` subcommands that only read (or print help). Every other subcommand writes. */
+const LABEL_READS: ReadonlySet<string> = new Set(["help", "list", "ls"]);
+
 /** The methods that change something. */
 const WRITE_METHODS: ReadonlySet<string> = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 
-/** A repository's issues endpoints: `repos/<o>/<r>/issues`, below it, or by repository id. */
-const ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
+/**
+ * A repository's issues and labels endpoints: `repos/<o>/<r>/issues`, below it (a comment, a
+ * label on an issue), or by repository id.
+ */
+const ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/(?:issues|labels)(?:\/.*)?$/i;
 
-/** The GraphQL mutations that write an issue, a comment on one, or its labels. */
-const ISSUE_MUTATION =
-  /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
+/** Text the shell fills in when the line runs: the guard reads it as written, not as sent. */
+const SHELL_FILLED = /[$`]/;
+
+/**
+ * The GraphQL mutations of pull requests: the merge guard judges these (a merge, an opening, a
+ * ready mark), so they are no issue write. Any other mutation is one: it may touch an issue, a
+ * comment, a label, a sub-issue or an assignee, and GitHub adds more.
+ */
+const PULL_REQUEST_MUTATIONS: ReadonlySet<string> = new Set([
+  "createPullRequest",
+  "enablePullRequestAutoMerge",
+  "markPullRequestReadyForReview",
+  "mergePullRequest",
+]);
 
 /** The endpoint as a path: no host, no query, no outer slashes. */
 function apiPath(endpoint: string): string {
@@ -51,7 +85,36 @@ function isGraphql(endpoint: string): boolean {
   return path === "graphql" || path.endsWith("/graphql");
 }
 
-/** What a `gh api …` call writes to the issues, named; null when it writes none. */
+/**
+ * What a GraphQL request writes, named, or null. Every GitHub mutation is `name(input: …)`, so
+ * the names are the words before `(input:`; a mutation made only of pull request mutations is
+ * the merge guard's. A request the guard cannot read (a file, the shell) counts as a write: it
+ * cannot be told from a mutation.
+ */
+function graphqlWrite(fields: readonly string[], body: boolean): string | null {
+  if (body) {
+    return "a gh api graphql request that cannot be read (its body comes from a file or standard input)";
+  }
+  for (const field of fields) {
+    if (!field.startsWith("query=")) continue;
+    const query = field.slice("query=".length);
+    if (query.startsWith("@") || SHELL_FILLED.test(query)) {
+      return "a gh api graphql request that cannot be read (its query comes from a file or the shell)";
+    }
+    if (!/\bmutation\b/i.test(query)) continue;
+    const named = [...query.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
+    const issueWrites = named.filter(
+      (name) => name !== undefined && !PULL_REQUEST_MUTATIONS.has(name),
+    );
+    if (named.length > 0 && issueWrites.length === 0) continue;
+    return issueWrites.length > 0
+      ? `a gh api graphql mutation (${[...new Set(issueWrites)].join(", ")})`
+      : "a gh api graphql mutation";
+  }
+  return null;
+}
+
+/** What a `gh api …` call writes to the issues or labels, named; null when it writes none. */
 function apiIssueWrite(rest: readonly string[]): string | null {
   const fields: string[] = [];
   let endpoint: string | null = null;
@@ -78,10 +141,10 @@ function apiIssueWrite(rest: readonly string[]): string | null {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const { flags, value: attached, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter)) continue;
-      const value = wantsNext ? (rest[index + 1] ?? "") : word.slice(flags.length + 1);
+      const value = wantsNext ? (rest[index + 1] ?? "") : attached;
       if (wantsNext) index += 1;
       if (letter === "f" || letter === "F") fields.push(value);
       if (letter === "X") method = value;
@@ -90,18 +153,17 @@ function apiIssueWrite(rest: readonly string[]): string | null {
     endpoint ??= word;
   }
   if (endpoint === null) return null;
-  if (isGraphql(endpoint)) {
-    for (const field of fields) {
-      if (!field.startsWith("query=")) continue;
-      const mutation = ISSUE_MUTATION.exec(field)?.[0];
-      if (mutation !== undefined) return `a gh api graphql mutation (${mutation})`;
-    }
-    return null;
-  }
   // gh sends GET, and POST once a parameter or a body is added (`gh api --help`).
   const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  // A method the shell fills in could be any of them: it is read as a write.
+  if (!WRITE_METHODS.has(used) && !SHELL_FILLED.test(used)) return null;
+  // An endpoint the shell fills in cannot be read: the call may reach any issue or label.
+  if (SHELL_FILLED.test(endpoint)) {
+    return `a gh api ${used} to an endpoint that cannot be read (${endpoint})`;
+  }
+  if (isGraphql(endpoint)) return graphqlWrite(fields, body);
   const path = apiPath(endpoint);
-  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
+  return ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
 }
 
 /**
@@ -117,8 +179,47 @@ function isHelpAt(words: readonly string[], index: number): boolean {
   return !(before.startsWith("-") && !before.includes("="));
 }
 
-/** What a `gh …` invocation writes to the issues, named; null when it writes none. */
-function ghIssueWrite(args: readonly string[]): string | null {
+/** What one reading of a line found: the writes, and the `gh` words that name no command. */
+interface Reading {
+  writes: string[];
+  unnamed: string[];
+}
+
+/**
+ * What a `gh <alias> …` writes: the alias is looked up in `aliases` (null: not read, so the
+ * word is handed back), and its expansion is read like a `gh` line. `named`: the alias the
+ * person typed, for the question's words when a chain of them is too long.
+ */
+function aliasWrite(
+  word: string,
+  rest: readonly string[],
+  aliases: ReadonlyMap<string, string> | null,
+  found: Reading,
+  depth: number,
+  named: string,
+): string | null {
+  const expansion = aliases?.get(word);
+  if (expansion === undefined) {
+    if (!found.unnamed.includes(word)) found.unnamed.push(word);
+    return null;
+  }
+  if (expansion.startsWith("!")) {
+    return `a gh alias that runs a shell command (\`gh ${named}\`)`;
+  }
+  if (depth >= MAX_NESTING) {
+    return `a gh alias that expands to further commands (\`gh ${named}\`)`;
+  }
+  return ghIssueWrite([...wordsOf(expansion), ...rest], aliases, found, depth + 1, named);
+}
+
+/** What a `gh …` invocation writes to the issues or labels, named; null when it writes none. */
+function ghIssueWrite(
+  args: readonly string[],
+  aliases: ReadonlyMap<string, string> | null,
+  found: Reading,
+  depth = 0,
+  named = "",
+): string | null {
   // `--help` prints the usage and does nothing (before a `--`, as gh's own parser reads it).
   const dashes = args.indexOf("--");
   const words = dashes === -1 ? args : args.slice(0, dashes);
@@ -134,43 +235,110 @@ function ghIssueWrite(args: readonly string[]): string | null {
       continue;
     }
     positional.push(word);
-    // `gh api` reads its own flags; the rest of the line is its.
-    if (positional[0] === "api") return apiIssueWrite(args.slice(index + 1));
+    if (positional.length === 1) {
+      const command = word.toLowerCase();
+      // `gh api` reads its own flags; the rest of the line is its.
+      if (command === "api") return apiIssueWrite(args.slice(index + 1));
+      // A word that names no gh command: one of the person's aliases, or an extension.
+      if (!GH_COMMANDS.has(command)) {
+        const rest = args.slice(index + 1);
+        return aliasWrite(command, rest, aliases, found, depth, named === "" ? command : named);
+      }
+      if (command !== "issue" && command !== "label") return null;
+    }
     if (positional.length === 2) break;
   }
   const [group, sub] = positional;
-  if (group !== "issue" || sub === undefined) return null;
+  if (sub === undefined) return null;
   const name = sub.toLowerCase();
+  if (group?.toLowerCase() === "label") {
+    return LABEL_READS.has(name) ? null : `gh label ${name}`;
+  }
   if (ISSUE_READS.has(name)) return null;
   // `gh issue develop --list` only lists the branches of an issue.
   if (name === "develop" && args.some((word) => word === "-l" || word === "--list")) return null;
   return `gh issue ${name}`;
 }
 
-/**
- * Every raw issue write a command line makes, named, in the order it runs them: `gh issue
- * close`, `a gh api PATCH to repos/o/r/issues/5`. `dialect`: the tool's; not given, both are
- * read.
- */
-export function issueWrites(command: string, dialect?: Dialect): string[] {
-  const found: string[] = [];
-  const note = (write: string | null) => {
-    if (write !== null && !found.includes(write)) found.push(write);
-  };
+/** Read a line once: every raw issue or label write, and the `gh` words that name no command. */
+function readLine(
+  command: string,
+  dialect: Dialect | undefined,
+  aliases: ReadonlyMap<string, string> | null,
+): Reading {
+  const found: Reading = { writes: [], unnamed: [] };
   for (const run of invocationsOf(command, dialect)) {
-    if (!run.computed && run.program === "gh") note(ghIssueWrite(run.args));
+    if (run.computed || run.program !== "gh") continue;
+    const write = ghIssueWrite(run.args, aliases, found);
+    if (write !== null && !found.writes.includes(write)) found.writes.push(write);
   }
   return found;
 }
 
 /**
+ * Every raw issue or label write a command line makes, named, in the order it runs them: `gh
+ * issue close`, `a gh api PATCH to repos/o/r/issues/5`. `dialect`: the tool's; not given, both
+ * are read. `aliases`: the person's `gh alias list` as name → expansion; not given, a `gh
+ * <word>` is no write (`unnamedGhWords` hands the word back).
+ */
+export function issueWrites(
+  command: string,
+  dialect?: Dialect,
+  aliases: ReadonlyMap<string, string> | null = null,
+): string[] {
+  return readLine(command, dialect, aliases).writes;
+}
+
+/**
+ * The words after `gh` that name no gh command and, when `aliases` is given, no alias in it
+ * (`gh dash`, `gh bug` before the alias list is read). A crew session is denied these: what
+ * they run cannot be read.
+ */
+export function unnamedGhWords(
+  command: string,
+  dialect?: Dialect,
+  aliases: ReadonlyMap<string, string> | null = null,
+): string[] {
+  return readLine(command, dialect, aliases).unnamed;
+}
+
+/**
+ * `issueWrites` and `unnamedGhWords` with the person's gh aliases read when a `gh <word>` needs
+ * them, as the merge reader does (`pullRequestCallsWithAliases`): `gh alias list` reads the local
+ * config, no network, and `readAliases` runs only for a line with such a word (the caller passes
+ * one `onceAliases` reader to this and to the pull request reader). A list that cannot be read leaves the alias a write of its own — whether `gh <word>` writes is
+ * then unknown, and a guard asks.
+ */
+export function issueWritesWithAliases(
+  command: string,
+  readAliases: AliasReader,
+  dialect?: Dialect,
+): Reading {
+  const plain = readLine(command, dialect, null);
+  if (plain.unnamed.length === 0) return plain;
+  const aliases = readAliases();
+  if (aliases === null) {
+    const words = plain.unnamed.map((word) => `gh ${word}`).join(", ");
+    return {
+      writes: [...plain.writes, `a gh alias that cannot be read (${words})`],
+      unnamed: plain.unnamed,
+    };
+  }
+  return readLine(command, dialect, aliases);
+}
+
+/**
  * True when a command's program is worked out when it runs (`$GH`, `$(which gh)`) and its
- * words name an issue (`issue`, a path with `/issues`): the guard cannot tell whether it
- * writes one, so it asks (a crew session: denied), like a computed merge.
+ * words name an issue or a label (`issue`, `label`, a path with `/issues` or `/labels`): the
+ * guard cannot tell whether it writes one, so it asks (a crew session: denied), like a computed
+ * merge.
  */
 export function computedIssueRisk(command: string, dialect?: Dialect): boolean {
   return computedInvocationRisk(command, dialect, (words) =>
-    words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)),
+    words.some(
+      (word) =>
+        /(?:^|\/)(?:issue|label)s?(?:\/|$)/i.test(word) || /^(?:issue|label)s?$/i.test(word),
+    ),
   );
 }
 

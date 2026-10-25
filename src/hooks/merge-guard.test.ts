@@ -35,6 +35,7 @@ import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
 import {
   CREW_ISSUE_REFUSAL,
+  crewGhWordRefusal,
   CREW_MERGE_REFUSAL,
   CREW_PR_REFUSAL,
   mergeGuard,
@@ -2490,5 +2491,83 @@ describe("D67: the review of GI1 - the issue write in every path of the guard", 
       context,
     );
     expect(read).toEqual({});
+  });
+});
+
+describe("IX1: gh aliases and unreadable gh words in the issue part of the guard", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+  const BUG_ALIAS = "bug: issue create --label bug\nls: issue list\n";
+
+  test("IX1-4: an alias for an issue write is asked about for the person, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    const asked = await decide(env, repo, "gh bug --title t");
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("writes to GitHub's issues (gh issue create)");
+    expect(await decide({ ...env, ...CREW }, repo, "gh bug --title t")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-4: an alias for a read is silent, and the person's run reads `gh alias list` once", async () => {
+    const { env, gh, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    expect(await decide(env, repo, "gh ls")).toBeNull();
+    expect(ghCalls(gh)).toEqual(["alias list"]);
+    expect(await decide({ ...env, ...CREW }, repo, "gh ls")).toBeNull();
+  });
+
+  test("IX1-4: a shell alias is asked about, for it cannot be read, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": "sh: '!gh issue close 5'\n" });
+    // The pull request part asks first (it reads a shell alias the same way); either way the
+    // person is asked, and the issue part holds for a crew session.
+    expect((await decide(env, repo, "gh sh"))?.decision).toBe("ask");
+    expect(await decide({ ...env, ...CREW }, repo, "gh sh")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-4: a gh word that is no command and no alias: silent for the person, denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG, { "alias list": BUG_ALIAS });
+    expect(await decide(env, repo, "gh dash")).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, "gh dash")).toEqual({
+      decision: "deny",
+      reason: crewGhWordRefusal(["dash"]),
+    });
+    // The same in a project with no file: the crew part holds.
+    const bare = makeRepo();
+    const word = await decide({ ...hookEnv(), ...CREW }, bare, "gh dash");
+    expect(word?.decision).toBe("deny");
+  });
+
+  test("IX1-4: an alias list that cannot be read: the person is asked, a crew session is denied", async () => {
+    const { env, repo } = ready(CONFIG, {}, true);
+    expect((await decide(env, repo, "gh bug"))?.decision).toBe("ask");
+    expect(await decide({ ...env, ...CREW }, repo, "gh bug")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-1: a write to an endpoint the shell fills in is asked about, a read is not", async () => {
+    const { env, repo } = ready(CONFIG);
+    const asked = await decide(env, repo, 'gh api "$EP" -f body=hi');
+    expect(asked?.reason).toContain("an endpoint that cannot be read");
+    expect(await decide(env, repo, 'gh api "$EP"')).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, 'gh api "$EP" -f body=hi')).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
+  });
+
+  test("IX1-11: a label write is asked about, and denied in a crew session", async () => {
+    const { env, repo } = ready(CONFIG);
+    const asked = await decide(env, repo, "gh label create ready");
+    expect(asked?.reason).toContain("writes to GitHub's issues (gh label create)");
+    expect(await decide(env, repo, "gh label list")).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, "gh api repos/o/r/labels -f name=x")).toEqual({
+      decision: "deny",
+      reason: CREW_ISSUE_REFUSAL,
+    });
   });
 });

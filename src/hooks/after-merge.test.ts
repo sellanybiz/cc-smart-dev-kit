@@ -16,6 +16,7 @@ import {
   type PullRequestView,
   parsePullRequestView,
   pullRequestMerges,
+  pullRequestOpenings,
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
@@ -888,5 +889,37 @@ describe("the hook", () => {
     await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
     const note = await noteAfterMerge(join(worktree, "src"), env);
     expect(note).toContain("No other lead is recorded in this repo.");
+  });
+});
+
+describe("IX1: the merge reader reads gh's flags and a query the way gh and the shell do", () => {
+  test("IX1-2: `gh api -X=POST …/pulls` opens a pull request, as `-X POST` does", () => {
+    for (const command of [
+      "gh api -X=POST repos/o/r/pulls -f title=t",
+      "gh api -X POST repos/o/r/pulls -f title=t",
+      "gh api -XPOST repos/o/r/pulls -f title=t",
+    ]) {
+      expect([command, pullRequestOpenings(command, null, "bash").length]).toEqual([command, 1]);
+    }
+    // `=GET` is GET: a list, no opening.
+    expect(pullRequestOpenings("gh api -X=GET repos/o/r/pulls", null, "bash")).toEqual([]);
+  });
+
+  test("IX1-2: a bare `$Q` for a query is a refusal, like `$(…)`", () => {
+    for (const command of [
+      'gh api graphql -f query="$Q"',
+      "gh api graphql -F query=$Q",
+      'gh api graphql -f query="mutation { $M }"',
+    ]) {
+      const calls = pullRequestMerges(command, null, "bash");
+      expect([command, calls.length, calls[0]?.refusal]).toEqual([
+        command,
+        1,
+        "the GraphQL query is read from a file or built by the shell, so this guard cannot read it",
+      ]);
+    }
+    expect(
+      pullRequestMerges("gh api graphql -f query='{ viewer { login } }'", null, "bash"),
+    ).toEqual([]);
   });
 });

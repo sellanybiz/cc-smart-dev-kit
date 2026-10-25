@@ -112,12 +112,14 @@ import {
 import { openPrRefusal } from "../workflow/pr-switches";
 import { type GateRead, resolveGate } from "../workflow/resolve";
 import {
+  type AliasReader,
   COMPUTED_MERGE,
   computedMergeRisk,
   computedPullRequestRisk,
   exactMergeOf,
   isMerge,
   type MergeCall,
+  onceAliases,
   pullRequestCallsWithAliases,
   pullRequestMerges,
   repositoryKey,
@@ -133,11 +135,24 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import { computedIssueRisk, issueWrites, requestsIssueWrite } from "./issue-writes";
+import { computedIssueRisk, issueWritesWithAliases } from "./issue-writes";
 import type { Env, HookContext } from "./run";
 
 /** How long the alias lookup may take inside the budget: the same cap it has on its own. */
 const ALIAS_LIMIT_MS = 3_000;
+
+/** The alias reader of one hook run, so the pull request part and the issue part share a read. */
+const ALIAS_READERS = new WeakMap<HookContext, AliasReader>();
+
+/** This run's one `gh alias list` reader; the first caller's time limit is the run's. */
+function aliasReaderOf(context: HookContext, timeoutMs: number): AliasReader {
+  let reader = ALIAS_READERS.get(context);
+  if (reader === undefined) {
+    reader = onceAliases(context.cwd, context.env, timeoutMs);
+    ALIAS_READERS.set(context, reader);
+  }
+  return reader;
+}
 
 /** Why a crew session's `gh pr create` / `gh pr ready` is denied (D24). */
 export const CREW_PR_REFUSAL =
@@ -151,6 +166,15 @@ export const CREW_PR_REFUSAL =
  * person has switched it on.
  */
 export const CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
+
+/**
+ * Why a crew session's `gh <word>` is denied when the word is neither a gh command nor an alias
+ * the kit could read (IX1): what it runs cannot be read, so it might write an issue or a label.
+ */
+export function crewGhWordRefusal(words: readonly string[]): string {
+  const named = words.map((word) => `\`gh ${word}\``).join(", ");
+  return `A crew session runs no ${named}: it is neither a gh command nor an alias the kit can read, so the kit cannot tell whether it writes to GitHub. Use a gh command written out in full, or put the finding in your report for your lead.`;
+}
 
 /**
  * Why a crew session's `gh pr merge` is denied (D24): nobody is at the machine to answer the
@@ -191,7 +215,15 @@ export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): 
   // A raw issue write is the other thing a crew session never does (D67). Read FIRST: a line
   // that also holds a `gh <word>` this guard cannot name (an extension) is a pull request
   // question whose alias read can end in silence, and must not hide the write behind it.
-  if (requestsIssueWrite(command, dialect)) return toolDecision("deny", CREW_ISSUE_REFUSAL);
+  // A `gh <word>` is looked up in the person's aliases (a `bug` alias for `issue create` is a
+  // write), and a word that is neither a gh command nor an alias is denied: what it runs cannot
+  // be read, and nobody is here to answer.
+  const readAliases = onceAliases(cwd, env, ALIAS_LIMIT_MS);
+  const issue = issueWritesWithAliases(command, readAliases, dialect);
+  if (issue.writes.length > 0 || computedIssueRisk(command, dialect)) {
+    return toolDecision("deny", CREW_ISSUE_REFUSAL);
+  }
+  if (issue.unnamed.length > 0) return toolDecision("deny", crewGhWordRefusal(issue.unnamed));
   if (!requestsPullRequestChange(command, dialect)) return SILENT;
   // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
   // cannot be named: its words name an opening or a merge, which a crew session never does
@@ -204,7 +236,14 @@ export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): 
   // and `gh mg` a merge), so each one is refused by what it really does:
   // - a merge (or a word that may expand to one) is the merge refusal;
   // - an opening is the pull request refusal.
-  const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  const calls = pullRequestCallsWithAliases(
+    command,
+    cwd,
+    env,
+    ALIAS_LIMIT_MS,
+    dialect,
+    readAliases,
+  );
   if (calls.some((one) => isMerge(one) && !one.disarms)) {
     return toolDecision("deny", CREW_MERGE_REFUSAL);
   }
@@ -320,7 +359,13 @@ function issueWriteQuestion(context: HookContext): string | null {
   const command = stringField(toolInput(input).command);
   if (command === null || project.config === null) return null;
   const dialect = dialectOfTool(input.tool_name);
-  const writes = issueWrites(command, dialect);
+  // An alias the person typed is read for what it expands to; a word that is no alias at all
+  // (an extension) is no write for them, and is denied only for a crew session.
+  const writes = issueWritesWithAliases(
+    command,
+    aliasReaderOf(context, ALIAS_LIMIT_MS),
+    dialect,
+  ).writes;
   if (writes.length === 0 && !computedIssueRisk(command, dialect)) return null;
   const what =
     writes.length > 0
@@ -453,7 +498,15 @@ async function pullRequestGuard(context: HookContext): Promise<HookResult> {
   // Every merge and every opening the command runs, in order, its aliases read when a `gh
   // <word>` needs them (a local file read, no network). A `--disable-auto` takes an armed
   // merge back: it merges nothing, so it is not judged.
-  const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
+  const aliasTime = timeFor(ALIAS_LIMIT_MS);
+  const calls = pullRequestCallsWithAliases(
+    command,
+    cwd,
+    env,
+    aliasTime,
+    dialect,
+    aliasReaderOf(context, aliasTime),
+  );
   const merges = calls.filter((one) => isMerge(one) && !one.disarms);
   const openings = calls.filter((one) => !isMerge(one));
 

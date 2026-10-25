@@ -9455,10 +9455,16 @@ function shortFlags(arg, valued) {
   for (let i = 1;i < arg.length; i++) {
     const letter = arg.charAt(i);
     flags += letter;
-    if (valued.includes(letter))
-      return { flags, wantsNext: i === arg.length - 1 };
+    if (valued.includes(letter)) {
+      const attached = arg.slice(i + 1);
+      return {
+        flags,
+        value: attached.startsWith("=") ? attached.slice(1) : attached,
+        wantsNext: i === arg.length - 1
+      };
+    }
   }
-  return { flags, wantsNext: false };
+  return { flags, value: "", wantsNext: false };
 }
 function isShort(arg) {
   return /^-[^-]/.test(arg);
