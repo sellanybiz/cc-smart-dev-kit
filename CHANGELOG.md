@@ -28,6 +28,17 @@ own repository, instead of losing them as a line in a summary.
   `issue file` is not asked about.
 - **`doctor`** has one line while the switch is on: `gh` is logged in for github.com and can
   file issues in `origin`'s repository, each failure with its fix.
+- **A fix is marked at the merge and closed by the release.** A crew report can name the issues
+  its phase fixes (`crew report --issue <n>`, or an `issues` list in the JSON part). When the
+  lead merges the branch, the watch comments "fixed on `<branch>` at `<commit>`, merged into
+  `<base>`; it closes when `<base>` ships" on each and adds the label `fixed-unreleased`, once per
+  merge. GitHub closes an issue only when a pull request that names it merges into the *default*
+  branch, so the release's pull request lists them: `cc-smart-dev-kit issue fixed --base <default>
+  --head <branch>` prints one `Fixes #<n>` line for each open `fixed-unreleased` issue whose fix
+  is in the pull request's commits. If GitHub cannot be reached the merge still counts: the watch
+  says so in one line, keeps the mark in a queue file and tries again every five minutes. With
+  the switch off, nothing is sent. The lead skill files a bug outside the plan with `issue file`
+  instead of a line that is lost.
 - Design: `docs/design/issues.md`.
 
 ## 1.2.1

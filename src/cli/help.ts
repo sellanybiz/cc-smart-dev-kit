@@ -333,6 +333,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   },
   { name: "issue", listed: "more", help: ISSUE_USAGE },
   { name: "issue file", help: ISSUE_USAGE },
+  { name: "issue fixed", help: ISSUE_USAGE },
   { name: "workflow", listed: "more", help: WORKFLOW_USAGE },
   // The lead's hand-back gate (D22): `help workflow merge-check` prints the workflow's own
   // usage, which carries merge-check's lines — one text, not a second copy.

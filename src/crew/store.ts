@@ -708,6 +708,8 @@ const reportFields = z.object({
     .optional(),
   /** The docs it changed. */
   docs: z.array(text),
+  /** The GitHub issues it fixes (D67); older reports have none. */
+  issues: z.array(z.number().int().positive()).optional(),
   /** What only the lead may do: text for the lead's own files, a decision. */
   needsLead: z.array(text),
   /** What is still open. */

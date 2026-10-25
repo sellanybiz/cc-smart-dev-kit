@@ -7577,6 +7577,7 @@ var reportFields = object({
     findings: array(looseObject({ finding: text2, fix: text2 }))
   }).nullable().optional(),
   docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
   needsLead: array(text2),
   open: array(text2),
   question: text2.nullable(),
@@ -11898,6 +11899,34 @@ var encoder = new TextEncoder;
 var FIRST_BACKOFF_MS = 5 * 60000;
 var MAX_BACKOFF_MS = 20 * 60000;
 var REPAUSE_WINDOW_MS = 15 * 60000;
+
+// src/workflow/merge-check.ts
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/fixed.ts
+var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
+
+// src/issues/pending.ts
+var RETRY_MS = 5 * 60000;
+var sha2 = string2().regex(/^[0-9a-f]{40}$/);
+var pendingSchema = object({
+  marks: array(object({
+    base: string2().min(1),
+    branch: string2().min(1),
+    issue: number2().int().positive(),
+    merge: sha2.nullable(),
+    told: boolean2().default(false),
+    tip: sha2,
+    triedAt: number2().int().min(0).optional()
+  })),
+  version: literal(1)
+});
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [

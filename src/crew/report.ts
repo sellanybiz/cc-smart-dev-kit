@@ -22,6 +22,7 @@
  * the person.
  */
 import { z } from "zod";
+import { phaseIssues } from "../issues/phase-issues";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -53,6 +54,9 @@ export type ReportStatusName = (typeof REPORT_STATUS_NAMES)[number];
 export function isReportStatus(value: string): value is ReportStatusName {
   return (REPORT_STATUS_NAMES as readonly string[]).includes(value);
 }
+
+/** One GitHub issue's number: a whole number above 0. */
+const issueNumber = z.number().int().positive();
 
 /** One test run a crew reports. */
 const testRunFields = z.looseObject({
@@ -96,6 +100,8 @@ const ownReviewFields = z.looseObject({
  * request — the command fills.
  */
 export const modelReportSchema = z.looseObject({
+  /** The numbers of the GitHub issues the phase fixes (D67); `crew report --issue` adds to them. */
+  issues: z.array(issueNumber).default([]),
   tests: z
     .looseObject({
       targeted: z.array(testRunFields).default([]),
@@ -173,6 +179,8 @@ export interface ReportArgs {
   options: string[];
   /** The option the crew session recommends (counted from 1); null when it recommends none. */
   recommend: null | number;
+  /** The issues `--issue` names, for a report (the JSON part's `issues` add to them). */
+  issues: number[];
 }
 
 /** A refusal with its line and the exit code. */
@@ -380,6 +388,7 @@ export function buildReport(
   record: CrewRecord,
   summary: null | string = null,
   extra: Record<string, unknown> = {},
+  issues: readonly number[] = [],
 ): HandBackReport {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal(
@@ -394,6 +403,8 @@ export function buildReport(
     changed: facts.changed,
     checks: model.checks,
     docs: model.docs,
+    // The model's list, `--issue`, and the issue `crew start --issue` stored on the record.
+    issues: phaseIssues(record, { issues: [...model.issues, ...issues] }),
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
@@ -521,7 +532,15 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
   let report: HandBackReport;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
+    report = buildReport(
+      model.part,
+      facts,
+      args.status,
+      record,
+      model.summary,
+      model.extra,
+      args.issues,
+    );
   } catch (error) {
     if (!(error instanceof ReportRefusal)) throw error;
     return say(ctx, error);

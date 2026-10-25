@@ -186,7 +186,7 @@ export function ownRepository(cwd: string, env: Env): { repo: string } | { why: 
 /** The switch, as the guards read it: the committed policy on the base, over the person's file. */
 export function resolveSwitch(
   world: IssueWorld,
-): { base: string | null; resolved: ResolvedWorkflow } | { why: string } {
+): { base: string | null; resolved: ResolvedWorkflow } | { retry?: true; why: string } {
   try {
     const checkout = locateCheckout(world.cwd, { env: world.env });
     if (checkout === null) return { why: "this folder is not in a git project" };
@@ -204,13 +204,16 @@ export function resolveSwitch(
       timeoutMs: GIT_TIMEOUT_MS,
     });
     if (!read.ok) {
+      // Not "off": the policy may be committed and not yet pushed, or git may have failed once.
+      // A caller that can wait (the watch's queue) waits; `retry` says so.
       return {
+        retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`,
       };
     }
     return { base, resolved: read.gate.resolved };
   } catch (error) {
-    return { why: error instanceof Error ? error.message : String(error) };
+    return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -245,6 +248,26 @@ function createdIssue(out: string): { number: number; url: string } | null {
   const url = out.trim().split("\n").at(-1)?.trim() ?? "";
   const match = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/(\d+)$/.exec(url);
   return match === null ? null : { number: Number(match[1]), url };
+}
+
+/** The one `gh` call that makes a label (`issue file` and the fixed mark both use it). */
+export function createLabel(
+  write: (args: string[]) => Promise<GhResult>,
+  repo: string,
+  label: string,
+): Promise<GhResult> {
+  // The label is a positional word: every option first, then `--`, so a name can never be
+  // read as an option and take `--repo` with it (the repository would be gh's own guess).
+  return write([
+    "label",
+    "create",
+    "--repo",
+    repo,
+    "--description",
+    `Filed by ${COMMAND}`,
+    "--",
+    label,
+  ]);
 }
 
 /**
@@ -343,18 +366,7 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
 
   for (const label of labels) {
     if (existing.includes(label.toLowerCase())) continue;
-    // The label is a positional word: every option first, then `--`, so a name can never be
-    // read as an option and take `--repo` with it (the repository would be gh's own guess).
-    const made = await write([
-      "label",
-      "create",
-      "--repo",
-      repo,
-      "--description",
-      `Filed by ${COMMAND}`,
-      "--",
-      label,
-    ]);
+    const made = await createLabel(write, repo, label);
     if (made.kind !== "ok") return refuse(ghProblem(`created the label ${label}`, made));
   }
   const create = await write(

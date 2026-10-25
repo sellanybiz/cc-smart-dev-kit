@@ -17,7 +17,7 @@ GI4, below). The research behind it: `.claude/research/2026-10-25-gi1-issues.md`
 | `enabled` | `false` | The kit may file issues in the project's repository. |
 | `allowPublic` | `false` | It may also file in a **public** repository. A second yes, because everyone reads an issue there. |
 | `foundLabel` | `kit:found` | On every issue the kit files; how it finds the one a fingerprint already filed. |
-| `fixedLabel` | `fixed-unreleased` | An issue whose fix is merged and not released (GI2). |
+| `fixedLabel` | `fixed-unreleased` | An issue whose fix is merged and not released (§ Resolved when it ships). |
 | `readyLabel` | `kit:ready` | An issue the kit may pick up and build (GI3). |
 
 The defaults live in `workflowDefaults.issues`, one place. A flat set of keys
@@ -60,7 +60,8 @@ It prints one line and exits 0 (filed, updated), 1 (refused) or 2 (not a command
 An update of a closed issue adds ` (closed issue)` (the issue is not reopened), and a public
 repository adds ` (public repository)`, in that order, to the first two. A caller reads the first
 word and the number. The code is `src/issues/`
-(`file.ts` the work, `screen.ts`, `marker.ts`, `command.ts`, `doctor.ts`).
+(`file.ts` the work, `screen.ts`, `marker.ts`, `command.ts`, `doctor.ts`; `fixed.ts`,
+`pending.ts` and `phase-issues.ts` are § Resolved when it ships).
 
 ### What it checks, in this order, before anything is sent
 
@@ -150,11 +151,89 @@ for the repository; read-only access (Read cannot apply a label). Triage (it app
 cannot create them) and a public repository with `allowPublic` off are `!` warnings. With the
 switch off: no line, and no `gh` call.
 
+## Resolved when it ships
+
+GitHub closes an issue only when a pull request that names it (`Fixes #n` in its body, or in a
+commit of it) **merges into the default branch**. A crew merge is a local merge into the lead's
+branch (a release branch), so it closes nothing; a keyword in a pull request into any other
+branch is ignored (research: `.claude/research/2026-10-25-gi2-closing.md`). So the kit marks at
+the merge and closes with the release.
+
+**1. Which issues a phase fixes.** The hand-back report has `issues`: whole numbers above 0
+(`modelReportSchema`, the store's `reportFields`, `src/crew/report.ts`). The crew session fills
+them with `crew report --issue <n>` (repeatable) or an `issues` list in its JSON part; the
+command joins both, each number once, ascending, and refuses a value that is not a number. A
+phase started from an issue (`crew start --issue <n>`, GI3) has the number on its record
+(`record.issue.number`); `phaseIssues` (`src/issues/phase-issues.ts`) joins it in, read by shape
+so this part does not depend on that field's code.
+
+**2. At the merge.** The one place a merge is known is the watch marking a crew record `merged`
+(`watchPass`, `src/crew/watch.ts`: a local merge, and a squash or a pull request once the base
+has the work). There it **queues** one mark per issue (`queueMarks`), and **every pass settles
+the queue** (`settleMarks`, `src/issues/pending.ts`). A mark is the issue, the branch, the
+branch's tip, the commit the base got and the base's name. `markFixed` (`src/issues/fixed.ts`)
+passes the same gate as `issue file` (`openGate`: the switch as committed on the base, `origin`,
+a public repository only with `allowPublic`), then:
+
+- reads the issue once (`gh issue view --json state,labels,comments`). A closed issue gets
+  nothing; one GitHub does not know is dropped with one line;
+- posts the comment unless a comment already holds this merge's marker. The comment is "Fixed on
+  `<branch>` at `<short commit>`, merged into `<base>`; it closes when `<base>` ships" and ends
+  with `<!-- cc-smart-dev-kit:fixed <branch, URL-encoded> <tip> <merge commit> -->`. It holds no closing
+  keyword, and it is screened like any text the kit posts;
+- adds the label (`issues.fixedLabel`, created when the repository lacks it) unless the issue
+  has it.
+
+Each step looks at the issue first, so a retry after any failure does only what is missing, and
+a merge seen twice posts once. **Memory:** the queue file `<store>/issue-marks/<lead session>.json`
+(one file per lead; the lead's watch is its only writer). It outlives the crew record, which the
+watch removes right after the merge. A mark leaves it when GitHub took it, when the issue is
+closed or gone, or when the project does not use issues (the switch is off). A mark GitHub could
+not take stays, waits `RETRY_MS` (five minutes), and is told to the lead **once** ("issues: could
+not mark … fixed (…); it is tried again every 5 minutes"); the lead hears one more line when it is
+done. A failure to reach GitHub never fails a merge or a pass. Only the watch that holds its
+lead's lease settles. With the switch off, nothing is sent and nothing stays queued.
+
+**3. The release.** `cc-smart-dev-kit issue fixed --base <default> --head <branch>`
+(`listFixed`) lists the **open** issues that carry the fixed label and whose comment's marker
+names a commit in `<base>..<head>`: the tip or the merge commit is in the head, and neither is
+already in the base (so a squash merge counts by its squash commit). It prints one `Fixes #<n>`
+line each, ascending, and nothing else. The `pull-request` skill puts those lines after the last
+heading of a pull request into the default branch; GitHub closes the issues when it merges.
+Switch off or none waiting: no output, exit 0. GitHub or a branch unreadable: the reason on
+standard error and exit 1, never an empty list that looks complete. The label stays on a closed
+issue: it shows that the issue shipped through the kit. **A limit:** the marker is trusted as the
+label is. Anyone who can comment and label can forge both; the effect is one `Fixes #n` line in
+a pull request body that a person reviews. An issue number a crew report names is the crew
+session's claim; the lead reads the report before the merge.
+
+**4. The lead files what it would lose.** With the switch on, a bug, gap or follow-up outside the
+plan goes to `issue file` (the lead skill, the paragraph after the hand-back gate) where it used
+to be one line of a summary.
+
+**Limits, said once.**
+
+- *A policy that cannot be read* (the switch is committed but not pushed and fetched, or git
+  failed once) is not "off": the mark waits in the queue, is told to the lead once, and is tried
+  again; `issue fixed` exits 1. Only a clear "off" (the switch, no opt-in, no github.com
+  `origin`, issues turned off for the repository, a public one without `allowPublic`) drops the
+  marks.
+- *A hand-off chain* (a `handoff` record and its continuation, merged together) is one mark: the
+  queue and the comment marker both match on the merge commit.
+- *A merge the watch never saw* is not marked: a record that `crew rm` removed before the watch's
+  next pass has no mark queued. The watch removes a merged record itself, so this is the lead
+  running `crew rm` by hand first.
+- *A rewritten release branch*: if the tip and the merge commit named in a marker are no longer
+  in `<head>` (a rebase, a force push), the issue is not listed. A fix already on the base that
+  was never closed is not listed either; close it by hand.
+- *Long threads*: `gh issue list` returns 100 comments of an issue at most, so an issue with that
+  many is read whole with `issue view`.
+
 ## What the later parts add
 
-- **GI2** the `fixedLabel`: an issue whose fix is merged and not yet released.
-- **GI3** the `readyLabel`: issues the kit may pick up and build.
-- **GI4** the rest of the loop. Each builds on `issue file`, the marker and the three labels.
+- **GI3** the `readyLabel`: issues the kit may pick up and build (`crew start --issue <n>`).
+- **GI4** the rest of the loop: the lead hears new issues and comments. Each builds on
+  `issue file`, the marker and the three labels.
 
 ## What it never does
 

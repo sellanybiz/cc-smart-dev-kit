@@ -11,6 +11,8 @@ export interface FakeIssue {
   body: string;
   /** True: the issue is closed (`state: CLOSED` in a list). */
   closed?: boolean;
+  /** The bodies of the comments on it, oldest first. */
+  comments?: string[];
   labels: string[];
   number: number;
   title: string;
@@ -28,18 +30,23 @@ export interface FakeGhOptions {
   issues?: FakeIssue[];
   labels?: string[];
   /** Every call ends this way, as a missing gh, a logged-out one, or a timeout does. */
-  mode?: "logged-out" | "missing" | "timeout";
+  mode?: FakeGhMode;
   /** The viewer's role on the repository, as `viewerPermission` prints it. Default: `WRITE`. */
   permission?: "ADMIN" | "MAINTAIN" | "READ" | "TRIAGE" | "WRITE";
   /** `PUBLIC` or `PRIVATE`, as `gh repo view --json visibility` prints it. */
   visibility?: "PRIVATE" | "PUBLIC";
 }
 
+/** How every call ends, as a missing gh, a logged-out one, or a timeout does. */
+export type FakeGhMode = "logged-out" | "missing" | "timeout";
+
 export interface FakeGh {
   calls: FakeGhCall[];
   exec: GhExec;
   issues: FakeIssue[];
   labels: string[];
+  /** Every call ends this way; set it to null to bring GitHub back (a test of a retry). */
+  mode: FakeGhMode | null;
 }
 
 /** The repository a call names: `--repo <r>`, or the positional one of `gh repo view <r>`. */
@@ -64,15 +71,28 @@ function values(args: readonly string[], flag: string): string[] {
   return found;
 }
 
+/** One issue as `gh issue list|view --json number,url,body,state,labels,comments` prints it. */
+function listedRow(issue: FakeIssue) {
+  return {
+    body: issue.body,
+    comments: (issue.comments ?? []).map((body) => ({ body })),
+    labels: issue.labels.map((name) => ({ name })),
+    number: issue.number,
+    state: issue.closed === true ? "CLOSED" : "OPEN",
+    title: issue.title,
+    url: issue.url,
+  };
+}
+
 /** A fake `gh` over a repository `example-org/my-app`. */
 export function fakeGh(options: FakeGhOptions = {}): FakeGh {
   const state: FakeGh = {
     calls: [],
     exec: async (args: string[], call: GhCall) => {
       state.calls.push({ args, input: call.input });
-      if (options.mode === "missing") return result("missing", "", "spawn gh ENOENT");
-      if (options.mode === "timeout") return result("timeout");
-      if (options.mode === "logged-out") return result("failed", "", LOGGED_OUT);
+      if (state.mode === "missing") return result("missing", "", "spawn gh ENOENT");
+      if (state.mode === "timeout") return result("timeout");
+      if (state.mode === "logged-out") return result("failed", "", LOGGED_OUT);
       const [group, action] = args;
       if (group === "auth" && action === "status") return result("ok", "Logged in to github.com\n");
       if (group === "repo" && action === "view") {
@@ -95,20 +115,39 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
       }
       if (group === "issue" && action === "list") {
         const label = values(args, "--label")[0];
+        const wanted = values(args, "--state")[0] ?? "open";
         const listed = state.issues.filter(
-          (issue) => label === undefined || issue.labels.includes(label),
+          (issue) =>
+            (label === undefined || issue.labels.includes(label)) &&
+            (wanted === "all" || (wanted === "closed") === (issue.closed === true)),
         );
+        // As the real list: only the first 100 comments of an issue (`issue view` has them all).
         return result(
           "ok",
           JSON.stringify(
-            listed.map(({ body, closed, number, url }) => ({
-              body,
-              number,
-              state: closed === true ? "CLOSED" : "OPEN",
-              url,
+            listed.map((one) => ({
+              ...listedRow(one),
+              comments: listedRow(one).comments.slice(0, 100),
             })),
           ),
         );
+      }
+      if (group === "issue" && action === "view") {
+        const issue = state.issues.find((one) => String(one.number) === args[2]);
+        if (issue === undefined) {
+          return result(
+            "failed",
+            "",
+            `GraphQL: Could not resolve to an Issue with the number of ${args[2]}. (repository.issue)`,
+          );
+        }
+        return result("ok", JSON.stringify(listedRow(issue)));
+      }
+      if (group === "issue" && action === "comment") {
+        const issue = state.issues.find((one) => String(one.number) === args[2]);
+        if (issue === undefined) return result("failed", "", "issue not found");
+        issue.comments = [...(issue.comments ?? []), call.input ?? ""];
+        return result("ok", `${issue.url}#issuecomment-1\n`);
       }
       if (group === "issue" && action === "create") {
         const number = state.issues.length + 1;
@@ -125,13 +164,19 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
       if (group === "issue" && action === "edit") {
         const issue = state.issues.find((one) => String(one.number) === args[2]);
         if (issue === undefined) return result("failed", "", "issue not found");
-        issue.body = call.input ?? "";
+        const added = values(args, "--add-label");
+        if (added.length > 0) {
+          issue.labels = [...new Set([...issue.labels, ...added])];
+        } else {
+          issue.body = call.input ?? "";
+        }
         return result("ok", `${issue.url}\n`);
       }
       return result("failed", "", `fake gh: unexpected call ${args.join(" ")}`);
     },
     issues: options.issues ?? [],
     labels: options.labels ?? [],
+    mode: options.mode ?? null,
   };
   return state;
 }

@@ -227,10 +227,20 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
    to a new crew session.
 5. **In the same turn,** check that the watch started the phases that waited for this merge,
    and start any phase it unblocked that was never started (§ 3).
+6. **Issues the phase fixes** (the report's `issues`): with `workflow.issues.enabled` on, the
+   watch comments "fixed on `<branch>` at `<commit>`" on each and labels it `fixed-unreleased`
+   (`issues.fixedLabel`), by itself, once per merge. Do not repeat it. One line that GitHub could
+   not be reached is not a failed merge: the watch queues the mark and tries again every few
+   minutes. The release closes the issue, not the merge (`/cc-smart-dev-kit:pull-request`).
 
 **The kit records the run itself**: the merge (its commit, and the lead session that made it) and the
 removal go into `<plan folder>/runs/<crew id>.json` with the sessions, pauses and times. Never write or
 edit a run file by hand, and never delete one; `cc-smart-dev-kit crew history` reads them.
+
+**A bug, gap or follow-up outside the plan that a report or a review turns up** is not lost in a
+line of your summary: with `workflow.issues.enabled` on, file it with `cc-smart-dev-kit issue file
+--title … --body-file - --fingerprint <stable key>` (the same key never opens a second issue) and
+name its number in your summary. With the switch off, one summary line is all it gets.
 
 **Read the diff only when something does not add up** — a red line in the report, a file
 outside the brief, a failed check after the merge, a report that contradicts itself — and then
