@@ -8229,7 +8229,7 @@ import { join as join8 } from "path";
 var MAJOR_NOTES_PATH = join8("src", "update", "major-notes.json");
 
 // src/update/apply.ts
-var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 
 // src/hooks/stop-failure.ts
