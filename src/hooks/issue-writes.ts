@@ -71,12 +71,13 @@ const PULL_REQUEST_MUTATIONS: ReadonlySet<string> = new Set([
   "mergePullRequest",
 ]);
 
-/** The endpoint as a path: no host, no query, no outer slashes. */
+/** The endpoint as a path: no host, no query, no outer slashes, no GitHub Enterprise `api/v3`. */
 function apiPath(endpoint: string): string {
   return endpoint
     .replace(/^https?:\/\/[^/]+/i, "")
     .replace(/[?#].*$/, "")
-    .replace(/^\/+|\/+$/g, "");
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/^api\/v3\//i, "");
 }
 
 /** Does the endpoint reach GitHub's GraphQL API? */
@@ -102,7 +103,9 @@ function graphqlWrite(fields: readonly string[], body: boolean): string | null {
       return "a gh api graphql request that cannot be read (its query comes from a file or the shell)";
     }
     if (!/\bmutation\b/i.test(query)) continue;
-    const named = [...query.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
+    // GraphQL ignores commas, comments and the byte order mark between tokens: read through them.
+    const tokens = query.replace(/#[^\r\n]*|[,﻿]/g, " ");
+    const named = [...tokens.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
     const issueWrites = named.filter(
       (name) => name !== undefined && !PULL_REQUEST_MUTATIONS.has(name),
     );
@@ -239,10 +242,13 @@ function ghIssueWrite(
       const command = word.toLowerCase();
       // `gh api` reads its own flags; the rest of the line is its.
       if (command === "api") return apiIssueWrite(args.slice(index + 1));
-      // A word that names no gh command: one of the person's aliases, or an extension.
+      // A command the shell fills in (`gh "$CMD" create`) cannot be read: it may be any.
+      if (SHELL_FILLED.test(word)) return `a gh command the shell fills in (\`gh ${word}\`)`;
+      // A word that names no gh command: one of the person's aliases, or an extension. gh's
+      // commands are found in any case, its aliases only as typed.
       if (!GH_COMMANDS.has(command)) {
         const rest = args.slice(index + 1);
-        return aliasWrite(command, rest, aliases, found, depth, named === "" ? command : named);
+        return aliasWrite(word, rest, aliases, found, depth, named === "" ? word : named);
       }
       if (command !== "issue" && command !== "label") return null;
     }

@@ -345,3 +345,59 @@ describe("IX1-11: a label write asks like an issue write", () => {
     ]);
   });
 });
+
+describe("IX1 review: what the second opinion found", () => {
+  test("gh's own command aliases and hidden commands name a gh command", () => {
+    for (const word of [
+      "version",
+      "ext",
+      "extensions",
+      "cs",
+      "at",
+      "rs",
+      "agent",
+      "agents",
+      "agent-tasks",
+    ]) {
+      expect([word, unnamedGhWords(`gh ${word} list`, "bash")]).toEqual([word, []]);
+    }
+  });
+
+  test.each([
+    'gh "$CMD" create -t x',
+    "gh $(echo issue) create -t x",
+    "gh $X",
+    "gh `echo issue` create -t x",
+  ])("%s: a gh command the shell fills in is a write", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(true);
+  });
+
+  test.each([
+    "gh api graphql -f query='mutation{createPullRequest(input:{}){a} createIssue,(input:{}){a}}'",
+    "gh api graphql -f query='mutation{createPullRequest(input:{}){a} createIssue(\n# a comment\ninput:{}){a}}'",
+    "gh api graphql -f query='mutation{mergePullRequest(input:{}){a} , clearLabelsFromLabelable (input:{}){a}}'",
+  ])("%s: a GraphQL ignored token does not hide an issue mutation", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(true);
+  });
+
+  test("an alias is looked up by the name as typed: gh's aliases are case-sensitive", () => {
+    const aliases = new Map([["Bug", "issue create"]]);
+    expect(issueWrites("gh Bug -t x", "bash", aliases)).toEqual(["gh issue create"]);
+    expect(unnamedGhWords("gh bug -t x", "bash", aliases)).toEqual(["bug"]);
+  });
+
+  test("a full URL of a GitHub Enterprise API is read like the path", () => {
+    expect(
+      requestsIssueWrite(
+        "gh api https://ghe.example.com/api/v3/repos/o/r/issues -f title=x",
+        "bash",
+      ),
+    ).toBe(true);
+    expect(
+      requestsIssueWrite("gh api https://ghe.example.com/api/v3/repos/o/r/labels -X POST", "bash"),
+    ).toBe(true);
+    expect(
+      requestsIssueWrite("gh api https://ghe.example.com/api/v3/repos/o/r/issues", "bash"),
+    ).toBe(false);
+  });
+});

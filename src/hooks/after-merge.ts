@@ -69,14 +69,21 @@ import { isSessionId } from "./session-name";
  * The gh commands this plugin knows (gh 2.102.0: `gh --help` and `gh help reference` read
  * 2026-10-16). A word after `gh` that is not one of these is a name of the person's — an
  * alias, or an extension — and is never guessed: `mergeCalls` reads `gh alias list` for it,
- * and a word that neither is an alias nor expands to a merge is left alone.
+ * and a word that neither is an alias nor expands to a merge is left alone. It holds gh's own
+ * command aliases too (`ext`, `cs`, `at`, `rs`, `agent`, … — each shown under ALIASES in the
+ * command's `--help`) and the hidden `version`: a crew session is denied a word that is none of
+ * these, so a real gh command left out here would be refused.
  */
 export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "accessibility",
   "actions",
+  "agent",
   "agent-task",
+  "agent-tasks",
+  "agents",
   "alias",
   "api",
+  "at",
   "attestation",
   "auth",
   "browse",
@@ -86,10 +93,13 @@ export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "completion",
   "config",
   "copilot",
+  "cs",
   "discussion",
   "environment",
   "exit-codes",
+  "ext",
   "extension",
+  "extensions",
   "formatting",
   "gist",
   "gpg-key",
@@ -105,6 +115,7 @@ export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "reference",
   "release",
   "repo",
+  "rs",
   "ruleset",
   "run",
   "search",
@@ -114,6 +125,7 @@ export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "status",
   "telemetry",
   "variable",
+  "version",
   "workflow",
 ]);
 

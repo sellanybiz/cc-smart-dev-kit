@@ -33056,9 +33056,13 @@ function runsGit(command, dialect) {
 var GH_COMMANDS = new Set([
   "accessibility",
   "actions",
+  "agent",
   "agent-task",
+  "agent-tasks",
+  "agents",
   "alias",
   "api",
+  "at",
   "attestation",
   "auth",
   "browse",
@@ -33068,10 +33072,13 @@ var GH_COMMANDS = new Set([
   "completion",
   "config",
   "copilot",
+  "cs",
   "discussion",
   "environment",
   "exit-codes",
+  "ext",
   "extension",
+  "extensions",
   "formatting",
   "gist",
   "gpg-key",
@@ -33087,6 +33094,7 @@ var GH_COMMANDS = new Set([
   "reference",
   "release",
   "repo",
+  "rs",
   "ruleset",
   "run",
   "search",
@@ -33096,6 +33104,7 @@ var GH_COMMANDS = new Set([
   "status",
   "telemetry",
   "variable",
+  "version",
   "workflow"
 ]);
 var WORDS = {
@@ -34557,7 +34566,7 @@ var PULL_REQUEST_MUTATIONS = new Set([
   "mergePullRequest"
 ]);
 function apiPath(endpoint) {
-  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "").replace(/^api\/v3\//i, "");
 }
 function isGraphql(endpoint) {
   const path = apiPath(endpoint).toLowerCase();
@@ -34576,7 +34585,8 @@ function graphqlWrite(fields, body) {
     }
     if (!/\bmutation\b/i.test(query))
       continue;
-    const named = [...query.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
+    const tokens = query.replace(/#[^\r\n]*|[,\uFEFF]/g, " ");
+    const named = [...tokens.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
     const issueWrites = named.filter((name) => name !== undefined && !PULL_REQUEST_MUTATIONS.has(name));
     if (named.length > 0 && issueWrites.length === 0)
       continue;
@@ -34682,9 +34692,11 @@ function ghIssueWrite(args, aliases, found, depth = 0, named = "") {
       const command = word.toLowerCase();
       if (command === "api")
         return apiIssueWrite(args.slice(index + 1));
+      if (SHELL_FILLED.test(word))
+        return `a gh command the shell fills in (\`gh ${word}\`)`;
       if (!GH_COMMANDS.has(command)) {
         const rest = args.slice(index + 1);
-        return aliasWrite(command, rest, aliases, found, depth, named === "" ? command : named);
+        return aliasWrite(word, rest, aliases, found, depth, named === "" ? word : named);
       }
       if (command !== "issue" && command !== "label")
         return null;
@@ -35952,7 +35964,8 @@ function aliasReaderOf(context, timeoutMs) {
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
 var CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
 function crewGhWordRefusal(words) {
-  const named = words.map((word) => `\`gh ${word}\``).join(", ");
+  const plain = (word) => [...word].filter((char) => char >= " " && char !== "\x7F").join("");
+  const named = words.map((word) => `\`gh ${plain(word)}\``).join(", ");
   return `A crew session runs no ${named}: it is neither a gh command nor an alias the kit can read, so the kit cannot tell whether it writes to GitHub. Use a gh command written out in full, or put the finding in your report for your lead.`;
 }
 var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";

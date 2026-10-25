@@ -165,11 +165,14 @@ on the same line wins for a person; for a crew session the issue denial is read 
 `gh <unknown word>` beside the write cannot hide it. gh's flags are read the way gh reads them
 (before the subcommand an option takes the next word; a `-h` after an option is its value), and
 the runners `find -exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they
-name. A `gh <word>` that is neither a gh command is looked up in `gh alias list` (read once, shared
-with the pull request reader): an alias is read for what it expands to, a shell alias (`!…`) or
-one that expands too deep counts as a write, and a list that cannot be read counts as a write.
-In a crew session a word that is neither a gh command nor an alias the kit can read is denied
-(`crewGhWordRefusal`). Not read: a script file. The guard's fail-closed answers (a broken or
+name. A `gh <word>` that is neither a gh command (`GH_COMMANDS`, gh's own command aliases such as
+`ext` and `cs` included) is looked up in `gh alias list`, by the name as typed (gh's aliases are
+case-sensitive), and the list is read once for the guard's crew part and once for its project
+part, each shared with the pull request reader: an alias is read for what it expands to, a shell
+alias (`!…`) or one that expands too deep counts as a write, and a list that cannot be read counts
+as a write. A word the shell fills in (`gh "$CMD" create`) counts as a write. In a crew session a
+word that is neither a gh command nor an alias the kit can read is denied (`crewGhWordRefusal`).
+Not read: a script file. The guard's fail-closed answers (a broken or
 too new project file, a crash) cover an issue write like a pull request change. The reader is described in `docs/design/hooks.md` (the `merge-guard` row)
 and `.claude/rules/hooks-guards.md`.
 

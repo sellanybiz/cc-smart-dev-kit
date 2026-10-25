@@ -172,7 +172,10 @@ export const CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a 
  * the kit could read (IX1): what it runs cannot be read, so it might write an issue or a label.
  */
 export function crewGhWordRefusal(words: readonly string[]): string {
-  const named = words.map((word) => `\`gh ${word}\``).join(", ");
+  // A word may carry what a shell turns into a control character (PowerShell's backtick-e).
+  const plain = (word: string) =>
+    [...word].filter((char) => char >= " " && char !== "\x7f").join("");
+  const named = words.map((word) => `\`gh ${plain(word)}\``).join(", ");
   return `A crew session runs no ${named}: it is neither a gh command nor an alias the kit can read, so the kit cannot tell whether it writes to GitHub. Use a gh command written out in full, or put the finding in your report for your lead.`;
 }
 

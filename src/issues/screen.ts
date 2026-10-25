@@ -29,7 +29,7 @@ const TOKEN_SHAPES: readonly RegExp[] = [
   /\bgsk_[A-Za-z0-9]{20,256}/g,
   /\btvly-[A-Za-z0-9_-]{16,256}/g,
   // A webhook URL is the secret: whoever holds it can post to the channel.
-  /(?:https?:\/\/)?hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{16,256}/g,
+  /(?:https?:\/\/)?hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]{16,256}/g,
   /(?:https?:\/\/)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d{5,32}\/[A-Za-z0-9._-]{16,256}/g,
   /\bnpm_[A-Za-z0-9]{30,256}/g,
   /\bglpat-[A-Za-z0-9_-]{16,256}/g,
@@ -102,12 +102,13 @@ function homePatterns(home: string | null): RegExp[] {
     const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
     return [new RegExp(`${lead}${escaped.join("[\\\\/]+")}${end}`, "g")];
   }
-  // A bare drive names no home. Git Bash's `/c/…` must not start inside WSL's `/mnt/c/…`.
+  // A bare drive names no home. Git Bash's `/c/…` must not start inside WSL's `/mnt/c/…`, nor
+  // inside a `~` path (`~/c/Users/x` is a folder under the home, which is fine).
   if (below === "") return [];
   const rest = `[\\\\/]+${below}`;
   return [
     `${drive}:${rest}`,
-    `(?<![A-Za-z0-9_])[\\\\/]${drive}${rest}`,
+    `(?<![A-Za-z0-9_~])[\\\\/]${drive}${rest}`,
     `[\\\\/]mnt[\\\\/]${drive}${rest}`,
   ].map((source) => new RegExp(`${source}${end}`, "gi"));
 }

@@ -251,3 +251,17 @@ describe("IX1-9: token shapes of more services", () => {
     expect(screenText(text, HOME)).toEqual([]);
   });
 });
+
+describe("IX1 review: edges of the screen", () => {
+  test("a `~` path that looks like a Git Bash home is fine", () => {
+    expect(screenText("see ~/c/Users/Tester/x", HOME)).toEqual([]);
+    expect(screenText("see ~/c/Users/Tester/x", "C:\\Users\\Tester")).toEqual([]);
+  });
+
+  test.each([
+    "https://hooks.slack.com/workflows/T0000000/A0000000/abcdefghijklmnop",
+    "https://hooks.slack.com/triggers/T0000000/1234567890/abcdefghijklmnop",
+  ])("%s is a webhook", (text) => {
+    expect(screenText(text, HOME).map((hit) => hit.kind as string)).toContain("a key or token");
+  });
+});
