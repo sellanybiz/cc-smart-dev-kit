@@ -793,6 +793,20 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   documented limit, not a fix: a second account's marker is ignored, never trusted. IF1, RX1, RX2
   and RX3's records stay until `release-1.2.1` merges into `release-1.3.0` (`crew rm` checks the
   lead folder's branch).
+- 2026-10-25 (late): **1.3.0 is PR #25** (full check 7,466 pass; Linux CI green). Its Windows
+  job failed one test, D62's leftover folder: the test left `mounts` out, so the clean read the
+  host's, and `mountPoints` answers "unknown" everywhere but Linux. A builder (opus `high`) fixed
+  the tests (`quietFacts`, `quietScan`: every fact given). **The product limit, now in
+  `docs/design/crew.md` and the CHANGELOG:** a leftover folder git no longer lists is finished
+  only on Linux; on Windows and macOS it stays, logged, for a removal by hand. **Merged into
+  `release-1.3.0`** (`e5baa10`, 1.4.0 in `plugin.json` and the installers, the drift test's
+  `workflow.issues` keys; full check 7,947 pass). IF1, RX1, RX2, RX3 removed; RX2's worktree was
+  held by an orphan `until ! pgrep -f "bun run check"; do sleep 3; done` from its session, a loop
+  whose pattern matches itself.
+  **Later, outside 1.3.0:** one shared quiet-facts helper in `src/testing/` (three copies now:
+  `end.test.ts`'s `QUIET_MACHINE`, `quietFacts`, `quietScan`) and a default `scanFacts` in
+  `crew-world.ts`'s `ctx`, so no crew test reads the host; mount points on Windows and macOS
+  (a design decision); the launch judge's polling-loop rule missed that self-matching wait loop.
 
 ### For the owner in the morning
 
