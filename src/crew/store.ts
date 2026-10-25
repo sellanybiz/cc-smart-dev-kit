@@ -1370,6 +1370,7 @@ export async function recordCrewReport(
   id: string,
   report: HandBackReport,
   atMs: number,
+  contextTokens: null | number = null,
 ): Promise<{ file: string; record: CrewRecord }> {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
@@ -1399,7 +1400,7 @@ export async function recordCrewReport(
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
-    recordRunOf({ after, at, before, by: null, report: value });
+    recordRunOf({ after, at, before, by: null, contextTokens, report: value });
     return after;
   });
   return { file, record };

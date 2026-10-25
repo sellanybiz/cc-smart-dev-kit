@@ -305,6 +305,28 @@ describe("the record of a run", () => {
     expect(times.workingMs).toBe(40 * MIN);
   });
 
+  test("a run that works again after it reported has not finished; when it ends again, that is the end", async () => {
+    const { planFile, repo, state } = planWorld();
+    const id = "PL1-runs-aaaaaa";
+    await createCrew(state, newCrew(repo, planFile), T0);
+    await updateCrew(
+      state,
+      repo,
+      id,
+      { startedAt: "2026-10-25T10:00:00.000Z", state: "working" },
+      T0 + MIN,
+    );
+    await updateCrew(state, repo, id, { state: "done" }, T0 + 30 * MIN);
+    expect(runOf(planFile).times.finishedAt).toBe("2026-10-25T10:30:00.000Z");
+    await updateCrew(state, repo, id, { state: "working" }, T0 + 40 * MIN);
+    expect(runOf(planFile).times.finishedAt).toBeNull();
+    expect(runOf(planFile).times.workingMs).toBeNull();
+    await updateCrew(state, repo, id, { state: "done" }, T0 + 70 * MIN);
+    const { times } = runOf(planFile);
+    expect(times.finishedAt).toBe("2026-10-25T11:10:00.000Z");
+    expect(times.workingMs).toBe(70 * MIN);
+  });
+
   test("a question and its answer, each with the time and the lead who answered", async () => {
     const { planFile, repo, state } = planWorld();
     const id = "PL1-runs-aaaaaa";
@@ -330,9 +352,11 @@ describe("the record of a run", () => {
     const { planFile, repo, state } = planWorld();
     const id = "PL1-runs-aaaaaa";
     await createCrew(state, newCrew(repo, planFile), T0);
-    await recordCrewReport(state, repo, id, report(), T0 + MIN);
+    await recordCrewReport(state, repo, id, report(), T0 + MIN, 184_000);
     const event = runOf(planFile).events.find((one) => one.kind === "report");
     expect(event?.text).toBe("done");
+    // The context its last reply used, when the report's caller read the transcript.
+    expect(runOf(planFile).contextTokens).toBe(184_000);
     expect(event?.detail).toEqual({
       checksFailed: 1,
       review: { agent: "cc-smart-dev-kit:reviewer", effort: "high", model: "sonnet" },

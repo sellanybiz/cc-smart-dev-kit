@@ -411,7 +411,7 @@ model, and how long it took. `src/crew/runs.ts` holds the layout and the record,
 <plans dir>/archive/<plan stem>/…                    the folder after the plan is archived
 ```
 
-**One folder per plan, never per lead.** One plan outlives its leads (the master plan had
+**One folder per plan, never per lead.** One plan outlives its leads (one plan has had
 three), and a folder per lead would split its briefs and its history. The file name is the crew
 branch without `crew/`, so a plan row, its brief and its branch line up.
 

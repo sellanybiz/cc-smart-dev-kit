@@ -14810,8 +14810,9 @@ function eventsOf(change) {
 }
 var END_OF_WORK = ["done", "failed", "handoff"];
 function deriveTimes(run, nowMs = null) {
-  const first = (states) => run.events.find((one) => states.includes(one.state) && one.kind !== "created")?.at ?? null;
-  const finishedAt = first(END_OF_WORK);
+  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && one.kind !== "created");
+  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+  const finishedAt = lastEnd === -1 || runsAgain ? null : run.events[lastEnd]?.at ?? null;
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;
   const startedAt = run.startedAt ?? run.events.find((one) => one.kind === "state" && !["queued", "failed"].includes(one.state))?.at ?? null;
@@ -15603,7 +15604,7 @@ function stateForReport(status) {
       return null;
   }
 }
-async function recordCrewReport(stateDir, repo, id, report, atMs) {
+async function recordCrewReport(stateDir, repo, id, report, atMs, contextTokens = null) {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
   const state = stateForReport(report.status);
@@ -15627,7 +15628,7 @@ async function recordCrewReport(stateDir, repo, id, report, atMs) {
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
-    recordRunOf({ after, at, before, by: null, report: value });
+    recordRunOf({ after, at, before, by: null, contextTokens, report: value });
     return after;
   });
   return { file, record: record2 };
@@ -29624,7 +29625,8 @@ async function runCrewReport(args, ctx) {
     return say(ctx, error);
   }
   try {
-    const written = await recordCrewReport(ctx.paths.stateDir, repo, record.id, report, ctx.now());
+    const context = record.sessionId === null ? null : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+    const written = await recordCrewReport(ctx.paths.stateDir, repo, record.id, report, ctx.now(), context?.tokens ?? null);
     ctx.print(`report ${report.status} \xB7 ${written.file}`);
     return 0;
   } catch (error) {

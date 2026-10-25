@@ -9006,8 +9006,9 @@ function eventsOf(change) {
 }
 var END_OF_WORK = ["done", "failed", "handoff"];
 function deriveTimes(run, nowMs = null) {
-  const first = (states) => run.events.find((one) => states.includes(one.state) && one.kind !== "created")?.at ?? null;
-  const finishedAt = first(END_OF_WORK);
+  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && one.kind !== "created");
+  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+  const finishedAt = lastEnd === -1 || runsAgain ? null : run.events[lastEnd]?.at ?? null;
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;
   const startedAt = run.startedAt ?? run.events.find((one) => one.kind === "state" && !["queued", "failed"].includes(one.state))?.at ?? null;

@@ -381,9 +381,16 @@ export function deriveTimes(
   run: Pick<RunRecord, "createdAt" | "events"> & { startedAt: null | string },
   nowMs: null | number = null,
 ): RunTimes {
-  const first = (states: string[]): null | string =>
-    run.events.find((one) => states.includes(one.state) && one.kind !== "created")?.at ?? null;
-  const finishedAt = first(END_OF_WORK);
+  // The work ended at the last event that says so (a run answered after it reported, and ended
+  // again, ended the second time); a state change after it that is no end (it works again) means
+  // it has not ended.
+  const lastEnd = run.events.findLastIndex(
+    (one) => END_OF_WORK.includes(one.state) && one.kind !== "created",
+  );
+  const runsAgain = run.events
+    .slice(lastEnd + 1)
+    .some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+  const finishedAt = lastEnd === -1 || runsAgain ? null : (run.events[lastEnd]?.at ?? null);
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;
   const startedAt =

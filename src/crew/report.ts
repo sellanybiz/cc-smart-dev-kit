@@ -28,6 +28,7 @@ import type { CrewContext } from "./context";
 import { DiffError, type DiffFacts, diffAgainstBase, outsideBrief } from "./diff";
 import { headSha } from "./step";
 import { addCrewQuestion, type CrewRecord, type HandBackReport, recordCrewReport } from "./store";
+import { contextUseOf, transcriptFile } from "./transcript";
 import {
   openTasks,
   readSessionTasks,
@@ -426,7 +427,19 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
     return say(ctx, error);
   }
   try {
-    const written = await recordCrewReport(ctx.paths.stateDir, repo, record.id, report, ctx.now());
+    // The context its last reply used, for the run record (PL1): the transcript's tail, read once.
+    const context =
+      record.sessionId === null
+        ? null
+        : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
+    const written = await recordCrewReport(
+      ctx.paths.stateDir,
+      repo,
+      record.id,
+      report,
+      ctx.now(),
+      context?.tokens ?? null,
+    );
     ctx.print(`report ${report.status} · ${written.file}`);
     return 0;
   } catch (error) {
