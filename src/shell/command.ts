@@ -1376,6 +1376,131 @@ function writtenText(segment: string): string | null {
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
 
+/** `find`'s actions that run a command, up to a `;` or a `+`. */
+const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/** The word that ends a `find -exec` command: `;` (quoted or escaped it reaches us as `;`) or `+`. */
+const FIND_END: ReadonlySet<string> = new Set([";", "\\;", "+"]);
+
+/**
+ * The commands `find` runs: the words of each `-exec`, `-execdir`, `-ok` and `-okdir` up to its
+ * `;` or `+`, quoted so they read back the same, joined by `;` (several actions are several
+ * commands). Undefined when `find` runs none.
+ */
+function findCommands(args: readonly string[]): string | undefined {
+  const commands: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (!FIND_EXEC.has(args[index] ?? "")) continue;
+    const words: string[] = [];
+    for (index++; index < args.length && !FIND_END.has(args[index] ?? ""); index++) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0) commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+
+/**
+ * The command `watch` runs. Its options end at the first word that is no option (`-n 5`,
+ * `--interval=2`, `-d`), or at `--`; what follows is the command. Without `-x`/`--exec`, watch
+ * hands the words to `sh -c` joined by spaces — so they are read the same way; with it, each
+ * word is an argument of the program, quoted.
+ */
+function watchCommand(args: readonly string[]): string | undefined {
+  let exec = false;
+  let index = 0;
+  for (; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-") break;
+    if (word.startsWith("--")) {
+      if (word === "--exec") exec = true;
+      // `--interval 5` takes the next word; `--interval=5` carries it.
+      else if (word === "--interval") index++;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, "n");
+    if (flags.includes("x")) exec = true;
+    if (wantsNext) index++;
+  }
+  const words = args.slice(index);
+  if (words.length === 0) return undefined;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+
+/**
+ * The command line `su` runs: the value of `-c` / `--command` (also in a group, `-lc`), wherever
+ * the user's name stands (`su - me -c '…'`, `su -c '…' me`). Undefined for `su` alone, which
+ * opens a shell and runs no command line of its own.
+ */
+function suCommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") return undefined;
+    if (word.startsWith("--command=")) return word.slice("--command=".length);
+    if (word === "--command") return args[index + 1];
+    // The options of su that take a value: `-s <shell>`, `-g`, `-G`, `-w` and the command `-c`.
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c")) return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext) index++;
+      continue;
+    }
+    if (word === "--shell" || word === "--group" || word === "--supp-group") index++;
+  }
+  return undefined;
+}
+
+/** GNU parallel's options that take the next word (`-j 4`, `--jobs 4`; `-j4` and `--jobs=4` carry it). */
+const PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--colsep",
+  "--delimiter",
+  "--eof",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--results",
+  "--retries",
+  "--sshlogin",
+  "--sshloginfile",
+  "--timeout",
+  "--workdir",
+]);
+
+/** The command GNU parallel runs: the words after its options, up to its `:::` arguments. */
+function parallelCommand(args: readonly string[]): string | undefined {
+  let index = 0;
+  for (; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-") break;
+    if (word.startsWith("--")) {
+      if (PARALLEL_VALUED.has(word)) index++;
+      continue;
+    }
+    // A short group: `-j4` carries its value, `-j 4` takes the next word, `-k` takes none.
+    if (shortFlags(word, "jnNPaduSIELlz").wantsNext) index++;
+  }
+  const words: string[] = [];
+  for (; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === ":::" || word === "::::" || word === ":::+" || word === "::::+") break;
+    words.push(word);
+  }
+  // Several words are one command line the shell reads; one word is a line of its own.
+  return words.length === 0 ? undefined : words.join(" ");
+}
+
 /**
  * The command line a wrapper runs, when the line gives it one: `bash -c "…"` (a `c`
  * anywhere in a group of short options: `-ce`, `-ec`), a shell that reads its script from
@@ -1408,6 +1533,13 @@ export function nestedCommand(
           .map(shellQuote)
           .join(" ");
   }
+  // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
+  // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
+  // does to a merge still holds; the command they run is read here, once, for every guard.
+  if (program === "find") return findCommands(args);
+  if (program === "watch") return watchCommand(args);
+  if (program === "su") return suCommand(args);
+  if (program === "parallel") return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");

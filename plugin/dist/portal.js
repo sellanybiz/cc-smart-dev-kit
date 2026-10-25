@@ -31793,6 +31793,118 @@ function writtenText(segment) {
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
+var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+var FIND_END = new Set([";", "\\;", "+"]);
+function findCommands(args) {
+  const commands = [];
+  for (let index = 0;index < args.length; index++) {
+    if (!FIND_EXEC.has(args[index] ?? ""))
+      continue;
+    const words = [];
+    for (index++;index < args.length && !FIND_END.has(args[index] ?? ""); index++) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0)
+      commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+function watchCommand(args) {
+  let exec = false;
+  let index = 0;
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-")
+      break;
+    if (word.startsWith("--")) {
+      if (word === "--exec")
+        exec = true;
+      else if (word === "--interval")
+        index++;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, "n");
+    if (flags.includes("x"))
+      exec = true;
+    if (wantsNext)
+      index++;
+  }
+  const words = args.slice(index);
+  if (words.length === 0)
+    return;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+function suCommand(args) {
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--")
+      return;
+    if (word.startsWith("--command="))
+      return word.slice("--command=".length);
+    if (word === "--command")
+      return args[index + 1];
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c"))
+        return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext)
+        index++;
+      continue;
+    }
+    if (word === "--shell" || word === "--group" || word === "--supp-group")
+      index++;
+  }
+  return;
+}
+var PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--colsep",
+  "--delimiter",
+  "--eof",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--results",
+  "--retries",
+  "--sshlogin",
+  "--sshloginfile",
+  "--timeout",
+  "--workdir"
+]);
+function parallelCommand(args) {
+  let index = 0;
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-")
+      break;
+    if (word.startsWith("--")) {
+      if (PARALLEL_VALUED.has(word))
+        index++;
+      continue;
+    }
+    if (shortFlags(word, "jnNPaduSIELlz").wantsNext)
+      index++;
+  }
+  const words = [];
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === ":::" || word === "::::" || word === ":::+" || word === "::::+")
+      break;
+    words.push(word);
+  }
+  return words.length === 0 ? undefined : words.join(" ");
+}
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
@@ -31811,6 +31923,14 @@ function nestedCommand(program, args, pipedFrom = null) {
     const dashes = args.indexOf("--");
     return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
+  if (program === "find")
+    return findCommands(args);
+  if (program === "watch")
+    return watchCommand(args);
+  if (program === "su")
+    return suCommand(args);
+  if (program === "parallel")
+    return parallelCommand(args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");
@@ -34002,30 +34122,9 @@ function issueWrites(command, dialect) {
       found.push(write);
   };
   for (const run of invocationsOf(command, dialect)) {
-    if (run.computed)
-      continue;
-    if (run.program === "gh")
+    if (!run.computed && run.program === "gh")
       note(ghIssueWrite(run.args));
-    else if (RUNNER_PROGRAMS.has(run.program)) {
-      for (const args of runnerGhArgs(run.words))
-        note(ghIssueWrite(args));
-    }
   }
-  return found;
-}
-var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch", "xargs"]);
-function runnerGhArgs(words) {
-  const found = [];
-  words.forEach((word, index) => {
-    if (programName2(word) === "gh") {
-      found.push(words.slice(index + 1));
-    } else if (/\s/.test(word)) {
-      const inner = wordsOf(word, "bash");
-      const at = inner.findIndex((one) => programName2(one) === "gh");
-      if (at !== -1)
-        found.push(inner.slice(at + 1));
-    }
-  });
   return found;
 }
 function computedIssueRisk(command, dialect) {

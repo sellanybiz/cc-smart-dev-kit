@@ -1315,6 +1315,16 @@ describe("a merge run by another program", () => {
       "the merge runs from `find -exec`, once for each match",
     ],
     ["watch -n 5 gh pr merge 7", "the merge runs from `watch`, over and over"],
+    // The finding of the GI1 review: the runners keep their own reason once the shell reader
+    // knows them, and the --admin forms are read too.
+    // With --admin the nested command is read first, and the question names the flag.
+    ["find . -maxdepth 0 -exec gh pr merge 5 --admin \\;", "the command merges #5 with `--admin`"],
+    [
+      'su -c "gh pr merge 5" user',
+      "the merge runs from `su`, whose command and environment come from outside the line",
+    ],
+    ["su - user -c 'gh pr merge 5 --admin'", "the command merges #5 with `--admin`"],
+    ["watch 'gh pr merge 5'", "the merge runs from `watch`, over and over"],
   ])("%j: asks, and reads nothing with gh", async (command, reason) => {
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);

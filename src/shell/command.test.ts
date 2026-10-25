@@ -486,6 +486,93 @@ describe("invocationOf", () => {
   });
 });
 
+describe("the runners: find -exec, watch, su -c and parallel run the command they name", () => {
+  // The finding of the GI1 review: only the issue-write guard knew these four, so
+  // `watch git push` and `find . -exec git push \;` got past the git guard. The reader knows
+  // them once, beside `bash -c`, and every guard that walks the nesting sees the inner program.
+  test("find: every -exec, -execdir, -ok and -okdir up to its `;` or `+`", () => {
+    expect(nestedCommand("find", [".", "-exec", "git", "push", ";"])).toBe("'git' 'push'");
+    expect(nestedCommand("find", [".", "-exec", "git", "push", "{}", "+"])).toBe(
+      "'git' 'push' '{}'",
+    );
+    expect(nestedCommand("find", [".", "-execdir", "a", ";", "-ok", "b", "c", ";"])).toBe(
+      "'a' ; 'b' 'c'",
+    );
+    expect(nestedCommand("find", [".", "-maxdepth", "0", "-okdir", "gh", "pr", "merge", ";"])).toBe(
+      "'gh' 'pr' 'merge'",
+    );
+    // A second -exec after a harmless first one is still read.
+    expect(nestedCommand("find", [".", "-exec", "true", ";", "-exec", "git", "push", ";"])).toBe(
+      "'true' ; 'git' 'push'",
+    );
+    expect(nestedCommand("find", [".", "-name", "x", "-print"])).toBeUndefined();
+    // No terminator: find itself refuses it, but what follows is still what would run.
+    expect(nestedCommand("find", [".", "-exec", "git", "push"])).toBe("'git' 'push'");
+  });
+
+  test("watch: the command after its options, as the shell it runs it in reads it", () => {
+    expect(nestedCommand("watch", ["git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n", "5", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n5", "--color", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--interval=2", "-d", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-x", "git", "push"])).toBe("'git' 'push'");
+    expect(nestedCommand("watch", ["--", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-n", "5"])).toBeUndefined();
+  });
+
+  test("su: the -c or --command string, wherever the user stands", () => {
+    expect(nestedCommand("su", ["-c", "git push", "user"])).toBe("git push");
+    expect(nestedCommand("su", ["-", "user", "-c", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--command=git push", "user"])).toBe("git push");
+    expect(nestedCommand("su", ["--command", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["-lc", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["-s", "/bin/sh", "-c", "git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["user"])).toBeUndefined();
+    expect(nestedCommand("su", ["-"])).toBeUndefined();
+  });
+
+  test("parallel: the command before its `:::` arguments, after its own options", () => {
+    expect(nestedCommand("parallel", ["git push {}", ":::", "a", "b"])).toBe("git push {}");
+    expect(nestedCommand("parallel", ["git", "push", "{}", ":::", "a"])).toBe("git push {}");
+    expect(nestedCommand("parallel", ["-j", "4", "git", "push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["--jobs=4", "-k", "git push", "::::", "list"])).toBe(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["-j4", "--bar", "git push"])).toBe("git push");
+    // No command: parallel reads its commands from standard input, which cannot be read.
+    expect(nestedCommand("parallel", [":::", "a", "b"])).toBeUndefined();
+    expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
+  });
+
+  test("programsOf sees the inner program, behind a wrapper too", () => {
+    expect(programsOf("find . -exec git push \\;")).toEqual(["find", "git"]);
+    // In Bash. PowerShell reads `\;` as a separator, so a line with no dialect named also holds
+    // the words it leaves behind (`-exec`) as a program.
+    expect(programsOf("find . -exec true \\; -exec git push \\;", "bash")).toEqual([
+      "find",
+      "true",
+      "git",
+    ]);
+    expect(programsOf("watch -n 5 git push")).toEqual(["watch", "git"]);
+    expect(programsOf("watch 'git push'")).toEqual(["watch", "git"]);
+    expect(programsOf('su -c "git push" user')).toEqual(["su", "git"]);
+    expect(programsOf("parallel git push ::: a b")).toEqual(["parallel", "git"]);
+    expect(programsOf("sudo watch git push")).toEqual(["watch", "git"]);
+    expect(programsOf("timeout 9 find . -exec git push {} +", "bash")).toEqual(["find", "git"]);
+    expect(programsOf("find . -name x")).toEqual(["find"]);
+    expect(programsOf("watch ls")).toEqual(["watch", "ls"]);
+  });
+
+  test("a runner inside a shell inside a runner is read three levels deep", () => {
+    expect(programsOf("watch \"bash -c 'git push'\"")).toEqual(["watch", "bash", "git"]);
+    expect(programsOf("bash -c 'find . -exec git push \\;'", "bash")).toEqual([
+      "bash",
+      "find",
+      "git",
+    ]);
+  });
+});
+
 describe("nestedCommand and nestedDialect", () => {
   test("reads the inner command of a wrapper", () => {
     expect(nestedCommand("bash", ["-lc", "ls; pwd"])).toBe("ls; pwd");

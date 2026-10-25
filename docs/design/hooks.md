@@ -558,7 +558,12 @@ crew flag reaches every path it answers through (`run`, `onConfigProblem`, `outs
 **How `CLAUDECODE` counts as removed.** The shell reader (`src/shell/command.ts`) gives each
 command of the line, its wrappers (`setsid env …`, `flock <file> env …`, `script -c …`,
 `busybox sh -c …`), and the lines it runs (`bash -c`, `eval`, a here-string,
-`cc-smart-dev-kit job run --`, `ssh host '…'`). On one command: `CLAUDECODE=…` before it, `env -u
+`cc-smart-dev-kit job run --`, `ssh host '…'`) — and the commands its **runners** run: `find`'s
+`-exec`/`-execdir`/`-ok`/`-okdir` (up to the `;` or `+`, every action), `watch`'s command (`-x`
+or through `sh -c`), `su -c`/`--command` (wherever the user stands) and `parallel`'s command
+(before its `:::` arguments), read in `nestedCommand` beside `bash -c` so every guard that walks
+the nesting — the git guard, the merge guard, the issue-write reader, `job-route`, the
+session-escape guard — sees the inner program (`xargs` is a wrapper). On one command: `CLAUDECODE=…` before it, `env -u
 CLAUDECODE`, `env --unset`, `env -i` (and `env -`), `sudo`/`doas`/`su`/`runuser`/`ssh`/`systemd-run`
 (a fresh environment). For the commands after it in the same line: `unset CLAUDECODE`, `export
 CLAUDECODE=…`, `export -n`, `declare +x`, a step that is only `CLAUDECODE=`, and in PowerShell any
