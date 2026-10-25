@@ -23,6 +23,7 @@
 5. UA1 (`user-unavailable` / `user-available`) is briefed for 1.2.1 by your ask.
 6. Remote Control (DF1's proof): Claude Code turns it off only while `ANTHROPIC_BASE_URL` is not Anthropic's, and `gateway off` writes Anthropic's address, so it comes back by itself; the kit never touched it. Auto-connect at start is your own `remoteControlAtStartup` (true on your machine). The lead chose not to have setup write it for every machine (remote access is each person's choice). Say "write it" and a small follow-up makes it a managed key that `restore` removes.
 7. Two interactive sessions the lead did not start are open on this machine: one named `LEAD cc-smart-dev master-plan (2)` (started about 05:08) and `cc-smart-dev-kit-a9`. The lead never messaged or touched them. If the first is yours, it shares this lead's name: say which one leads, and close or rename the other.
+8. LT1 (load tests) left a load generator behind at about 05:33: `bash -c for i in $(seq 1 96); do (while :; do :; done) & done; wait`, orphaned, load about 135 on 16 cores. The lead's kill was refused by auto mode (it is another session's process), so the lead told LT1 to stop it and to bound any load from now on. If `pgrep -f 'seq 1 96'` still finds it, stop it: `pkill -f 'seq 1 96'`. LH1 (`crew.loadPerCore`, queued) is the guard against a machine this loaded.
 
 ## Decisions
 
