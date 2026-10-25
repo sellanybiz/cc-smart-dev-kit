@@ -91,6 +91,7 @@
  * calls that measure the change after a review (`.claude/rules/hooks.md` § Timeouts).
  */
 
+import { COMMAND } from "../build-info/names";
 import { crewIdOf } from "../crew/session";
 import { baseForBranch, type CcSmartDevKitConfig } from "../project/config";
 import type { Project } from "../project/resolve";
@@ -124,6 +125,7 @@ import {
 } from "./after-merge";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import { computedIssueRisk, issueWrites, requestsIssueWrite } from "./issue-writes";
 import {
   type HookInput,
   type HookResult,
@@ -142,6 +144,13 @@ export const CREW_PR_REFUSAL =
   "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " +
   "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " +
   "at your commit and say so in your report.";
+
+/**
+ * Why a crew session's raw write to GitHub's issues is denied (D67): nobody is at the machine
+ * to approve text that leaves it, and the kit has a way that needs no approval once the
+ * person has switched it on.
+ */
+export const CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
 
 /**
  * Why a crew session's `gh pr merge` is denied (D24): nobody is at the machine to answer the
@@ -179,7 +188,10 @@ export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): 
   // The cheap pure read first, as `mergeGuard` does: an ordinary call finds nothing and pays
   // nothing, and `gh alias list` is read only for a word that may be an alias.
   const dialect = dialectOfTool(input.tool_name);
-  if (!requestsPullRequestChange(command, dialect)) return SILENT;
+  if (!requestsPullRequestChange(command, dialect)) {
+    // Not a pull request: a raw issue write is the other thing a crew session never does (D67).
+    return requestsIssueWrite(command, dialect) ? toolDecision("deny", CREW_ISSUE_REFUSAL) : SILENT;
+  }
   // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
   // cannot be named: its words name an opening or a merge, which a crew session never does
   // (D24), so it is denied here rather than left to the guard's project part (F5-1).
@@ -287,6 +299,38 @@ function askFor(verdict: Exclude<MergeVerdict, { kind: "allowed" | "silent" }>, 
  * could not be read. An exact `gh pr merge <n>` that the policy allows gets `allow` (D31).
  */
 export async function mergeGuard(context: HookContext): Promise<HookResult> {
+  const answer = await pullRequestGuard(context);
+  // Any answer about a pull request already puts the whole command to the person (or refuses
+  // it); a line that changes none is asked about when it writes to GitHub's issues (D67).
+  if (answer.stdout !== undefined) return answer;
+  const question = issueWriteQuestion(context);
+  return question === null ? SILENT : toolDecision("ask", question);
+}
+
+/**
+ * The question a raw write to GitHub's issues puts to the person (D67), or null: `gh issue
+ * create`, `gh api … /issues` with a write method, and the like (`issue-writes.ts`). An issue is
+ * text that leaves the machine, so a session's own write is the person's yes; the kit's way is
+ * `cc-smart-dev-kit issue file`, which is no `gh` command and is not asked about. A project
+ * that never opted in has no policy to ask for (`.claude/rules/hooks.md`); a crew session's
+ * denial is the crew part (`crewPullRequestAnswer`).
+ */
+function issueWriteQuestion(context: HookContext): string | null {
+  const { project, input } = context;
+  const command = stringField(toolInput(input).command);
+  if (command === null || project.config === null) return null;
+  const dialect = dialectOfTool(input.tool_name);
+  const writes = issueWrites(command, dialect);
+  if (writes.length === 0 && !computedIssueRisk(command, dialect)) return null;
+  const what =
+    writes.length > 0
+      ? `writes to GitHub's issues (${writes.join(", ")})`
+      : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
+  return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+}
+
+/** The pull request half of the guard: merges, openings and readying. */
+async function pullRequestGuard(context: HookContext): Promise<HookResult> {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.

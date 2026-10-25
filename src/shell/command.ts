@@ -1466,3 +1466,50 @@ function programsIn(command: string, dialect: Dialect): string[] {
   walk(command, dialect, 0);
   return found;
 }
+
+/** One command a line runs: its program, its arguments (redirections left in), and its words. */
+export interface RunInvocation {
+  args: string[];
+  /** The program is worked out when the line runs (`$GH`, `$(which gh)`). */
+  computed: boolean;
+  program: string;
+  /** Every word of the step, as the reader split it. */
+  words: string[];
+}
+
+/**
+ * Every command the line runs, in order, with its arguments: each command of it, and the inner
+ * command of a wrapper or a shell (`bash -c "gh issue create"`), three levels deep — the walk
+ * `programsOf` makes, handing back the whole invocation instead of the program. In `dialect`;
+ * not told the tool, both readings, each command once.
+ */
+export function invocationsOf(command: string, dialect?: Dialect): RunInvocation[] {
+  const walk = (line: string, one: Dialect, depth: number, into: RunInvocation[]): void => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const words = wordsOf(step.text, one);
+      const invocation = invocationOf(words);
+      if (invocation === undefined) continue;
+      into.push({
+        args: invocation.args,
+        computed: invocation.computed,
+        program: invocation.program,
+        words,
+      });
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1, into);
+      }
+    }
+  };
+  const found: RunInvocation[] = [];
+  for (const one of dialect === undefined ? (["bash", "powershell"] as const) : [dialect]) {
+    walk(command, one, 0, found);
+  }
+  const seen = new Set<string>();
+  return found.filter((one) => {
+    const key = JSON.stringify(one);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

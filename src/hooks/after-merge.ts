@@ -889,7 +889,7 @@ function mergeArguments(words: string[]): {
 }
 
 /** `gh api` flags that take a value (gh 2.102.0, `gh api --help`): `=value`, or the next word. */
-const API_VALUE_FLAGS = new Set([
+export const API_VALUE_FLAGS = new Set([
   "--cache",
   "--field",
   "--header",
@@ -910,7 +910,7 @@ const API_VALUE_FLAGS = new Set([
 ]);
 
 /** `gh api` flags that take no value. */
-const API_PLAIN_FLAGS = new Set([
+export const API_PLAIN_FLAGS = new Set([
   "--allow-escape-sequences",
   "--include",
   "--paginate",
@@ -921,7 +921,7 @@ const API_PLAIN_FLAGS = new Set([
 ]);
 
 /** The short letters of `gh api` that take a value. */
-const API_VALUE_LETTERS = "FHXfpqt";
+export const API_VALUE_LETTERS = "FHXfpqt";
 
 /** The refusal every `gh api` merge gets: the guard does not judge that form. */
 const API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not judge";
@@ -1242,7 +1242,7 @@ export const COMPUTED_MERGE =
  * words of that command, as the reader sees them, say `names`. One reader for every
  * computed-program risk, so the merge check and the opening check can never disagree.
  */
-function computedInvocationRisk(
+export function computedInvocationRisk(
   command: string,
   dialect: Dialect | undefined,
   names: (words: readonly string[]) => boolean,
