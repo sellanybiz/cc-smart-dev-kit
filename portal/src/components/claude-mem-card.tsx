@@ -501,8 +501,10 @@ function TakeOver({
           </p>
           <p>
             <span className="font-mono">{KIT_NAME} restore</span> puts them back as they were. A
-            key's value is never written down: restore leaves a taken-over key as you set it, or,
-            once the kit replaced it, names the backup that holds yours.
+            key's value is never written down, and a key always goes with its own address: where
+            your address comes back, your key comes back from a backup of the file (the kit's key is
+            removed when no backup holds yours); beside an address the kit never changed, the key
+            stays as it is.
           </p>
         </div>
       </ConfirmDialog>

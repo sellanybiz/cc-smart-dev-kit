@@ -545,6 +545,8 @@ export interface CrewReport {
   docs: string[];
   needsLead: string[];
   open: string[];
+  /** The crew session's own review, where its brief asked for no second opinion (RG1); null or absent when there is none. */
+  ownReview?: null | { findings: { finding: string; fix: string }[]; reason: string } | undefined;
   outsideBrief: string[];
   phase: string;
   pr: null | number;
