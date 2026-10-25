@@ -1,7 +1,7 @@
 /**
  * A fake GitHub for the tests of a phase that starts from an issue (GI3): a `GhExec` over
  * `example-org/my-app` that answers the REST reads `pickup.ts` makes (the issue, its events, an
- * account's permission, the last edit of its body, its comments) and the `issue comment` the
+ * account's permission, the edits of its body, its comments) and the `issue comment` the
  * hand-back posts, and records every call. Everything else (`repo view`, `auth status`)
  * goes to the issue fake (`src/testing/fake-gh.ts`). Nothing here reaches GitHub.
  */
@@ -21,8 +21,12 @@ export interface FakeEvent {
 export interface FakeRestIssue {
   author: string;
   body: string;
-  /** The last edit of the body: when, and by whom; absent: never edited. */
+  /** The one edit of the body: when, and by whom; absent: never edited. */
   edit?: { at: string; editor: null | string };
+  /** More edits of the body, with `edit` (the order given is the order GitHub lists: newest first). */
+  edits?: { at: string; editor: null | string }[];
+  /** True: GitHub says there are more edits than one read returns. */
+  moreEdits?: boolean;
   events: FakeEvent[];
   labels: string[];
   number: number;
@@ -101,8 +105,16 @@ export function fakeIssueGh(options: FakeIssueGhOptions): FakeIssueGh {
           data: {
             repository: {
               issue: {
-                editor: issue.edit?.editor === undefined ? null : { login: issue.edit.editor },
-                lastEditedAt: issue.edit?.at ?? null,
+                userContentEdits: {
+                  nodes: [
+                    ...(issue.edit === undefined ? [] : [issue.edit]),
+                    ...(issue.edits ?? []),
+                  ].map((one) => ({
+                    editedAt: one.at,
+                    editor: one.editor === null ? null : { login: one.editor },
+                  })),
+                  pageInfo: { hasNextPage: issue.moreEdits === true },
+                },
               },
             },
           },
@@ -118,14 +130,17 @@ export function fakeIssueGh(options: FakeIssueGhOptions): FakeIssueGh {
         }
         if (issue === undefined) return notFound();
         if (issueMatch[2] === "/events") {
-          return ok([
-            issue.events.map((one) => ({
-              actor: one.actor === null ? null : { login: one.actor },
-              created_at: one.at,
-              event: one.event,
-              ...(one.label === undefined ? {} : { label: { name: one.label } }),
-            })),
-          ]);
+          // `--paginate --slurp` gives a list of pages: two events to a page here, so a
+          // history longer than that is read across pages in every test.
+          const rows = issue.events.map((one) => ({
+            actor: one.actor === null ? null : { login: one.actor },
+            created_at: one.at,
+            event: one.event,
+            ...(one.label === undefined ? {} : { label: { name: one.label } }),
+          }));
+          const pages: (typeof rows)[] = [];
+          for (let at = 0; at < rows.length; at += 2) pages.push(rows.slice(at, at + 2));
+          return ok(pages);
         }
         return ok({
           body: issue.body,

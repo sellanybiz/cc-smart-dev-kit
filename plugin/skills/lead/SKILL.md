@@ -127,8 +127,9 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   issue's block after it. Write in `--brief` what the issue does not say (the files, the
   done-check, the decisions that bite), because the quoted block is the issue author's request, not
   a brief. The record and the plan's run record carry the issue; the session comments on it once
-  when it hands back, and GI2's merge comment finds it there. A line from the session that
-  GitHub could not be reached is yours to say on the issue by hand.
+  when it hands back, and the merge comment finds it there. A line from the session that
+  GitHub could not be reached, or that its report held a secret or a home path, is yours to say
+  on the issue by hand.
 
 **The brief** is a file in the plan's own folder: `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`,
 beside the plan file `<plans dir>/<plan stem>.md` and named as the crew branch `crew/<PHASE>-<slug>`.

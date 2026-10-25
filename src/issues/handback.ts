@@ -24,7 +24,7 @@ import {
   REPO_FIELDS,
   resolveSwitch,
 } from "./file";
-import { redactText } from "./screen";
+import { screenText } from "./screen";
 
 /** The issue a phase started from, as the crew record keeps it. */
 export interface HandBackIssue {
@@ -32,6 +32,18 @@ export interface HandBackIssue {
   /** `owner/name`. */
   repo: string;
 }
+
+/** What a failed read stops, for `ghProblem`: nothing was posted. */
+const BEFORE_WORDS = {
+  afterTimeout: "nothing was posted. Try again",
+  stops: "the hand-back cannot be commented",
+} as const;
+
+/** What a failed post stops: a timeout may have come after GitHub took the comment. */
+const POST_WORDS = {
+  afterTimeout: "the comment may have been posted; look at the issue before saying it again",
+  stops: "the hand-back cannot be commented",
+} as const;
 
 /** What happened: posted, left out on purpose (already said), or why it could not be said. */
 export type HandBackOutcome = { kind: "already" | "posted" } | { kind: "failed"; why: string };
@@ -66,7 +78,24 @@ function findingsLine(findings: readonly { finding: string; fix: string }[]): st
   return `${findings.length} finding${findings.length === 1 ? "" : "s"}, fixed: ${fixed}`;
 }
 
-/** The comment for `report`, before it is cleaned of secrets as a whole. */
+/** Every string of the report's own words that the comment can carry, whole and uncut. */
+function wordsOf(report: HandBackReport): string[] {
+  const findings = [...(report.review?.findings ?? []), ...(report.ownReview?.findings ?? [])];
+  return [
+    report.phase,
+    report.branch.name,
+    ...report.tests.targeted.map((run) => run.command),
+    ...(report.tests.full === null ? [] : [report.tests.full.command]),
+    ...report.checks.flatMap((check) => [check.name, check.note ?? ""]),
+    ...(report.review === null
+      ? []
+      : [report.review.agent, report.review.model, report.review.effort]),
+    ...(report.ownReview ? [report.ownReview.reason] : []),
+    ...findings.flatMap((one) => [one.finding, one.fix]),
+  ];
+}
+
+/** The comment for `report`. */
 export function handBackComment(report: HandBackReport, crewId: string): string {
   const sha = report.branch.sha.slice(0, 7);
   const head = `**cc-smart-dev-kit:** phase ${code(report.phase)}`;
@@ -141,7 +170,7 @@ export async function commentHandBack(
       });
 
     const view = await run(["repo", "view", repo, "--json", REPO_FIELDS], GH_TIMEOUT_MS);
-    if (view.kind !== "ok") return failed(ghProblem("read the repository", view));
+    if (view.kind !== "ok") return failed(ghProblem("read the repository", view, BEFORE_WORDS));
     const facts = parseRepoFacts(view.out);
     if ("why" in facts) return failed(facts.why);
     if (!facts.hasIssues) return failed(`${repo} has issues turned off`);
@@ -162,7 +191,7 @@ export async function commentHandBack(
       ],
       GH_WRITE_TIMEOUT_MS,
     );
-    if (listed.kind !== "ok") return failed(ghProblem("listed the comments", listed));
+    if (listed.kind !== "ok") return failed(ghProblem("listed the comments", listed, BEFORE_WORDS));
     let comments: unknown;
     try {
       comments = JSON.parse(listed.out);
@@ -179,13 +208,24 @@ export async function commentHandBack(
     );
     if (said) return { kind: "already" };
 
-    const body = redactText(handBackComment(report, crewId), world.home);
+    // The words are a session's own, written after it read an outsider's text: a secret or a home
+    // path in them is not cleaned and posted. It is left out, with where it is, and the lead says
+    // the hand-back by hand. Each field is screened whole, before any cut to length.
+    const body = handBackComment(report, crewId);
+    for (const text of [body, ...wordsOf(report)]) {
+      const hit = screenText(text, world.home)[0];
+      if (hit !== undefined) {
+        return failed(
+          `what the report says holds ${hit.kind} (line ${hit.line}, column ${hit.column} of one field); nothing was posted. Say the hand-back on the issue by hand`,
+        );
+      }
+    }
     const posted = await run(
       ["issue", "comment", String(issue.number), "--repo", repo, "--body-file", "-"],
       GH_WRITE_TIMEOUT_MS,
       body,
     );
-    if (posted.kind !== "ok") return failed(ghProblem("posted the comment", posted));
+    if (posted.kind !== "ok") return failed(ghProblem("posted the comment", posted, POST_WORDS));
     return { kind: "posted" };
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));

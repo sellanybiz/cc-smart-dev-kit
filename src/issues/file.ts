@@ -121,16 +121,29 @@ function textProblem(request: IssueRequest, home: string | null): string | null 
   return null;
 }
 
-/** Why a failed `gh` call failed, in words that carry the fix. */
-export function ghProblem(what: string, result: GhResult): string {
+/** What `issue file` says a failed `gh` stops, and what is known after a timeout. */
+const FILING = {
+  afterTimeout: "nothing is known to be filed. Try again",
+  stops: "no issue can be filed",
+} as const;
+
+/**
+ * Why a failed `gh` call failed, in words that carry the fix. `words` say what the failure stops
+ * and what is known after a timeout; `issue file` files, a phase's start reads, a hand-back comments.
+ */
+export function ghProblem(
+  what: string,
+  result: GhResult,
+  words: { afterTimeout: string; stops: string } = FILING,
+): string {
   if (result.kind === "missing") {
-    return "gh is not installed, so no issue can be filed: install GitHub's CLI from https://cli.github.com, then run `gh auth login`";
+    return `gh is not installed, so ${words.stops}: install GitHub's CLI from https://cli.github.com, then run \`gh auth login\``;
   }
   if (result.kind === "timeout") {
-    return `gh timed out while it ${what}; nothing is known to be filed. Try again`;
+    return `gh timed out while it ${what}; ${words.afterTimeout}`;
   }
   if (/auth login|not logged in|authentication|HTTP 401|bad credentials/i.test(result.err)) {
-    return `gh is not logged in for github.com, so no issue can be filed: run \`gh auth login\``;
+    return `gh is not logged in for github.com, so ${words.stops}: run \`gh auth login\``;
   }
   const last =
     result.err
@@ -215,10 +228,17 @@ export function resolveSwitch(
 }
 
 /** The issues that carry `label`, every state, once: number, url and body. */
-type ListedIssue = { body: string; closed: boolean; number: number; url: string };
+type ListedIssue = {
+  body: string;
+  closed: boolean;
+  number: number;
+  /** True: it carries the ready label, so a person has chosen its text as it stands. */
+  ready: boolean;
+  url: string;
+};
 type Listed = { issues: ListedIssue[] } | { why: string };
 
-function parseListed(out: string): Listed {
+function parseListed(out: string, ready: string): Listed {
   try {
     const rows = JSON.parse(out) as unknown;
     if (!Array.isArray(rows)) return { why: "gh answered something this command cannot read" };
@@ -231,6 +251,12 @@ function parseListed(out: string): Listed {
         body: typeof row.body === "string" ? row.body : "",
         closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
+        ready: Array.isArray(row.labels)
+          ? (row.labels as { name?: unknown }[]).some(
+              (one) =>
+                typeof one.name === "string" && one.name.toLowerCase() === ready.toLowerCase(),
+            )
+          : false,
         url: row.url,
       });
     }
@@ -259,6 +285,19 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if ("why" in policy) return refuse(`the issue switch cannot be read: ${policy.why}`);
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null) return refuse(off);
+
+  // The ready label is the person's choice: a phase starts from an issue that carries it, added by
+  // someone with write access (`pickup.ts`). The kit files under that person's login, so it must
+  // never add the label itself, nor let the found label be the same word.
+  const ready = policy.resolved.issues.readyLabel.value;
+  const readyHit = [policy.resolved.issues.foundLabel.value, ...request.labels].find(
+    (label) => label.toLowerCase() === ready.toLowerCase(),
+  );
+  if (readyHit !== undefined) {
+    return refuse(
+      `the label ${readyHit} is the ready label (issues.readyLabel): only a person adds it, because it tells the kit an issue is theirs to start work from; take it out of --label (and keep issues.foundLabel a different word)`,
+    );
+  }
 
   const own = ownRepository(world.cwd, world.env);
   if ("why" in own) return refuse(own.why);
@@ -311,10 +350,10 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body,state",
+    "number,url,body,state,labels",
   ]);
   if (listed.kind !== "ok") return refuse(ghProblem("listed the issues", listed));
-  const all = parseListed(listed.out);
+  const all = parseListed(listed.out, policy.resolved.issues.readyLabel.value);
   if ("why" in all) return refuse(all.why);
   const double = all.issues.find((issue) => hasMarker(issue.body, hash));
   if (double === undefined && all.issues.length >= LIST_LIMIT) {
@@ -326,6 +365,13 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   const body = bodyWithMarker(request.body, hash);
   if (double !== undefined) {
     if (double.body !== body) {
+      // A person labelled it ready after reading its text as it stood: a rewrite under their own
+      // login would be a change they never saw (and the edit check of `pickup.ts` would pass it).
+      if (double.ready) {
+        return refuse(
+          `#${double.number} carries the ready label (${ready}), so a person has chosen its text as it stands; the kit does not rewrite it. Remove the label first, or file this as a new finding with another fingerprint`,
+        );
+      }
       const edit = await write(
         ["issue", "edit", String(double.number), "--repo", repo, "--body-file", "-"],
         body,

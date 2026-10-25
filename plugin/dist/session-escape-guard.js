@@ -18153,34 +18153,6 @@ function crewRecordsOf(paths, repo) {
   }
 }
 
-// src/workflow/pr-switches.ts
-function turnOn(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  const literal = value === "true" ? "true" : `"${value}"`;
-  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
-}
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
-    return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
-    return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
-  }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
-}
-
-// src/setup/marketplace-access.ts
-var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
-
 // src/workflow/auto-merge.ts
 function autoMergeOff(resolved, base) {
   if (resolved.autoMerge.value)
@@ -18515,6 +18487,34 @@ async function checkPullRequest(world, target, defaultBranches = new Map) {
     reason: pullRequestAllowed(cover?.covered === true ? cover : null)
   };
 }
+
+// src/workflow/pr-switches.ts
+function turnOn(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
+}
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
+    return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
+}
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
+      return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
+  }
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
+}
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/issues/marker.ts
 var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;

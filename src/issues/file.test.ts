@@ -13,7 +13,7 @@ import {
 } from "../testing/issues-world";
 import { git } from "../testing/temp";
 import { fileIssue, type IssueOutcome, issueLine } from "./file";
-import { fingerprintHash, markerLine } from "./marker";
+import { bodyWithMarker, fingerprintHash, markerLine } from "./marker";
 
 const world = (setup: IssuesSetup = {}) => issuesWorld(setup);
 
@@ -207,7 +207,7 @@ describe("filing and the hidden marker", () => {
     );
   });
 
-  test("the big list read gets the write time, and asks for the state", async () => {
+  test("the big list read gets the write time, and asks for the state and the labels", async () => {
     const { gh, world: w } = world();
     const timeouts: number[] = [];
     const inner = w.gh;
@@ -219,7 +219,7 @@ describe("filing and the hidden marker", () => {
     expect(timeouts).toEqual([30_000]);
     expect(
       gh.calls.find((call) => call.args[1] === "list" && call.args[0] === "issue")?.args,
-    ).toContain("number,url,body,state");
+    ).toContain("number,url,body,state,labels");
   });
 
   test("a label the schema would refuse is refused before gh is called", async () => {
@@ -402,5 +402,73 @@ describe("an issue someone else wrote is data", () => {
     const edits = gh.calls.filter((call) => call.args[1] === "edit");
     expect(edits.map((call) => call.args.slice(0, 3))).toEqual([["issue", "edit", "3"]]);
     expect(edits[0]?.args).not.toContain("--title");
+  });
+});
+
+describe("the ready label is the person's, never the kit's (GI3)", () => {
+  const callsOf = (gh: FakeGh, group: string, action: string) =>
+    gh.calls.filter((call) => call.args[0] === group && call.args[1] === action);
+
+  test("--label with the ready label is refused, in any letter case, before anything is sent", async () => {
+    for (const label of ["kit:ready", "KIT:Ready"]) {
+      const { gh, world: w } = world();
+      const why = refusal(await fileIssue(w, { ...REQUEST, labels: [label] }));
+      expect(why).toContain("is the ready label");
+      expect(why).toContain("only a person adds it");
+      expect(gh.calls).toEqual([]);
+    }
+  });
+
+  test("a found label that is the ready label would make every issue ready: refused", async () => {
+    const { gh, world: w } = world({
+      committed: {
+        worktrees: { base: "main" },
+        workflow: { issues: { enabled: true, foundLabel: "kit:ready" } },
+      },
+    });
+    expect(refusal(await fileIssue(w, REQUEST))).toContain("is the ready label");
+    expect(gh.calls).toEqual([]);
+  });
+
+  test("the configured ready label is the one refused, not the word kit:ready", async () => {
+    const committed = {
+      worktrees: { base: "main" },
+      workflow: { issues: { enabled: true, readyLabel: "go" } },
+    };
+    const refused = world({ committed });
+    expect(refusal(await fileIssue(refused.world, { ...REQUEST, labels: ["go"] }))).toContain(
+      "is the ready label",
+    );
+    const fine = world({ committed });
+    expect((await fileIssue(fine.world, { ...REQUEST, labels: ["kit:ready"] })).kind).toBe("filed");
+  });
+
+  test("an update never rewrites an issue a person labelled ready", async () => {
+    const chosen: FakeGh["issues"][number] = {
+      body: `old\n\n${markerLine(fingerprintHash(REQUEST.fingerprint))}\n`,
+      labels: ["kit:found", "kit:ready"],
+      number: 3,
+      title: "chosen",
+      url: "https://github.com/example-org/my-app/issues/3",
+    };
+    const { gh, world: w } = world({ gh: { issues: [chosen] } });
+    const why = refusal(await fileIssue(w, REQUEST));
+    expect(why).toContain("#3 carries the ready label");
+    expect(callsOf(gh, "issue", "edit")).toEqual([]);
+    expect(chosen.body).toStartWith("old");
+  });
+
+  test("an update that changes nothing on a ready issue is still just 'updated'", async () => {
+    const same = bodyWithMarker(REQUEST.body, fingerprintHash(REQUEST.fingerprint));
+    const chosen: FakeGh["issues"][number] = {
+      body: same,
+      labels: ["kit:found", "kit:ready"],
+      number: 3,
+      title: "chosen",
+      url: "https://github.com/example-org/my-app/issues/3",
+    };
+    const { gh, world: w } = world({ gh: { issues: [chosen] } });
+    expect((await fileIssue(w, REQUEST)).kind).toBe("updated");
+    expect(callsOf(gh, "issue", "edit")).toEqual([]);
   });
 });

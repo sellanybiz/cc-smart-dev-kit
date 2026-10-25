@@ -980,21 +980,78 @@ ${MARKER("handoff")}
     expect(world.out.some((one) => one.includes("allowPublic"))).toBe(true);
   });
 
-  test("a secret in a finding and an @mention are not posted as written", async () => {
-    const part = modelPart({
+  const reviewWith = (finding: string) =>
+    modelPart({
       review: {
         agent: "cc-smart-dev-kit:reviewer",
         effort: "xhigh",
-        findings: [{ finding: `key ghp_${"a".repeat(36)} @octocat`, fix: "removed" }],
+        findings: [{ finding, fix: "removed" }],
         model: "opus",
         sha: "b".repeat(40),
       },
     });
-    const { fake } = await issueReport("done", {}, part);
+
+  test("a secret in the words is not posted, cleaned or not: one note, and the report goes on", async () => {
+    const { code, fake, world } = await issueReport(
+      "done",
+      {},
+      reviewWith(`key ghp_${"a".repeat(36)}`),
+    );
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+    const line = world.out.find((one) => one.startsWith("note: the hand-back comment")) ?? "";
+    expect(line).toContain("a key or token");
+    expect(line).not.toContain("ghp_");
+    const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+    expect(report?.open.some((one) => one.includes("not posted on issue #12"))).toBe(true);
+  });
+
+  test("a secret longer than the cut to length is still found before it is cut", async () => {
+    const { fake } = await issueReport(
+      "done",
+      {},
+      reviewWith(`${"x ".repeat(160)}ghp_${"a".repeat(36)}`),
+    );
+    expect(fake.posted).toEqual([]);
+  });
+
+  test("a home path in the words is not posted either", async () => {
+    const world = await crewWorld1({ issue: true });
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {} });
+    const part = modelPart({
+      tests: {
+        full: { command: `cd ${world.home}/work && bun test`, failed: 0, ok: true, passed: 42 },
+        targeted: [],
+      },
+    });
+    const code = await runCrew(
+      doneArgs(part),
+      world.ctx({ cwd: world.worktree, gh: fake.exec }, CREW_ENV),
+    );
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+    expect(world.out.some((one) => one.includes("a home path"))).toBe(true);
+  });
+
+  test("an @mention is broken, so the comment pings nobody", async () => {
+    const { fake } = await issueReport("done", {}, reviewWith("ask @octocat about it"));
     const body = fake.posted[0]?.body ?? "";
-    expect(body).not.toContain("ghp_");
-    expect(body).toContain("[redacted: a key or token]");
     expect(body).not.toContain("@octocat");
+    expect(body).toContain("@\u200boctocat");
+  });
+
+  test("a timed-out post says the comment may have landed, not that nothing was filed", async () => {
+    const world = await crewWorld1({ issue: true });
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {} });
+    const flaky = async (args: string[], call: Parameters<typeof fake.exec>[1]) =>
+      args[0] === "issue" && args[1] === "comment"
+        ? { code: null, err: "", kind: "timeout" as const, out: "" }
+        : fake.exec(args, call);
+    const code = await runCrew(doneArgs(), world.ctx({ cwd: world.worktree, gh: flaky }, CREW_ENV));
+    expect(code).toBe(0);
+    const line = world.out.find((one) => one.startsWith("note: the hand-back comment")) ?? "";
+    expect(line).toContain("the comment may have been posted");
+    expect(line).not.toContain("filed");
   });
 
   test("a phase that did not start from an issue never calls gh", async () => {

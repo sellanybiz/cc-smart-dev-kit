@@ -101,8 +101,9 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
         return result(
           "ok",
           JSON.stringify(
-            listed.map(({ body, closed, number, url }) => ({
+            listed.map(({ body, closed, labels, number, url }) => ({
               body,
+              labels: labels.map((name) => ({ name })),
               number,
               state: closed === true ? "CLOSED" : "OPEN",
               url,

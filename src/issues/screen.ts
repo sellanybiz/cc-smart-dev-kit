@@ -141,18 +141,44 @@ export function screenText(text: string, home: string | null): Hit[] {
 }
 
 /**
+ * Where a hit really ends. The patterns cap a value's length (so no input makes one backtrack
+ * long), but a secret is the whole run it sits in: a key or token goes to the next space or quote,
+ * and a private key from its BEGIN line to its END line (or the end of the text). Left at the cap,
+ * the tail of a long value would stay in the clear.
+ */
+function reach(text: string, found: Span & { kind: HitKind }): number {
+  const end = found.index + found.length;
+  if (found.kind !== "a key or token") return end;
+  if (text.startsWith("-----BEGIN", found.index)) {
+    const stop = text.indexOf("-----END", end);
+    if (stop === -1) return text.length;
+    const close = text.indexOf("-----", stop + "-----END".length);
+    return close === -1 ? text.length : close + "-----".length;
+  }
+  let at = end;
+  while (at < text.length && !/[\s"'`<>]/.test(text[at] ?? "")) at += 1;
+  return at;
+}
+
+/**
  * `text` with every place the screen would refuse replaced by `[redacted: <kind>]`. For text
- * that is NOT ours to refuse — an issue someone else wrote, read into a brief: a secret in a
- * public issue is still a secret on this machine's disk (D67). Overlapping hits become one.
+ * that is NOT ours to refuse: an issue someone else wrote, read into a brief. A secret in a
+ * public issue is still a secret on this machine's disk (D67). Each hit is widened to the whole
+ * secret (`reach`), and hits that overlap become one, ending at the furthest end.
  */
 export function redactText(text: string, home: string | null): string {
-  const spans = findings(text, home).sort((a, b) => a.index - b.index || b.length - a.length);
+  const spans = findings(text, home)
+    .map((found) => ({ ...found, end: reach(text, found) }))
+    .sort((a, b) => a.index - b.index || b.end - a.end);
   let out = "";
   let at = 0;
   for (const span of spans) {
-    if (span.index < at) continue;
+    if (span.index < at) {
+      at = Math.max(at, span.end);
+      continue;
+    }
     out += `${text.slice(at, span.index)}[redacted: ${span.kind}]`;
-    at = span.index + span.length;
+    at = span.end;
   }
   return out + text.slice(at);
 }

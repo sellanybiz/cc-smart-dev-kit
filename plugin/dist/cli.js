@@ -12144,9 +12144,157 @@ function currentTerminal(env = process.env, platform = process.platform) {
   });
 }
 
+// src/hooks/git.ts
+import { realpathSync as realpathSync2 } from "fs";
+import { basename as basename3, dirname as dirname5, join as join14, resolve as resolve3 } from "path";
+
+// src/path-compare.ts
+import { resolve as resolve2 } from "path";
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
+}
+function samePath2(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
+function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
+  return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
+}
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
+// src/hooks/git.ts
+var GUARD_GIT_TIMEOUT_MS = 5000;
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
+  try {
+    const child = Bun.spawn(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const signaled = child.signalCode !== null && child.signalCode !== undefined;
+    return {
+      ok: code === 0,
+      out: stdout.trim(),
+      err: signaled ? "timed out" : stderr.trim(),
+      code: signaled ? null : code
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+function realPath(path) {
+  const rest = [];
+  let at = resolve3(path);
+  for (;; ) {
+    try {
+      return join14(realpathSync2(at), ...rest);
+    } catch {
+      const parent = dirname5(at);
+      if (parent === at)
+        return resolve3(path);
+      rest.unshift(basename3(at));
+      at = parent;
+    }
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    const lockReason = value("locked")?.trim();
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
+      prunable: flag("prunable")
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function innermostWorktree(path, worktrees) {
+  let deepest = null;
+  for (const worktree of worktrees) {
+    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
+      deepest = worktree;
+    }
+  }
+  return deepest;
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
+
 // src/project/resolve.ts
-import { existsSync as existsSync16, realpathSync as realpathSync2, statSync as statSync7 } from "fs";
-import { join as join14 } from "path";
+import { existsSync as existsSync16, realpathSync as realpathSync3, statSync as statSync7 } from "fs";
+import { join as join15 } from "path";
 
 // src/project/config.ts
 import { existsSync as existsSync15, readFileSync as readFileSync16 } from "fs";
@@ -12302,7 +12450,7 @@ function withWorkers(kind, command, workers) {
 }
 
 // src/crew/names.ts
-import { basename as basename3 } from "path";
+import { basename as basename4 } from "path";
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
 var MAX_CREW_PLAN = 16;
@@ -12343,7 +12491,7 @@ function isSlug(value) {
 }
 var PHASE_RULE = partRule(MAX_PHASE);
 function crewTag(mainCheckout, configured) {
-  const raw = configured ?? basename3(mainCheckout);
+  const raw = configured ?? basename4(mainCheckout);
   const tag = namePart(raw, MAX_TAG);
   if (tag === "") {
     throw new SessionNameError(`"${raw}" leaves no tag for a lead's or a crew session's name: set workflow.crew.tag (${TAG_RULE})`);
@@ -12839,26 +12987,6 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
-// src/project/git-env.ts
-var REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE"
-];
-function gitEnv(base) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
-      env[key] = value;
-  }
-  return env;
-}
-
 // src/project/resolve.ts
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
@@ -12976,7 +13104,7 @@ function mainCheckoutFrom(list, cwd) {
   if (!existsSync16(path) || lines.some((line) => line.startsWith("prunable"))) {
     throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync2(path);
+  return realpathSync3(path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -12994,9 +13122,9 @@ function revParseParts(revParse) {
   return { common, gitDir, top };
 }
 function checkoutRoots(parts) {
-  const root = realpathSync2(parts.top);
-  const commonDir = realpathSync2(parts.common);
-  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
+  const root = realpathSync3(parts.top);
+  const commonDir = realpathSync3(parts.common);
+  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
   if (!existsSync16(cwd) || !statSync7(cwd).isDirectory()) {
@@ -13060,20 +13188,20 @@ async function locateCheckoutAsync(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join14(root, ".claude", "cc-smart-dev-kit.json"));
+  const own = readOwnHooks(join15(root, ".claude", "cc-smart-dev-kit.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join14(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+  return readOwnHooks(join15(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join14(root, ".claude", "cc-smart-dev-kit.json");
+  const own = join15(root, ".claude", "cc-smart-dev-kit.json");
   let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join14(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    const main = join15(mainCheckout, ".claude", "cc-smart-dev-kit.json");
     config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -13153,10 +13281,10 @@ function resolveProject(cwd, options = {}) {
 import { existsSync as existsSync18, readFileSync as readFileSync18 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 
 // src/setup/launcher.ts
-import { join as join15 } from "path";
+import { join as join16 } from "path";
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
 var FIND_INSTALL_JS = [
@@ -13220,7 +13348,7 @@ exec "$bun" --no-env-file "$@"
 `;
 }
 function installLauncher(binDir, options) {
-  const path = join15(binDir, LAUNCHER_NAME);
+  const path = join16(binDir, LAUNCHER_NAME);
   const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
     stateDir: options.stateDir,
     kind: "whole-file",
@@ -13233,7 +13361,7 @@ function installLauncher(binDir, options) {
 // src/setup/statusline.ts
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join16(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join17(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
@@ -13247,18 +13375,18 @@ import {
   statSync as statSync8,
   writeFileSync as writeFileSync3
 } from "fs";
-import { join as join17 } from "path";
+import { join as join18 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join17(stateDir, "update-hold"),
-    check: join17(stateDir, "update-check.json"),
-    reported: join17(stateDir, "update-reported"),
-    major: join17(stateDir, "update-major.json"),
-    log: join17(stateDir, "update.log"),
-    lockDir: join17(stateDir, "update"),
-    sessions: join17(stateDir, "sessions")
+    hold: join18(stateDir, "update-hold"),
+    check: join18(stateDir, "update-check.json"),
+    reported: join18(stateDir, "update-reported"),
+    major: join18(stateDir, "update-major.json"),
+    log: join18(stateDir, "update.log"),
+    lockDir: join18(stateDir, "update"),
+    sessions: join18(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -13304,7 +13432,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join17(files.check, ".."));
+  ensureDir(join18(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -13322,7 +13450,7 @@ function heldSince(files) {
 function hold(files, nowMs) {
   if (isHeld(files))
     return false;
-  ensureDir(join17(files.hold, ".."));
+  ensureDir(join18(files.hold, ".."));
   atomicWrite(files.hold, `${isoSeconds(nowMs)}
 `, 384);
   return true;
@@ -13340,7 +13468,7 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLogLine(logFile, line, nowMs) {
-  ensureDir(join17(logFile, ".."));
+  ensureDir(join18(logFile, ".."));
   try {
     if (statSync8(logFile).size > LOG_MAX_BYTES) {
       const text = readFileSync17(logFile, "utf8");
@@ -13388,7 +13516,7 @@ function runningSessions(files) {
   } catch {
     return [];
   }
-  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join17(files.sessions, name))).filter((session) => session !== null && isRunning(session));
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join18(files.sessions, name))).filter((session) => session !== null && isRunning(session));
 }
 
 // src/zod-issues.ts
@@ -13637,169 +13765,6 @@ function resolveWorkflow(paths, projectConfig) {
       updateHold: isHeld(updateFiles(paths.stateDir)) ? current(true, "personal") : current(false, "default")
     }
   };
-}
-
-// src/workflow/pr-switches.ts
-function turnOn2(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  const literal = value === "true" ? "true" : `"${value}"`;
-  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
-}
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
-    return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
-    return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
-  }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
-}
-function issuesOff(resolved, base) {
-  if (resolved.issues.enabled.value)
-    return null;
-  return `issues.enabled is off (${sourceLabel(resolved.issues.enabled, base)}), so the kit files no GitHub issue: ${turnOn2("issues.enabled", "true", base)}`;
-}
-function publicIssuesOff(resolved, base) {
-  if (resolved.issues.allowPublic.value)
-    return null;
-  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
-}
-
-// src/hooks/git.ts
-import { realpathSync as realpathSync3 } from "fs";
-import { basename as basename4, dirname as dirname5, join as join18, resolve as resolve3 } from "path";
-
-// src/path-compare.ts
-import { resolve as resolve2 } from "path";
-var IGNORE_CASE = process.platform === "win32";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const child = pathForm(path, ignoreCase);
-  const parent = pathForm(folder, ignoreCase);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-  return ignoreCase ? forward.toLowerCase() : forward;
-}
-function samePath2(a, b, ignoreCase = IGNORE_CASE) {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
-}
-function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
-  return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
-}
-
-// src/hooks/git.ts
-var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
-    const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
-  }
-}
-async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
-  try {
-    const child = Bun.spawn(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    const signaled = child.signalCode !== null && child.signalCode !== undefined;
-    return {
-      ok: code === 0,
-      out: stdout.trim(),
-      err: signaled ? "timed out" : stderr.trim(),
-      code: signaled ? null : code
-    };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
-  }
-}
-function realPath(path) {
-  const rest = [];
-  let at = resolve3(path);
-  for (;; ) {
-    try {
-      return join18(realpathSync3(at), ...rest);
-    } catch {
-      const parent = dirname5(at);
-      if (parent === at)
-        return resolve3(path);
-      rest.unshift(basename4(at));
-      at = parent;
-    }
-  }
-}
-function parseWorktreeList(porcelain) {
-  const worktrees = [];
-  for (const block of porcelain.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).filter((line) => line !== "");
-    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
-    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
-    const path = value("worktree");
-    if (path === undefined)
-      continue;
-    const lockReason = value("locked")?.trim();
-    worktrees.push({
-      path,
-      head: value("HEAD") ?? "",
-      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
-      locked: flag("locked"),
-      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
-    });
-  }
-  return worktrees;
-}
-function listWorktrees(cwd, env, timeoutMs = 15000) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
-  if (!listed.ok)
-    throw new Error(`git worktree list failed: ${listed.err}`);
-  return parseWorktreeList(listed.out);
-}
-function innermostWorktree(path, worktrees) {
-  let deepest = null;
-  for (const worktree of worktrees) {
-    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
-      deepest = worktree;
-    }
-  }
-  return deepest;
-}
-function hasChanges(folder, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  return !status.ok || status.out !== "";
 }
 
 // src/workflow/auto-merge.ts
@@ -14617,6 +14582,41 @@ async function checkBranch(world, target) {
   };
 }
 
+// src/workflow/pr-switches.ts
+function turnOn2(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  const literal = value === "true" ? "true" : `"${value}"`;
+  const json = key.split(".").reduceRight((inner, part) => `{"${part}": ${inner}}`, literal);
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": ${json}), committed to ${where} and pushed`;
+}
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
+    return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn2("autoPush", "true", base)}`;
+}
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
+      return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn2("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn2("openPr", "ready", base)}`;
+  }
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn2("openPr", "draft", base)}`;
+}
+function issuesOff(resolved, base) {
+  if (resolved.issues.enabled.value)
+    return null;
+  return `issues.enabled is off (${sourceLabel(resolved.issues.enabled, base)}), so the kit files no GitHub issue: ${turnOn2("issues.enabled", "true", base)}`;
+}
+function publicIssuesOff(resolved, base) {
+  if (resolved.issues.allowPublic.value)
+    return null;
+  return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
+}
+
 // src/issues/marker.ts
 var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
 var HASH_HEX_LENGTH = 32;
@@ -14715,15 +14715,33 @@ function findings(text, home) {
 function screenText(text, home) {
   return findings(text, home).map((found) => ({ ...position(text, found.index), kind: found.kind })).sort((a, b) => a.line - b.line || a.column - b.column);
 }
+function reach(text, found) {
+  const end = found.index + found.length;
+  if (found.kind !== "a key or token")
+    return end;
+  if (text.startsWith("-----BEGIN", found.index)) {
+    const stop = text.indexOf("-----END", end);
+    if (stop === -1)
+      return text.length;
+    const close = text.indexOf("-----", stop + "-----END".length);
+    return close === -1 ? text.length : close + "-----".length;
+  }
+  let at = end;
+  while (at < text.length && !/[\s"'`<>]/.test(text[at] ?? ""))
+    at += 1;
+  return at;
+}
 function redactText(text, home) {
-  const spans = findings(text, home).sort((a, b) => a.index - b.index || b.length - a.length);
+  const spans = findings(text, home).map((found) => ({ ...found, end: reach(text, found) })).sort((a, b) => a.index - b.index || b.end - a.end);
   let out = "";
   let at = 0;
   for (const span of spans) {
-    if (span.index < at)
+    if (span.index < at) {
+      at = Math.max(at, span.end);
       continue;
+    }
     out += `${text.slice(at, span.index)}[redacted: ${span.kind}]`;
-    at = span.index + span.length;
+    at = span.end;
   }
   return out + text.slice(at);
 }
@@ -14763,15 +14781,19 @@ function textProblem(request, home) {
   }
   return null;
 }
-function ghProblem(what, result) {
+var FILING = {
+  afterTimeout: "nothing is known to be filed. Try again",
+  stops: "no issue can be filed"
+};
+function ghProblem(what, result, words = FILING) {
   if (result.kind === "missing") {
-    return "gh is not installed, so no issue can be filed: install GitHub's CLI from https://cli.github.com, then run `gh auth login`";
+    return `gh is not installed, so ${words.stops}: install GitHub's CLI from https://cli.github.com, then run \`gh auth login\``;
   }
   if (result.kind === "timeout") {
-    return `gh timed out while it ${what}; nothing is known to be filed. Try again`;
+    return `gh timed out while it ${what}; ${words.afterTimeout}`;
   }
   if (/auth login|not logged in|authentication|HTTP 401|bad credentials/i.test(result.err)) {
-    return `gh is not logged in for github.com, so no issue can be filed: run \`gh auth login\``;
+    return `gh is not logged in for github.com, so ${words.stops}: run \`gh auth login\``;
   }
   const last = result.err.split(`
 `).filter((line) => line.trim() !== "").at(-1) ?? "no message";
@@ -14829,7 +14851,7 @@ function resolveSwitch(world) {
     return { why: error instanceof Error ? error.message : String(error) };
   }
 }
-function parseListed(out) {
+function parseListed(out, ready) {
   try {
     const rows = JSON.parse(out);
     if (!Array.isArray(rows))
@@ -14843,6 +14865,7 @@ function parseListed(out) {
         body: typeof row.body === "string" ? row.body : "",
         closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
+        ready: Array.isArray(row.labels) ? row.labels.some((one) => typeof one.name === "string" && one.name.toLowerCase() === ready.toLowerCase()) : false,
         url: row.url
       });
     }
@@ -14867,6 +14890,11 @@ async function fileIssue(world, request) {
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null)
     return refuse(off);
+  const ready = policy.resolved.issues.readyLabel.value;
+  const readyHit = [policy.resolved.issues.foundLabel.value, ...request.labels].find((label) => label.toLowerCase() === ready.toLowerCase());
+  if (readyHit !== undefined) {
+    return refuse(`the label ${readyHit} is the ready label (issues.readyLabel): only a person adds it, because it tells the kit an issue is theirs to start work from; take it out of --label (and keep issues.foundLabel a different word)`);
+  }
   const own = ownRepository(world.cwd, world.env);
   if ("why" in own)
     return refuse(own.why);
@@ -14916,11 +14944,11 @@ async function fileIssue(world, request) {
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body,state"
+    "number,url,body,state,labels"
   ]);
   if (listed.kind !== "ok")
     return refuse(ghProblem("listed the issues", listed));
-  const all = parseListed(listed.out);
+  const all = parseListed(listed.out, policy.resolved.issues.readyLabel.value);
   if ("why" in all)
     return refuse(all.why);
   const double = all.issues.find((issue) => hasMarker(issue.body, hash));
@@ -14930,6 +14958,9 @@ async function fileIssue(world, request) {
   const body = bodyWithMarker(request.body, hash);
   if (double !== undefined) {
     if (double.body !== body) {
+      if (double.ready) {
+        return refuse(`#${double.number} carries the ready label (${ready}), so a person has chosen its text as it stands; the kit does not rewrite it. Remove the label first, or file this as a new finding with another fingerprint`);
+      }
       const edit = await write(["issue", "edit", String(double.number), "--repo", repo, "--body-file", "-"], body);
       if (edit.kind !== "ok")
         return refuse(ghProblem("updated the issue", edit));
@@ -14980,6 +15011,10 @@ async function fileIssue(world, request) {
 
 // src/issues/pickup.ts
 var refuse2 = (why) => ({ ok: false, why });
+var READ_WORDS = {
+  afterTimeout: "nothing was started. Try again",
+  stops: "the issue cannot be read"
+};
 function parseIssueRef(text) {
   const plain = /^#?([1-9][0-9]{0,8})$/.exec(text.trim());
   if (plain !== null)
@@ -15035,21 +15070,29 @@ function hasWriteAccess(out) {
     return null;
   return ["admin", "maintain", "write"].includes(word.toLowerCase());
 }
-var LAST_EDIT_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){lastEditedAt editor{login}}}}";
-function parseLastEdit(out) {
+var EDITS_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){nodes{editedAt editor{login}} pageInfo{hasNextPage}}}}}";
+function parseEdits(out) {
   const answer = parseJson(out);
-  if (!isObject3(answer) || !isObject3(answer.data))
+  if (!isObject3(answer) || !isObject3(answer.data) || answer.errors !== undefined)
     return;
   const repository = answer.data.repository;
   const found = isObject3(repository) ? repository.issue : undefined;
-  if (!isObject3(found))
+  const list = isObject3(found) ? found.userContentEdits : undefined;
+  if (!isObject3(list) || !Array.isArray(list.nodes) || !isObject3(list.pageInfo))
     return;
-  if (found.lastEditedAt === null)
-    return null;
-  if (typeof found.lastEditedAt !== "string")
-    return;
-  const editor = isObject3(found.editor) && typeof found.editor.login === "string" ? found.editor.login : null;
-  return { at: found.lastEditedAt, editor };
+  const edits = [];
+  for (const node of list.nodes) {
+    if (!isObject3(node) || typeof node.editedAt !== "string")
+      return;
+    const editor = isObject3(node.editor) && typeof node.editor.login === "string" ? node.editor.login : null;
+    edits.push({ at: node.editedAt, editor });
+  }
+  return { edits, more: list.pageInfo.hasNextPage === true };
+}
+function visibleText(text) {
+  const named = (char) => `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
+  return text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
+`).replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(/\p{Cf}/gu, named).replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 async function pickIssue(world, ref) {
   const given = parseIssueRef(ref);
@@ -15070,10 +15113,10 @@ async function pickIssue(world, ref) {
   }
   const { number } = given;
   const label = policy.resolved.issues.readyLabel.value;
-  const read = (args) => world.gh(["api", "--hostname", "github.com", ...args], {
+  const read = (args, timeoutMs = GH_TIMEOUT_MS) => world.gh(["api", "--hostname", "github.com", ...args], {
     env: world.env,
     folder: world.cwd,
-    timeoutMs: 1e4
+    timeoutMs
   });
   const unreadable = (what) => refuse2(`${what} of ${name}#${number} cannot be read from GitHub, so the issue is not used`);
   const viewed = await read([`repos/${name}/issues/${number}`]);
@@ -15081,7 +15124,7 @@ async function pickIssue(world, ref) {
     return refuse2(`${name} has no issue #${number}`);
   }
   if (viewed.kind !== "ok")
-    return refuse2(ghProblem(`read issue #${number}`, viewed));
+    return refuse2(ghProblem(`read issue #${number}`, viewed, READ_WORDS));
   const issue = parseJson(viewed.out);
   if (!isObject3(issue) || typeof issue.title !== "string" || typeof issue.html_url !== "string" || !Array.isArray(issue.labels) || !isObject3(issue.user) || typeof issue.user.login !== "string") {
     return unreadable("the issue");
@@ -15102,11 +15145,7 @@ async function pickIssue(world, ref) {
   if (!labels.some((one) => one.toLowerCase() === wanted)) {
     return missing(`does not carry the label ${label}`);
   }
-  const listed = await read([
-    "--paginate",
-    "--slurp",
-    `repos/${name}/issues/${number}/events?per_page=100`
-  ]);
+  const listed = await read(["--paginate", "--slurp", `repos/${name}/issues/${number}/events?per_page=100`], GH_WRITE_TIMEOUT_MS);
   if (listed.kind !== "ok")
     return unreadable("the events");
   const events = parseEvents(listed.out);
@@ -15119,7 +15158,16 @@ async function pickIssue(world, ref) {
   }
   if (last.actor === null)
     return refuse2(`#${number}: the label ${label} was added by no account that exists any more, so the issue is not used`);
+  const roles = new Map;
   const writer = async (login) => {
+    const known = roles.get(login);
+    if (known !== undefined)
+      return known;
+    const answered = await roleOf(login);
+    roles.set(login, answered);
+    return answered;
+  };
+  const roleOf = async (login) => {
     if (!LOGIN.test(login))
       return refuse2(`the account name ${JSON.stringify(login)} is not one GitHub uses`);
     const role = await read([
@@ -15138,8 +15186,15 @@ async function pickIssue(world, ref) {
     return refuse2(`the label ${label} on #${number} was added by ${last.actor}, who has no write access to ${name}: only a label from someone with write access counts`);
   }
   const since = Date.parse(last.at);
+  if (Number.isNaN(since))
+    return unreadable("the time the label was added");
   for (const event of events) {
-    if (event.event !== "renamed" || !(Date.parse(event.at) >= since))
+    if (event.event !== "renamed")
+      continue;
+    const at = Date.parse(event.at);
+    if (Number.isNaN(at))
+      return unreadable("the time of a rename");
+    if (at < since)
       continue;
     if (event.actor === null) {
       return refuse2(`#${number} was renamed after it was labelled, by no account that exists any more; label it again once the title is read`);
@@ -15155,7 +15210,7 @@ async function pickIssue(world, ref) {
   const edited = await read([
     "graphql",
     "-f",
-    `query=${LAST_EDIT_QUERY}`,
+    `query=${EDITS_QUERY}`,
     "-f",
     `owner=${owner}`,
     "-f",
@@ -15163,10 +15218,18 @@ async function pickIssue(world, ref) {
     "-F",
     `number=${number}`
   ]);
-  const edit = edited.kind === "ok" ? parseLastEdit(edited.out) : undefined;
-  if (edit === undefined)
-    return unreadable("the last edit of the text");
-  if (edit !== null && Date.parse(edit.at) >= since) {
+  const history = edited.kind === "ok" ? parseEdits(edited.out) : undefined;
+  if (history === undefined)
+    return unreadable("the edits of the text");
+  if (history.more) {
+    return refuse2(`the text of #${number} was edited more than 100 times, more than this command reads; open a new issue`);
+  }
+  for (const edit of history.edits) {
+    const at = Date.parse(edit.at);
+    if (Number.isNaN(at))
+      return unreadable("the time of an edit");
+    if (at < since)
+      continue;
     if (edit.editor === null) {
       return refuse2(`the text of #${number} was edited after it was labelled, by no account that exists any more; label it again once it is read`);
     }
@@ -15182,15 +15245,14 @@ async function pickIssue(world, ref) {
     ok: true,
     issue: {
       author: plainLogin(issue.user.login),
-      body: redactText(body.replace(/\r\n?/g, `
-`), world.home),
+      body: redactText(visibleText(body), world.home),
       labeledAt: last.at,
       labeledBy: plainLogin(last.actor),
       labels,
       number,
       readyLabel: label,
       repo: name,
-      title: redactText(issue.title, world.home).replace(/\s+/g, " ").trim(),
+      title: redactText(visibleText(issue.title), world.home).replace(/\s+/g, " ").trim(),
       url: issue.html_url
     }
   };
@@ -31166,6 +31228,14 @@ async function runLeadTell(args, ctx) {
 }
 
 // src/issues/handback.ts
+var BEFORE_WORDS = {
+  afterTimeout: "nothing was posted. Try again",
+  stops: "the hand-back cannot be commented"
+};
+var POST_WORDS = {
+  afterTimeout: "the comment may have been posted; look at the issue before saying it again",
+  stops: "the hand-back cannot be commented"
+};
 var FIELD_MAX = 300;
 function clean(text) {
   const one = text.replace(/\s+/g, " ").replace(/`/g, "'").replace(/@(?=[A-Za-z0-9])/g, "@\u200B").trim();
@@ -31183,6 +31253,19 @@ function findingsLine(findings) {
     return "no findings";
   const fixed = findings.map((one) => `${clean(one.finding)} (${clean(one.fix)})`).join("; ");
   return `${findings.length} finding${findings.length === 1 ? "" : "s"}, fixed: ${fixed}`;
+}
+function wordsOf(report) {
+  const findings = [...report.review?.findings ?? [], ...report.ownReview?.findings ?? []];
+  return [
+    report.phase,
+    report.branch.name,
+    ...report.tests.targeted.map((run) => run.command),
+    ...report.tests.full === null ? [] : [report.tests.full.command],
+    ...report.checks.flatMap((check) => [check.name, check.note ?? ""]),
+    ...report.review === null ? [] : [report.review.agent, report.review.model, report.review.effort],
+    ...report.ownReview ? [report.ownReview.reason] : [],
+    ...findings.flatMap((one) => [one.finding, one.fix])
+  ];
 }
 function handBackComment(report, crewId) {
   const sha = report.branch.sha.slice(0, 7);
@@ -31252,7 +31335,7 @@ async function commentHandBack(world, issue, report, crewId) {
     });
     const view = await run(["repo", "view", repo, "--json", REPO_FIELDS], GH_TIMEOUT_MS);
     if (view.kind !== "ok")
-      return failed(ghProblem("read the repository", view));
+      return failed(ghProblem("read the repository", view, BEFORE_WORDS));
     const facts = parseRepoFacts(view.out);
     if ("why" in facts)
       return failed(facts.why);
@@ -31273,7 +31356,7 @@ async function commentHandBack(world, issue, report, crewId) {
       `repos/${issue.repo}/issues/${issue.number}/comments?per_page=100`
     ], GH_WRITE_TIMEOUT_MS);
     if (listed.kind !== "ok")
-      return failed(ghProblem("listed the comments", listed));
+      return failed(ghProblem("listed the comments", listed, BEFORE_WORDS));
     let comments;
     try {
       comments = JSON.parse(listed.out);
@@ -31286,10 +31369,16 @@ async function commentHandBack(world, issue, report, crewId) {
     const said = comments.flat().some((one) => typeof one.body === "string" && one.body.split(/\r?\n/).some((line) => line.trim() === marker));
     if (said)
       return { kind: "already" };
-    const body = redactText(handBackComment(report, crewId), world.home);
+    const body = handBackComment(report, crewId);
+    for (const text of [body, ...wordsOf(report)]) {
+      const hit = screenText(text, world.home)[0];
+      if (hit !== undefined) {
+        return failed(`what the report says holds ${hit.kind} (line ${hit.line}, column ${hit.column} of one field); nothing was posted. Say the hand-back on the issue by hand`);
+      }
+    }
     const posted = await run(["issue", "comment", String(issue.number), "--repo", repo, "--body-file", "-"], GH_WRITE_TIMEOUT_MS, body);
     if (posted.kind !== "ok")
-      return failed(ghProblem("posted the comment", posted));
+      return failed(ghProblem("posted the comment", posted, POST_WORDS));
     return { kind: "posted" };
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));
@@ -38431,7 +38520,7 @@ var POWERSHELL_ESCAPES = {
   t: "\t",
   v: "\v"
 };
-function wordsOf(segment, dialect = "bash") {
+function wordsOf2(segment, dialect = "bash") {
   const bash = dialect === "bash";
   const escaper = ESCAPE[dialect];
   const single = SINGLE[dialect];
@@ -38756,13 +38845,13 @@ function invocationOf(words) {
     if (after.split !== undefined && splits < MAX_NESTING) {
       const { from, keep, to, value } = after.split;
       const kept = keep === null ? [] : [keep];
-      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
+      list = [...list.slice(0, from), ...kept, ...wordsOf2(value), ...list.slice(to)];
       splits++;
       continue;
     }
     if (after.runs !== undefined && splits < MAX_NESTING) {
       const { from, to, value } = after.runs;
-      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      list = [...list.slice(0, from), ...wordsOf2(value), ...list.slice(to)];
       index = from;
       splits++;
       continue;
@@ -38850,12 +38939,12 @@ function startProcess(args) {
     if (name === "filepath" && value !== undefined)
       file = value;
     else if (name === "argumentlist" && value !== undefined) {
-      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+      list = value.split(",").flatMap((part) => wordsOf2(part)).filter((one) => one !== "");
     } else if (name === "usenewenvironment")
       fresh = arg;
   }
   file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  list ??= positional.length > 1 ? wordsOf2(positional.slice(1).join(" ")) : [];
   if (file === null)
     return null;
   return {
@@ -38965,11 +39054,11 @@ function shellCommandString(args) {
   return;
 }
 function readsStdinShell(segment) {
-  const invocation = invocationOf(wordsOf(segment));
+  const invocation = invocationOf(wordsOf2(segment));
   return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
 }
 function writtenText(segment) {
-  const invocation = invocationOf(wordsOf(segment));
+  const invocation = invocationOf(wordsOf2(segment));
   if (invocation === undefined || invocation.args.length === 0)
     return null;
   const text = invocation.args.join(" ");
@@ -39027,7 +39116,7 @@ function programsIn(command, dialect) {
   const found = [];
   const walk = (line, one, depth) => {
     for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
-      const invocation = invocationOf(wordsOf(step.text, one));
+      const invocation = invocationOf(wordsOf2(step.text, one));
       if (invocation === undefined)
         continue;
       found.push(invocation.program);
@@ -39043,7 +39132,7 @@ function programsIn(command, dialect) {
 function invocationsOf(command, dialect) {
   const walk = (line, one, depth, into) => {
     for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
-      const words = wordsOf(step.text, one);
+      const words = wordsOf2(step.text, one);
       const invocation = invocationOf(words);
       if (invocation === undefined)
         continue;
@@ -39326,7 +39415,7 @@ function inspect(command, kinds, dialect, depth, run) {
   const found = [];
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
+    const invocation = invocationOf(wordsOf2(step.text, dialect));
     if (invocation === undefined)
       continue;
     const { program, args } = invocation;
@@ -39367,7 +39456,7 @@ function routableKinds(command, kinds, dialect, depth, run) {
   const found = [];
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
-    const words = wordsOf(step.text, dialect);
+    const words = wordsOf2(step.text, dialect);
     if (words.length === 0 || isAssignmentOnly(words))
       continue;
     const invocation = invocationOf(words);
@@ -50944,7 +51033,7 @@ function computedPushIn(command, dialect) {
     dialect: reading.dialect,
     joinLines: reading.joinLines
   }).some((step) => {
-    const words = wordsOf(step.text, reading.dialect);
+    const words = wordsOf2(step.text, reading.dialect);
     const invocation = invocationOf(words);
     return invocation?.computed === true && namesPush(words);
   }));
@@ -50956,7 +51045,7 @@ function pushAlias(call) {
   const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
   if (value === null || value === undefined)
     return null;
-  const words = wordsOf(value);
+  const words = wordsOf2(value);
   const first = words[0] ?? "";
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
@@ -51013,7 +51102,7 @@ function inspect2(command, cwd, reading, run, depth = 0) {
   let folder = cwd;
   const { dialect, joinLines } = reading;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const words = wordsOf2(step.text, dialect);
     const invocation = invocationOf(words);
     if (invocation === undefined)
       continue;
@@ -51152,7 +51241,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
   const calls = [];
   let moved = movedBefore;
   for (const step of shellSteps(command, { dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const words = wordsOf2(step.text, dialect);
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
@@ -51375,7 +51464,7 @@ function dispatch(words, moved, aliases, depth, repo = null) {
       })
     ];
   }
-  return dispatch([...wordsOf(expansion), ...rest], moved, aliases, depth + 1, carried);
+  return dispatch([...wordsOf2(expansion), ...rest], moved, aliases, depth + 1, carried);
 }
 function ghSwitchReason(words, aliases, depth) {
   if (depth > MAX_NESTING)
@@ -51399,7 +51488,7 @@ function ghSwitchReason(words, aliases, depth) {
   const expansion = aliases?.get(command);
   if (expansion === undefined || expansion.startsWith("!"))
     return null;
-  return ghSwitchReason([...wordsOf(expansion), ...args], aliases, depth + 1);
+  return ghSwitchReason([...wordsOf2(expansion), ...args], aliases, depth + 1);
 }
 function prCalls(rest, moved, carried) {
   let repo = null;
@@ -51843,7 +51932,7 @@ function computedInvocationRisk(command, dialect, names) {
     dialect: reading.dialect,
     joinLines: reading.joinLines
   }).some((step) => {
-    const words = wordsOf(step.text, reading.dialect);
+    const words = wordsOf2(step.text, reading.dialect);
     const invocation = invocationOf(words);
     return invocation?.computed === true && names(words);
   }));
@@ -51874,7 +51963,7 @@ function exactMergeOf(command, dialect) {
   const step = steps[0];
   if (steps.length !== 1 || step === undefined || step.pipedFrom !== null)
     return null;
-  const words = wordsOf(step.text, reading.dialect);
+  const words = wordsOf2(step.text, reading.dialect);
   if (redirectionTargets(words).length > 0)
     return null;
   const invocation = invocationOf(words);
@@ -52604,7 +52693,7 @@ function runnerGhArgs(words) {
     if (programName2(word) === "gh") {
       found.push(words.slice(index + 1));
     } else if (/\s/.test(word)) {
-      const inner = wordsOf(word, "bash");
+      const inner = wordsOf2(word, "bash");
       const at = inner.findIndex((one) => programName2(one) === "gh");
       if (at !== -1)
         found.push(inner.slice(at + 1));
@@ -52882,7 +52971,7 @@ function watchTarget(args) {
   const target = args.slice(index);
   if (target.length === 0)
     return null;
-  return target.length === 1 ? wordsOf(target[0] ?? "") : target;
+  return target.length === 1 ? wordsOf2(target[0] ?? "") : target;
 }
 function startsLoop(words) {
   return LOOP_KEYWORDS.has((words[0] ?? "").toLowerCase());
@@ -52909,7 +52998,7 @@ function isShellStep(step) {
 }
 function walk(line, dialect, depth, top, all, state) {
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
-    const words = wordsOf(step.text, dialect);
+    const words = wordsOf2(step.text, dialect);
     if (words.length === 0)
       continue;
     const inRepeat = loopMark(words, dialect, state);
@@ -53207,7 +53296,7 @@ function plainWords(command) {
   const segments = shellSegments(command);
   if (segments.length !== 1)
     return null;
-  const words = wordsOf(segments[0] ?? "");
+  const words = wordsOf2(segments[0] ?? "");
   if (words.length === 0 || !words.every((word) => !SHELL_MEANING.test(word)))
     return null;
   const invocation = invocationOf(words);
@@ -53230,7 +53319,7 @@ function jobRunCommand(kind, command, shell) {
 }
 function runsJobRun(command) {
   return shellSegments(command).some((segment) => {
-    const words = wordsOf(segment);
+    const words = wordsOf2(segment);
     const inner = invocationOf(words);
     if (inner === undefined)
       return false;
@@ -53239,7 +53328,7 @@ function runsJobRun(command) {
     const nested = nestedCommand(inner.program, inner.args);
     if (nested === undefined)
       return false;
-    const deeper = invocationOf(wordsOf(nested));
+    const deeper = invocationOf(wordsOf2(nested));
     return deeper !== undefined && isJobRun(deeper.program, deeper.args);
   });
 }
@@ -54240,7 +54329,7 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
   let where = folder;
   let ranKit = false;
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const words = wordsOf2(step.text, dialect);
     const invocation = invocationOf(words);
     const writes = writtenPaths(words, invocation);
     if (writes.length > 0)
@@ -54556,7 +54645,7 @@ function runWords(line, dialect, depth = 0) {
     return [];
   const words = [];
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
-    const command = wordsOf(step.text, dialect);
+    const command = wordsOf2(step.text, dialect);
     words.push(...command);
     const invocation = invocationOf(command);
     if (invocation === undefined)

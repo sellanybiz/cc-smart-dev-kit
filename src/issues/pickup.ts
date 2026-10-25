@@ -23,6 +23,7 @@
  * URL with credentials replaced (`redactText`): a secret in a public issue is still a secret on
  * this machine's disk. The brief quotes it under a heading that says so (`brief.ts`).
  */
+import { GH_TIMEOUT_MS, GH_WRITE_TIMEOUT_MS } from "../workflow/merge-check";
 import { issuesOff } from "../workflow/pr-switches";
 import { ghProblem, type IssueWorld, ownRepository, resolveSwitch } from "./file";
 import { redactText } from "./screen";
@@ -46,6 +47,12 @@ export interface PickedIssue {
 export type PickOutcome = { issue: PickedIssue; ok: true } | { ok: false; why: string };
 
 const refuse = (why: string): PickOutcome => ({ ok: false, why });
+
+/** What a failed `gh` read stops, for `ghProblem`: nothing is written, so a retry is safe. */
+const READ_WORDS = {
+  afterTimeout: "nothing was started. Try again",
+  stops: "the issue cannot be read",
+} as const;
 
 /** What `--issue` was given: a number, or the address of an issue (its repository then). */
 export type IssueRef = { number: number; repo: null | string } | { error: string };
@@ -125,22 +132,52 @@ function hasWriteAccess(out: string): boolean | null {
   return ["admin", "maintain", "write"].includes(word.toLowerCase());
 }
 
-/** The GraphQL read of the last edit of an issue's body. */
-const LAST_EDIT_QUERY =
-  "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){lastEditedAt editor{login}}}}";
+/**
+ * The GraphQL read of every edit of an issue's body (`userContentEdits`, newest first). The last
+ * edit alone is not enough: a writer's later edit would hide a stranger's earlier one.
+ */
+const EDITS_QUERY =
+  "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){nodes{editedAt editor{login}} pageInfo{hasNextPage}}}}}";
 
-/** The body's last edit: when and by whom (null: never edited); undefined when unreadable. */
-function parseLastEdit(out: string): undefined | { at: string; editor: null | string } | null {
+/** One edit of the issue's body: when, and by whom (null: an account that no longer exists). */
+interface BodyEdit {
+  at: string;
+  editor: null | string;
+}
+
+/** The body's edits and whether there are more than one read returns; undefined when unreadable. */
+function parseEdits(out: string): undefined | { edits: BodyEdit[]; more: boolean } {
   const answer = parseJson(out);
-  if (!isObject(answer) || !isObject(answer.data)) return undefined;
+  if (!isObject(answer) || !isObject(answer.data) || answer.errors !== undefined) return undefined;
   const repository = answer.data.repository;
   const found = isObject(repository) ? repository.issue : undefined;
-  if (!isObject(found)) return undefined;
-  if (found.lastEditedAt === null) return null;
-  if (typeof found.lastEditedAt !== "string") return undefined;
-  const editor =
-    isObject(found.editor) && typeof found.editor.login === "string" ? found.editor.login : null;
-  return { at: found.lastEditedAt, editor };
+  const list = isObject(found) ? found.userContentEdits : undefined;
+  if (!isObject(list) || !Array.isArray(list.nodes) || !isObject(list.pageInfo)) return undefined;
+  const edits: BodyEdit[] = [];
+  for (const node of list.nodes as unknown[]) {
+    if (!isObject(node) || typeof node.editedAt !== "string") return undefined;
+    const editor =
+      isObject(node.editor) && typeof node.editor.login === "string" ? node.editor.login : null;
+    edits.push({ at: node.editedAt, editor });
+  }
+  return { edits, more: list.pageInfo.hasNextPage === true };
+}
+
+/**
+ * The issue's text as the labeller could see it: line separators made real lines, an HTML comment
+ * (hidden by GitHub's rendering) shown in plain view and marked, and every invisible format
+ * character (zero-width, bidi, tag characters) or control character named by its code. The
+ * person chose the text they saw; nothing in the brief may be hidden from them.
+ */
+export function visibleText(text: string): string {
+  const named = (char: string) =>
+    `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
+  return text
+    .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
+    .replace(/<!--/g, "[hidden HTML comment: ")
+    .replace(/-->/g, "]")
+    .replace(/\p{Cf}/gu, named)
+    .replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 
 /**
@@ -167,11 +204,11 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
   const { number } = given;
   const label = policy.resolved.issues.readyLabel.value;
 
-  const read = (args: string[]) =>
+  const read = (args: string[], timeoutMs = GH_TIMEOUT_MS) =>
     world.gh(["api", "--hostname", "github.com", ...args], {
       env: world.env,
       folder: world.cwd,
-      timeoutMs: 10_000,
+      timeoutMs,
     });
   const unreadable = (what: string) =>
     refuse(`${what} of ${name}#${number} cannot be read from GitHub, so the issue is not used`);
@@ -180,7 +217,7 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
   if (viewed.kind === "failed" && /404|not found/i.test(viewed.err)) {
     return refuse(`${name} has no issue #${number}`);
   }
-  if (viewed.kind !== "ok") return refuse(ghProblem(`read issue #${number}`, viewed));
+  if (viewed.kind !== "ok") return refuse(ghProblem(`read issue #${number}`, viewed, READ_WORDS));
   const issue = parseJson(viewed.out);
   if (
     !isObject(issue) ||
@@ -216,11 +253,11 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
     return missing(`does not carry the label ${label}`);
   }
 
-  const listed = await read([
-    "--paginate",
-    "--slurp",
-    `repos/${name}/issues/${number}/events?per_page=100`,
-  ]);
+  // Every page of a long history is read, so it gets the time of the one big read.
+  const listed = await read(
+    ["--paginate", "--slurp", `repos/${name}/issues/${number}/events?per_page=100`],
+    GH_WRITE_TIMEOUT_MS,
+  );
   if (listed.kind !== "ok") return unreadable("the events");
   const events = parseEvents(listed.out);
   if (events === null) return unreadable("the events");
@@ -237,7 +274,15 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
     );
 
   /** Whether `login` holds write access: true or false, or a refusal when it cannot be read. */
+  const roles = new Map<string, boolean | PickOutcome>();
   const writer = async (login: string): Promise<boolean | PickOutcome> => {
+    const known = roles.get(login);
+    if (known !== undefined) return known;
+    const answered = await roleOf(login);
+    roles.set(login, answered);
+    return answered;
+  };
+  const roleOf = async (login: string): Promise<boolean | PickOutcome> => {
     if (!LOGIN.test(login))
       return refuse(`the account name ${JSON.stringify(login)} is not one GitHub uses`);
     const role = await read([
@@ -260,8 +305,12 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
   }
 
   const since = Date.parse(last.at);
+  if (Number.isNaN(since)) return unreadable("the time the label was added");
   for (const event of events) {
-    if (event.event !== "renamed" || !(Date.parse(event.at) >= since)) continue;
+    if (event.event !== "renamed") continue;
+    const at = Date.parse(event.at);
+    if (Number.isNaN(at)) return unreadable("the time of a rename");
+    if (at < since) continue;
     if (event.actor === null) {
       return refuse(
         `#${number} was renamed after it was labelled, by no account that exists any more; label it again once the title is read`,
@@ -280,7 +329,7 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
   const edited = await read([
     "graphql",
     "-f",
-    `query=${LAST_EDIT_QUERY}`,
+    `query=${EDITS_QUERY}`,
     "-f",
     `owner=${owner}`,
     "-f",
@@ -288,9 +337,17 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
     "-F",
     `number=${number}`,
   ]);
-  const edit = edited.kind === "ok" ? parseLastEdit(edited.out) : undefined;
-  if (edit === undefined) return unreadable("the last edit of the text");
-  if (edit !== null && Date.parse(edit.at) >= since) {
+  const history = edited.kind === "ok" ? parseEdits(edited.out) : undefined;
+  if (history === undefined) return unreadable("the edits of the text");
+  if (history.more) {
+    return refuse(
+      `the text of #${number} was edited more than 100 times, more than this command reads; open a new issue`,
+    );
+  }
+  for (const edit of history.edits) {
+    const at = Date.parse(edit.at);
+    if (Number.isNaN(at)) return unreadable("the time of an edit");
+    if (at < since) continue;
     if (edit.editor === null) {
       return refuse(
         `the text of #${number} was edited after it was labelled, by no account that exists any more; label it again once it is read`,
@@ -310,14 +367,14 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
     ok: true,
     issue: {
       author: plainLogin(issue.user.login),
-      body: redactText(body.replace(/\r\n?/g, "\n"), world.home),
+      body: redactText(visibleText(body), world.home),
       labeledAt: last.at,
       labeledBy: plainLogin(last.actor),
       labels,
       number,
       readyLabel: label,
       repo: name,
-      title: redactText(issue.title, world.home).replace(/\s+/g, " ").trim(),
+      title: redactText(visibleText(issue.title), world.home).replace(/\s+/g, " ").trim(),
       url: issue.html_url,
     },
   };

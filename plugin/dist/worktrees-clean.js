@@ -11895,11 +11895,11 @@ var FIRST_BACKOFF_MS = 5 * 60000;
 var MAX_BACKOFF_MS = 20 * 60000;
 var REPAUSE_WINDOW_MS = 15 * 60000;
 
-// src/setup/marketplace-access.ts
-var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
-
 // src/workflow/merge-check.ts
 var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/issues/marker.ts
 var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
