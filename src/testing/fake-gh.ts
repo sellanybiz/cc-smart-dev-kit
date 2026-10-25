@@ -121,7 +121,16 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
             (label === undefined || issue.labels.includes(label)) &&
             (wanted === "all" || (wanted === "closed") === (issue.closed === true)),
         );
-        return result("ok", JSON.stringify(listed.map(listedRow)));
+        // As the real list: only the first 100 comments of an issue (`issue view` has them all).
+        return result(
+          "ok",
+          JSON.stringify(
+            listed.map((one) => ({
+              ...listedRow(one),
+              comments: listedRow(one).comments.slice(0, 100),
+            })),
+          ),
+        );
       }
       if (group === "issue" && action === "view") {
         const issue = state.issues.find((one) => String(one.number) === args[2]);

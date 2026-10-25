@@ -186,7 +186,7 @@ export function ownRepository(cwd: string, env: Env): { repo: string } | { why: 
 /** The switch, as the guards read it: the committed policy on the base, over the person's file. */
 export function resolveSwitch(
   world: IssueWorld,
-): { base: string | null; resolved: ResolvedWorkflow } | { why: string } {
+): { base: string | null; resolved: ResolvedWorkflow } | { retry?: true; why: string } {
   try {
     const checkout = locateCheckout(world.cwd, { env: world.env });
     if (checkout === null) return { why: "this folder is not in a git project" };
@@ -204,13 +204,16 @@ export function resolveSwitch(
       timeoutMs: GIT_TIMEOUT_MS,
     });
     if (!read.ok) {
+      // Not "off": the policy may be committed and not yet pushed, or git may have failed once.
+      // A caller that can wait (the watch's queue) waits; `retry` says so.
       return {
+        retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`,
       };
     }
     return { base, resolved: read.gate.resolved };
   } catch (error) {
-    return { why: error instanceof Error ? error.message : String(error) };
+    return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
 }
 

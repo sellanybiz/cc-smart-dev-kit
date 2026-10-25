@@ -903,11 +903,16 @@ export async function watchPass(
         if (proof === undefined) continue;
         // Queued before the mark, so a pass that stops between the two loses nothing: the
         // next pass queues the same marks again, and the queue keeps each once (D67).
-        queueIssueMarks(
-          record,
-          proof,
-          issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
-        );
+        try {
+          queueIssueMarks(
+            record,
+            proof,
+            issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
+          );
+        } catch (error) {
+          // A queue that cannot be written never stops the merge from counting (D67).
+          say(`issues: the marks for ${record.name} could not be queued (${reasonOf(error)})`);
+        }
         await updateCrew(
           ctx.paths.stateDir,
           record.repo,
@@ -1153,18 +1158,29 @@ export async function watchPass(
   // takes them. Only the watch that holds its lead's lease talks to GitHub (WF1). A failure is
   // one line to the lead, never a failed merge; the queue is the memory.
   if ((await scope.goesOn?.()) !== false) {
-    const marks = await settleMarks(
-      issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
-      {
-        cwd: scope.repo,
-        env: ctx.env,
-        gh: scope.gh ?? runGh,
-        home: ctx.paths.home,
-        paths: ctx.paths,
-      },
-      ctx.now(),
-    );
-    for (const line of marks) say(line);
+    const settleKey = "issues:settle";
+    try {
+      const marks = await settleMarks(
+        issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
+        {
+          cwd: scope.repo,
+          env: ctx.env,
+          gh: scope.gh ?? runGh,
+          home: ctx.paths.home,
+          paths: ctx.paths,
+        },
+        ctx.now(),
+      );
+      for (const line of marks) say(line);
+      delete said[settleKey];
+    } catch (error) {
+      // The queue file cannot be read or written: one line, once while it lasts, and the watch goes on.
+      const line = `issues: the queue of marks could not be settled (${reasonOf(error)})`;
+      if (said[settleKey] !== line) {
+        say(line);
+        said[settleKey] = line;
+      }
+    }
   }
 
   // What this pass itself wrote is said now, in the same pass — once.

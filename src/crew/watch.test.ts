@@ -3207,6 +3207,16 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
     expect(queue()).toEqual([]);
   });
 
+  test("a queue that cannot be written is one line; the merge still counts and the watch goes on", async () => {
+    const { gh, pass, said, start, world } = await mergedWorld({ issues: [1] });
+    // A plain file where the queue's folder must be: every write fails.
+    writeFileSync(join(crewStoreDir(world.paths.stateDir, world.repo), "issue-marks"), "x");
+    await pass(start);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
+    expect(said().filter((line) => line.includes("could not be queued"))).toHaveLength(1);
+    expect(gh.calls).toEqual([]);
+  });
+
   test("a report that names no issue sends nothing", async () => {
     const { gh, pass, start } = await mergedWorld({ issues: [] });
     await pass(start);

@@ -58,14 +58,20 @@ function writePending(file: string, marks: Pending[]): void {
   writeJsonFile(file, { marks, version: 1 });
 }
 
-const keyOf = (mark: FixedMark): string => `${mark.issue}\n${mark.branch}\n${mark.tip}`;
+/** One merge of one issue: its commit when known (a hand-off chain merges under one), else its tip. */
+const keyOf = (mark: FixedMark): string =>
+  `${mark.issue}\n${mark.merge ?? `${mark.branch}\n${mark.tip}`}`;
 
 /** Queue marks; one already queued (the same issue, branch and tip) is kept as it is. */
 export function queueMarks(file: string, marks: readonly FixedMark[]): void {
   if (marks.length === 0) return;
   const queued = readPending(file);
   const have = new Set(queued.map(keyOf));
-  const added = marks.filter((mark) => !have.has(keyOf(mark)));
+  const added = marks.filter((mark) => {
+    if (have.has(keyOf(mark))) return false;
+    have.add(keyOf(mark));
+    return true;
+  });
   if (added.length === 0) return;
   writePending(file, [...queued, ...added.map((mark) => ({ ...mark, told: false }))]);
 }

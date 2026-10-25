@@ -29,10 +29,16 @@ describe("queueMarks", () => {
     expect(readPending(path).map((one) => one.issue)).toEqual([1, 2]);
   });
 
-  test("a new tip on the same branch is a new entry", () => {
+  test("a later merge of the same branch (a new tip, a new merge commit) is a new entry", () => {
     const path = file();
-    queueMarks(path, [MARK, { ...MARK, tip: "c".repeat(40) }]);
+    queueMarks(path, [MARK, { ...MARK, merge: "e".repeat(40), tip: "c".repeat(40) }]);
     expect(readPending(path)).toHaveLength(2);
+  });
+
+  test("a hand-off chain merged as one (two branches, one merge commit) is one entry", () => {
+    const path = file();
+    queueMarks(path, [MARK, { ...MARK, branch: "crew/x-2", tip: "c".repeat(40) }]);
+    expect(readPending(path).map((one) => one.branch)).toEqual(["crew/x"]);
   });
 
   test("a file that is not there, or not a queue, reads as empty", () => {

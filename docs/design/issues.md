@@ -179,7 +179,7 @@ a public repository only with `allowPublic`), then:
   nothing; one GitHub does not know is dropped with one line;
 - posts the comment unless a comment already holds this merge's marker. The comment is "Fixed on
   `<branch>` at `<short commit>`, merged into `<base>`; it closes when `<base>` ships" and ends
-  with `<!-- cc-smart-dev-kit:fixed <branch> <tip> <merge commit> -->`. It holds no closing
+  with `<!-- cc-smart-dev-kit:fixed <branch, URL-encoded> <tip> <merge commit> -->`. It holds no closing
   keyword, and it is screened like any text the kit posts;
 - adds the label (`issues.fixedLabel`, created when the repository lacks it) unless the issue
   has it.
@@ -208,7 +208,26 @@ a pull request body that a person reviews. An issue number a crew report names i
 session's claim; the lead reads the report before the merge.
 
 **4. The lead files what it would lose.** With the switch on, a bug, gap or follow-up outside the
-plan goes to `issue file` (the lead skill, § 6) where it used to be one line of a summary.
+plan goes to `issue file` (the lead skill, the paragraph after the hand-back gate) where it used
+to be one line of a summary.
+
+**Limits, said once.**
+
+- *A policy that cannot be read* (the switch is committed but not pushed and fetched, or git
+  failed once) is not "off": the mark waits in the queue, is told to the lead once, and is tried
+  again; `issue fixed` exits 1. Only a clear "off" (the switch, no opt-in, no github.com
+  `origin`, issues turned off for the repository, a public one without `allowPublic`) drops the
+  marks.
+- *A hand-off chain* (a `handoff` record and its continuation, merged together) is one mark: the
+  queue and the comment marker both match on the merge commit.
+- *A merge the watch never saw* is not marked: a record that `crew rm` removed before the watch's
+  next pass has no mark queued. The watch removes a merged record itself, so this is the lead
+  running `crew rm` by hand first.
+- *A rewritten release branch*: if the tip and the merge commit named in a marker are no longer
+  in `<head>` (a rebase, a force push), the issue is not listed. A fix already on the base that
+  was never closed is not listed either; close it by hand.
+- *Long threads*: `gh issue list` returns 100 comments of an issue at most, so an issue with that
+  many is read whole with `issue view`.
 
 ## What the later parts add
 

@@ -119,8 +119,11 @@ export type Gate =
  */
 export async function openGate(world: IssueWorld): Promise<Gate> {
   const policy = resolveSwitch(world);
-  if ("why" in policy)
-    return { kind: "off", why: `the issue switch cannot be read: ${policy.why}` };
+  if ("why" in policy) {
+    const why = `the issue switch cannot be read: ${policy.why}`;
+    // A policy that could not be read is not a policy that says off: the mark waits for it.
+    return { kind: policy.retry === true ? "failed" : "off", why };
+  }
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null) return { kind: "off", why: off };
   const own = ownRepository(world.cwd, world.env);
@@ -217,9 +220,12 @@ export async function markFixed(
   if ("why" in issue) return { kind: "failed", why: issue.why };
   if (issue.closed) return { kind: "closed" };
 
-  const done = issue.comments
-    .flatMap(fixedMarkers)
-    .some((one) => one.branch === mark.branch && one.tip === mark.tip);
+  const done = issue.comments.flatMap(fixedMarkers).some(
+    (one) =>
+      (one.branch === mark.branch && one.tip === mark.tip) ||
+      // A hand-off chain: an earlier branch of the phase comes in with the same merge.
+      (mark.merge !== null && one.merge === mark.merge),
+  );
   let commented = false;
   if (!done) {
     const text = fixedComment(mark);
@@ -285,6 +291,9 @@ export async function markFixed(
   return { commented, kind: "marked", labeled };
 }
 
+/** How many comments `gh issue list --json comments` returns for one issue (gh's own page). */
+const COMMENT_PAGE = 100;
+
 /** How many issues one list may return (as `issue file`'s own list). */
 const LIST_LIMIT = 1000;
 
@@ -343,8 +352,30 @@ export async function listFixed(
     if (typeof row.number !== "number") {
       return { kind: "failed", why: "gh answered something this command cannot read" };
     }
-    const commits = (row.comments ?? [])
-      .flatMap((one) => (typeof one.body === "string" ? fixedMarkers(one.body) : []))
+    let bodies = (row.comments ?? []).flatMap((one) =>
+      typeof one.body === "string" ? [one.body] : [],
+    );
+    // `gh issue list` returns the first COMMENT_PAGE comments of an issue; a longer thread is
+    // read whole with `issue view`, so a marker after the page is never missed.
+    if ((row.comments?.length ?? 0) >= COMMENT_PAGE) {
+      const whole = await gate.read([
+        "issue",
+        "view",
+        String(row.number),
+        "--repo",
+        gate.repo,
+        "--json",
+        "state,labels,comments",
+      ]);
+      if (whole.kind !== "ok") {
+        return { kind: "failed", why: ghProblem(`read issue #${row.number}`, whole) };
+      }
+      const viewed = parseViewed(whole.out);
+      if ("why" in viewed) return { kind: "failed", why: viewed.why };
+      bodies = viewed.comments;
+    }
+    const commits = bodies
+      .flatMap((body) => fixedMarkers(body))
       .flatMap((one) => (one.merge === null ? [one.tip] : [one.tip, one.merge]));
     const inHead = commits.some((commit) => isAncestor(gate.cwd, gate.env, commit, range.head));
     const inBase = commits.some((commit) => isAncestor(gate.cwd, gate.env, commit, range.base));

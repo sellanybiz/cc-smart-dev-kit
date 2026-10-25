@@ -570,7 +570,7 @@ describe("crew report", () => {
       expect(stored(world)?.issues).toEqual([12, 14, 15]);
     });
 
-    test.each([["abc"], ["0"], ["-3"], ["1.5"]])(
+    test.each([["abc"], ["0"], ["-3"], ["1.5"], ["99999999999999999999"]])(
       "--issue %p is not an issue number: refused, nothing written",
       async (value) => {
         const world = await crewWorld1();

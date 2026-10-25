@@ -24242,12 +24242,13 @@ function resolveSwitch(world) {
     });
     if (!read.ok) {
       return {
+        retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
       };
     }
     return { base, resolved: read.gate.resolved };
   } catch (error) {
-    return { why: error instanceof Error ? error.message : String(error) };
+    return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
 }
 function parseListed(out) {
@@ -24439,8 +24440,10 @@ function fixedMarkers(text) {
 }
 async function openGate(world) {
   const policy = resolveSwitch(world);
-  if ("why" in policy)
-    return { kind: "off", why: `the issue switch cannot be read: ${policy.why}` };
+  if ("why" in policy) {
+    const why = `the issue switch cannot be read: ${policy.why}`;
+    return { kind: policy.retry === true ? "failed" : "off", why };
+  }
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null)
     return { kind: "off", why: off };
@@ -24512,7 +24515,7 @@ async function markFixed(gate, mark) {
     return { kind: "failed", why: issue.why };
   if (issue.closed)
     return { kind: "closed" };
-  const done = issue.comments.flatMap(fixedMarkers).some((one) => one.branch === mark.branch && one.tip === mark.tip);
+  const done = issue.comments.flatMap(fixedMarkers).some((one) => one.branch === mark.branch && one.tip === mark.tip || mark.merge !== null && one.merge === mark.merge);
   let commented = false;
   if (!done) {
     const text = fixedComment(mark);
@@ -24574,6 +24577,7 @@ async function markFixed(gate, mark) {
   }
   return { commented, kind: "marked", labeled };
 }
+var COMMENT_PAGE = 100;
 var LIST_LIMIT2 = 1000;
 function isAncestor(cwd, env, commit, ref) {
   return runGit(cwd, ["merge-base", "--is-ancestor", commit, ref], env, 5000).code === 0;
@@ -24619,7 +24623,26 @@ async function listFixed(gate, range) {
     if (typeof row.number !== "number") {
       return { kind: "failed", why: "gh answered something this command cannot read" };
     }
-    const commits = (row.comments ?? []).flatMap((one) => typeof one.body === "string" ? fixedMarkers(one.body) : []).flatMap((one) => one.merge === null ? [one.tip] : [one.tip, one.merge]);
+    let bodies = (row.comments ?? []).flatMap((one) => typeof one.body === "string" ? [one.body] : []);
+    if ((row.comments?.length ?? 0) >= COMMENT_PAGE) {
+      const whole = await gate.read([
+        "issue",
+        "view",
+        String(row.number),
+        "--repo",
+        gate.repo,
+        "--json",
+        "state,labels,comments"
+      ]);
+      if (whole.kind !== "ok") {
+        return { kind: "failed", why: ghProblem(`read issue #${row.number}`, whole) };
+      }
+      const viewed = parseViewed(whole.out);
+      if ("why" in viewed)
+        return { kind: "failed", why: viewed.why };
+      bodies = viewed.comments;
+    }
+    const commits = bodies.flatMap((body) => fixedMarkers(body)).flatMap((one) => one.merge === null ? [one.tip] : [one.tip, one.merge]);
     const inHead = commits.some((commit) => isAncestor(gate.cwd, gate.env, commit, range.head));
     const inBase = commits.some((commit) => isAncestor(gate.cwd, gate.env, commit, range.base));
     if (inHead && !inBase)
@@ -24655,14 +24678,19 @@ function writePending(file, marks) {
   writeJsonFile(file, { marks, version: 1 });
 }
 var keyOf = (mark) => `${mark.issue}
-${mark.branch}
-${mark.tip}`;
+${mark.merge ?? `${mark.branch}
+${mark.tip}`}`;
 function queueMarks(file, marks) {
   if (marks.length === 0)
     return;
   const queued = readPending(file);
   const have = new Set(queued.map(keyOf));
-  const added = marks.filter((mark) => !have.has(keyOf(mark)));
+  const added = marks.filter((mark) => {
+    if (have.has(keyOf(mark)))
+      return false;
+    have.add(keyOf(mark));
+    return true;
+  });
   if (added.length === 0)
     return;
   writePending(file, [...queued, ...added.map((mark) => ({ ...mark, told: false }))]);
@@ -28166,7 +28194,11 @@ async function watchPass(state, ctx, scope) {
         const proof = mergeProof(record, ctx);
         if (proof === undefined)
           continue;
-        queueIssueMarks(record, proof, issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId));
+        try {
+          queueIssueMarks(record, proof, issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId));
+        } catch (error) {
+          say(`issues: the marks for ${record.name} could not be queued (${reasonOf2(error)})`);
+        }
         await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "merged", mergeProof: proof }, ctx.now(), wasStopped ? "the lead merged its branch; it was stopped, so `crew rm` removes it" : "the lead merged its branch; the watch removes it");
       }
       if (wasStopped || record.mergedWhileStopped === true)
@@ -28310,15 +28342,25 @@ async function watchPass(state, ctx, scope) {
   }
   const marked = paused.length === 0 ? null : await resumePaused(paused, state, said, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), scope.goesOn ?? (() => Promise.resolve(true)), agents, say);
   if (await scope.goesOn?.() !== false) {
-    const marks = await settleMarks(issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId), {
-      cwd: scope.repo,
-      env: ctx.env,
-      gh: scope.gh ?? runGh,
-      home: ctx.paths.home,
-      paths: ctx.paths
-    }, ctx.now());
-    for (const line of marks)
-      say(line);
+    const settleKey = "issues:settle";
+    try {
+      const marks = await settleMarks(issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId), {
+        cwd: scope.repo,
+        env: ctx.env,
+        gh: scope.gh ?? runGh,
+        home: ctx.paths.home,
+        paths: ctx.paths
+      }, ctx.now());
+      for (const line of marks)
+        say(line);
+      delete said[settleKey];
+    } catch (error) {
+      const line = `issues: the queue of marks could not be settled (${reasonOf2(error)})`;
+      if (said[settleKey] !== line) {
+        say(line);
+        said[settleKey] = line;
+      }
+    }
   }
   offset = sayEvents(offset, scope, ctx, say);
   const resumedAt = marked?.resumedAt ?? state.resumedAt;
@@ -33203,7 +33245,7 @@ function parseReportArgs(argv) {
   const optionValues = lists.get("--option") ?? [];
   const issues = [];
   for (const raw of lists.get("--issue") ?? []) {
-    if (!/^[1-9][0-9]*$/.test(raw)) {
+    if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
       return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
     }
     issues.push(Number(raw));

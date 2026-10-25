@@ -108,9 +108,18 @@ describe("markFixed", () => {
     const { gate, gh } = await gateOf({ gh: { issues: [openIssue()] } });
     if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
     await markFixed(gate, MARK);
-    const again = await markFixed(gate, { ...MARK, tip: "c".repeat(40) });
+    const again = await markFixed(gate, { ...MARK, merge: "e".repeat(40), tip: "c".repeat(40) });
     expect(again).toEqual({ commented: true, kind: "marked", labeled: false });
     expect(gh.issues[0]?.comments).toHaveLength(2);
+  });
+
+  test("a hand-off chain merged as one: the second branch adds no comment", async () => {
+    const { gate, gh } = await gateOf({ gh: { issues: [openIssue()] } });
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    await markFixed(gate, MARK);
+    const second = await markFixed(gate, { ...MARK, branch: "crew/x-2", tip: "c".repeat(40) });
+    expect(second).toEqual({ commented: false, kind: "marked", labeled: false });
+    expect(gh.issues[0]?.comments).toHaveLength(1);
   });
 
   test("a label that is there is not made again", async () => {
@@ -230,6 +239,28 @@ describe("listFixed: the Fixes lines of a release", () => {
       issues: [1],
       kind: "listed",
     });
+  });
+
+  test("a marker after the 100th comment is still found (gh's list returns 100 at most)", async () => {
+    const made = issuesWorld();
+    const { inRelease } = history(made);
+    const long = marked(1, inRelease, { merge: "d".repeat(40) });
+    long.comments = [...Array.from({ length: 120 }, (_, n) => `comment ${n}`), ...long.comments];
+    made.gh.issues.push(long);
+    const gate = await openGate(made.world);
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    expect(await listFixed(gate, { base: "main", head: "release" })).toEqual({
+      issues: [1],
+      kind: "listed",
+    });
+  });
+
+  test("a policy that cannot be read is a failure to retry, never an off switch", async () => {
+    // The project's file is committed on main, but origin/main was never fetched.
+    const made = issuesWorld();
+    git(made.repo, "update-ref", "-d", "refs/remotes/origin/main");
+    const gate = await openGate(made.world);
+    expect(gate.kind).toBe("failed");
   });
 
   test("a fix already on the base is not listed again", async () => {

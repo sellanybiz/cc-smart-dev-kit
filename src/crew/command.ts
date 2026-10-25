@@ -634,7 +634,7 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
   const optionValues = lists.get("--option") ?? [];
   const issues: number[] = [];
   for (const raw of lists.get("--issue") ?? []) {
-    if (!/^[1-9][0-9]*$/.test(raw)) {
+    if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
       return { error: `--issue is the number of a GitHub issue (1 or more), not "${raw}"` };
     }
     issues.push(Number(raw));

@@ -29008,12 +29008,13 @@ function resolveSwitch(world) {
     });
     if (!read.ok) {
       return {
+        retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`
       };
     }
     return { base, resolved: read.gate.resolved };
   } catch (error) {
-    return { why: error instanceof Error ? error.message : String(error) };
+    return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
 }
 
