@@ -383,7 +383,13 @@ describe("resolveWorkflow: the order", () => {
     const env = hookEnv();
     writePersonal(env, {
       fixesAfterReview: { lines: 50 },
-      crew: { enabled: true, keep: ["server:sequential-thinking"], loadPerCore: 4, max: 2, tag: "mine" },
+      crew: {
+        enabled: true,
+        keep: ["server:sequential-thinking"],
+        loadPerCore: 4,
+        max: 2,
+        tag: "mine",
+      },
     });
     const config = ccSmartDevKitConfigSchema.parse({
       workflow: {

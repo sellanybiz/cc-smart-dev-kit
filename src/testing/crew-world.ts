@@ -194,6 +194,8 @@ export function crewWorld(): CrewWorld {
       env: fullEnv,
       error: (line: string) => err.push(line),
       freeMemoryGb: () => Promise.resolve(64),
+      // Calm, whatever the host runs: a test that wants a busy machine hands in its own.
+      load: () => ({ cores: 16, oneMinute: 1 }),
       now: () => Date.parse("2026-10-21T10:00:00.000Z"),
       paths,
       pid: COMMAND_PID,

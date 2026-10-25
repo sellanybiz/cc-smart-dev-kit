@@ -1207,6 +1207,8 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         freeGb: null,
         leadRunning: mine.length,
         leadRunningOpus: onOpusTier(mine).length,
+        load: null,
+        loadPerCore: crew.loadPerCore.value,
         max: crew.max.value,
         maxOpus: crew.maxOpus.value,
         needGb: crew.memoryGb.value,
@@ -1222,7 +1224,9 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
       };
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
-      const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+      const place = first.start
+        ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+        : first;
       const record = await createCrew(
         ctx.paths.stateDir,
         {
@@ -1360,6 +1364,8 @@ export async function startQueued(
       freeGb: null,
       leadRunning: mine.length,
       leadRunningOpus: onOpusTier(mine).length,
+      load: null,
+      loadPerCore: crew.loadPerCore.value,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
@@ -1374,7 +1380,9 @@ export async function startQueued(
       usagePercent: usage.percent,
     };
     const first = placeFor(input);
-    const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+    const place = first.start
+      ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+      : first;
     if (!place.start) return null;
     const base = commitOf(record.repo, record.baseRef, ctx.env);
     if (base === null) {

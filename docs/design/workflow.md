@@ -68,7 +68,7 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
-| `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
+| `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.loadPerCore`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the CPU load for each core, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
 | the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through

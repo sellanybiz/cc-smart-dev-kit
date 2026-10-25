@@ -24,6 +24,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
+import { type LoadReading, loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
@@ -260,6 +261,9 @@ export function modelLine(record: CrewRecord): string {
 /** The caps a queued crew session waits on, read the way `crew start` reads them. */
 export interface Caps {
   freeGb: null | number;
+  /** The CPU load now; null where the platform gives no load average. */
+  load: LoadReading | null;
+  loadPerCore: number;
   max: number;
   maxOpus: null | number;
   needGb: number;
@@ -279,6 +283,8 @@ export async function capsOf(ctx: CrewContext, checkout: Checkout | null): Promi
     const usage = usageFacts(ctx.paths, ctx.now());
     return {
       freeGb: await ctx.freeMemoryGb(),
+      load: ctx.load(),
+      loadPerCore: crew.loadPerCore.value,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
@@ -312,6 +318,8 @@ export function heldBy(
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
+    load: null,
+    loadPerCore: caps.loadPerCore,
     max: caps.max,
     maxOpus: caps.maxOpus,
     needGb: caps.needGb,
@@ -327,7 +335,7 @@ export function heldBy(
   };
   const first = placeFor(input);
   if (!first.start) return first.why;
-  const withMemory = placeFor({ ...input, freeGb: caps.freeGb });
+  const withMemory = placeFor({ ...input, freeGb: caps.freeGb, load: caps.load });
   return withMemory.start ? PLACE_FREE : withMemory.why;
 }
 
@@ -520,6 +528,13 @@ export async function runCrewList(
         one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE,
     );
   if (unguarded) ctx.print(usageUnreadLine());
+  // Where the platform gives no load average the CPU hold does not apply: said once, and only
+  // beside a crew session that waits for nothing else.
+  const unloaded =
+    caps !== null &&
+    caps.load === null &&
+    read.records.some((one) => one.state === "queued" && held.get(one.id) === PLACE_FREE);
+  if (unloaded) ctx.print(loadUnreadLine());
   return 0;
 }
 

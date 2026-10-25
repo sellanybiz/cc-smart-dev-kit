@@ -439,10 +439,7 @@ export function resolveWorkflow(
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
-      loadPerCore: of(
-        "crew.loadPerCore",
-        crew.loadPerCore ?? workflowDefaults.crew.loadPerCore,
-      ),
+      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of(

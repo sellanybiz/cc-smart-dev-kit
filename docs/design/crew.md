@@ -298,7 +298,12 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    does not hold, and `crew start` and `crew list` say so once; **the memory** — the memory free
    now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
-   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The queued line
+   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS); **the CPU** — a
+   start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (3) times the
+   cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
+   The one reader is `src/machine/load.ts`, handed to the commands as `CrewContext.load`; native
+   Windows has no load average, so no hold applies there and `crew list` says so once. The load is
+   read, like the memory, only when nothing else holds. The queued line
    names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own

@@ -12515,6 +12515,7 @@ var NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.loadPerCore": ABOVE_ZERO,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -12571,6 +12572,7 @@ var workflowSchema = strictObject({
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
+    loadPerCore: numberField("crew.loadPerCore"),
     perLead: numberField("crew.perLead"),
     perLeadOpus: numberField("crew.perLeadOpus"),
     usagePercent: numberField("crew.usagePercent"),
@@ -12609,6 +12611,7 @@ var workflowDefaults = {
     max: 24,
     maxOpus: null,
     memoryGb: 2,
+    loadPerCore: 3,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -12645,6 +12648,7 @@ var POLICY_KEYS = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.loadPerCore",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -13084,6 +13088,27 @@ function rowOf(rows, record) {
 }
 function isLiveRow(row) {
   return row !== null && row.pid !== null && row.state !== "stopped" && row.state !== "failed";
+}
+
+// src/machine/load.ts
+import { availableParallelism, loadavg } from "os";
+function realLoadFacts() {
+  return { cores: availableParallelism, loadavg, platform: process.platform };
+}
+function machineLoad(facts) {
+  if (facts.platform === "win32")
+    return null;
+  const oneMinute = facts.loadavg()[0];
+  const cores = facts.cores();
+  if (oneMinute === undefined || !Number.isFinite(oneMinute) || !(cores >= 1))
+    return null;
+  return { cores, oneMinute };
+}
+function loadLimit(reading, loadPerCore) {
+  return reading.cores * loadPerCore;
+}
+function loadUnreadLine() {
+  return "note: this platform gives no load average, so a crew start does not wait for the CPU (workflow.crew.loadPerCore does not apply)";
 }
 
 // src/project/resolve.ts
@@ -14059,6 +14084,7 @@ var RESOLVED = {
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.loadPerCore": (r) => r.crew.loadPerCore,
   "crew.perLead": (r) => r.crew.perLead,
   "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
   "crew.usagePercent": (r) => r.crew.usagePercent,
@@ -14109,6 +14135,7 @@ function resolveWorkflow(paths, projectConfig) {
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of("crew.usagePercent", crew.usagePercent ?? workflowDefaults.crew.usagePercent),
@@ -18849,7 +18876,7 @@ function queueRefusal(what, why) {
   ].join(`
 `);
 }
-async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) {
+async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load) {
   if (inCrew(env))
     return null;
   if (checkout === null)
@@ -18873,6 +18900,7 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) 
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
+      load,
       memory,
       nowMs,
       opus,
@@ -18885,14 +18913,14 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) 
     return null;
   return queueRefusal(queueSubject(judged, input), place.why);
 }
-async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null, memory = realMemoryFacts()) {
+async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null, memory = realMemoryFacts(), load = realLoadFacts()) {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null)
     return SILENT;
   const ran = afterTheCall(input);
   const judgedDeny = judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load);
     if (queued !== null)
       return toolDecision("deny", queued);
   }
@@ -19024,6 +19052,15 @@ function placeFor(input) {
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`
     };
   }
+  if (input.load !== null) {
+    const limit = loadLimit(input.load, input.loadPerCore);
+    if (input.load.oneMinute > limit) {
+      return {
+        start: false,
+        why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`
+      };
+    }
+  }
   if (input.opus && !input.opusFallback && input.usagePercent !== null && input.usagePercent > input.usageHoldPercent) {
     return {
       start: false,
@@ -19078,6 +19115,8 @@ async function placeForLeadStart(input) {
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
+    load: null,
+    loadPerCore: crew.loadPerCore.value,
     max: crew.max.value,
     maxOpus: crew.maxOpus.value,
     needGb: crew.memoryGb.value,
@@ -19100,7 +19139,7 @@ async function placeForLeadStart(input) {
   } catch {
     return null;
   }
-  return placeFor({ ...held, freeGb });
+  return placeFor({ ...held, freeGb, load: machineLoad(input.load) });
 }
 
 // src/crew/wait.ts
@@ -25019,6 +25058,8 @@ async function startPlanned(planned, ctx) {
         freeGb: null,
         leadRunning: mine.length,
         leadRunningOpus: onOpusTier(mine).length,
+        load: null,
+        loadPerCore: crew.loadPerCore.value,
         max: crew.max.value,
         maxOpus: crew.maxOpus.value,
         needGb: crew.memoryGb.value,
@@ -25033,7 +25074,7 @@ async function startPlanned(planned, ctx) {
         usagePercent: usage.percent
       };
       const first = placeFor(input);
-      const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+      const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() }) : first;
       const record = await createCrew(ctx.paths.stateDir, {
         base: place.start ? { ref: planned.baseRef, sha: planned.baseSha } : null,
         baseRef: planned.baseRef,
@@ -25141,6 +25182,8 @@ async function startQueued(record, ctx, resolved) {
       freeGb: null,
       leadRunning: mine.length,
       leadRunningOpus: onOpusTier(mine).length,
+      load: null,
+      loadPerCore: crew.loadPerCore.value,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
@@ -25155,7 +25198,7 @@ async function startQueued(record, ctx, resolved) {
       usagePercent: usage.percent
     };
     const first = placeFor(input);
-    const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
+    const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() }) : first;
     if (!place.start)
       return null;
     const base = commitOf(record.repo, record.baseRef, ctx.env);
@@ -26584,6 +26627,7 @@ function realCrewContext(paths) {
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
+    load: () => machineLoad(realLoadFacts()),
     now: () => Date.now(),
     outputClosed: stdout.closed,
     parentPid: () => process.ppid,
@@ -27969,6 +28013,8 @@ async function capsOf(ctx, checkout) {
     const usage = usageFacts(ctx.paths, ctx.now());
     return {
       freeGb: await ctx.freeMemoryGb(),
+      load: ctx.load(),
+      loadPerCore: crew.loadPerCore.value,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
@@ -27992,6 +28038,8 @@ function heldBy(record, machine, caps) {
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
+    load: null,
+    loadPerCore: caps.loadPerCore,
     max: caps.max,
     maxOpus: caps.maxOpus,
     needGb: caps.needGb,
@@ -28008,7 +28056,7 @@ function heldBy(record, machine, caps) {
   const first = placeFor(input);
   if (!first.start)
     return first.why;
-  const withMemory = placeFor({ ...input, freeGb: caps.freeGb });
+  const withMemory = placeFor({ ...input, freeGb: caps.freeGb, load: caps.load });
   return withMemory.start ? PLACE_FREE : withMemory.why;
 }
 function boardLines(record, events, options) {
@@ -28128,6 +28176,9 @@ async function runCrewList(args, ctx) {
   const unguarded = caps !== null && caps.usagePercent === null && !caps.opusFallback && read.records.some((one) => one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE);
   if (unguarded)
     ctx.print(usageUnreadLine());
+  const unloaded = caps !== null && caps.load === null && read.records.some((one) => one.state === "queued" && held.get(one.id) === PLACE_FREE);
+  if (unloaded)
+    ctx.print(loadUnreadLine());
   return 0;
 }
 function refuse2(refusal, ctx) {
@@ -34924,7 +34975,7 @@ function runAlert(alert, platform, launcher, run) {
 
 // src/jobs/commands.ts
 import { readdirSync as readdirSync22, statSync as statSync21 } from "fs";
-import { availableParallelism, hostname as hostname4 } from "os";
+import { availableParallelism as availableParallelism2, hostname as hostname4 } from "os";
 
 // src/jobs/classify.ts
 import { isAbsolute as isAbsolute4, join as join57, normalize } from "path";
@@ -37085,7 +37136,7 @@ ${USAGE2}`);
         held = reservation;
         return reservation;
       },
-      workersFor: (size, gbEach) => workerCount(size, gbEach, availableParallelism()),
+      workersFor: (size, gbEach) => workerCount(size, gbEach, availableParallelism2()),
       memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
       launchFacts: () => config.launch === "plain" ? null : realLaunchFacts(slice),
       now,

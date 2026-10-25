@@ -150,6 +150,7 @@ import {
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gateway/settings";
 import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
+import { type LoadFacts, realLoadFacts } from "../machine/load";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
@@ -1761,6 +1762,7 @@ async function queuedLaunch(
   checkout: null | Checkout,
   nowMs: number,
   memory: MemoryFacts,
+  load: LoadFacts,
 ): Promise<null | string> {
   // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
   if (inCrew(env)) return null;
@@ -1788,6 +1790,7 @@ async function queuedLaunch(
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
+      load,
       memory,
       nowMs,
       opus,
@@ -1833,6 +1836,7 @@ export async function agentGuard(
   nowMs: number = Date.now(),
   checkout: null | Checkout = null,
   memory: MemoryFacts = realMemoryFacts(),
+  load: LoadFacts = realLoadFacts(),
 ): Promise<HookResult> {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
@@ -1842,7 +1846,7 @@ export async function agentGuard(
   const judgedDeny =
     judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load);
     if (queued !== null) return toolDecision("deny", queued);
   }
   const file = agentLaunchesFile(paths.stateDir);

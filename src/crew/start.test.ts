@@ -571,6 +571,18 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
     expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
   });
 
+  test("the queue holds a queued crew session while the load is past the limit", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const busy = world.ctx(
+      { load: () => ({ cores: 4, oneMinute: 40 }) },
+      { FAKE_PLUGINS: PLUGINS },
+    );
+    await startQueued(record, busy, defaultResolved());
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("queued");
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
   test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {
     const world = await ledWorld();
     const record = await queuedHere(world);
@@ -1035,6 +1047,29 @@ describe("D25: the queue — still one line, at once", () => {
     expect(world.out).toEqual([
       "queued C my-app master-plan B6b portal-live: 2 GB free, a crew session needs 3 GB; it starts when memory frees",
     ]);
+  });
+
+  test("a load past workflow.crew.loadPerCore for each core: queued, with the load and the limit", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ loadPerCore: 2 });
+    const busy = world.ctx({ load: () => ({ cores: 16, oneMinute: 85 }) });
+    expect(await runCrew(startArgs(world.brief), busy)).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app master-plan B6b portal-live: the load is 85 on 16 cores, past 32 (2 for each core); it starts when the load falls",
+    ]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("queued");
+  });
+
+  test("a load under the limit starts, and no load average does not hold", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ loadPerCore: 2 });
+    const calm = world.ctx({ load: () => ({ cores: 16, oneMinute: 31 }) });
+    expect(await runCrew(startArgs(world.brief), calm)).toBe(0);
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");
+
+    const none = await ledWorld();
+    expect(await runCrew(startArgs(none.brief), none.ctx({ load: () => null }))).toBe(0);
+    expect(none.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");
   });
 
   test("--waits-for a phase not done: queued, and the record keeps what it waits for", async () => {
