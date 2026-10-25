@@ -23,6 +23,7 @@ import {
   loadConfigFile,
   parseConfig,
   saveConfig,
+  streamIdleMs,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -309,6 +310,55 @@ describe("timeouts.breakerHoldMs", () => {
       firstByteMs: 60_000,
       idleMs: 9000,
     });
+  });
+});
+
+describe("timeouts.firstByteMs (SC1)", () => {
+  it("takes up to the longest wait a timer has, and refuses more: above it the wait is 1 ms", () => {
+    expect(parsed(raw({ timeouts: { firstByteMs: 2_147_483_647 } })).timeouts.firstByteMs).toBe(
+      2_147_483_647,
+    );
+    expect(parseConfig(raw({ timeouts: { firstByteMs: 2_147_483_648 } }))).toEqual({
+      error: [
+        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every wait it bounds would end at once)",
+        "  → at timeouts.firstByteMs",
+      ].join("\n"),
+    });
+  });
+});
+
+describe("timeouts.streamIdleMs (SC1)", () => {
+  it("is 120 s when the config does not say, and adds no key to a config that has none", () => {
+    expect(streamIdleMs(parsed(raw()))).toBe(120_000);
+    expect(parsed(raw({ timeouts: { firstByteMs: 30_000 } })).timeouts).toStrictEqual({
+      firstByteMs: 30_000,
+    });
+  });
+
+  it("takes any positive whole number of milliseconds", () => {
+    for (const value of [1, 45_000, 600_000]) {
+      expect(streamIdleMs(parsed(raw({ timeouts: { streamIdleMs: value } })))).toBe(value);
+    }
+  });
+
+  it("refuses a value no timer can wait: above it the wait is 1 ms and every stream is cut", () => {
+    expect(streamIdleMs(parsed(raw({ timeouts: { streamIdleMs: 2_147_483_647 } })))).toBe(
+      2_147_483_647,
+    );
+    expect(parseConfig(raw({ timeouts: { streamIdleMs: 2_147_483_648 } }))).toEqual({
+      error: [
+        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every stream would be cut)",
+        "  → at timeouts.streamIdleMs",
+      ].join("\n"),
+    });
+  });
+
+  it("refuses 0, a fraction and a word", () => {
+    expect(parseConfig(raw({ timeouts: { streamIdleMs: 0 } }))).toEqual({
+      error: "✖ Too small: expected number to be >0\n  → at timeouts.streamIdleMs",
+    });
+    expect("error" in parseConfig(raw({ timeouts: { streamIdleMs: 1.5 } }))).toBe(true);
+    expect("error" in parseConfig(raw({ timeouts: { streamIdleMs: "120" } }))).toBe(true);
   });
 });
 

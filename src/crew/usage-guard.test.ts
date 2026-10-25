@@ -16,7 +16,7 @@ import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { capsOf } from "./board";
 import { placeForLeadStart } from "./places";
 import { writeLead } from "./store";
-import { opusFallbackOf, usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewSettingsFolder, opusFallbackOf, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** 2026-10-21 10:00 UTC. */
 const NOW = Date.parse("2026-10-21T10:00:00.000Z");
@@ -224,13 +224,15 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
     });
   });
 
-  describe("RV3: one folder for every reader — the main checkout, as crew start reads it", () => {
+  describe("FX1: one folder for every reader — the lead's own folder, where the crew worktree is cut from", () => {
     const ROUTER = "http://127.0.0.1:20199";
 
     /**
      * A lead that works in a linked worktree of its repository. The main checkout's team file and
-     * the worktree's can differ (a branch that changed `.claude/settings.json`): `crew start`
-     * reads the main checkout's (its `repo`), so the guard and the board must read the same one.
+     * the worktree's can differ (a branch that changed `.claude/settings.json`). A crew session's
+     * worktree is cut from the lead's branch and Claude Code reads the session's own worktree's
+     * team file (proved on 2.1.310, `docs/claude-code-contract.md`), so `crew start`, the guard
+     * and the board all read the lead's folder (`crewSettingsFolder`), never the main checkout's.
      * The opus slot has a chain with its fallback on, the 5-hour window is at 90%, and the
      * crew section is on in both folders.
      */
@@ -293,9 +295,9 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
       totalmem: () => 32 * 1024 ** 3,
     };
 
-    test("the guard asks the main checkout's team file, not the linked worktree's", async () => {
-      // Main on, the worktree off: the opus chain answers, so the window does not hold the start.
-      const on = await linkedWorld(ROUTER, "https://api.anthropic.com");
+    test("the guard asks the lead's own team file, not the main checkout's", async () => {
+      // Main off, the worktree on: the opus chain answers, so the window does not hold the start.
+      const on = await linkedWorld("https://api.anthropic.com", ROUTER);
       expect(
         await placeForLeadStart({
           checkout: on.checkout,
@@ -307,8 +309,8 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
           paths: on.paths,
         }),
       ).toEqual({ start: true });
-      // Main off, the worktree on: Claude answers, so the 90% window holds an opus start.
-      const off = await linkedWorld("https://api.anthropic.com", ROUTER);
+      // Main on, the worktree off: Claude answers, so the 90% window holds an opus start.
+      const off = await linkedWorld(ROUTER, "https://api.anthropic.com");
       expect(
         await placeForLeadStart({
           checkout: off.checkout,
@@ -323,7 +325,7 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
     });
 
     test("the board's caps read the same folder", async () => {
-      const on = await linkedWorld(ROUTER, "https://api.anthropic.com");
+      const on = await linkedWorld("https://api.anthropic.com", ROUTER);
       const caps = async (made: typeof on) =>
         await capsOf(
           {
@@ -336,8 +338,19 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
           made.checkout,
         );
       expect((await caps(on))?.opusFallback).toBe(true);
-      const off = await linkedWorld("https://api.anthropic.com", ROUTER);
+      const off = await linkedWorld(ROUTER, "https://api.anthropic.com");
       expect((await caps(off))?.opusFallback).toBe(false);
+    });
+
+    test("the one helper names the lead's folder, in a linked worktree and in the main checkout", async () => {
+      const made = await linkedWorld(ROUTER, ROUTER);
+      expect(crewSettingsFolder(made.checkout)).toBe(made.checkout.root);
+      expect(crewSettingsFolder(made.checkout)).not.toBe(made.checkout.mainCheckout);
+      const main = locateCheckout(made.checkout.mainCheckout ?? made.checkout.root, {
+        env: cleanGitEnv(),
+      });
+      if (main === null) throw new Error("the main checkout was not found");
+      expect(crewSettingsFolder(main)).toBe(main.root);
     });
   });
 

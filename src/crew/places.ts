@@ -55,7 +55,7 @@ import { withLock } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
 import { type CrewRecord, type CrewState, crewRootDir, listAllCrew } from "./store";
-import { usageFacts } from "./usage-guard";
+import { crewSettingsFolder, usageFacts } from "./usage-guard";
 
 /** The states in which a crew session holds a place on the machine: its session lives, its phase is open. */
 export const RUNNING_STATES: readonly CrewState[] = [
@@ -385,13 +385,9 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    // The project's gateway is read at the main checkout, the folder `crew start` reads it at
-    // (`caller.repo`): a lead in a linked worktree gets the answer a start would.
-    usage = usageFacts(
-      input.paths,
-      input.nowMs,
-      input.checkout.mainCheckout ?? input.checkout.root,
-    );
+    // The project's gateway is read at the lead's own folder, the one `crew start` reads it at
+    // (`crewSettingsFolder`): a lead in a linked worktree gets the answer a start would.
+    usage = usageFacts(input.paths, input.nowMs, crewSettingsFolder(input.checkout));
   } catch {
     return null;
   }

@@ -221,7 +221,7 @@ async function updateNow(
           );
           if (routerChanged) {
             print(
-              `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`,
+              `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart). A machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it.`,
             );
           }
           // A major version's own one-time steps run in its setup.

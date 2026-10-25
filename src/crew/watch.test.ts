@@ -1772,6 +1772,39 @@ describe("crew watch", () => {
     ]);
   });
 
+  test("FX1: a done report with an own review says review ✓, not review ✗", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const { recordCrewReport } = await import("./store");
+    const sha = git(world.repo, "rev-parse", "HEAD").trim();
+    const { file } = await recordCrewReport(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      {
+        base: { ref: "main", sha },
+        branch: { name: "crew/B6b-portal-live", sha },
+        changed: { deletions: 0, files: 0, insertions: 0 },
+        checks: [],
+        docs: [],
+        needsLead: [],
+        open: [],
+        outsideBrief: [],
+        ownReview: { findings: [], reason: "the brief asked for no second opinion" },
+        phase: "B6b",
+        pr: null,
+        question: null,
+        review: null,
+        status: "done",
+        tests: { full: null, targeted: [] },
+        version: 1,
+      },
+      T0,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.out).toEqual([`C my-app B6b portal-live: done · review ✓ · report ${file}`]);
+  });
+
   test("D62: a stopped crew session is marked merged, so its dependents start, and never removed by the watch", async () => {
     const world = await leadWorld();
     await addCrew(world, "stopped");

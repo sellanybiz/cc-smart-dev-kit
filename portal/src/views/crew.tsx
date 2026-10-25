@@ -282,6 +282,8 @@ function memoryWords(memory: CrewDetail["memory"]): string {
 
 function CrewPage({ data }: { data: CrewDetail }) {
   const { record, report } = data;
+  // The review a report carries: a reviewer's, or the crew session's own (RG1: no second opinion asked).
+  const reviewFindings = report?.review?.findings ?? report?.ownReview?.findings ?? null;
   const running = RUNNING.includes(record.state);
   const merged = record.state === "merged";
   // The server sends the diff in totals (`diffTotals`) and per file; a binary file has no counts.
@@ -360,26 +362,30 @@ function CrewPage({ data }: { data: CrewDetail }) {
         <StatCard
           label="Review"
           value={
-            report?.review == null
+            reviewFindings === null
               ? "None yet"
-              : `${report.review.findings.length} finding${report.review.findings.length === 1 ? "" : "s"}`
+              : `${reviewFindings.length} finding${reviewFindings.length === 1 ? "" : "s"}`
           }
           badge={
-            report?.review == null ? (
+            reviewFindings === null ? (
               <TonePill tone="info">waits</TonePill>
             ) : (
               <TonePill tone="ok">fixed</TonePill>
             )
           }
           headline={
-            report?.review == null
-              ? "One review per change set"
-              : `${report.review.agent} on ${report.review.model}`
+            report?.review != null
+              ? `${report.review.agent} on ${report.review.model}`
+              : report?.ownReview != null
+                ? "Its own review"
+                : "One review per change set"
           }
           detail={
-            report?.review == null
-              ? "Before its first push"
-              : `At effort ${report.review.effort}, commit ${report.review.sha.slice(0, 7)}`
+            report?.review != null
+              ? `At effort ${report.review.effort}, commit ${report.review.sha.slice(0, 7)}`
+              : report?.ownReview != null
+                ? report.ownReview.reason
+                : "Before its first push"
           }
         />
         <StatCard
@@ -528,11 +534,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
                 </section>
                 <section className="flex flex-col gap-2">
                   <h3 className="font-medium">Review findings, and their fixes</h3>
-                  {report.review === null || report.review.findings.length === 0 ? (
+                  {reviewFindings === null || reviewFindings.length === 0 ? (
                     <p className="text-muted-foreground">No finding.</p>
                   ) : (
                     <ul className="flex flex-col gap-2">
-                      {report.review.findings.map((finding) => (
+                      {reviewFindings.map((finding) => (
                         <li key={finding.finding}>
                           <p>{finding.finding}</p>
                           <p className="text-muted-foreground">Fixed: {finding.fix}</p>

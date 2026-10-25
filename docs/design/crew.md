@@ -87,9 +87,14 @@ guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
 is the project's: the address its own settings choose over the machine's — its personal file, its
 team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
-`src/crew/usage-guard.ts`). It reads the settings files at the repository's main checkout, the
-same folder for `crew start`, for the Agent guard's question "would a start queue now?" and for
-`crew list`; the user's file alone would miss a project turned on or off with `gateway project`.
+`src/crew/usage-guard.ts`). It reads the settings files at the lead's own folder
+(`crewSettingsFolder`): a crew session's worktree is cut from the lead's branch and Claude Code
+reads the team file of the folder a session runs in, so a lead in a linked worktree whose branch
+changed `.claude/settings.json` gets the answer its crew will meet, not the main checkout's
+(proved on 2.1.310, `docs/claude-code-contract.md`). It is the same folder for `crew start`, for the
+queue's start, for the Agent guard's question "would a start queue now?" and for `crew list`; the
+user's file alone would miss a project turned on or off with `gateway project`. (`crew model`
+still asks the record's repository: it has no lead folder to hand.)
 It reads no environment: an address exported only in the shell that runs `crew start`, with no
 settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
@@ -858,10 +863,11 @@ misspelt `tests` — is kept as written under the report's `extra`, never over a
 fills; a refused `done` report names such fields in its own line. **Limits, on purpose:** the gate reads fields, so a claim that was
 never run (`tests.full` with `ok: true`), or an `ownReview` where the brief asked for a second
 opinion, passes it; the lead's own check of the branch is what catches that. An `ownReview` is
-not in the review record, so the watch prints `review ✗` and the portal shows no review for it:
-the lead judges it from the report. The role card, the brief's frame and the Stop-hook line
-(`brief.ts`, `crew-role.ts`) still give `crew report --status done` without `--file -`; the
-refusal's `Fix:` line names it.
+not in the review record, but the watch prints `review ✓` for it and the portal's crew page shows
+it as the review (with its reason): the lead still judges it from the report. The role card, the
+brief's frame, the Stop-hook line and the message guard's refusals (`brief.ts`, `crew-role.ts`,
+`message-guard.ts`) give `crew report --status done --file -` with the JSON part
+(`REPORT_DONE_COMMAND`), as the refusal's `Fix:` line does.
 
 **A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
@@ -1278,7 +1284,7 @@ that works outside this repo is denied. Then, when the sender is a crew session 
 names a crew id, `CREW_ENV`) whose record this repo's store holds, and the target is the name of
 **another crew session of the same repo**, the message's first line must carry the tag
 `[<its phase>] CONTRACT:` or `[<its phase>] QUESTION:`; an untagged one is **denied**, and the
-refusal names `crew tell`, its two kinds, and `crew report --status done` for a hand-back. A
+refusal names `crew tell`, its two kinds, and `crew report --status done --file -` for a hand-back. A
 message to the session's **own lead** is denied too, with the `crew report` route — the lead is
 matched by name, as `crew tell` matches it (`src/crew/tell.ts`), because the lead hears its crew
 through the recorded report and never a raw message. A message **from the lead**, and one to a

@@ -212,8 +212,9 @@ recommends, and the crew session goes on with what the question does not block.
 
 A `done` report is the crew session's word that its phase is ready. Your gate is mechanical:
 
-1. **The report:** status `done`; the whole suite and the checks green; the review recorded,
-   each finding with its fix; no file outside the brief without a reason; nothing left open
+1. **The report:** status `done`; the whole suite and the checks green; the review recorded
+   (a reviewer's `review`, or an `ownReview` with its reason where the brief asked for no second
+   opinion; the watch and the portal show either as a review), each finding with its fix; no file outside the brief without a reason; nothing left open
    that the phase needed.
 2. **The merge check:** `cc-smart-dev-kit workflow merge-check --branch <branch> --base <your
    branch>` says whether the recorded review covers the branch head. Where the installed kit has

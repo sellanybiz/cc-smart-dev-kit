@@ -7472,6 +7472,11 @@ function cooldownSeconds(status, retryAfter) {
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
+var DEFAULT_STREAM_IDLE_MS = 120000;
+var MAX_TIMER_MS = 2147483647;
+function timerTooLong(consequence) {
+  return `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and ${consequence})`;
+}
 var BREAKER_HOLD_CEILING_MS = 240000;
 var BREAKER_HOLD_NON_STREAMING_MS = 60000;
 var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
@@ -7515,7 +7520,8 @@ var gatewayConfigSchema = looseObject({
   slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
-    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
+    firstByteMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every wait it bounds would end at once")).default(DEFAULT_FIRST_BYTE_MS),
+    streamIdleMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every stream would be cut")).optional()
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -7699,6 +7705,9 @@ function breakerOn(config, slot) {
 }
 function breakerHoldMs(config) {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
+}
+function streamIdleMs(config) {
+  return config.timeouts.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS;
 }
 function historyRetentionDays(config) {
   return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
@@ -10277,6 +10286,56 @@ function createRouter(deps) {
       })
     };
   }
+  function restsAfterStall(target) {
+    return target?.kind === "backend";
+  }
+  function endIfSilent(response, label, idleMs, rests) {
+    const body = response.body;
+    if (body === null)
+      return response;
+    const reader = body.getReader();
+    const guarded = new ReadableStream({
+      cancel: (reason) => reader.cancel(reason),
+      async pull(controller) {
+        const timer = deadline(idleMs);
+        const read = reader.read();
+        try {
+          const step = await Promise.race([read, timer.done]);
+          if (step === "timeout") {
+            read.catch(() => {
+              return;
+            });
+            reader.cancel().catch((error) => {
+              deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
+            });
+            deps.log(`WARN ${label} sent no byte for ${idleMs} ms (timeouts.streamIdleMs); its stream was ended${rests ? " and the target rests" : ""}`);
+            if (rests)
+              noteCooldown(label, { failure: `no byte for ${idleMs} ms`, status: null });
+            controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
+            return;
+          }
+          if (step.done) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(step.value);
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          timer.clear();
+        }
+      }
+    });
+    return new Response(guarded, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText
+    });
+  }
+  function relayAnswer(upstream, target, label, config, url) {
+    const bounded = url.pathname === MESSAGES_PATH && upstream.ok && (upstream.headers.get("content-type") ?? "").includes("text/event-stream") ? endIfSilent(upstream, label, streamIdleMs(config), restsAfterStall(target)) : upstream;
+    return relay(bounded, target);
+  }
   function relay(upstream, target) {
     const headers = responseHeaders(upstream.headers, target?.kind === "backend" ? deps.now() : null);
     return new Response(NULL_BODY_STATUS.has(upstream.status) ? null : upstream.body, {
@@ -10578,7 +10637,7 @@ function createRouter(deps) {
         }
         const answer = {
           fallbacks,
-          response: relay(result.response, target),
+          response: relayAnswer(result.response, target, label, config, url),
           skipped,
           target: label
         };
@@ -10983,7 +11042,7 @@ function createRouter(deps) {
       if (isMessages && "response" in result && result.response.status >= 400) {
         logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, observed === null ? undefined : signatureWarn(observed, result.response.status));
       }
-      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
+      const response = "response" in result ? relayAnswer(result.response, null, "anthropic", config, url) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
     const direct = async (body = bytes, observed = null) => answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
@@ -11349,10 +11408,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
-var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
+var loopbackFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: routerFetch,
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -11363,7 +11422,7 @@ function isJsonObject6(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = routerFetch) {
+async function routerHealth(port, fetchImpl = loopbackFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -17142,6 +17201,7 @@ var LEAD_SKILL = `${PLUGIN}:lead`;
 
 // src/crew/brief.ts
 var REPORT_COMMAND = `${COMMAND} crew report`;
+var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
@@ -19440,13 +19500,13 @@ function readGatewaySettings(settingsPath) {
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   const modelKeys = [];
-  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+  if (typeof settings.model === "string") {
     modelKeys.push({ key: "model", value: settings.model });
   }
   for (const family of CLAUDE_FAMILIES) {
     const key = familyEnv(family);
     const value = env[key];
-    if (typeof value === "string" && value.trim() !== "")
+    if (typeof value === "string")
       modelKeys.push({ key: `env.${key}`, value });
   }
   return {
@@ -24706,7 +24766,7 @@ function routerNeedsSetup(paths) {
   const bundle = join40(install.installPath, "dist", "router.js");
   return existsSync37(bundle) && readFileSync43(bundle, "utf8") !== readFileSync43(paths.routerCopy, "utf8");
 }
-var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 function commandContext(env, home) {
   return { cwd: home, env: gitEnv(env) };
@@ -28642,6 +28702,9 @@ function opusFallbackOf(facts) {
     return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
+function crewSettingsFolder(checkout) {
+  return checkout.root;
+}
 function crewGatewayOf(paths, folder) {
   const { effective } = projectGatewayState(folder, {
     configPath: paths.gatewayConfigFile,
@@ -28783,7 +28846,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
+    usage = usageFacts(input.paths, input.nowMs, crewSettingsFolder(input.checkout));
   } catch {
     return null;
   }
@@ -29136,15 +29199,17 @@ function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
-function reportDetail(record) {
+function reportOfRecord(record) {
   if (record === null || record.reportPath === null)
     return null;
-  let report;
   try {
-    report = readReport(record.reportPath);
+    return readReport(record.reportPath);
   } catch {
     return null;
   }
+}
+function reportDetail(record) {
+  const report = reportOfRecord(record);
   if (report === null)
     return null;
   if (report.status === "blocked" && report.question !== null) {
@@ -29179,8 +29244,10 @@ function eventLine(event, record, waits, reviewed) {
       const detail = reportDetail(record);
       if (detail !== null)
         parts.push(detail);
-      if (status === "done" || status === "handoff")
-        parts.push(reviewed ? "review \u2713" : "review \u2717");
+      if (status === "done" || status === "handoff") {
+        const hasReview = reviewed || (reportOfRecord(record)?.ownReview ?? null) !== null;
+        parts.push(hasReview ? "review \u2713" : "review \u2717");
+      }
       if (status === "done" && waits.length > 0)
         parts.push(`unblocks ${waits.join(", ")}`);
       if (typeof record?.reportPath === "string")
@@ -33540,7 +33607,7 @@ var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
 function reportStep() {
-  return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+  return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 function taskListStep() {
   return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
@@ -33605,8 +33672,8 @@ function roleCard(record, briefFile) {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
-    `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep2()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
     `Git: commit on your branch \`${record.branch}\`; never push, never open a pull request, never merge \u2014 the lead handles git.`
@@ -35599,14 +35666,14 @@ function untaggedTellRefusal(to, from) {
     `"${to}" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
     `Fix: ${COMMAND} crew tell "${to}" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
     `It writes the first line the note must carry ("${tellTag(from.phase, "contract")} \u2026"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: ${COMMAND} crew report --status done.`
+    `That the phase is done, or how it goes, goes to the lead: ${REPORT_DONE_COMMAND} (with the JSON part).`
   ].join(`
 `);
 }
 function leadTellRefusal(to) {
   return [
     `"${to}" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: ${COMMAND} crew report --status done, or ${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    `Fix: ${REPORT_DONE_COMMAND} (with the JSON part), or ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
     "The report is recorded for the lead, and its watch wakes the lead on the line."
   ].join(`
 `);
@@ -37870,7 +37937,7 @@ async function omnirouteCheck(paths, env, gateway) {
   const line = await omnirouteDoctorLine({
     confirm: null,
     env,
-    health: (url, init) => fetch(url, init),
+    health: loopbackFetch,
     now: () => Date.now(),
     paths,
     registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
@@ -38233,7 +38300,7 @@ async function updateNow(paths, env, now, sinks) {
         const routerChanged = routerNeedsSetup(paths);
         record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
         if (routerChanged) {
-          print(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`);
+          print(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart). A machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it.`);
         }
         if (major !== null)
           print(majorSetupLine());
@@ -41788,7 +41855,7 @@ function readHealth(body) {
 }
 function realPortalProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: loopbackFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -45439,11 +45506,7 @@ async function runEnsure(paths, pluginDir) {
     paths,
     pluginFolder: installed.folder,
     port: DEFAULT_PORTAL_PORT,
-    probe: {
-      fetch: (url, init) => fetch(url, init),
-      now: () => Date.now(),
-      sleep: (ms) => Bun.sleep(ms)
-    },
+    probe: realPortalProbe(),
     spawn: (argv) => startDetached(process.platform, argv, {
       cwd: paths.home,
       env: startEnv(process.env),
@@ -45460,7 +45523,7 @@ async function runServer(paths, options) {
   const ctx = {
     bunVersion: Bun.version,
     env: process.env,
-    fetch: (url, init) => fetch(url, init),
+    fetch: loopbackFetch,
     machine,
     now: () => Date.now(),
     openBrowser: (url) => openBrowser(machine, url),

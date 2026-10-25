@@ -71,7 +71,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { firstPrompt, REPORT_COMMAND } from "../crew/brief";
+import { firstPrompt, REPORT_COMMAND, REPORT_DONE_COMMAND } from "../crew/brief";
 import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
@@ -121,7 +121,7 @@ export const LAST_LINE_MAX = 120;
 
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
-  return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+  return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 
 /**
@@ -270,8 +270,8 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
-    `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
     `Git: commit on your branch \`${record.branch}\`; never push, never open a pull request, never merge — the lead handles git.`,

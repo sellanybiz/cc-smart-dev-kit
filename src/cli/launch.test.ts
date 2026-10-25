@@ -717,6 +717,66 @@ describe("RV3: launch says what its settings file leaves in place (the lead's ch
     );
   });
 
+  test("FX1: a higher file that sets a model key to an empty text blanks the lower file's slot name: it is not named", async () => {
+    // Proved on Claude Code 2.1.310 (offline probe, `docs/claude-code-contract.md`): an empty text in
+    // the file that wins replaces the lower file's value, for `model` and for an env key alike,
+    // and the session runs on its default model, not on the lower file's name.
+    const team = (home: World) => join(realpathSync(home.cwd), ".claude", "settings.json");
+    const blanked = world();
+    settingsAt(userFile(blanked), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+      model: "cc-smart-dev-kit-opus",
+    });
+    settingsAt(team(blanked), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "" }, model: "" });
+    const quiet = context(blanked);
+    expect(await runLaunch(["--no-gateway"], quiet)).toBe(7);
+    expect(quiet.errors).toEqual([]);
+    // Control: the same lower file with no higher file is named, both keys.
+    const alone = world();
+    settingsAt(userFile(alone), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+      model: "cc-smart-dev-kit-opus",
+    });
+    const named = context(alone);
+    expect(await runLaunch(["--no-gateway"], named)).toBe(7);
+    expect(named.errors.map((line) => line.split(" is ")[0])).toEqual([
+      "launch: model",
+      "launch: env.ANTHROPIC_DEFAULT_SONNET_MODEL",
+    ]);
+  });
+
+  test("FX1: `launch -- --model <id>` overrides a file's `model`: it is not named; the env keys still are", async () => {
+    const withModel = (args: string[]) => {
+      const home = world();
+      settingsAt(userFile(home), {
+        env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout" },
+        model: "cc-smart-dev-kit-opus",
+      });
+      return { args, ctx: context(home) };
+    };
+    for (const args of [
+      ["--no-gateway", "--", "--model", "haiku"],
+      ["--no-gateway", "--", "--model=haiku"],
+    ]) {
+      const run = withModel(args);
+      expect(await runLaunch(run.args, run.ctx)).toBe(7);
+      expect(run.ctx.errors.map((line) => line.split(" is ")[0])).toEqual([
+        "launch: env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      ]);
+    }
+    // The argument after a prompt's own `--` is the prompt, not a flag: `model` stays named.
+    const prompt = withModel(["--no-gateway", "--", "-p", "--", "--model"]);
+    expect(await runLaunch(prompt.args, prompt.ctx)).toBe(7);
+    expect(prompt.ctx.errors.map((line) => line.split(" is ")[0])).toEqual([
+      "launch: model",
+      "launch: env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ]);
+    // No `--model`: both are named.
+    const plain = withModel(["--no-gateway"]);
+    expect(await runLaunch(plain.args, plain.ctx)).toBe(7);
+    expect(plain.ctx.errors).toHaveLength(2);
+  });
+
   test("a file whose address is malformed still tells what else it sets: its login key is named", async () => {
     const home = world();
     const team = join(realpathSync(home.cwd), ".claude", "settings.json");
