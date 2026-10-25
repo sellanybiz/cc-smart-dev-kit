@@ -531,6 +531,20 @@ describe("a profile's breaker (RV3: it is stored under <profile>/<slot>)", () =>
     expect(waitFor(paused(), profileOnly, NOW, "other").kind).toBe("unknown");
   });
 
+  test("an unknown wait keeps the state key too, so the watch asks the session's own breaker (review)", () => {
+    expect(waitFor(paused(), facts(), NOW, "my-project")).toEqual({
+      kind: "unknown",
+      since: "2026-10-21T22:00:00.000Z",
+      slot: KEY,
+    });
+    const record = paused({
+      waitingFor: { kind: "unknown", since: "2026-10-21T21:55:00.000Z", slot: KEY },
+    });
+    // The machine's breaker is another session's: it does not hold this one.
+    expect(waitOver(record, facts({ breakers: { [WORKER]: breaker() } }), NOW)).toBe(true);
+    expect(waitOver(record, facts({ breakers: { [KEY]: breaker() } }), NOW)).toBe(false);
+  });
+
   test("the watch holds a profile's wait while its breaker is open, and lets go when it closes", () => {
     const record = paused({
       waitingFor: { kind: "slot", since: "2026-10-21T21:05:00.000Z", slot: KEY },
