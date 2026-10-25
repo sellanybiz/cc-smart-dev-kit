@@ -96,14 +96,19 @@ export type PlanLookup =
 
 /**
  * The plan file of plan `slug`: the one `<plans dir>/<YYYY-MM-DD>-<slug>.md` (or `<slug>.md`) in
- * the plans directories and the `archive/` folder of each. Exactly one match or none: two files
- * are two plans, and a guess would put a run record in the wrong one.
+ * the plans directories and, unless `archived` is off, the `archive/` folder of each (`crew history`
+ * reads an archived plan; a lead never binds to one). Exactly one match or none: two files are two
+ * plans, and a guess would put a run record in the wrong one.
  */
-export function findPlanFile(slug: string, dirs: readonly string[]): PlanLookup {
+export function findPlanFile(
+  slug: string,
+  dirs: readonly string[],
+  options: { archived: boolean } = { archived: true },
+): PlanLookup {
   const name = new RegExp(`^(\\d{4}-\\d{2}-\\d{2}-)?${escapeRegExp(slug)}\\.md$`);
   const matches: string[] = [];
   for (const dir of dirs) {
-    for (const folder of [dir, join(dir, PLAN_ARCHIVE_DIR)]) {
+    for (const folder of options.archived ? [dir, join(dir, PLAN_ARCHIVE_DIR)] : [dir]) {
       let names: string[];
       try {
         names = readdirSync(folder);
@@ -370,7 +375,7 @@ function eventsOf(change: RunChange): RunEvent[] {
   return events;
 }
 
-const END_OF_WORK = ["done", "failed", "handoff"];
+const END_OF_WORK = ["done", "failed", "handoff", "discarded"];
 
 /**
  * The times a run's events say. Wall time runs from the record to the end of the work, working
@@ -385,11 +390,11 @@ export function deriveTimes(
   // again, ended the second time); a state change after it that is no end (it works again) means
   // it has not ended.
   const lastEnd = run.events.findLastIndex(
-    (one) => END_OF_WORK.includes(one.state) && one.kind !== "created",
+    (one) => END_OF_WORK.includes(one.state) && (one.kind === "state" || one.kind === "report"),
   );
   const runsAgain = run.events
     .slice(lastEnd + 1)
-    .some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+    .some((one) => one.kind === "state" && !["stopped", ...END_OF_WORK].includes(one.state));
   const finishedAt = lastEnd === -1 || runsAgain ? null : (run.events[lastEnd]?.at ?? null);
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;

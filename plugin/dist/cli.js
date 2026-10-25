@@ -14617,11 +14617,11 @@ function runFile(planFile, id) {
 function plansDirs(repo, paths) {
   return [join23(repo, ".claude", "plans"), join23(paths.claudeConfigDir, "plans")];
 }
-function findPlanFile(slug, dirs) {
+function findPlanFile(slug, dirs, options = { archived: true }) {
   const name = new RegExp(`^(\\d{4}-\\d{2}-\\d{2}-)?${escapeRegExp(slug)}\\.md$`);
   const matches = [];
   for (const dir of dirs) {
-    for (const folder of [dir, join23(dir, PLAN_ARCHIVE_DIR)]) {
+    for (const folder of options.archived ? [dir, join23(dir, PLAN_ARCHIVE_DIR)] : [dir]) {
       let names;
       try {
         names = readdirSync10(folder);
@@ -14808,10 +14808,10 @@ function eventsOf(change) {
   }
   return events;
 }
-var END_OF_WORK = ["done", "failed", "handoff"];
+var END_OF_WORK = ["done", "failed", "handoff", "discarded"];
 function deriveTimes(run, nowMs = null) {
-  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && one.kind !== "created");
-  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && (one.kind === "state" || one.kind === "report"));
+  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", ...END_OF_WORK].includes(one.state));
   const finishedAt = lastEnd === -1 || runsAgain ? null : run.events[lastEnd]?.at ?? null;
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;
@@ -15470,6 +15470,17 @@ function readLead(stateDir, repo, sessionId) {
 }
 function listLeads(stateDir, repo) {
   return listRecords(leadRecordSchema, join24(crewStoreDir(stateDir, repo), "leads"));
+}
+async function setLeadPlanFile(stateDir, repo, sessionId, planFile, atMs) {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null)
+      return null;
+    const after = checked(leadRecordSchema, { ...before, planFile, updatedAt: iso(atMs) }, file);
+    writeJsonFile(file, after);
+    return after;
+  });
 }
 async function writeLead(stateDir, lead, atMs) {
   const file = leadFile(stateDir, lead.repo, lead.sessionId);
@@ -24974,14 +24985,14 @@ async function leadPlanFile(lead, caller, ctx) {
     return lead.planFile;
   let found;
   try {
-    found = planFileOfLead(lead, listLeads(ctx.paths.stateDir, caller.repo).records.filter((one) => one.sessionId !== lead.sessionId), () => findPlanFile(lead.plan, plansDirs(caller.repo, ctx.paths)));
+    found = planFileOfLead(lead, listLeads(ctx.paths.stateDir, caller.repo).records.filter((one) => one.sessionId !== lead.sessionId), () => findPlanFile(lead.plan, plansDirs(caller.repo, ctx.paths), { archived: false }));
   } catch (error) {
     throw refusal(reasonOf2(error));
   }
   if (!found.ok)
     return null;
   try {
-    await writeLead(ctx.paths.stateDir, { ...lead, planFile: found.file }, ctx.now());
+    await setLeadPlanFile(ctx.paths.stateDir, caller.repo, lead.sessionId, found.file, ctx.now());
   } catch (error) {
     ctx.error(`crew start: the plan file could not be kept on the lead: ${reasonOf2(error)}`);
   }
@@ -29055,7 +29066,7 @@ async function runCrewLead(args, ctx) {
   }
   let planNote;
   if (planFile === null) {
-    const found = planFileOfLead({ plan, planFile: before?.planFile }, listLeads(ctx.paths.stateDir, repo).records.filter((one) => one.sessionId !== session.sessionId), () => findPlanFile(plan, plansDirs(repo, ctx.paths)));
+    const found = planFileOfLead({ plan, planFile: before?.plan === plan ? before.planFile : undefined }, listLeads(ctx.paths.stateDir, repo).records.filter((one) => one.sessionId !== session.sessionId), () => findPlanFile(plan, plansDirs(repo, ctx.paths), { archived: false }));
     planFile = found.ok ? found.file : null;
     planNote = found.ok ? `plan file ${tildify(found.file, ctx.paths.home)}` : `no plan file for ${plan}${found.reason === "several" ? ` (${found.matches.length} files match)` : ""}: its briefs and run records are off; pass --plan-file <path>`;
   } else {
@@ -29737,22 +29748,24 @@ var BACKFILL_UNKNOWN = [
 function rebuilt(record, events, planFile) {
   const base = startOf({ ...record, planFile }, record.createdAt);
   const runEvents = [];
-  for (const one of events) {
+  const lastReport = events.findLastIndex((one) => one.crew === record.id && one.type === "report");
+  for (const [index, one] of events.entries()) {
     if (one.crew !== record.id)
       continue;
     if (!["created", "state", "report", "question"].includes(one.type))
       continue;
     let detail;
-    if (one.type === "report") {
+    if (one.type === "report")
+      detail = { status: one.text };
+    if (one.type === "report" && index === lastReport) {
       let report = null;
       try {
         report = readReport(record.reportPath ?? "");
       } catch {
         report = null;
       }
-      if (report !== null) {
+      if (report !== null)
         detail = { sha: report.branch.sha, status: report.status };
-      }
     }
     runEvents.push({
       at: one.at,
@@ -29791,26 +29804,39 @@ function backfillRuns(planFile, repo, ctx) {
   const { records } = listCrew(ctx.paths.stateDir, repo);
   const events = readCrewEvents(ctx.paths.stateDir, repo).events;
   const written = [];
+  const broken = [];
   for (const record of records) {
     if (!belongsTo(record, planFile))
       continue;
     const file = runFile(planFile, record.id);
-    if (readRunFile(file) !== null)
+    try {
+      if (readRunFile(file) !== null)
+        continue;
+    } catch (error) {
+      broken.push(`${record.id}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
+    }
     writeRunFile(file, rebuilt(record, events, planFile));
     written.push(record.id);
   }
   for (const record of records) {
     if (!written.includes(record.id) || typeof record.continues !== "string")
       continue;
-    const old = readRunFile(runFile(planFile, record.continues));
-    if (old !== null && old.continuedBy === null) {
-      writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
+    try {
+      const old = readRunFile(runFile(planFile, record.continues));
+      if (old !== null && old.continuedBy === null) {
+        writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
+      }
+    } catch (error) {
+      broken.push(`${record.continues}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (written.length === 0)
-    return [`backfill: nothing to write for ${planStemOf(planFile)}`];
+  const skipped = broken.map((one) => `backfill: left alone, it cannot be read: ${one}`);
+  if (written.length === 0) {
+    return [`backfill: nothing to write for ${planStemOf(planFile)}`, ...skipped];
+  }
   return [
+    ...skipped,
     `backfill: wrote ${written.length} run record${written.length === 1 ? "" : "s"} for ${planStemOf(planFile)} from the store (${written.join(", ")})`,
     `backfill: it could not know: ${BACKFILL_UNKNOWN.join("; ")}`
   ];
@@ -30592,11 +30618,15 @@ function parseHistoryArgs(argv) {
   if (phase !== undefined && !isPhase(phase)) {
     return { error: `The phase "${phase}" is not one: a phase is ${PHASE_RULE}` };
   }
+  const plan = parsed.options.get("--plan") ?? null;
+  if (plan !== null && /[\\/]/.test(plan)) {
+    return { error: `--plan is a plan's file name without .md, not a path: "${plan}"` };
+  }
   return {
     backfill: parsed.flags.has("--backfill"),
     json: parsed.flags.has("--json"),
     phase: phase ?? null,
-    plan: parsed.options.get("--plan") ?? null
+    plan
   };
 }
 function parseListArgs(argv) {

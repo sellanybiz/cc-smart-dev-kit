@@ -166,11 +166,14 @@ export const BACKFILL_UNKNOWN = [
 function rebuilt(record: CrewRecord, events: readonly CrewEvent[], planFile: string): RunRecord {
   const base = startOf({ ...record, planFile }, record.createdAt);
   const runEvents: RunEvent[] = [];
-  for (const one of events) {
+  // The store keeps one report file per run, the last: only the last report event gets its facts.
+  const lastReport = events.findLastIndex((one) => one.crew === record.id && one.type === "report");
+  for (const [index, one] of events.entries()) {
     if (one.crew !== record.id) continue;
     if (!["created", "state", "report", "question"].includes(one.type)) continue;
     let detail: Record<string, unknown> | undefined;
-    if (one.type === "report") {
+    if (one.type === "report") detail = { status: one.text };
+    if (one.type === "report" && index === lastReport) {
       let report: ReturnType<typeof readReport> = null;
       try {
         report = readReport(record.reportPath ?? "");
@@ -178,9 +181,7 @@ function rebuilt(record: CrewRecord, events: readonly CrewEvent[], planFile: str
         // A report that cannot be read leaves the line without its details; the status stays.
         report = null;
       }
-      if (report !== null) {
-        detail = { sha: report.branch.sha, status: report.status };
-      }
+      if (report !== null) detail = { sha: report.branch.sha, status: report.status };
     }
     runEvents.push({
       at: one.at,
@@ -234,23 +235,38 @@ export function backfillRuns(planFile: string, repo: string, ctx: CrewContext): 
   const { records } = listCrew(ctx.paths.stateDir, repo);
   const events = readCrewEvents(ctx.paths.stateDir, repo).events;
   const written: string[] = [];
+  const broken: string[] = [];
   for (const record of records) {
     if (!belongsTo(record, planFile)) continue;
     const file = runFile(planFile, record.id);
-    if (readRunFile(file) !== null) continue;
+    try {
+      if (readRunFile(file) !== null) continue;
+    } catch (error) {
+      // A run file that cannot be read is not overwritten: it is named, and the rest goes on.
+      broken.push(`${record.id}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
     writeRunFile(file, rebuilt(record, events, planFile));
     written.push(record.id);
   }
   // A run that continues another is linked both ways, as a run recorded live is.
   for (const record of records) {
     if (!written.includes(record.id) || typeof record.continues !== "string") continue;
-    const old = readRunFile(runFile(planFile, record.continues));
-    if (old !== null && old.continuedBy === null) {
-      writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
+    try {
+      const old = readRunFile(runFile(planFile, record.continues));
+      if (old !== null && old.continuedBy === null) {
+        writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
+      }
+    } catch (error) {
+      broken.push(`${record.continues}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (written.length === 0) return [`backfill: nothing to write for ${planStemOf(planFile)}`];
+  const skipped = broken.map((one) => `backfill: left alone, it cannot be read: ${one}`);
+  if (written.length === 0) {
+    return [`backfill: nothing to write for ${planStemOf(planFile)}`, ...skipped];
+  }
   return [
+    ...skipped,
     `backfill: wrote ${written.length} run record${written.length === 1 ? "" : "s"} for ${planStemOf(planFile)} from the store (${written.join(", ")})`,
     `backfill: it could not know: ${BACKFILL_UNKNOWN.join("; ")}`,
   ];

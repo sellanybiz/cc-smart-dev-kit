@@ -131,11 +131,11 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   let planNote: string;
   if (planFile === null) {
     const found = planFileOfLead(
-      { plan, planFile: before?.planFile },
+      { plan, planFile: before?.plan === plan ? before.planFile : undefined },
       listLeads(ctx.paths.stateDir, repo).records.filter(
         (one) => one.sessionId !== session.sessionId,
       ),
-      () => findPlanFile(plan, plansDirs(repo, ctx.paths)),
+      () => findPlanFile(plan, plansDirs(repo, ctx.paths), { archived: false }),
     );
     planFile = found.ok ? found.file : null;
     planNote = found.ok

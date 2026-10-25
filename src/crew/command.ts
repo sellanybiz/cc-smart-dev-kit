@@ -255,11 +255,15 @@ export function parseHistoryArgs(argv: readonly string[]): HistoryArgs | { error
   if (phase !== undefined && !isPhase(phase)) {
     return { error: `The phase "${phase}" is not one: a phase is ${PHASE_RULE}` };
   }
+  const plan = parsed.options.get("--plan") ?? null;
+  if (plan !== null && /[\\/]/.test(plan)) {
+    return { error: `--plan is a plan's file name without .md, not a path: "${plan}"` };
+  }
   return {
     backfill: parsed.flags.has("--backfill"),
     json: parsed.flags.has("--json"),
     phase: phase ?? null,
-    plan: parsed.options.get("--plan") ?? null,
+    plan,
   };
 }
 

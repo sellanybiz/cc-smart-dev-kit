@@ -9004,10 +9004,10 @@ function eventsOf(change) {
   }
   return events;
 }
-var END_OF_WORK = ["done", "failed", "handoff"];
+var END_OF_WORK = ["done", "failed", "handoff", "discarded"];
 function deriveTimes(run, nowMs = null) {
-  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && one.kind !== "created");
-  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", "handoff"].includes(one.state));
+  const lastEnd = run.events.findLastIndex((one) => END_OF_WORK.includes(one.state) && (one.kind === "state" || one.kind === "report"));
+  const runsAgain = run.events.slice(lastEnd + 1).some((one) => one.kind === "state" && !["stopped", ...END_OF_WORK].includes(one.state));
   const finishedAt = lastEnd === -1 || runsAgain ? null : run.events[lastEnd]?.at ?? null;
   const mergedAt = run.events.find((one) => one.kind === "merged")?.at ?? null;
   const removedAt = run.events.find((one) => one.kind === "removed")?.at ?? null;

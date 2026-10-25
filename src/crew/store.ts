@@ -1100,6 +1100,28 @@ export function listLeads(stateDir: string, repo: string): Listed<LeadRecord> {
 }
 
 /**
+ * Records the plan file a lead found later (`crew start`, PL1) and changes nothing else: the lead
+ * record is read again under the store's lock, so a write another process made since (the
+ * presence mark) is never undone by a stale copy. Null when the lead is not recorded.
+ */
+export async function setLeadPlanFile(
+  stateDir: string,
+  repo: string,
+  sessionId: string,
+  planFile: string,
+  atMs: number,
+): Promise<LeadRecord | null> {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null) return null;
+    const after = checked(leadRecordSchema, { ...before, planFile, updatedAt: iso(atMs) }, file);
+    writeJsonFile(file, after);
+    return after;
+  });
+}
+
+/**
  * Records a lead, or records it again: a lead already there keeps when it was first recorded and
  * every field this kit does not know; the rest is `lead`.
  */

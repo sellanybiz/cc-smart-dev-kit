@@ -424,7 +424,7 @@ both ways), so two leads never write one file. The kit writes it at each change 
 records — in the same write, under the store's lock, never a second log — and never deletes it:
 `crew rm` and the clean-up of finished work leave it. A crew session's own commands (`step`,
 `report`) write to it at the absolute place the lead's record gave, never into its own worktree.
-The kit never commits the folder: the lead commits it with its plan. It holds:
+The kit never commits the folder: the lead commits it with its plan (and before it removes a lead worktree that holds it untracked). It holds:
 
 - at the start: the crew id, name, phase, slug, kind, model and effort, the base ref and its commit,
   the branch, the brief's path and its sha-256, and the lead (its session id and its name);
@@ -434,7 +434,8 @@ The kit never commits the folder: the lead commits it with its plan. It holds:
   answer, the report (its status, tests, checks and review), the merge (the merge commit), the
   removal;
 - the times, derived from those: the **wall time** (recorded to finished) and the **working time**
-  (started to finished, without the queue and the pauses).
+  (started to finished, without the queue and the pauses; a wait for the lead or for an answer still
+  counts).
 
 If a run record cannot be written, the change stands and one line says so. A run whose lead
 has no plan file is not recorded.

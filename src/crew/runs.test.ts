@@ -4,7 +4,14 @@
  * a temp folder; the times are fixed by hand, so every expected value is written out.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   type CrewWorld,
@@ -644,7 +651,85 @@ describe("the lead's plan file", () => {
     expect(ran.err.join("\n")).toContain("is no existing .md file");
   });
 
-  test("crew lead is used by the history above; runCrew is the command", () => {
-    expect(typeof runCrew).toBe("function");
+  test("the same session leading another plan does not keep the first plan's file", async () => {
+    const world = crewWorld();
+    const plans = join(tempDir("plans"), "plans");
+    mkdirSync(plans, { recursive: true });
+    const planFile = join(plans, "2026-10-21-master-plan.md");
+    writeFileSync(planFile, "# the plan\n");
+    await run(world, ["lead", "--plan", "master-plan", "--plan-file", planFile]);
+    const other = await run(world, ["lead", "--plan", "other-plan"]);
+    expect(other.out[0]).toStartWith("no plan file for other-plan");
+    expect(listLeads(world.paths.stateDir, world.repo).records[0]?.planFile).toBeNull();
+  });
+
+  test("a lead never binds to an archived plan by its slug", async () => {
+    const world = crewWorld();
+    const archive = join(world.repo, ".claude", "plans", "archive");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, "2026-09-01-master-plan.md"), "old\n");
+    const ran = await run(world, ["lead", "--plan", "master-plan"]);
+    expect(ran.out[0]).toStartWith("no plan file for master-plan");
+  });
+
+  test("--plan is a name, not a path", async () => {
+    const world = crewWorld();
+    const ran = await run(world, ["history", "--plan", "../../x"]);
+    expect(ran.code).toBe(2);
+    expect(ran.err[0]).toStartWith("--plan is a plan's file name without .md, not a path");
+  });
+});
+
+describe("a plan found by slug", () => {
+  test("the archive is searched only when asked", () => {
+    const { plans } = planWorld();
+    mkdirSync(join(plans, "archive"), { recursive: true });
+    writeFileSync(join(plans, "archive", "2026-09-01-old-plan.md"), "old\n");
+    expect(findPlanFile("old-plan", [plans], { archived: false }).ok).toBe(false);
+    expect(findPlanFile("old-plan", [plans]).ok).toBe(true);
+  });
+});
+
+describe("the end of a run", () => {
+  test("a note on a finished run does not move its finish; a discard ends the work", async () => {
+    const { planFile, repo, state } = planWorld();
+    const id = "PL1-runs-aaaaaa";
+    await createCrew(state, newCrew(repo, planFile), T0);
+    await updateCrew(state, repo, id, { state: "done" }, T0 + 30 * MIN);
+    await noteCrewRun(state, repo, id, T0 + 50 * MIN, { text: "model changed" });
+    expect(runOf(planFile).times.finishedAt).toBe("2026-10-25T10:30:00.000Z");
+    await updateCrew(state, repo, id, { state: "discarded" }, T0 + 60 * MIN);
+    expect(runOf(planFile).times.finishedAt).toBe("2026-10-25T11:00:00.000Z");
+  });
+
+  test("a backfill leaves a run file it cannot read alone, says so, and goes on", async () => {
+    const world = crewWorld();
+    const plans = join(tempDir("plans"), "plans");
+    mkdirSync(plans, { recursive: true });
+    const planFile = join(plans, "2026-10-21-master-plan.md");
+    writeFileSync(planFile, "# the plan\n");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: LEAD_ONE.name,
+        plan: "master-plan",
+        planFile,
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    for (const id of ["OLD1-bad-aaaaaa", "OLD2-good-bbbbbb"]) {
+      await createCrew(world.paths.stateDir, newCrew(world.repo, null, id), T0);
+    }
+    mkdirSync(join(plans, "2026-10-21-master-plan", "runs"), { recursive: true });
+    writeFileSync(runFile(planFile, "OLD1-bad-aaaaaa"), "{ not json");
+    const ran = await run(world, ["history", "--backfill"]);
+    expect(ran.out[0]).toStartWith("backfill: left alone, it cannot be read: OLD1-bad-aaaaaa");
+    expect(ran.out[1]).toContain("wrote 1 run record");
+    expect(readFileSync(runFile(planFile, "OLD1-bad-aaaaaa"), "utf8")).toBe("{ not json");
+    expect(readRunFile(runFile(planFile, "OLD2-good-bbbbbb"))?.id).toBe("OLD2-good-bbbbbb");
   });
 });

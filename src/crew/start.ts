@@ -136,7 +136,7 @@ import {
   readReport,
   updateCrew,
   writeJsonFile,
-  writeLead,
+  setLeadPlanFile,
   writeStoreFile,
 } from "./store";
 import { usageFacts, usageUnreadLine } from "./usage-guard";
@@ -372,14 +372,14 @@ async function leadPlanFile(
       listLeads(ctx.paths.stateDir, caller.repo).records.filter(
         (one) => one.sessionId !== lead.sessionId,
       ),
-      () => findPlanFile(lead.plan, plansDirs(caller.repo, ctx.paths)),
+      () => findPlanFile(lead.plan, plansDirs(caller.repo, ctx.paths), { archived: false }),
     );
   } catch (error) {
     throw refusal(reasonOf(error));
   }
   if (!found.ok) return null;
   try {
-    await writeLead(ctx.paths.stateDir, { ...lead, planFile: found.file }, ctx.now());
+    await setLeadPlanFile(ctx.paths.stateDir, caller.repo, lead.sessionId, found.file, ctx.now());
   } catch (error) {
     ctx.error(`crew start: the plan file could not be kept on the lead: ${reasonOf(error)}`);
   }

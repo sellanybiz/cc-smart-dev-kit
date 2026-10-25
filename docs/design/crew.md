@@ -453,16 +453,22 @@ Code session id with its time (the start, and each resume that brought a new id)
 (a pause carries `waitingFor`), `session`, `question`, `answer`, `report` (status, tests,
 checks, review), `merged` (the lead commit from the merge proof), `removed`, and `note`. Each
 event has `by`: the lead session that made it, so a plan with three leads says who answered,
-merged and removed. The acting lead comes from the session above the command (`actorOfCaller`,
-`runs-actor.ts`, used by `crew answer` and by `markState`, which `stop`, `resume` and `rm` share);
-the watch and the portal have none, and the event then names the lead the crew session belongs to.
+merged and removed: `by` is set on `answer`, `merged`, `removed` and a discard, and is null on the
+crew session's own changes (its report, its session, its pause). The acting lead comes from the
+session above the command (`actorOfCaller`, `runs-actor.ts`, used by `crew answer` and by
+`markState`, which `stop`, `resume` and `rm` share); where no recorded lead is above it (the
+watch's merge, the portal's click, a script) the event names the lead the crew session belongs to,
+which after a hand-over is the lead that started it, not necessarily the one that acted.
 `times` are derived from the events and written beside them: `wallMs` (recorded to the end of the
-work), `workingMs` (started to the end, without the pauses), `queuedMs`, `pausedMs` and each pause.
+work), `workingMs` (started to the end, without the pauses; a wait for the lead, a question or a stop is
+still counted, and the end is the last report, so a run answered and finished again counts to its
+second end), `queuedMs`, `pausedMs` and each pause.
 
 **It is never deleted.** `crew rm` and the clean-up of finished work leave it. When the plan
 is archived, its folder moves with the plan file to `<plans dir>/archive/`, the same move
 `/cc-smart-dev-kit:plan-task` § 8 makes for the plan, and the writer and `crew history` find it
-there. The kit never commits it: the lead commits the folder with its plan. A crew session's own
+there. The kit never commits it: the lead commits the folder with its plan, and before it removes a lead worktree
+that holds an untracked plan folder. A crew session's own
 commands (`step`, `report`) reach the writer too, and write to the absolute path the record gave,
 never into their own worktree.
 
