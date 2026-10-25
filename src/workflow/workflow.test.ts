@@ -358,6 +358,24 @@ describe("resolveWorkflow: the order", () => {
     expect(issues.foundLabel).toEqual({ source: "project", value: "theirs" });
   });
 
+  test("GI4: the three labels differ in one file, a label left out standing as its default", () => {
+    const parse = (issues: unknown) =>
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { issues } }).success;
+    expect(parse({ foundLabel: "a", fixedLabel: "b", readyLabel: "c" })).toBe(true);
+    // The default ready label is kit:ready, the default found label kit:found.
+    expect(parse({ foundLabel: "kit:ready" })).toBe(false);
+    expect(parse({ fixedLabel: "KIT:Ready" })).toBe(false);
+    expect(parse({ readyLabel: "fixed-unreleased", fixedLabel: "fixed-unreleased" })).toBe(false);
+    expect(parse({ readyLabel: "kit:found" })).toBe(false);
+    expect(parse({ fixedLabel: "kit:found" })).toBe(false);
+    const clash = ccSmartDevKitConfigSchema.safeParse({
+      workflow: { issues: { foundLabel: "x", fixedLabel: "X" } },
+    });
+    expect(clash.success ? "" : clash.error.message).toContain(
+      "issues.foundLabel and issues.fixedLabel are both x",
+    );
+  });
+
   test("D67: the schema refuses a label GitHub would split, and an unknown issues field", () => {
     const parse = (issues: unknown) =>
       ccSmartDevKitConfigSchema.safeParse({ workflow: { issues } }).success;

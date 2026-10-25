@@ -41,7 +41,7 @@ import {
 } from "../workflow/merge-check";
 import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
 import { type ResolvedWorkflow, resolveGate } from "../workflow/resolve";
-import { isLabelName, LABEL_RULE } from "../workflow/schema";
+import { isLabelName, LABEL_RULE, labelsClash } from "../workflow/schema";
 import { bodyWithMarker, fingerprintHash, hasMarker, holdsMarker } from "./marker";
 import { screenText } from "./screen";
 
@@ -230,6 +230,20 @@ export function resolveSwitch(
   }
 }
 
+/**
+ * Why the resolved labels cannot be used, or null: the kit's found or fixed label is the ready
+ * label, which only a person adds (`labelsClash`). The schema checks one file; the person's file
+ * and the project's can each hold one of a pair, so every use of the labels checks the resolved
+ * values too.
+ */
+export function labelsProblem(resolved: ResolvedWorkflow): string | null {
+  return labelsClash({
+    fixedLabel: resolved.issues.fixedLabel.value,
+    foundLabel: resolved.issues.foundLabel.value,
+    readyLabel: resolved.issues.readyLabel.value,
+  });
+}
+
 /** The issues that carry `label`, every state, once: number, url and body. */
 type ListedIssue = {
   body: string;
@@ -308,6 +322,8 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if ("why" in policy) return refuse(`the issue switch cannot be read: ${policy.why}`);
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null) return refuse(off);
+  const clash = labelsProblem(policy.resolved);
+  if (clash !== null) return refuse(clash);
 
   // The ready label is the person's choice: a phase starts from an issue that carries it, added by
   // someone with write access (`pickup.ts`). The kit files under that person's login, so it must

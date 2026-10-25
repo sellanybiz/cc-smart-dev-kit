@@ -255,6 +255,24 @@ describe("listFixed: the Fixes lines of a release", () => {
     });
   });
 
+  test("a fixed label that is the ready label is a failure, so no merge adds the person's label", async () => {
+    // Each file alone is valid; together the labels clash (`labelsClash`).
+    const made = issuesWorld({
+      committed: {
+        worktrees: { base: "main" },
+        workflow: { issues: { enabled: true, fixedLabel: "go" } },
+      },
+      gh: { issues: [openIssue()] },
+      personal: { issues: { readyLabel: "GO" } },
+    });
+    const gate = await openGate(made.world);
+    expect(gate).toEqual({
+      kind: "failed",
+      why: "issues.fixedLabel and issues.readyLabel are both go: the ready label is only a person's to add, so the kit's fixed label must be another word",
+    });
+    expect(made.gh.calls).toEqual([]);
+  });
+
   test("a policy that cannot be read is a failure to retry, never an off switch", async () => {
     // The project's file is committed on main, but origin/main was never fetched.
     const made = issuesWorld();

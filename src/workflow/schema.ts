@@ -106,6 +106,37 @@ export function isLabelName(name: string): boolean {
 
 const labelSchema = z.string().refine(isLabelName, LABEL_RULE);
 
+/** The three labels GitHub Issues uses, by the name each has in `workflow.issues`. */
+export interface IssueLabels {
+  fixedLabel: string;
+  foundLabel: string;
+  readyLabel: string;
+}
+
+/**
+ * Why the three labels cannot work together, or null when they differ (compared lower-cased:
+ * GitHub treats a label name that way). The ready label is a person's choice — a phase starts
+ * from an issue that carries it, added by someone with write access — so neither of the kit's
+ * own labels may be the same word: the kit adds `foundLabel` to every issue it files and
+ * `fixedLabel` at a merge, through the person's own `gh` login, and would then make an issue
+ * ready by itself. The found and fixed labels differ too, or "fixed" could not be told from
+ * "found". One home: the schema checks a file with it, and `issue file` and the fixed mark check
+ * the resolved values (the person's file and the project's can each hold one of a pair).
+ */
+export function labelsClash(labels: IssueLabels): string | null {
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
+
 /** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
 const tagSchema = z.string().refine(isNameTag, TAG_RULE);
 
@@ -202,6 +233,16 @@ export const workflowSchema = z.strictObject({
       fixedLabel: labelSchema.optional(),
       /** The label of an issue the kit may pick up and build. Default: kit:ready. */
       readyLabel: labelSchema.optional(),
+    })
+    .superRefine((issues, context) => {
+      // A label this object does not set stands as its default, so a file cannot name the
+      // default of another label (`labelsClash`).
+      const clash = labelsClash({
+        fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+        foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+        readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel,
+      });
+      if (clash !== null) context.addIssue({ code: "custom", message: clash });
     })
     .optional(),
   alerts: z

@@ -442,6 +442,29 @@ describe("what the labeller could not see is shown, or named", () => {
     expect(await bodyOf("a​b‮c\u{E0041}d­e")).toBe("a[U+200B]b[U+202E]c[U+E0041]d[U+00AD]e");
   });
 
+  // The characters are built from their code points: written raw, they would be as invisible
+  // in this file as they are in an issue.
+  const chars = (...points: number[]) => String.fromCodePoint(...points);
+
+  test("every other default-ignorable character is named: selectors, fillers, the joiner", async () => {
+    const hidden = [0xfe00, 0xe0100, 0x3164, 0x034f, 0x2800];
+    const body = hidden.map((point) => `x${chars(point)}`).join("");
+    expect(await bodyOf(body)).toBe("x[U+FE00]x[U+E0100]x[U+3164]x[U+034F]x[U+2800]");
+  });
+
+  test("a variation selector right after an emoji stays plain; elsewhere it is named", async () => {
+    const heart = `${chars(0x2764)}${chars(0xfe0f)}`;
+    const smile = `${chars(0x263a)}${chars(0xfe0e)}`;
+    expect(
+      await bodyOf(`ok ${heart} and ${smile}, but a${chars(0xfe0f)} and ${chars(0xfe0f)}`),
+    ).toBe(`ok ${heart} and ${smile}, but a[U+FE0F] and [U+FE0F]`);
+  });
+
+  test("a second selector after an emoji is named; only the first is plain", async () => {
+    const heart = `${chars(0x2764)}${chars(0xfe0f)}`;
+    expect(await bodyOf(`${heart}${chars(0xfe0f)}`)).toBe(`${heart}[U+FE0F]`);
+  });
+
   test("a control character is named; a tab and a newline stay", async () => {
     expect(await bodyOf("a\u0007b\tc\nd")).toBe("a[U+0007]b\tc\nd");
   });

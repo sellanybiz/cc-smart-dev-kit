@@ -12585,6 +12585,19 @@ function isLabelName(name) {
   return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
 }
 var labelSchema = string2().refine(isLabelName, LABEL_RULE);
+function labelsClash(labels) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -12620,6 +12633,14 @@ var workflowSchema = strictObject({
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
+  }).superRefine((issues, context) => {
+    const clash = labelsClash({
+      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
+    });
+    if (clash !== null)
+      context.addIssue({ code: "custom", message: clash });
   }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
@@ -14862,6 +14883,13 @@ function resolveSwitch(world) {
     return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
 }
+function labelsProblem(resolved) {
+  return labelsClash({
+    fixedLabel: resolved.issues.fixedLabel.value,
+    foundLabel: resolved.issues.foundLabel.value,
+    readyLabel: resolved.issues.readyLabel.value
+  });
+}
 function parseListed(out, ready) {
   try {
     const rows = JSON.parse(out);
@@ -14913,6 +14941,9 @@ async function fileIssue(world, request) {
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null)
     return refuse(off);
+  const clash = labelsProblem(policy.resolved);
+  if (clash !== null)
+    return refuse(clash);
   const ready = policy.resolved.issues.readyLabel.value;
   const readyHit = [policy.resolved.issues.foundLabel.value, ...request.labels].find((label) => label.toLowerCase() === ready.toLowerCase());
   if (readyHit !== undefined) {
@@ -15103,10 +15134,11 @@ function parseEdits(out) {
   }
   return { edits, more: list.pageInfo.hasNextPage === true };
 }
+var HIDDEN_CHARACTER = /(\p{Extended_Pictographic}[\uFE0E\uFE0F])|[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 function visibleText(text) {
   const named = (char) => `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
   return text.replace(/\r\n?|[\u2028\u2029\u0085]/g, `
-`).replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(/\p{Cf}/gu, named).replace(/(?![\n\t])\p{Cc}/gu, named);
+`).replace(/<!--/g, "[hidden HTML comment: ").replace(/-->/g, "]").replace(HIDDEN_CHARACTER, (match, emoji) => emoji === undefined ? named(match) : match).replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 async function pickIssue(world, ref) {
   const given = parseIssueRef(ref);
@@ -24831,6 +24863,9 @@ async function openGate(world) {
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null)
     return { kind: "off", why: off };
+  const clash = labelsProblem(policy.resolved);
+  if (clash !== null)
+    return { kind: "failed", why: clash };
   const own = ownRepository(world.cwd, world.env);
   if ("why" in own)
     return { kind: "off", why: own.why };

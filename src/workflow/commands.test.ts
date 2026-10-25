@@ -750,6 +750,14 @@ describe("the review gate (CM-1)", () => {
     expect(await runWorkflow(["set", "issues.readyLabel", "ready-to-build"], ok.context)).toBe(0);
   });
 
+  test("GI4: set refuses a label that is another issue label, and writes nothing", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "issues.fixedLabel", "kit:ready"], run.context)).toBe(1);
+    expect(run.errors[0]).toContain("issues.fixedLabel and issues.readyLabel are both kit:ready");
+    expect(existsSync(personalWorkflowFile(cliPaths(env)))).toBe(false);
+  });
+
   test("a setting outside the gate still works inside Claude Code", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), { ...env, CLAUDECODE: "1" });

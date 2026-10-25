@@ -8159,6 +8159,19 @@ function isLabelName(name) {
   return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
 }
 var labelSchema = string2().refine(isLabelName, LABEL_RULE);
+function labelsClash(labels) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -8194,6 +8207,14 @@ var workflowSchema = strictObject({
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
+  }).superRefine((issues, context) => {
+    const clash = labelsClash({
+      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
+    });
+    if (clash !== null)
+      context.addIssue({ code: "custom", message: clash });
   }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),

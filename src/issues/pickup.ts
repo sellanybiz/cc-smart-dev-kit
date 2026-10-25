@@ -164,9 +164,19 @@ function parseEdits(out: string): undefined | { edits: BodyEdit[]; more: boolean
 }
 
 /**
+ * What a reader cannot see: a format character (`Cf`: zero-width, bidi, tag), any default-ignorable
+ * code point (variation selectors, the Hangul filler, the combining grapheme joiner), and U+2800,
+ * the blank braille cell, which is none of those and still draws nothing. The one exception is
+ * captured: an emoji followed by its own variation selector (U+FE0E, U+FE0F), which is how an
+ * ordinary emoji is written and stays plain.
+ */
+const HIDDEN_CHARACTER =
+  /(\p{Extended_Pictographic}[\uFE0E\uFE0F])|[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+
+/**
  * The issue's text as the labeller could see it: line separators made real lines, an HTML comment
- * (hidden by GitHub's rendering) shown in plain view and marked, and every invisible format
- * character (zero-width, bidi, tag characters) or control character named by its code. The
+ * (hidden by GitHub's rendering) shown in plain view and marked, and every invisible character
+ * (`HIDDEN_CHARACTER`) or control character named by its code. The
  * person chose the text they saw; nothing in the brief may be hidden from them.
  */
 export function visibleText(text: string): string {
@@ -176,7 +186,9 @@ export function visibleText(text: string): string {
     .replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n")
     .replace(/<!--/g, "[hidden HTML comment: ")
     .replace(/-->/g, "]")
-    .replace(/\p{Cf}/gu, named)
+    .replace(HIDDEN_CHARACTER, (match, emoji: string | undefined) =>
+      emoji === undefined ? named(match) : match,
+    )
     .replace(/(?![\n\t])\p{Cc}/gu, named);
 }
 

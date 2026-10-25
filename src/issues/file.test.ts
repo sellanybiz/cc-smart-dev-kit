@@ -420,13 +420,30 @@ describe("the ready label is the person's, never the kit's (GI3)", () => {
   });
 
   test("a found label that is the ready label would make every issue ready: refused", async () => {
+    // Each file alone is valid (the schema checks one file); together the labels clash.
     const { gh, world: w } = world({
       committed: {
         worktrees: { base: "main" },
-        workflow: { issues: { enabled: true, foundLabel: "kit:ready" } },
+        workflow: { issues: { enabled: true, foundLabel: "go" } },
       },
+      personal: { issues: { readyLabel: "GO" } },
     });
-    expect(refusal(await fileIssue(w, REQUEST))).toContain("is the ready label");
+    const why = refusal(await fileIssue(w, REQUEST));
+    expect(why).toContain("issues.foundLabel and issues.readyLabel are both go");
+    expect(gh.calls).toEqual([]);
+  });
+
+  test("a fixed label that is the ready label would let a merge add it: refused", async () => {
+    const { gh, world: w } = world({
+      committed: {
+        worktrees: { base: "main" },
+        workflow: { issues: { enabled: true, fixedLabel: "go" } },
+      },
+      personal: { issues: { readyLabel: "go" } },
+    });
+    expect(refusal(await fileIssue(w, REQUEST))).toContain(
+      "issues.fixedLabel and issues.readyLabel are both go",
+    );
     expect(gh.calls).toEqual([]);
   });
 
