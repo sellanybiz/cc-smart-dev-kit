@@ -980,6 +980,18 @@ describe("IX3: the merge reader asks the shell reader which words the shell fill
     expect(pullRequestMerges("gh api graphql -f query=\\$Q", null, "bash")).toEqual([]);
   });
 
+  test("a `$` the line reader cuts off from what follows is a query it cannot read", () => {
+    for (const [command, dialect] of [
+      ["gh api graphql -f query=$\\\nQ", "bash"],
+      ['gh api graphql -f query="$\\\nQ"', "bash"],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      ["gh api graphql -f query=${env:Q}", "powershell"],
+    ] as const) {
+      const calls = pullRequestMerges(command, null, dialect);
+      expect([command, calls.map((one) => one.refusal)]).toEqual([command, [SHELL_REFUSAL]]);
+    }
+  });
+
   test("words a wrapper splits out of a string of its own are read by their text", () => {
     // `env -S` expands `${Q}` itself: no quote of this line says what the query becomes.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.

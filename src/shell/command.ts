@@ -738,9 +738,21 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
     word += piece;
     inWord = true;
   };
+  /**
+   * A `$` that may expand: one before an expansion's first character, or one the line reader cut
+   * off from what follows (`$\<newline>P` is joined into `$ P`, PowerShell's `${x}` is cut at
+   * its brace), so the word ends in a lone `$` before a space, an escape, a closing quote or
+   * the end. A lone `$` can become anything, so it counts: the guards read it as filled.
+   */
+  const startsExpansion = (after: string) =>
+    expands.test(after) ||
+    after === "" ||
+    /\s/.test(after) ||
+    after === escaper ||
+    oneOf(double, after);
   /** Adds a character read outside single quotes: a `$` that expands, or a bash backtick, fills. */
   const addExpandable = (char: string, after: string) => {
-    if ((char === "$" && expands.test(after)) || (bash && char === "`")) filled = true;
+    if ((char === "$" && startsExpansion(after)) || (bash && char === "`")) filled = true;
     add(char);
   };
   let i = 0;

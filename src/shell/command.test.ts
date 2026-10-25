@@ -832,8 +832,21 @@ describe("wordsWithFill — which words the shell fills in (IX3)", () => {
       false,
       false,
     ]);
-    // A `$` that starts no expansion stays text.
-    expect(filledOf("a $ 'x'$ 5$ $-")).toEqual([false, false, false, false, true]);
+    // A `$` before a character that makes it text (`$.`, `$~`) is text.
+    expect(filledOf("a $. $~ 'x'$.")).toEqual([false, false, false, false]);
+    expect(filledOf("a $-")).toEqual([false, true]);
+  });
+
+  test("a `$` the line reader cut off from what follows is filled: it may expand into anything", () => {
+    // The line reader joins `$\<newline>P` into `$ P` and cuts PowerShell's `${env:P}` at its
+    // brace, so the word ends in a lone `$`. A lone `$` is never a word to trust as text.
+    expect(filledOf("a repos/o/r/$ P")).toEqual([false, true, false]);
+    expect(filledOf('a "repos/o/r/$" b')).toEqual([false, true, false]);
+    expect(filledOf("a repos/o/r/$\\\nP")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$", "powershell")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$`\nP", "powershell")).toEqual([false, true]);
+    // Single quotes and an escaped `$` still fill nothing.
+    expect(filledOf("a 'repos/o/r/$' \\$")).toEqual([false, false, false]);
   });
 
   test("bash: one filled piece makes the whole word filled", () => {

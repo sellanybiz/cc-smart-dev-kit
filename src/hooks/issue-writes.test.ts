@@ -506,6 +506,27 @@ describe("IX3: only text the shell fills in cannot be read whole", () => {
     ).toBe(false);
   });
 
+  test("a `$` the line reader cuts off from what follows still fails closed", () => {
+    // `$\<newline>P` joins into `$ P`; PowerShell's `${env:P}` is cut at its brace.
+    for (const command of [
+      "gh api -X POST repos/o/r/$\\\nP -f a=1",
+      'gh api -X POST "repos/o/r/$\\\nP" -f a=1',
+      "gh api graphql -f query=$\\\nQ",
+      'gh api graphql -f query="$\\\nQ"',
+    ]) {
+      expect([command, requestsIssueWrite(command, "bash")]).toEqual([command, true]);
+    }
+    for (const command of [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "gh api -X POST repos/o/r/${env:P} -f a=1",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "gh api graphql -f query=${env:Q}",
+      "gh api -X POST repos/o/r/$`\nP -f a=1",
+    ]) {
+      expect([command, requestsIssueWrite(command, "powershell")]).toEqual([command, true]);
+    }
+  });
+
   test("words a wrapper splits out of a string of its own are read by their text", () => {
     // `env -S` expands `${K}` itself, and `script -c` hands its string to a shell: no quote of
     // this line says what those words become, so a `$` in them fails closed.

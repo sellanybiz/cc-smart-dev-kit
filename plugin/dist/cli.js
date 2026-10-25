@@ -39947,8 +39947,9 @@ function wordsWithFill(segment, dialect = "bash") {
     word += piece;
     inWord = true;
   };
+  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf2(double, after);
   const addExpandable = (char, after) => {
-    if (char === "$" && expands.test(after) || bash && char === "`")
+    if (char === "$" && startsExpansion(after) || bash && char === "`")
       filled = true;
     add(char);
   };

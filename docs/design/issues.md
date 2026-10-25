@@ -168,7 +168,10 @@ backtick outside single quotes. So a literal query in single quotes is read whol
 holds: `query($n: Int!) { … issue(number: $n) … }` is a plain read (silent for a person, allowed
 in a crew session), a `mutation` in it is judged by its name as before, and `'repos/o/r/issues/$x'`
 is the path it says. `"$Q"`, `"…$(cat q)…"`, a backtick, a bare `$Q`, and `"repos/o/r/$K/5/comments"`
-still fail closed. A line the shell fills in first (`bash -c "…$K…"`, `echo "…$K…" | sh`, `eval`,
+still fail closed, and so does a `$` the line reader cut off from what follows (`$\<newline>P` joins
+into `$ P`, PowerShell's `${env:P}` is cut at its brace): a word with a lone `$` before a space,
+an escape, a closing quote or its end counts as filled. Words a wrapper splits out of a string of
+its own (`env -S '…'`, `script -c '…'`) are read by their text (`derivedFill`). A line the shell fills in first (`bash -c "…$K…"`, `echo "…$K…" | sh`, `eval`,
 the script of a here-doc with no quoted delimiter) is filled all through: the quotes inside it were
 written before the shell chose the text. The pull request part of the guard reads a query the same
 way (`graphqlCalls`). `-X=POST` is `POST`, as
