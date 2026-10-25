@@ -17514,6 +17514,12 @@ function raisedRequires(existing, floor, floorVersion) {
   }
   return floor;
 }
+function requiresTooLow(existing, floorVersion) {
+  if (typeof existing !== "string")
+    return false;
+  const lowest = lowestAllowed(existing);
+  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
+}
 var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
 function lowestAllowed(range) {
   let lowest = null;
@@ -17873,7 +17879,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   else
     setLeaf(data, path, value);
   const needed = requiresFloor(data);
-  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0 || requiresTooLow(data.requires, needed.version)) {
     data.requires = raisedRequires(data.requires, needed.floor, needed.version);
   }
   checkCcSmartDevKitConfig(data, file);
@@ -36798,6 +36804,27 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
+function requiresLines(configFile, projectDir, home) {
+  let file;
+  try {
+    file = readUserJson(configFile);
+  } catch {
+    return [];
+  }
+  if (!isObject2(file))
+    return [];
+  const needed = requiresFloor(file);
+  if (!requiresTooLow(file.requires, needed.version))
+    return [];
+  return [
+    {
+      ok: true,
+      warn: true,
+      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      fix: `${COMMAND} project init (or any ${COMMAND} workflow set \u2026 --project) raises it to "${needed.floor}"`
+    }
+  ];
+}
 async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
@@ -36814,8 +36841,9 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   const sources = projectSettingsFiles(projectDir);
   const engine = engineLines(sources, projectDir, paths.home);
   let config;
+  let configFile;
   try {
-    config = loadProjectConfig(checkout).config;
+    ({ config, configFile } = loadProjectConfig(checkout));
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError))
       throw error;
@@ -36831,6 +36859,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
+    ...configFile === null ? [] : requiresLines(configFile, projectDir, paths.home),
     ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {

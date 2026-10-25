@@ -22,7 +22,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { checkCcSmartDevKitConfig } from "../project/config";
-import { raisedRequires, requiresFloor } from "../project/init";
+import { raisedRequires, requiresFloor, requiresTooLow } from "../project/init";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { jsonTextFor } from "../setup/json-edit";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
@@ -177,8 +177,13 @@ function writeProjectFile(
   // A write that brings a field a newer plugin added raises `requires` (never lowers it), as
   // `project init` does: a teammate on an older plugin then hears "update", not every guard
   // asking. Only then: a write the file's old floor already covers leaves `requires` alone.
+  // The file's own `requires` counts too: one an older plugin wrote below its fields (1.2.0 with
+  // `crew.handoffTokens` under `>=1.0`) is raised by any write, so the teammate hears "update".
   const needed = requiresFloor(data);
-  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+  if (
+    Bun.semver.order(needed.version, requiresFloor(before).version) > 0 ||
+    requiresTooLow(data.requires, needed.version)
+  ) {
     data.requires = raisedRequires(data.requires, needed.floor, needed.version);
   }
   // The same checks every reader of the file runs (`requires`, the retired engine fields, the

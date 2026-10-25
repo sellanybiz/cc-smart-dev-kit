@@ -477,6 +477,32 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
   });
 });
 
+describe("a requires below what the file's fields need", () => {
+  const LOW = {
+    requires: ">=1.0",
+    worktrees: { base: "main" },
+    workflow: { crew: { enabled: true, handoffTokens: 300000 } },
+  };
+
+  test("1.2.0 wrote handoffTokens under >=1.0: one ! line naming the range, the floor and the fix", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", LOW);
+    ignoreWorktrees(repo);
+    expect(await check(repo)).toEqual([
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields need ">=1.2": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init (or any cc-smart-dev-kit workflow set … --project) raises it to ">=1.2"',
+    ]);
+  });
+
+  test("a requires at or above the floor, a range read as a newer one, or none: nothing to say", async () => {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    for (const requires of [">=1.2", ">=1.3", "^1.2", undefined]) {
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { ...LOW, requires });
+      expect(await check(repo)).toEqual([]);
+    }
+  });
+});
+
 describe("D17: a git too old to measure fixes after a review", () => {
   test("D17: git older than 2.40 in a project: one ! line saying fixes need an exact re-review", async () => {
     const repo = makeRepo();

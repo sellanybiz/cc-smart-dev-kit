@@ -774,6 +774,10 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
     (`.claude/anymodel.json`, a `.claude/anymodel/` folder, a settings hook that calls
     `~/.local/bin/anymodel`): each names the new file, folder or command (§ Projects that
     used the old name);
+  - `!` when the file's `requires` lets in a plugin older than the one that brought a field
+    the file holds (1.2.0 wrote `crew.handoffTokens` under `>=1.0`): that plugin refuses the
+    whole file instead of saying "update". The fix line names the range to use;
+    `project init` and any `workflow set … --project` raise it;
   - `!` in a project with a `cc-smart-dev-kit.json`, when git is older than 2.40: a fix made
     after a review cannot be measured there, so each fix needs a review of the exact new head
     (§ The review record);
@@ -2815,7 +2819,9 @@ came after `ownHooks`: `subagent-background`, `crew-role` and `lead-notes` ask f
 `verify-gate` and `agent-usage` for `>=1.1`, and `tier-view` for `>=1.3`. An older plugin
 refuses a key or a hook name it does not know, so it must hear "update" first. The tables are
 `WORKFLOW_CREW_KEYS_SINCE` and `OWN_HOOK_NAMES_SINCE` in `src/project/config.ts`, and a test
-fails when a new key or hook name has no entry.
+fails when a new key or hook name has no entry. `workflow set --project` raises a `requires`
+that sits below what the file's fields need, on any write (never lowers one), and `doctor`
+warns about such a file and names the fix.
 `worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
 worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
 field and the fix, `cc-smart-dev-kit project init`.
