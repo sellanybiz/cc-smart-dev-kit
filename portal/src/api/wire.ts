@@ -219,6 +219,7 @@ export interface SlotsAnswer extends NotSetUp {
   backendNotes: string[];
   breakers: Record<string, OpenBreaker>;
   chains: Record<string, string[]>;
+  effortLevels: string[];
   fallback: Record<string, boolean>;
   models: ModelRow[];
   slots: SlotRow[];
@@ -1165,6 +1166,7 @@ export const ACTION_NAMES = [
   "sessions.rm",
   "slot.breaker",
   "slot.check",
+  "slot.effort",
   "slot.fallback",
   "slot.mode",
   "slot.save",

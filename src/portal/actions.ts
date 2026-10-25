@@ -55,6 +55,7 @@ import {
 } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
 import {
+  BACKEND_EFFORT_LEVELS,
   isProfileName,
   JUDGE_SLOT,
   MODEL_SLOTS,
@@ -409,6 +410,33 @@ async function setSlotBreaker(
     return { lines: ["Pick a slot, and say on or off."], ok: false };
   }
   return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
+}
+
+/**
+ * Pins one backend target's effort through `gateway effort`, or takes the pin off with `off`.
+ * The command refuses a `claude-…` target and a target outside the chain in use, and sends one
+ * test request at the level first: a refusal is this action's answer, in its words, and nothing
+ * is saved.
+ */
+async function setSlotEffort(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  const target = typeof body.target === "string" ? body.target : "";
+  const level = typeof body.level === "string" ? body.level : "";
+  if (
+    slot === "" ||
+    target === "" ||
+    (level !== "off" && !BACKEND_EFFORT_LEVELS.some((one) => one === level))
+  ) {
+    return { lines: ["Pick a slot, one of its backend targets, and a level or off."], ok: false };
+  }
+  try {
+    return await gateway(action, ["effort", slot, target, level]);
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
 }
 
 /**
@@ -1917,6 +1945,7 @@ export const ACTION_NAMES = [
   "sessions.rm",
   "slot.breaker",
   "slot.check",
+  "slot.effort",
   "slot.fallback",
   "slot.mode",
   "slot.save",
@@ -1954,6 +1983,8 @@ export async function runAction(
       return setSlotFallback(action, body);
     case "slot.breaker":
       return setSlotBreaker(action, body);
+    case "slot.effort":
+      return setSlotEffort(action, body);
     case "slot.mode":
       return setSlotMode(action, body);
     case "switch": {

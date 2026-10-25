@@ -63,7 +63,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   tests the level before saving it. A pin wins over the effort Claude Code sends, even when
   thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
   when their target leaves, and show in `gateway status`, Slots data, the log and health's
-  recent requests. Claude targets are never pinned. No router restart is needed.
+  recent requests. Claude targets are never pinned. No router restart is needed. The portal's
+  Slots page shows each backend target's pin, or "follows Claude Code", and sets it: it asks
+  first, runs `gateway effort`, and shows the test request and a backend's refusal in place.
 - **With the breaker on, a backend's hiccup no longer ends a session on Claude's plan limit.**
   In a chain like `<backend> → claude-sonnet-…`, while Sonnet is at a plan limit the router
   already knows, one failed answer from the backend became Sonnet's limit, and Claude Code

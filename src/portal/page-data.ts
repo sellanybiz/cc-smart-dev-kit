@@ -13,6 +13,7 @@ import type { GatewayConfig } from "../gateway/config";
 import { historyDbExists } from "../gateway/history";
 import { requestsSince } from "../gateway/history-read";
 import { backendAddress } from "../gateway/settings";
+import { BACKEND_EFFORT_LEVELS } from "../gateway/targets";
 import { isOlder } from "../update/check";
 import type { LastCheck } from "../update/state";
 import { type ActionContext, autoModeChange, jobLines, updateState } from "./actions";
@@ -239,6 +240,7 @@ export async function slotsData(deps: PageDataDeps, config: GatewayConfig): Prom
           `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`,
       ),
     chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
+    effortLevels: [...BACKEND_EFFORT_LEVELS],
     fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
     models,
     slots: rows,

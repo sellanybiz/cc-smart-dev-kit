@@ -4179,10 +4179,13 @@ describe("the JSON API", () => {
     try {
       const body = JSON.parse((await world.call("/api/slots")).body) as {
         chains: Record<string, string[]>;
+        effortLevels: string[];
         models: { id: string }[];
         switches: { models: boolean };
       };
       expect(body.chains.scout).toEqual(["omniroute:glm-5.3-flash", "claude-sonnet-5-5"]);
+      // D64: the levels `gateway effort` takes, from its own list: the page never keeps a copy.
+      expect(body.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
       expect(body.models.map((one) => one.id)).toContain("omniroute:glm-5.3-flash");
       expect(body.switches.models).toBe(false);
     } finally {
