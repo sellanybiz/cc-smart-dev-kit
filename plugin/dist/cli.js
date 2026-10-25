@@ -22183,7 +22183,7 @@ function waitOver(record, facts, nowMs) {
     }
     default: {
       const limited = [record.model.resolved, record.model.named].some((name) => facts.limits[withoutContextSuffix(name)] !== undefined);
-      const key = (waiting.kind === "unknown" ? waiting.slot : undefined) ?? record.model.slot;
+      const key = waiting.slot ?? record.model.slot;
       return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }
@@ -27649,9 +27649,13 @@ async function commandProfile(ctx, args, usage) {
   }, { waitMs: 1e4 });
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
-  if (plan.key === JUDGE_SLOT) {
-    const view = profileView(plan.config, plan.name);
-    if (view !== null && judgeOtherThanClaude(view))
+  const judgeView = plan.key === JUDGE_SLOT || plan.key === WORKER_SLOT ? profileView(plan.config, plan.name) : null;
+  if (judgeView !== null && plan.key === JUDGE_SLOT) {
+    if (judgeOtherThanClaude(judgeView))
+      out.line("warn", JUDGE_WARNING);
+  } else if (judgeView !== null && !Object.hasOwn(judgeView.slots, JUDGE_SLOT)) {
+    out.say(`Auto mode's checks in this profile: ${judgeDefaultWords(judgeView)}`, 2);
+    if (standInTradeOff(judgeView))
       out.line("warn", JUDGE_WARNING);
   }
   out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");

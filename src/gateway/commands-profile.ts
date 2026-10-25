@@ -48,7 +48,7 @@ import {
   profileView,
   saveConfig,
 } from "./config";
-import { isProfileName, JUDGE_SLOT, parseTarget, slotKeyFromArg } from "./targets";
+import { isProfileName, JUDGE_SLOT, parseTarget, slotKeyFromArg, WORKER_SLOT } from "./targets";
 
 /** A slot's change inside one profile: the config after it, and its own entry before and after. */
 export interface ProfileSlotPlan {
@@ -505,9 +505,18 @@ export async function commandProfile(
   );
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
-  if (plan.key === JUDGE_SLOT) {
-    const view = profileView(plan.config, plan.name);
-    if (view !== null && judgeOtherThanClaude(view)) out.line("warn", JUDGE_WARNING);
+  // The judge is set by its own chain, or by the worker's: the worker's tested targets judge
+  // while Claude cannot (D44), in a profile as on the machine.
+  const judgeView =
+    plan.key === JUDGE_SLOT || plan.key === WORKER_SLOT
+      ? profileView(plan.config, plan.name)
+      : null;
+  if (judgeView !== null && plan.key === JUDGE_SLOT) {
+    if (judgeOtherThanClaude(judgeView)) out.line("warn", JUDGE_WARNING);
+  } else if (judgeView !== null && !Object.hasOwn(judgeView.slots, JUDGE_SLOT)) {
+    // A worker change matters to who judges only while the profile has no judge chain.
+    out.say(`Auto mode's checks in this profile: ${judgeDefaultWords(judgeView)}`, 2);
+    if (standInTradeOff(judgeView)) out.line("warn", JUDGE_WARNING);
   }
   out.verdict(
     "ok",

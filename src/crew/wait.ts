@@ -429,7 +429,7 @@ export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): b
       const limited = [record.model.resolved, record.model.named].some(
         (name) => facts.limits[withoutContextSuffix(name)] !== undefined,
       );
-      const key = (waiting.kind === "unknown" ? waiting.slot : undefined) ?? record.model.slot;
+      const key = waiting.slot ?? record.model.slot;
       return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }

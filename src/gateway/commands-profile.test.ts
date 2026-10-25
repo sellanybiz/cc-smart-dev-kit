@@ -211,6 +211,31 @@ describe("gateway profile <name> slot", () => {
     expect(alone.output()).not.toContain(TRADE_OFF);
   });
 
+  test("a worker chain that makes a tested stand-in judge says so, with the trade-off, as the machine's does (RV3)", async () => {
+    const TRADE_OFF = "a judge other than Claude decides worse";
+    // omniroute:m1 passed the machine's judge test: in this profile it judges while Claude cannot.
+    const tested = machine({ judgeProof: true });
+    expect(await tested.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
+    expect(tested.output()).toContain(
+      "Auto mode's checks in this profile: Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
+    );
+    expect(tested.output()).toContain(TRADE_OFF);
+    // No proof for the target: Claude judges alone, and there is no trade-off to warn about.
+    const untested = machine();
+    expect(await untested.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
+    expect(untested.output()).toContain(
+      "Auto mode's checks in this profile: Claude judges every check, alone: no worker target has passed the judge test yet",
+    );
+    expect(untested.output()).not.toContain(TRADE_OFF);
+    // A profile with a judge chain of its own is judged by that chain, so the worker says nothing.
+    const own = machine({ judgeProof: true });
+    await own.run(["profile", "team", "slot", "judge", "omniroute:m1"]);
+    own.reset();
+    expect(await own.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
+    expect(own.output()).not.toContain("Auto mode's checks");
+    expect(own.output()).not.toContain(TRADE_OFF);
+  });
+
   test("clear takes the entry out: the machine's chain applies there again", async () => {
     const m = machine();
     await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
