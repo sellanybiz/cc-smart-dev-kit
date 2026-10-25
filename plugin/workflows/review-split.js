@@ -4,21 +4,47 @@ export const meta = {
     'The second opinion on one change set, split across review tracks: a read-only reviewer per track, a second reviewer to refute every finding, and the verified findings merged and ranked.',
 }
 
-// The input is the Workflow tool's `args`: the review skill sets every field. The defaults let a
-// person run the workflow by hand, without the skill.
-const base = args && typeof args.base === 'string' && args.base !== '' ? args.base : ''
-const head = args && typeof args.head === 'string' && args.head !== '' ? args.head : 'HEAD'
-const intent =
-  args && typeof args.intent === 'string' && args.intent !== ''
-    ? args.intent
-    : 'what its commits and the diff say it does'
-const folder = args && typeof args.folder === 'string' && args.folder !== '' ? args.folder : ''
+// The input is the Workflow tool's `args`, passed verbatim: one object, which the review skill
+// fills. A string, an unknown key or a wrong type is refused here, before any agent starts: a
+// run on silent defaults would be a different review (one generic track, the ordinary tier) than
+// the one the caller asked for. No `args` at all runs on the defaults, for a person who starts
+// the workflow by hand. `audit-run.js` carries the same check: a workflow script cannot import
+// another file, so each one holds its own.
+const USAGE =
+  'Pass one object: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number }.'
+const refuse = (problem) => {
+  throw new Error(`review-split refused its arguments (${problem}). ${USAGE}`)
+}
+const isText = (value) => typeof value === 'string'
+const CHECKS = {
+  base: [isText, 'a string'],
+  head: [isText, 'a string'],
+  intent: [isText, 'a string'],
+  folder: [isText, 'a string'],
+  tracks: [(value) => Array.isArray(value) && value.every(isText), 'an array of strings'],
+  risky: [(value) => typeof value === 'boolean', 'true or false'],
+  budget: [(value) => Number.isInteger(value) && value > 0, 'a whole number above 0'],
+}
+if (args !== undefined) {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+    refuse(args === null ? 'got null' : Array.isArray(args) ? 'got an array' : `got a ${typeof args}`)
+  }
+  for (const key of Object.keys(args)) {
+    if (!Object.hasOwn(CHECKS, key)) refuse(`unknown key "${key}"`)
+    if (!CHECKS[key][0](args[key])) refuse(`"${key}" must be ${CHECKS[key][1]}`)
+  }
+}
+const given = args === undefined ? {} : args
+const base = given.base || ''
+const head = given.head || 'HEAD'
+const intent = given.intent || 'what its commits and the diff say it does'
+const folder = given.folder || ''
 const tracks =
-  args && Array.isArray(args.tracks) && args.tracks.length > 0
-    ? args.tracks
+  given.tracks && given.tracks.length > 0
+    ? given.tracks
     : ['every review dimension and edge-case axis that applies to this change']
-const maxFindings = args && Number.isInteger(args.budget) && args.budget > 0 ? args.budget : 12
-const risky = Boolean(args && args.risky === true)
+const maxFindings = given.budget || 12
+const risky = given.risky === true
 
 // The change set as the reviewers read it. With no base, the branch works it out from its own
 // merge base: a base typed here would be one project's branch name in every project.
@@ -123,12 +149,23 @@ for (const finding of reported) {
   seen.add(key)
   unique.push(finding)
 }
-// The caller's budget bounds the expensive half: the agents this run starts.
-const checked = unique.slice(0, maxFindings)
+
+const SEVERITIES = ['critical', 'warning', 'suggestion']
+const rankOf = (severity) => {
+  const at = SEVERITIES.indexOf(String(severity).toLowerCase())
+  return at === -1 ? SEVERITIES.length : at
+}
+
+// The caller's budget bounds the expensive half: the agents this run starts. The cut falls on the
+// least severe, never on the last track: the sort is stable, so equal severities keep their track
+// order. What the budget does not reach is returned unchecked, never dropped.
+const ranked = unique.slice().sort((a, b) => rankOf(a.severity) - rankOf(b.severity))
+const checked = ranked.slice(0, maxFindings)
+const unchecked = ranked.slice(maxFindings)
 
 phase('Refute')
 log(
-  `${reported.length} finding(s) reported, ${unique.length} distinct; ${checked.length} refuted against the code.`,
+  `${reported.length} finding(s) reported, ${unique.length} distinct; ${checked.length} refuted against the code, ${unchecked.length} not (returned unchecked).`,
 )
 
 // A second reviewer tries to refute each finding. Only what survives the code is reported: the
@@ -151,12 +188,6 @@ const verdicts = await pipeline(checked, (finding) => {
         schema: VERDICT,
       })
 })
-
-const SEVERITIES = ['critical', 'warning', 'suggestion']
-const rankOf = (severity) => {
-  const at = SEVERITIES.indexOf(String(severity).toLowerCase())
-  return at === -1 ? SEVERITIES.length : at
-}
 
 // The reviewed findings, merged, verified and ranked: most severe first, then by file and line.
 const verified = checked
@@ -190,6 +221,9 @@ const lines = verified.map(
     `${index + 1}. [${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)}\n   trigger: ${one.finding.trigger}\n   outcome: ${one.finding.outcome}\n   missing guard: ${one.finding.missingGuard}\n   fix: ${one.finding.fix}\n   confidence: ${one.finding.confidence}`,
 )
 const dropped = checked.length - verified.length
+const uncheckedLines = unchecked.map(
+  (finding) => `- [${String(finding.severity).toUpperCase()}] ${finding.title} — ${placeOf(finding)}`,
+)
 
 return [
   `# Second opinion - ${base === '' ? 'the change on this branch' : `${base}...${head}`}`,
@@ -202,6 +236,10 @@ return [
   dropped === 0
     ? ''
     : `${dropped} of ${checked.length} checked finding(s) were refuted or left unproven, and are not listed.`,
+  '',
+  unchecked.length === 0
+    ? ''
+    : `${checked.length} of ${unique.length} distinct finding(s) refuted against the code; ${unchecked.length} not refuted.\n\n## Unchecked (${unchecked.length}, not refuted: check them or run again)\n\n${uncheckedLines.join('\n')}`,
   '',
   hunches.length === 0
     ? ''

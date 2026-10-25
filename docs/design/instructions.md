@@ -100,6 +100,24 @@ shipped script against fakes and checks the guard the plugin ships allows every 
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
 
+*The arguments and the budget (1.2.1).* The Workflow tool hands `args` to the script verbatim,
+so a caller that passes the text of an object gets a string. Both scripts refuse that at the
+start: a string, `null`, an array, an unknown key or a wrong type throws one line that names the
+problem and the expected object, before any agent starts; no `args` at all still runs on the
+defaults, for a person starting the workflow by hand. Both scripts rank the distinct findings by
+severity (the order of the final list), then by track, and the budget refutes the first
+`budget` of them, so one busy track cannot take every refuter and starve a critical finding of
+the last one. A finding past the budget is never dropped: `review-split` returns it in an
+**Unchecked** section (severity, title, file and line), `audit-run` hands the same lines to the
+writer for an **Unchecked findings** section, and each run's log and summary line say how many
+were checked and how many were not. The two scripts carry the same argument check and the same
+ranking, each in its own file: Claude Code documents a workflow script as a plain function body
+with no filesystem or Node API and no import, and the only reuse it names is `workflow()`, which
+runs a whole script as a step and returns its result, not a helper (read from the Workflow
+tool's own description, not proved by a live run). A shared piece would be a third script that
+runs agents, so the two stay self-contained (the checks are code, which `check:duplicates`,
+reading sentences, does not flag).
+
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is

@@ -175,6 +175,128 @@ describe("the review-split workflow", () => {
     expect(run.logs.join("\n")).toContain("3 finding(s) reported, 3 distinct; 2 refuted");
   });
 
+  test("more findings than the budget: the most severe are refuted, the rest come back unchecked", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([
+        finding("w1", "warning", "src/w1.ts", 1),
+        finding("s1", "suggestion", "src/s1.ts", 2),
+        finding("c1", "critical", "src/c1.ts", 3),
+        finding("w2", "warning", "src/w2.ts", 4),
+      ]),
+      args: { base: "main", budget: 2, tracks: ["craft"] },
+    });
+    expect(run.calls.filter(isRefute).map(labelOf)).toEqual([
+      "refute: src/c1.ts",
+      "refute: src/w1.ts",
+    ]);
+    const report = String(run.result);
+    expect(report).toContain("## Unchecked (2, not refuted: check them or run again)");
+    expect(report).toContain("- [WARNING] w2 — src/w2.ts:4");
+    expect(report).toContain("- [SUGGESTION] s1 — src/s1.ts:2");
+    expect(report).toContain("2 of 4 distinct finding(s) refuted against the code; 2 not refuted");
+    expect(run.logs.join("\n")).toContain("2 refuted against the code, 2 not");
+  });
+
+  test("a critical finding in the last track is refuted even when an earlier track fills the budget", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => {
+        if (!isReview(call)) return { reason: "checked", verdict: "confirmed" };
+        return labelOf(call) === "review: busy"
+          ? {
+              findings: [1, 2, 3, 4].map((n) =>
+                finding(`busy ${n}`, "suggestion", `src/busy${n}.ts`),
+              ),
+            }
+          : { findings: [finding("the critical one", "critical", "src/last.ts", 7)] };
+      },
+      args: { base: "main", budget: 2, tracks: ["busy", "last"] },
+    });
+    const refuted = run.calls.filter(isRefute).map(labelOf);
+    expect(refuted).toContain("refute: src/last.ts");
+    expect(String(run.result)).toContain("[CRITICAL] the critical one — src/last.ts:7");
+    expect(String(run.result)).toContain("## Unchecked (3,");
+  });
+
+  test("a finding without a line is listed unchecked by its file alone", async () => {
+    const lineless = { ...finding("no line", "suggestion", "src/n.ts"), line: undefined };
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("first", "critical"), lineless]),
+      args: { base: "main", budget: 1, tracks: ["craft"] },
+    });
+    expect(String(run.result)).toContain("- [SUGGESTION] no line — src/n.ts\n");
+  });
+
+  test("nothing past the budget: no unchecked section", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A")]),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    expect(String(run.result)).not.toContain("Unchecked");
+  });
+
+  test("a string argument is refused with one line that names the expected object, and no agent starts", async () => {
+    const calls: unknown[] = [];
+    const attempt = runScript(REVIEW_SPLIT, {
+      answer: (call) => {
+        calls.push(call);
+        return null;
+      },
+      args: '{"base":"main","risky":true}',
+    });
+    await expect(attempt).rejects.toThrow(/review-split refused its arguments \(got a string/);
+    await expect(attempt).rejects.toThrow(/Pass one object: \{ base\?: string/);
+    await attempt.catch((error: Error) => expect(error.message.includes("\n")).toBe(false));
+    expect(calls).toEqual([]);
+  });
+
+  test("an unknown key is refused, and the message names it", async () => {
+    await expect(
+      runScript(REVIEW_SPLIT, { args: { base: "main", risk: true, tracks: ["craft"] } }),
+    ).rejects.toThrow(/unknown key "risk"/);
+  });
+
+  test("a wrong type is refused, and the message names the key", async () => {
+    const bad: Array<[string, unknown]> = [
+      ["risky", "true"],
+      ["budget", "12"],
+      ["budget", 0],
+      ["budget", 2.5],
+      ["tracks", "craft"],
+      ["tracks", [1]],
+      ["base", 5],
+      ["head", ["x"]],
+      ["folder", {}],
+      ["intent", false],
+    ];
+    for (const [key, value] of bad) {
+      await expect(
+        runScript(REVIEW_SPLIT, { args: { base: "main", [key]: value } }),
+      ).rejects.toThrow(new RegExp(`"${key}" must be`));
+    }
+  });
+
+  test("a null, an array or a number is refused too; the object runs as before", async () => {
+    for (const args of [null, ["main"], 12]) {
+      await expect(runScript(REVIEW_SPLIT, { args })).rejects.toThrow(
+        /review-split refused its arguments/,
+      );
+    }
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        budget: 3,
+        folder: "/tmp/x",
+        head: "HEAD",
+        intent: "adds a cache",
+        risky: true,
+        tracks: ["craft"],
+      },
+    });
+    expect(run.calls.filter(isReview).length).toBe(1);
+    expect(run.calls[0]?.options).toMatchObject({ effort: "xhigh", model: "opus" });
+  });
+
   test("its reviewers are the ones whose return records the review for the merge guard", () => {
     const script = readFileSync(REVIEW_SPLIT, "utf8");
     for (const launch of judgeWorkflow(
