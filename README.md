@@ -2580,15 +2580,17 @@ Inside Claude Code the review-gate keys refuse, as `set` does there; outside it 
 terminal, the portal — every key is allowed, because the pull request's review is the gate.
 A crew session never runs it (D24): the shell judge denies the command under every spelling it
 reads — by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a
-program that runs its arguments (`find -exec`, `watch`), a computed program or subcommand, and
-`env -u` — and the command refuses too, with the step that puts the need to its lead.
+program that runs its arguments (`find -exec`, `watch`), a computed program or subcommand when the
+line names the kit (the words `workflow propose` are refused on any line, so a test run of a
+`workflow` folder is not), and `env -u` — and the command refuses too, with the step that puts the
+need to its lead.
 Any other Claude Code session that runs it is **asked first** whenever the gate the git and merge
 guards read — the default, your own `workflow.json`, the project's file as committed on
 `origin/<worktrees.base>` — has `autoPush` off or `openPr` short of `ready`: the command pushes
 the branch and opens a pull request ready for review in children those guards never see, so the
 question names both and the switch that says no. A gate it cannot read, a project it cannot name
 (`--folder` worked out when the line runs, a `cd` before it) and a computed program or subcommand
-are a question too; in `claude -p`, where nobody answers, the question is a refusal. The portal's
+on a line that names the kit are a question too; in `claude -p`, where nobody answers, the question is a refusal. The portal's
 Workflow card asks you on its page and runs the command outside any session, so it is unchanged.
 
 ## A project's `.claude/cc-smart-dev-kit.json`
