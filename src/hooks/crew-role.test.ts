@@ -1227,7 +1227,7 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     // The name is not set: the kit cannot remember it set it, and setting it every turn would
     // override a `/rename` the person gives later.
     expect(result.stderr).toStartWith(
-      "cc-smart-dev-kit crew-role: the session name could not be recorded, so it is not set this turn (",
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
     );
     const events = personEvents(world.stateDir, world.repo);
     expect(events.map((event) => event.text)).toEqual(["Stop after the guard."]);
@@ -1251,7 +1251,7 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     );
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith(
-      "cc-smart-dev-kit crew-role: the session name could not be recorded, so it is not set this turn (",
+      "cc-smart-dev-kit crew-role: the session name could not be recorded (",
     );
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });

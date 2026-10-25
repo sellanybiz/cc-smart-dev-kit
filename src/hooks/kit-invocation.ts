@@ -90,6 +90,14 @@ const PATH_BREAKS = /[\s"'`=;&|<>()]+/;
  * the words around a computed program are another program's (`"$PY" -m pytest -k workflow`),
  * and a guard that read them as the kit's would ask or refuse a test run. `session-escape-guard`
  * and `job-route`'s judge share this one test.
+ *
+ * **It leans toward yes, on purpose.** A line that holds the kit's bundle as another program's
+ * argument (`"$PY" -m pytest src/entries/cli.ts`) or a folder that ends in the kit's name
+ * (`cd /repo/cc-smart-dev-kit && "$PY" …`) names it too. A text test cannot tell those from the
+ * same words as a variable's value (`B="${PLUGIN_ROOT}/dist/cli.js"; … $B`, `K=/opt/tools/${COMMAND}`),
+ * and a narrower rule — a folder of the kit's name above the bundle, a launcher only under `bin/` —
+ * would let those real spellings past a guard that fails closed. The cost of the wide rule is one
+ * question about a computed program on a line with a stray kit path.
  */
 export function namesKit(text: string): boolean {
   return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));

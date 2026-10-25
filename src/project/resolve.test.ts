@@ -11,8 +11,10 @@ import {
 } from "./config";
 import {
   type Checkout,
+  checkoutFailure,
   GIT_NOT_FOUND,
   GIT_TIMED_OUT,
+  GitTimedOutError,
   locateCheckout,
   locateCheckoutAsync,
   ownHooksOf,
@@ -451,6 +453,24 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
       where: "origin/dev:.claude/cc-smart-dev-kit.json",
       why: GIT_TIMED_OUT,
     });
+  });
+
+  test("a lookup that timed out throws one plain line with its fix; checkoutFailure says the reason alone", () => {
+    const repo = makeRepo();
+    let thrown: unknown;
+    try {
+      locateCheckout(repo, { timeFor: () => 0 });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GitTimedOutError);
+    expect(thrown instanceof Error ? thrown.message : null).toBe(
+      "git did not answer in time: run `git status` in this folder; if that hangs too, fix git first, then run this again",
+    );
+    expect(checkoutFailure(thrown)).toBe("git did not answer in time");
+    // Any other error keeps its own message, and a thrown string is its text.
+    expect(checkoutFailure(new Error("git older than 2.31"))).toBe("git older than 2.31");
+    expect(checkoutFailure("no folder")).toBe("no folder");
   });
 
   // A fake git that hangs on the call named stands in for a stuck one. POSIX only (`slowGitEnv`).

@@ -63,9 +63,7 @@ describe("titleToSetOrProblem: a name whose record cannot be written is not set,
     expect(() => titleToSet(env, SESSION, "LEAD app plan", "other")).toThrow();
     const answer = titleToSetOrProblem(env, SESSION, "LEAD app plan", "other");
     expect(answer.title).toBeNull();
-    expect(answer.problem).toStartWith(
-      "the session name could not be recorded, so it is not set this turn (",
-    );
+    expect(answer.problem).toStartWith("the session name could not be recorded (");
   });
 });
 

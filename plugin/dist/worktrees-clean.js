@@ -6373,6 +6373,14 @@ function gitNotFound(error) {
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
 var NO_TIME_LEFT = {
   ok: false,
   stdout: "",
@@ -6422,7 +6430,7 @@ function requireGitVersion(git) {
 }
 function mainCheckoutFrom(list, cwd) {
   if (list.timedOut === true)
-    throw new Error(GIT_TIMED_OUT);
+    throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -6471,7 +6479,7 @@ function locateCheckout(cwd, options = {}) {
     "--git-common-dir"
   ]);
   if (revParse.timedOut === true)
-    throw new Error(GIT_TIMED_OUT);
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);

@@ -71,7 +71,12 @@ import {
 } from "../crew/brief";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
-import { loadProjectConfig, locateCheckout, type TimeFor } from "../project/resolve";
+import {
+  checkoutFailure,
+  loadProjectConfig,
+  locateCheckout,
+  type TimeFor,
+} from "../project/resolve";
 import {
   CHANGE_DIR,
   type Dialect,
@@ -690,7 +695,9 @@ function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor
     if (checkout === null) return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    // The reason alone: the question names it in a sentence, and a timeout's own fix ("run this
+    // again") is for a command the person ran, not for a line they are asked to approve.
+    return cannotTellProject(checkoutFailure(error));
   }
   const acts = proposeActs(base);
   try {

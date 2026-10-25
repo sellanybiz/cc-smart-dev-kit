@@ -593,7 +593,7 @@ describe("RF1-4: a session that is not a crew session proposing a workflow chang
       });
       expect(verdict).toEqual({
         decision: "ask",
-        reason: `${ACTS.replace("into `dev`","into the project's integration base (worktrees.base)")}\ncc-smart-dev-kit cannot tell which project's workflow this line proposes into (${TIMED_OUT}), so it cannot read the gate. Approve it if you meant it.`,
+        reason: `${ACTS.replace("into `dev`", "into the project's integration base (worktrees.base)")}\ncc-smart-dev-kit cannot tell which project's workflow this line proposes into (${TIMED_OUT}), so it cannot read the gate. Approve it if you meant it.`,
         why: "propose",
       });
       // One call may take the budget less the margin (1 s here), and none is made after it.

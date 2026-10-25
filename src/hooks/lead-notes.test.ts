@@ -297,7 +297,7 @@ describe("the lead's name (LD1)", () => {
     });
     expect(result.stdout).toBe(addContext("UserPromptSubmit", stepLine("tests-green")).stdout);
     expect(result.stderr).toStartWith(
-      "cc-smart-dev-kit lead-notes: the session name could not be recorded, so it is not set this turn (",
+      "cc-smart-dev-kit lead-notes: the session name could not be recorded (",
     );
     // The news is said once, and the name is set on the first turn that can record it.
     expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(

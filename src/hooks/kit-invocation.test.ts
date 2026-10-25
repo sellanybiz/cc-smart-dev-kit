@@ -13,6 +13,10 @@ describe("namesKit: the kit command as a token of a line's text", () => {
       "$HOME/.local/bin/cc-smart-dev-kit workflow",
       "C:\\bin\\cc-smart-dev-kit.cmd workflow",
       "echo propose | xargs cc-smart-dev-kit workflow",
+      // A launcher the person put in a folder of their own: a name that ends a path counts
+      // wherever the path runs (the cost is `cd /repo/cc-smart-dev-kit && "$PY" …`, which counts
+      // too, on purpose: RV4 finding F6).
+      "K=/opt/tools/cc-smart-dev-kit; $K workflow",
     ]) {
       expect({ line, names: namesKit(line) }).toEqual({ line, names: true });
     }
@@ -24,6 +28,10 @@ describe("namesKit: the kit command as a token of a line's text", () => {
       'C="/opt/plugin/dist/cli.js"; "$BUN" "$C" crew list',
       "export P=/opt/plugin/dist/portal.js && $NODE $P",
       "$(which bun) src/entries/cli.ts doctor",
+      // The form the plugin's own hook commands take: the plugin folder is a variable, so no
+      // folder of the path holds the kit's name (a rule that wanted one would miss this; the
+      // cost is `"$PY" -m pytest src/entries/cli.ts …`, which counts too: RV4 finding F5).
+      'B="$CLAUDE_PLUGIN_ROOT/dist/cli.js"; $(which bun) $B workflow',
     ]) {
       expect({ line, names: namesKit(line) }).toEqual({ line, names: true });
     }

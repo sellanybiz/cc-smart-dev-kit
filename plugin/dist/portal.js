@@ -14360,6 +14360,19 @@ function gitNotFound(error) {
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+function checkoutFailure(error) {
+  if (error instanceof GitTimedOutError)
+    return GIT_TIMED_OUT;
+  return error instanceof Error ? error.message : String(error);
+}
 var NO_TIME_LEFT = {
   ok: false,
   stdout: "",
@@ -14438,7 +14451,7 @@ async function requireGitVersionAsync(git) {
 }
 function mainCheckoutFrom(list, cwd) {
   if (list.timedOut === true)
-    throw new Error(GIT_TIMED_OUT);
+    throw new GitTimedOutError;
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -14490,7 +14503,7 @@ function locateCheckout(cwd, options = {}) {
     "--git-common-dir"
   ]);
   if (revParse.timedOut === true)
-    throw new Error(GIT_TIMED_OUT);
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -14520,7 +14533,7 @@ async function locateCheckoutAsync(cwd, options = {}) {
     "--git-common-dir"
   ]);
   if (revParse.timedOut === true)
-    throw new Error(GIT_TIMED_OUT);
+    throw new GitTimedOutError;
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     await requireGitVersionAsync(git);
@@ -25845,7 +25858,7 @@ function titleToSetOrProblem(env, sessionId, wanted, current) {
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return {
-      problem: `the session name could not be recorded, so it is not set this turn (${why})`,
+      problem: `the session name could not be recorded (${why})`,
       title: null
     };
   }
@@ -32688,7 +32701,7 @@ function proposeQuestion(folder, context, timeFor) {
       return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(error instanceof Error ? error.message : String(error));
+    return cannotTellProject(checkoutFailure(error));
   }
   const acts = proposeActs(base);
   try {
@@ -35047,7 +35060,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile) {
   try {
     checkout = existsSync50(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
-    return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
+    return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
   if (checkout === null)
     return [];

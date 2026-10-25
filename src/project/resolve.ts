@@ -84,6 +84,33 @@ function gitNotFound(error: unknown): unknown {
 /** What a caller is told when git did not answer: the reason of a question, never a guess. */
 export const GIT_TIMED_OUT = "git did not answer in time";
 
+/** What a person does about it: the one fix every command that prints the error carries. */
+export const GIT_TIMED_OUT_FIX =
+  "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+/**
+ * What a checkout lookup throws when git did not answer. A hung git is an error, never "outside
+ * git" (RV4-2). The message is one plain line, the reason and its fix, so a command that prints
+ * `error.message` (most do, and the CLI's last catch) tells the person what to do; a check that
+ * prints its fix on a line of its own (`doctor`) says `GIT_TIMED_OUT` alone.
+ */
+export class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+
+/**
+ * What went wrong in a checkout lookup, without the fix a timeout's message carries: for a caller
+ * that puts the reason inside a sentence or beside a fix of its own (`doctor`'s check, a guard's
+ * question), where "run this again" would read wrongly.
+ */
+export function checkoutFailure(error: unknown): string {
+  if (error instanceof GitTimedOutError) return GIT_TIMED_OUT;
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** What a call answers when its shared budget has no time left: it was never made. */
 const NO_TIME_LEFT: GitResult = {
   ok: false,
@@ -193,7 +220,7 @@ async function requireGitVersionAsync(git: GitAsync): Promise<void> {
  * one parse both readers of the list use.
  */
 function mainCheckoutFrom(list: GitResult, cwd: string): string | null {
-  if (list.timedOut === true) throw new Error(GIT_TIMED_OUT);
+  if (list.timedOut === true) throw new GitTimedOutError();
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split("\n\n");
   const lines = firstEntry.split("\n");
@@ -253,7 +280,8 @@ export type Checkout = Omit<Project, "config" | "configFile">;
 
 /**
  * Finds the git checkout `cwd` is in, reading no cc-smart-dev-kit.json. Returns null outside git or
- * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
+ * in a bare repo. Throws when git is older than 2.31, the main checkout is missing, or git did
+ * not answer in time (`GitTimedOutError`: a hung git says nothing about the folder).
  * A hook calls it first, then `ownHooksOf`, so a hook the project runs as its own copy stays
  * silent even when the cc-smart-dev-kit.json is broken.
  */
@@ -270,7 +298,7 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
     "--git-common-dir",
   ]);
   // A git that did not answer says nothing about the folder: not "outside git".
-  if (revParse.timedOut === true) throw new Error(GIT_TIMED_OUT);
+  if (revParse.timedOut === true) throw new GitTimedOutError();
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -310,7 +338,7 @@ export async function locateCheckoutAsync(
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
-  if (revParse.timedOut === true) throw new Error(GIT_TIMED_OUT);
+  if (revParse.timedOut === true) throw new GitTimedOutError();
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     await requireGitVersionAsync(git);

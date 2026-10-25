@@ -59,13 +59,19 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   propose`.** A program a line works out when it runs (`$RUNNER … workflow`) was read as the
   kit's `workflow propose` whenever its last word was `workflow`, so a crew session was denied
   commands such as a test run of a `workflow` folder. The line now has to name the kit: by its
-  name, a path to its launcher, or its bundle behind another program.
+  name, a path to its launcher, or its bundle behind another program. The same holds when the
+  word after `workflow` is also worked out at run time (`$RUNNER … workflow $ARG`); the words
+  `workflow propose` are still refused on any line.
 - **The escape guard still asks when the kit's bundle path is bound in a variable** and run by a
   computed program (`C=…/dist/cli.js; $(which bun) $C …`), though it no longer asks for a path
   that only passes through a folder named like the kit.
 - **The `workflow propose` question answers in time.** It finds the project and reads its
   committed policy inside one budget of 8 of its hook's 10 seconds. On a git that hangs or is
   slow it asks and says that git did not answer in time, where the hook was cut off before.
+- **A command run where git does not answer says what to do.** `project init`, `workflow`,
+  `worktrees` and `crew` print one plain line, "git did not answer in time: run `git status` in
+  this folder; …", where they printed the bare reason; `doctor` prints the same fix on its own
+  line.
 - **A session name that cannot be recorded no longer loses a message.** When the temp folder is
   not usable, the person's own prompt typed into a crew session (and the lead's line about it)
   and a lead's news about its crew sessions were lost with the name. They now go through, the

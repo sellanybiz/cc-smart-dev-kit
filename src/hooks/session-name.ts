@@ -118,7 +118,7 @@ export function titleToSetOrProblem(
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return {
-      problem: `the session name could not be recorded, so it is not set this turn (${why})`,
+      problem: `the session name could not be recorded (${why})`,
       title: null,
     };
   }
