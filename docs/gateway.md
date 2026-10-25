@@ -172,7 +172,11 @@ http://127.0.0.1:20100/p/my-project
   because the proof is machine-wide and the router ignores untested targets: set the judge with
   `gateway slot judge` (or `gateway slot worker`, whose proof also lets a target judge while
   Claude cannot) first. A profile's **worker** targets judge while Claude cannot only once the
-  machine proved the same target. The router reads the
+  machine proved the same target. Where a judge other than Claude decides in a profile (its own
+  judge chain, or its tested worker targets standing in), the profile commands say the trade-off
+  too (`JUDGE_WARNING`), and `gateway profile <name> fallback judge on|off` — with no judge chain
+  in the profile — says who judges, as `gateway fallback judge` does, instead of a next target.
+  The router reads the
   config again within about a second, so a session using the profile uses the change from its
   next request. A project gets the profile with `gateway project on --profile <name>` (§ Per
   project). A profile's fallback or breaker switch set on a slot it only inherits (it names no
@@ -305,8 +309,11 @@ the command's.
   the fix (remove it from that file), read from the project's settings chain
   (`projectGatewayState`) and never a model suggested. A login key is named in every mode that
   passes the file; a slot name only in `--no-gateway`, because on the gateway a slot name is what
-  the router reads. A file that cannot be read is not named here; `doctor` names it. A launch with
-  no mode passes no file and says nothing.
+  the router reads. The files are read in the order Claude Code applies them, and the first one
+  that sets a model key decides it: a slot name another file overrides with a real model is not
+  named. A file that cannot be read holds no facts and is not named here (`doctor` names it); a
+  file whose `ANTHROPIC_BASE_URL` alone is malformed is still read for its other keys. A launch
+  with no mode passes no file and says nothing.
 - **Where the file is:** `<stateDir>/launch/<mode>-<pid>.json` (`no-gateway-<pid>.json`,
   `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600 in a 0700 folder, written by the
   kit's one JSON writer (`writeJsonFile`, `src/crew/store.ts`), which `crew start` uses for its
@@ -329,7 +336,12 @@ the command's.
   session's exit code. The terminal sees one session either way. A SIGHUP, SIGINT or SIGTERM sent
   to the command alone (`kill <pid>`, a supervisor) is handed on to the session, so the command
   ends with the session and removes its settings file; one the terminal sent reaches the session
-  by itself too. What happens to the session on Ctrl+Z is Claude Code's own and not proved here.
+  by itself too. The session's exit code is passed on as Bun gives it: 128 plus the signal's
+  number for a session a signal ended (143 for SIGTERM). **On Windows the command hands on no
+  signal**: a Ctrl+C or a closed console is a console event every process on that console gets
+  by itself, and `kill` there ends a process outright instead of delivering a signal, so a
+  forwarded one would turn the session's own handling into a hard stop. The Windows run is owed
+  (P11). What happens to the session on Ctrl+Z is Claude Code's own and not proved here.
 - **A router that does not answer is refused, in both gateway modes.** The config alone proves
   nothing: `restore` keeps `gateway.json` and removes the router, and a stopped service leaves it
   too. A session pointed at a silent port fails every request with a connection error that Claude
@@ -338,7 +350,10 @@ the command's.
   timeout, an HTTP error) stops the launch with `launch: the router does not answer on
   127.0.0.1:<port> (<why>) …` and the fix `gateway setup`. `--gateway` needs only an answer;
   `--profile` also needs `profiles` in the page's `features`. `--no-gateway` and no mode ask
-  nothing: they do not use the router.
+  nothing: they do not use the router. The question goes straight to 127.0.0.1, never through a
+  proxy in the environment (`routerFetch`, as `setup` and `doctor` ask it): Bun sends a loopback
+  request to `HTTP_PROXY` unless `NO_PROXY` names the host, and a running router would look
+  silent.
 - **Windows is unproved** (P11 is owed): the CLI writes the file before it starts `claude`, and
   a `claude.cmd` runs through `cmd.exe` on one quoted line (`claudeArgv`), so no `.cmd` launcher
   has to write a file first. The path and the quoting are tested; the live run is not.
@@ -561,8 +576,10 @@ was (`config.ts`, tested in `config.test.ts`).
   behind goes stale.
 - **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design/crew.md`) a
   `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` (`slot` is the
-  state key: `<profile>/<slot>` for a worker in a project on a profile) or `{kind:
-  "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
+  state key: `<profile>/<slot>` for a worker in a project on a profile), `{kind:
+  "claude-limit", model, resetsAt}`, or `{kind: "unknown", since, slot?}` (the same state key,
+  so the watch asks the session's own breaker before it resumes it, never the machine's), and a
+  lead's record may carry `pausedAgents`, the ids of its
   own subagents waiting to be woken. Both are optional.
 
 ## The breaker
@@ -647,8 +664,8 @@ switches `--fallback-model` (a 529 does after three).
    down …` and ends with the profile's command, `cc-smart-dev-kit gateway profile <name> slot
    worker <targets>`; a profile that names no chain of its own for the slot uses the machine's,
    so the message also names `gateway slot worker <targets>` and says it is the chain this
-   profile uses (`breakerChangeHint`; the reminder line, the alert and the status line say the
-   same). The request line reads `→ breaker(cc-smart-dev-kit-worker) 429 240013ms held
+   profile uses (`breakerChangeHint`; the reminder line says the same, while the alert and the
+   status line name the profile's command alone). The request line reads `→ breaker(cc-smart-dev-kit-worker) 429 240013ms held
    probes=1` (`not-held` when the 65th or a hold of 0 answered at once).
 6. **Why 429, not 529.** A 429 is retried for every login type, never switches a
    `--fallback-model`, and is not dropped for Claude Code's own background calls (a 529 is).
@@ -666,10 +683,11 @@ record is named by its key, `<profile>/cc-smart-dev-kit-worker`. The status line
 shows `<slot> slot: every target limited since 21:05 → gateway slot <slot> <targets>` while the
 record is fresh, and a turn that still stops gives the StopFailure alert once per opening
 (§ The limit state, the status line, the alert); for a profile's breaker both name the profile
-and point at its key under `profiles` in the config, never at `gateway slot`, which would change
-the machine's chain. The way out is in the answer:
+and its command, `gateway profile <name> slot worker <targets>`, never `gateway slot`, which would
+change the machine's chain. The way out is in the answer:
 `cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
-within a second), or `gateway breaker worker off` for the old behaviour.
+within a second), or `gateway breaker worker off` for the old behaviour; for a profile,
+`gateway profile <name> breaker worker off`.
 
 **Without Claude Code's retry watchdog**, the bridge is 11 requests × (240 s hold + a wait of at
 most 60 s), about 55 minutes. The watchdog (`CLAUDE_CODE_RETRY_WATCHDOG`) and the kit's own
@@ -1006,9 +1024,10 @@ that works whether the profile names the slot or uses the machine's chain), and 
 `5h 23% · 7d 41%`, which warns from 85 %. **A fallback or breaker line shows only in a session on
 its chain**: the status line command's environment carries the session's own
 `ANTHROPIC_BASE_URL` (`docs/claude-code-contract.md`), so a session on the machine's address sees
-the machine's records, one on `…/p/<name>` sees that profile's, and one off the gateway sees
-neither (an environment with no address says nothing, so the machine's records show); a plan limit
-shows in every session, because the login is one. Run by hand with no input from Claude Code, it
+the machine's records, one on `…/p/<name>` sees that profile's, and one off the gateway (Anthropic's
+own address, or an empty one) sees neither. Any other address counts as the machine's gateway, as
+the guards read it; an environment with no address at all says nothing, so the machine's records
+show. A plan limit shows in every session, because the login is one. Run by hand with no input from Claude Code, it
 shows every record. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on

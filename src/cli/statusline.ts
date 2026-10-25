@@ -24,11 +24,13 @@
  *     <targets>`, never the `gateway slot` command, which would change the machine's chain;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
- * It reads two small files and prints; no network. **A fallback or breaker record shows only in a
- * session on its chain** (`sessionGatewayOf`: the `ANTHROPIC_BASE_URL` the command's environment
- * carries is the session's own, `docs/claude-code-contract.md`): the machine's records on the
- * machine's address (or when it carries none), a profile's on that profile's address, none off
- * the gateway. A plan limit shows in every session: the login is one.
+ * It reads the router's state file and the gateway's config (the config only to tell a profile's
+ * address from the machine's, `sessionGatewayOf`) and prints; no network. **A fallback or
+ * breaker record shows only in a session on its chain** (`sessionGatewayOf`: the
+ * `ANTHROPIC_BASE_URL` the command's environment carries is the session's own,
+ * `docs/claude-code-contract.md`): the machine's records on the machine's address (or when it
+ * carries none), a profile's on that profile's address, none off the gateway. A plan limit shows
+ * in every session: the login is one.
  *
  * **The warning share is a setting** (`alerts.usagePercent`, 85 by default): the entry reads it
  * once, at the folder the session is in, with the same reader the alert hooks use (`alertsAt`),
@@ -137,14 +139,14 @@ export function statuslineText(
 
 /**
  * The gateway the session runs on, for the records its line shows. An environment with no
- * address says nothing: the contract proves the session's address there for a `--settings` file
- * and a project's own file (`docs/claude-code-contract.md`), so with none the machine's records
- * show, as they always did. An address decides: Anthropic's own (off), the router's, or a
- * profile's.
+ * address at all says nothing: the contract proves the session's address there for a `--settings`
+ * file and a project's own file (`docs/claude-code-contract.md`), so with none the machine's
+ * records show, as they always did. An address decides, as `sessionGatewayOf` reads it for the
+ * guards: Anthropic's own or an empty one (off), the router's, a profile's, and any other
+ * address counts as the machine's gateway.
  */
 function sessionOf(paths: CliPaths, env: Env): Pick<SessionGateway, "gatewayOn" | "profile"> {
-  const url = env.ANTHROPIC_BASE_URL;
-  if (url === undefined || url === "") return { gatewayOn: true, profile: null };
+  if (env.ANTHROPIC_BASE_URL === undefined) return { gatewayOn: true, profile: null };
   return sessionGatewayOf(paths, env);
 }
 

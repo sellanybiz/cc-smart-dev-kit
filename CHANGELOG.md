@@ -18,17 +18,22 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   on|off` and `gateway profile <name> breaker <slot> on|off`). Projects you never set keep the
   machine's gateway. A profile needs this version's router: until `gateway setup` puts it in
   place, `--profile` (here and in `launch`) is refused and `doctor` fails a project whose address
-  names one. When every target of a profile's slot is limited, the router's message, its reminder, the alert and the status
-  line name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
-  `gateway slot …` too when the profile uses the machine's chain), not a hand edit of
-  `gateway.json`. `gateway profile <name> slot judge off` no longer says Claude judges alone: the
+  names one. When every target of a profile's slot is limited, the router's message and its
+  reminder name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
+  `gateway slot …` too when the profile uses the machine's chain), and the alert and the status
+  line name the profile's command, not a hand edit of `gateway.json`. `gateway profile <name> slot judge off` no longer says Claude judges alone: the
   profile's tested worker targets still judge while Claude cannot, unless its judge fallback is off.
-  A crew session in a profile project now waits on its profile's breaker, not the machine's.
+  The profile commands also say the trade-off of a judge other than Claude, and `gateway profile
+  <name> fallback judge on|off` says who judges instead of a "next target".
+  A crew session in a profile project now waits on its profile's breaker, not the machine's, also
+  after a failure the router did not explain.
   The status line shows a fallback or breaker only in a session on that chain: a profile's
-  record no longer appears in every session on the machine, and a session off the gateway shows
-  none. `crew start` and the opus usage guard read a project's own gateway (its settings, and its
-  profile's chains), not the user's file alone: a project turned on or off with `gateway project`
-  now decides which effort a crew session gets and whether the usage guard holds.
+  record no longer appears in every session on the machine, and a session off the gateway (an
+  empty address too) shows none. `crew start` and the opus usage guard read a project's own
+  gateway (its settings, and its profile's chains), not the user's file alone: a project turned on
+  or off with `gateway project` now decides which effort a crew session gets and whether the usage
+  guard holds. `crew start`, the Agent guard's queue check and `crew list` read it at the same
+  folder, the repository's main checkout.
 - **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
   (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
   and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and
@@ -39,7 +44,11 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   also says, on stderr and still starting, what its settings file leaves in place: one line per
   login key or helper in your settings (the session bills through it, not through your plan's
   login), and in `--no-gateway` per retired model key that names a slot (Anthropic has no such
-  model), each with its file and the fix.
+  model), each with its file and the fix; a model key is named only where its file decides it,
+  and a file whose address alone is malformed is still read for its other keys. The router
+  question goes straight to `127.0.0.1`, so a proxy in your environment no longer makes a running
+  router look silent (`setup` and `doctor` ask it the same way). On Windows, where the console
+  already gives a Ctrl+C or a close to the session, `launch` hands on no signal.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
   so no session needs a restart. A second `restore` takes the key out. One exception: on a

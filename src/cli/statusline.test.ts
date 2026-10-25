@@ -326,6 +326,8 @@ describe("RV3: a record shows in the session it is about", () => {
       await run("https://api.anthropic.com");
       // No address in the environment says nothing about the gateway: the machine's records.
       await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, undefined, {});
+      // An empty address is Anthropic's own (what `sessionGatewayOf` and Claude Code read): off.
+      await run("");
     } finally {
       console.log = original;
     }
@@ -336,5 +338,6 @@ describe("RV3: a record shows in the session it is about", () => {
     expect(lines[2]).not.toContain("omniroute:");
     expect(lines[3]).toContain("omniroute:machine-opus");
     expect(lines[3]).not.toContain("team-fable");
+    expect(lines[4]).not.toContain("omniroute:");
   });
 });

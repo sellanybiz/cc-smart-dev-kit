@@ -41,8 +41,11 @@ guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
 is the project's: the address its own settings choose over the machine's — its personal file, its
 team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
-`src/crew/usage-guard.ts`; `crew start` runs outside any session, so the user's file alone would
-miss a project turned on or off with `gateway project`). So does code that
+`src/crew/usage-guard.ts`). It reads the settings files at the repository's main checkout, the
+same folder for `crew start`, for the Agent guard's question "would a start queue now?" and for
+`crew list`; the user's file alone would miss a project turned on or off with `gateway project`.
+It reads no environment: an address exported only in the shell that runs `crew start`, with no
+settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
 Work that needs judgment — `architecture` — runs on `opus` at `xhigh`, whatever answers the
 tier. `ui` is the exception (`UI_POLICY`, D50): it runs on `opus` at `high`, never on an
@@ -124,7 +127,8 @@ repository, under the state folder:
   and where it is: its state, its last line, its report, its pull request, its memory, its
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
   open — the slot's key, or `<profile>/<slot>` for a crew session in a project on a profile, whose
-  breaker is the profile's —, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
+  breaker is the profile's —, Claude's own plan limit, or `unknown` when the router's state explains nothing (it keeps
+  the same key, so the watch asks that session's own breaker before it resumes it); with the
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
   § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id

@@ -51083,8 +51083,7 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
   return parts.join(" \xB7 ");
 }
 function sessionOf(paths, env) {
-  const url = env.ANTHROPIC_BASE_URL;
-  if (url === undefined || url === "")
+  if (env.ANTHROPIC_BASE_URL === undefined)
     return { gatewayOn: true, profile: null };
   return sessionGatewayOf(paths, env);
 }
