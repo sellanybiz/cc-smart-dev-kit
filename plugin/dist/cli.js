@@ -54170,6 +54170,19 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
   });
 }
 
+// src/setup/remote-control.ts
+var REMOTE_CONTROL_KEY = ["remoteControlAtStartup"];
+var REMOTE_CONTROL_VALUE = true;
+function planRemoteControl(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
+  if (!current.found) {
+    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+    return ownership(records, REMOTE_CONTROL_KEY, current) !== "changed";
+  }
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  return Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) && ownership(records, REMOTE_CONTROL_KEY, current) === "ours";
+}
+
 // src/cli/setup.ts
 function show5(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
@@ -54259,6 +54272,8 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     add("mcp", mark, `${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
   const set = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
+  if (planRemoteControl(paths))
+    set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
   if (managed.statusline)
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on")

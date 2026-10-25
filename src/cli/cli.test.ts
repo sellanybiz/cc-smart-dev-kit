@@ -545,8 +545,9 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  6 changes, 1 note",
+          "✓ Claude Code settings  7 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
@@ -559,13 +560,14 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 14 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 15 changes, with 2 warnings to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
+      remoteControlAtStartup: true,
       hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
       env: { ...WATCHDOG_ENV, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
       enabledPlugins: {
@@ -615,7 +617,10 @@ describe("cc-smart-dev-kit setup", () => {
     expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
       false,
     );
-    expect(readFileSync(ownedFile, "utf8")).not.toContain('"value": true');
+    // The autoUpdate record holds false again (the Remote Control key's own record holds true).
+    expect(readFileSync(ownedFile, "utf8")).not.toContain(
+      '"autoUpdate"\n      ],\n      "value": true',
+    );
   });
 
   test("the backups go into the state folder, never beside the files", () => {
@@ -654,8 +659,9 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "· The command           1 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "· Claude Code settings  6 to change, 1 note",
+          "· Claude Code settings  7 to change, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
@@ -669,7 +675,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 14 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 15 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -823,8 +829,9 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  6 changes, 1 note",
+          "✓ Claude Code settings  7 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
@@ -837,7 +844,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 12 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 13 changes, with 2 warnings to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1894,8 +1901,9 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  5 changes, 1 note",
+          "✓ Claude Code settings  6 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
@@ -1907,7 +1915,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 13 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 14 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -1993,8 +2001,9 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  5 changes, 1 note",
+          "✓ Claude Code settings  6 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
