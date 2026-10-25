@@ -677,8 +677,15 @@ where there was a question, never an allow.
   prompt goes to the person, who is back and answers it. Without it the skill's own calls would
   be parked and denied in the default permission mode, and the one command that ends the state
   could never run. The line is read with the one shell reader and the one kit-command reader
-  (`kitArguments`); a second command, a substitution, a redirection, a prefix, a computed
-  program or any other argument is parked as before, so nothing gets looser. When a session
+  (`kitArguments` is not used for this: it leans toward yes for guards and would read
+  `bash -c '…' cc-smart-dev-kit user available` as the kit's; here the program must be the kit's
+  own command by name); a second command, a substitution, a redirection, a prefix, a computed
+  program, another program or any other argument is parked as before, so nothing gets looser. A
+  crew session never gets the silence: it never asks the person, so its call is denied and parked
+  under its name. **The trade-off:** the hook cannot tell the returning person's run from a
+  session's own `user status` or `user list` while the person is away, so such a call waits for
+  Claude Code's prompt; the `user-unavailable` skill tells a session not to run them (the hook's
+  note carries the state and the count). When a session
   still cannot run it, the person types `! cc-smart-dev-kit user available` in the session
   (`/cc-smart-dev-kit:user-available` says so).
 - **A kit guard that would ask** — the frame's step 6, for every hook, so a new guard needs
@@ -686,10 +693,14 @@ where there was a question, never an allow.
   the call is parked as an `action`. A deny, an allow and silence pass through unchanged. A park
   that fails (a full list, a lock held too long) still denies, and the deny says to park by hand:
   the person is away, so the call must not wait. **The park fits inside the hook's time:** it
-  waits at most `AWAY_HOOK_LOCK_WAIT_MS` (1 s) for the lock, half of `BUDGET_MARGIN_MS`, the
-  time a guard keeps back for its answer (a guard's budget is 8 s of its 10 s, the merge guard's
-  25 s of 30 s, `src/hooks/budget.ts`). The command `user park` still waits 5 s
-  (`AWAY_LOCK_WAIT_MS`). A hook the host kills answers nothing, and `onFailure: block` then
+  waits at most `PARK_WAIT_MS` (1 s) for the lock, half of `BUDGET_MARGIN_MS`, the time a guard
+  keeps back for its answer. For a guard that runs on a budget (the merge guard 25 s of its 30 s,
+  `job-route`'s `workflow propose` question and `after-merge`, `src/hooks/budget.ts`) the last
+  child ends by 6 s of 10 s, or 23 s of 30 s, so the park ends well inside the hook's `timeout`.
+  A guard with no budget (`git-guard`, `main-folder-guard`, `message-guard`, and the frame's own
+  project lookup, each with 5 s git calls) was never held to a shared deadline: the short wait
+  does not fix that, it only stops the park from adding 5 s. The command `user park` still waits
+  5 s (`AWAY_LOCK_WAIT_MS`). A hook the host kills answers nothing, and `onFailure: block` then
   blocks the call with no word to the session. `user-away`'s own crash-ask is not converted.
 - **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
   …: follow `/cc-smart-dev-kit:user-unavailable`", with the expected return and how many items

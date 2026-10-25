@@ -160,7 +160,7 @@ While it is on, nobody reads a question, so no hook may leave one open. The desi
 | The answer | While the person is away |
 |---|---|
 | `AskUserQuestion` or `ExitPlanMode` (PreToolUse) | `user-away` **denies**, with the step that parks the question |
-| Claude Code's own permission prompt (`PermissionRequest`) | `user-away` **denies** and parks the call as an `action` |
+| Claude Code's own permission prompt (`PermissionRequest`) | `user-away` **denies** and parks the call as an `action`; the one exception is a plain session's line that is nothing but the kit's own `user available`, `user status` or `user list` (the program by name, never `kitArguments`), which is left to Claude Code's prompt so the returning person can answer it |
 | Any hook's PreToolUse **ask** | the frame's step 6 (`askedWhileAway`) turns it into a **deny**: the hook's own words, "parked as #N", and the call parked as an `action` with its exact command |
 | A deny, an allow, silence | unchanged |
 

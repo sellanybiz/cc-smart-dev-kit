@@ -37,17 +37,12 @@ import { atomicWrite } from "../setup/write";
 export const PARK_KINDS = ["question", "action", "decision"] as const;
 export type ParkKind = (typeof PARK_KINDS)[number];
 
-/** How long a park waits for the folder's lock: a write takes milliseconds. */
-export const AWAY_LOCK_WAIT_MS = 5_000;
-
 /**
- * How long a hook's park waits for the lock: half of `BUDGET_MARGIN_MS` (`src/hooks/budget.ts`),
- * the time a guard keeps back for its answer. A guard that used its whole budget and then waited
- * the full `AWAY_LOCK_WAIT_MS` would pass its hook's `timeout`, and Claude Code, killing it,
- * blocks the call with no word to the session (`onFailure: block`). A lock held longer is a park
- * that failed, which still denies and says to park by hand.
+ * How long a park waits for the folder's lock by default: a write takes milliseconds. The
+ * commands wait this long; a hook passes a shorter wait to `parkItem` (`PARK_WAIT_MS`,
+ * `src/hooks/user-away.ts`), to stay inside its own time.
  */
-export const AWAY_HOOK_LOCK_WAIT_MS = 1_000;
+export const AWAY_LOCK_WAIT_MS = 5_000;
 
 /** The most items the list holds: a loop that parks without end must not grow the file for good. */
 export const MAX_ITEMS = 500;

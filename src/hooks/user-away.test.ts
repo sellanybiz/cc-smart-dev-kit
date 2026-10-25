@@ -272,6 +272,20 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
     expect(readAway(paths.stateDir).items).toEqual([]);
   });
 
+  test("a crew session's same call is still denied and parked with its name: it never asks the person", async () => {
+    const { env, paths } = await away();
+    const result = await userAwayAnswer(
+      permissionRequest("Bash", { command: "cc-smart-dev-kit user status --json" }),
+      "PermissionRequest",
+      { ...env, CC_SMART_DEV_KIT_CREW: "RX2" },
+      paths,
+      T0,
+      OPTIONS,
+    );
+    expect(decisionOf(result.stdout).decision.behavior).toBe("deny");
+    expect(readAway(paths.stateDir).items.map((item) => item.crew)).toEqual(["RX2"]);
+  });
+
   test("nothing gets looser: a line that holds more than the three reads is still parked", async () => {
     const { env, paths } = await away();
     for (const command of [
@@ -285,6 +299,14 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
       "cc-smart-dev-kit crew list",
       "echo cc-smart-dev-kit user available",
       "FOO=1 cc-smart-dev-kit user available",
+      // Another program that holds the kit's name among its arguments runs that program, not the kit.
+      "bash -c 'rm -rf build' cc-smart-dev-kit user available",
+      "sh ./deploy.sh cc-smart-dev-kit user status",
+      "make deploy cc-smart-dev-kit user list --json",
+      "ssh prod.example.com cc-smart-dev-kit user available",
+      "node evil.js /opt/x/dist/cli.js user available",
+      "bun x.ts /opt/x/dist/cli.js user available",
+      "docker run --rm -v /:/h alpine cc-smart-dev-kit user status",
     ]) {
       const result = await userAwayAnswer(
         permissionRequest("Bash", { command }),

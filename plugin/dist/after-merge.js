@@ -8673,7 +8673,6 @@ import { mkdirSync as mkdirSync5, readFileSync as readFileSync8 } from "fs";
 import { join as join10 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
-var AWAY_HOOK_LOCK_WAIT_MS = 1000;
 var MAX_ITEMS = 500;
 var MAX_SAID = 100;
 var itemSchema = object({
@@ -8811,61 +8810,18 @@ Commands:
 
 Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
 
-// src/hooks/kit-invocation.ts
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
-var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
-function namesKit(text) {
-  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+// src/hooks/budget.ts
+var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
 }
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
+  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
 // src/hooks/prompt-source.ts
@@ -8880,6 +8836,7 @@ function hasNotPersonWrapper(prompt) {
 }
 
 // src/hooks/user-away.ts
+var PARK_WAIT_MS = BUDGET_MARGIN_MS / 2;
 var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var SHELL_TOOLS = ["Bash", "PowerShell"];
 var STATE_COMMANDS = [
@@ -8961,7 +8918,7 @@ async function parkCall(input, env, paths, nowMs, words) {
       session: stringField(input.session_id) ?? "",
       text: text.slice(0, TEXT_MAX),
       tool: stringField(input.tool_name)
-    }, nowMs, AWAY_HOOK_LOCK_WAIT_MS);
+    }, nowMs, PARK_WAIT_MS);
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
@@ -8980,11 +8937,12 @@ function isStateCommand(input) {
     if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
       return false;
     }
-    const operands = withoutRedirections(invocation.args);
-    if (operands.length !== invocation.args.length)
+    if (invocation.program !== COMMAND)
       return false;
-    const kit = kitArguments(invocation.program, operands);
-    return kit !== null && STATE_COMMANDS.some((known) => known.length === kit.length && known.every((word, at) => word === kit[at]));
+    const operands = invocation.args;
+    if (withoutRedirections(operands).length !== operands.length)
+      return false;
+    return STATE_COMMANDS.some((known) => known.length === operands.length && known.every((word, at) => word === operands[at]));
   });
 }
 function permissionDeny(message) {
@@ -9001,7 +8959,7 @@ async function permissionAnswer(input, env, paths, nowMs, options) {
   const state = readAway(paths.stateDir);
   if (!state.unavailable)
     return SILENT;
-  if (isStateCommand(input))
+  if (crewIdOf(env) === null && isStateCommand(input))
     return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
@@ -10520,20 +10478,6 @@ function takeToldLine(context, repo) {
     return null;
   }
   return toldLine(record);
-}
-
-// src/hooks/budget.ts
-var GUARD_BUDGET_MS = 25000;
-var SHORT_GUARD_BUDGET_MS = 8000;
-var BUDGET_MARGIN_MS = 2000;
-var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
-  const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
-}
-function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
-  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
-  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
 // src/hooks/git-guard.ts
@@ -16749,6 +16693,65 @@ function packageScripts(folder) {
 
 // src/hooks/bash-judge.ts
 import { isAbsolute as isAbsolute5, resolve as resolve7 } from "path";
+
+// src/hooks/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+
+// src/hooks/bash-judge.ts
 var CLAUDE_VALUED = [
   "--add-dir",
   "--agent",
