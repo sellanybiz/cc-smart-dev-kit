@@ -19,6 +19,7 @@
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
+import type { CommandRunner } from "../update/apply";
 import { readMcpRecords } from "./records";
 import { overridingServer, readUserServers, sameConfig } from "./register";
 import { retiredChecks } from "./retired";
@@ -37,18 +38,31 @@ const FIRST_START_LIMIT_MS = 180_000;
 
 /** What these checks ask of the machine — a test hands in fakes. */
 export interface McpDoctorDeps {
-  /** Runs `claude mcp get`, with extra environment variables (its `MCP_TIMEOUT`). */
-  run: (argv: string[], extraEnv: Record<string, string>) => { ok: boolean; output: string };
+  /**
+   * Runs `claude mcp get`, with extra environment variables (its `MCP_TIMEOUT`). A caller off
+   * the server's event loop (the portal's Machine page) may answer with a promise: the check
+   * starts the MCP server itself, and a first download can take a minute.
+   */
+  run: (
+    argv: string[],
+    extraEnv: Record<string, string>,
+  ) => { ok: boolean; output: string } | Promise<{ ok: boolean; output: string }>;
   which: (command: string) => null | string;
 }
 
 /**
  * The machine's own `McpDoctorDeps`: `claude mcp get` run for real. One home for both
  * `cc-smart-dev-kit doctor` and the portal's Machine page, so the two judge a machine alike.
+ * `read` (the portal's own runner, `Bun.spawn`) runs it without blocking the server; left
+ * out, the command line's own synchronous spawn answers where it stands.
  */
-export function realMcpDoctorDeps(): McpDoctorDeps {
+export function realMcpDoctorDeps(read?: CommandRunner): McpDoctorDeps {
   return {
-    run: (argv, extraEnv) => {
+    run: async (argv, extraEnv) => {
+      if (read !== undefined) {
+        const answer = await read(argv, extraEnv);
+        return { ok: answer.exitCode === 0, output: answer.output };
+      }
       try {
         const result = Bun.spawnSync(argv, {
           env: { ...process.env, ...extraEnv },
@@ -76,14 +90,14 @@ function field(report: string, label: string): string {
 }
 
 /** The MCP servers' lines for `doctor`. */
-export function mcpChecks(
+export async function mcpChecks(
   paths: CliPaths,
   deps: McpDoctorDeps,
   env: Record<string, string | undefined>,
   /** The folder doctor runs in: where a project's `.mcp.json` and the local scope are looked
    *  for. A copy there wins over the user-scope server. */
   cwd: string = process.cwd(),
-): McpCheck[] {
+): Promise<McpCheck[]> {
   const names = SERVER_NAMES.filter(
     (name) => name !== "tavily-websearch" || readTavilyKey(paths, env).source !== "none",
   );
@@ -153,9 +167,11 @@ export function mcpChecks(
       });
       continue;
     }
-    const report = deps.run(["claude", "mcp", "get", name], {
-      MCP_TIMEOUT: String(FIRST_START_LIMIT_MS),
-    }).output;
+    const report = (
+      await deps.run(["claude", "mcp", "get", name], {
+        MCP_TIMEOUT: String(FIRST_START_LIMIT_MS),
+      })
+    ).output;
     const scope = field(report, "Scope");
     // `claude mcp get` leads the status with a mark of its own; ours says more.
     const status = field(report, "Status").replace(/^[^A-Za-z]+/, "");

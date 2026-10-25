@@ -35,6 +35,7 @@ import {
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
+import { LAUNCH_USAGE } from "./launch";
 import { PROJECT_INIT_USAGE } from "./project-init";
 import { REPORT_USAGE } from "./report";
 import { UPDATE_USAGE } from "./update";
@@ -92,8 +93,10 @@ Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-updat
 kit's background update is the one updater, so a major version waits for you), installs the
 plugin's instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported
 by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem
-at the scout slot's affordable model (when its chain starts with one), and copies the
-project's auto-mode entries into your settings. The entries are trust rules: they are shown
+at the scout slot's first model (when its chain starts with a backend model), and copies the
+project's auto-mode entries into your settings. Once per machine, a gateway set up before the
+Claude defaults moves to them: every slot on Claude, every fallback off, the gateway off, a
+backup first and one line per change. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
 with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
 prints a section per part, one verdict line, and the next steps to run, in order.
@@ -247,15 +250,38 @@ Print the version.`;
 
 const ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
 
-Waits for a click on the desktop alert, then brings the alert's window back. The notify and
-stop-failure hooks start it, detached, through the launcher. It is not a command to run by
-hand.`;
+Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
+starts it, detached, through the launcher. It is not a command to run by hand.`;
 
 /**
  * Every command, in the order the top-level help shows them. A command the dispatcher knows and
  * this table does not would have no help: `src/cli/help.test.ts` fails when one is added
  * without a row.
  */
+const CLAUDE_MEM_HELP = `Usage: ${COMMAND} claude-mem [status]
+       ${COMMAND} claude-mem route claude|<backend>:<model>
+       ${COMMAND} claude-mem key [--gateway]
+       ${COMMAND} claude-mem fallback off|claude [<claude model id>]|<backend>:<model>
+       ${COMMAND} claude-mem take-over [--yes]
+
+status (the default) prints claude-mem's route and its model, its key (never the key itself),
+its quota fallback and the model that fallback runs on, each with who set it.
+
+route   sends claude-mem's summaries to Claude on your own login, or to <backend>:<model> from
+        the gateway's backends. A model the backend does not list is refused.
+key     reads the OpenAI-compatible key from stdin (never an argument) and checks it before it
+        is saved. --gateway puts the gateway's own key for that backend back.
+fallback picks what takes over while the route's provider is limited: off, claude (with
+        claude-mem's own model, or the <claude model id> you name), or a <backend>:<model>.
+take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
+        route, the key and the fallback may change. Nothing in that file changes: each value
+        stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
+        key's value is never written down: restore leaves your key as it is while it is still
+        yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address
+        it was written for. Where your address comes back, your key comes back with it, from
+        the backup of your file; with no backup that holds it, the kit's key is removed. It
+        asks first; --yes takes them over without the question.`;
+
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {
     name: "setup",
@@ -277,7 +303,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   },
   {
     name: "gateway setup",
-    summary: "Optional: more affordable models, through a local gateway",
+    summary: "Optional: set up the local AI gateway",
     listed: "start",
     help: GATEWAY_USAGE,
   },
@@ -291,9 +317,12 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   // The lead's hand-back gate (D22): `help workflow merge-check` prints the workflow's own
   // usage, which carries merge-check's lines — one text, not a second copy.
   { name: "workflow merge-check", help: WORKFLOW_USAGE },
+  // A project's setting through a pull request (D57): the same one text carries its lines.
+  { name: "workflow propose", help: WORKFLOW_USAGE },
   { name: "update", listed: "more", help: UPDATE_HELP },
   { name: "restore", listed: "more", help: RESTORE_HELP },
   { name: "migrate", listed: "more", help: MIGRATE_HELP },
+  { name: "launch", listed: "more", help: LAUNCH_USAGE },
   { name: "sessions", listed: "more", help: SESSIONS_HELP },
   { name: "worktrees", listed: "more", help: WORKTREES_HELP },
   { name: "usage", listed: "more", help: USAGE_HELP },
@@ -301,6 +330,9 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "portal", listed: "more", help: PORTAL_USAGE },
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: OMNIROUTE_USAGE },
+  // Not in the top-level help: one screen is the budget (UX-3), and claude-mem is a companion
+  // plugin's own command — `help claude-mem` and the README's table name it.
+  { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
   { name: "crew", listed: "more", help: CREW_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },

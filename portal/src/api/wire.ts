@@ -164,6 +164,7 @@ export interface SwitchFacts {
 // ── Slots ──────────────────────────────────────────────────────────────────────────────
 
 export interface SlotTarget {
+  effort?: string;
   target: string;
   from: string;
   restingFor: null | number;
@@ -193,6 +194,12 @@ export interface PlanWindow {
   resetsAt: null | string;
 }
 
+/** `src/portal/views.ts` › `OverviewRequests`: the history's model requests, not the router's. */
+export interface OverviewRequests {
+  perMinute: null | number;
+  sinceRouterStart: null | number;
+}
+
 export interface OverviewAnswer extends NotSetUp {
   backends: BackendRow[];
   dashboardUrl: null | string;
@@ -201,6 +208,7 @@ export interface OverviewAnswer extends NotSetUp {
   jobs: { budgetGb: number; heldGb: number; waiting: number };
   limits: LimitRow[];
   limitsRead: boolean;
+  requests: OverviewRequests;
   router: RouterFacts;
   slots: SlotRow[];
   switches: SwitchFacts;
@@ -370,18 +378,22 @@ export interface ClaudeMemCurrent {
     model: null | string;
     address: null | string;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
   key: {
     state: "gateway" | "none" | "other";
     pool: boolean;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
   fallback: {
     provider: string;
     model: null | string;
+    claudeModel: null | string;
     idle: null | string;
     target: null | string;
     source: ClaudeMemSource;
+    refusedByHand: boolean;
   };
 }
 
@@ -393,6 +405,7 @@ export interface ClaudeMemFacts {
   blocked: null | { fix: null | string; text: string };
   current: null | ClaudeMemCurrent;
   backends: null | string[];
+  handKeys: string[];
 }
 
 export interface MachineAnswer {
@@ -451,6 +464,7 @@ export type WorkflowKey =
   | "crew.usagePercent"
   | "crew.quietMinutes"
   | "crew.handoffPercent"
+  | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.tag"
@@ -521,6 +535,110 @@ export interface ProjectAnswer {
   card: ProjectCardData;
   checkedAt: string;
   project: ProjectSummary;
+}
+
+/** One workflow setting of a project: its value now, and where that value comes from. */
+export interface ProjectWorkflowSetting {
+  /** One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): the page labels it. */
+  key: string;
+  source: "project" | "personal" | "default";
+  /** Only for a null `crew.tag` or `crew.maxOpus`: what `workflow show` prints in its place. */
+  unsetWords?: string;
+  value: unknown;
+}
+
+/** What a `gh` on this machine can do now (`src/workflow/propose.ts` › `ghLoginState`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/** `GET /api/projects/<id>/workflow` (D57): every setting, the base, and gh's state. */
+export interface ProjectWorkflowAnswer {
+  base: null | string;
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. */
+  note: null | string;
+  /** Every setting the project's file can hold, in the schema's order. Empty when `note` says why. */
+  settings: ProjectWorkflowSetting[];
+}
+
+/** What a project's gateway address means (`src/gateway/project-state.ts`). */
+export type ProjectGatewayStateName = "default" | "off" | "on" | "other" | "unknown";
+
+/** Which settings file a project's gateway state comes from; `none` when no file sets it. */
+export type ProjectGatewaySource = "machine" | "none" | "personal" | "team";
+
+/** One stretch of the settings chain, decided, in `gateway project status`' own words. */
+export interface ProjectGatewayDecision {
+  /** The file that decides, in words: "nothing in this project" for none. */
+  from: string;
+  profile: null | string;
+  source: ProjectGatewaySource;
+  state: ProjectGatewayStateName;
+  /** The decision in words; another gateway's address is masked. */
+  words: string;
+}
+
+/** One settings file the reader looked at, in the order Claude Code applies them. */
+export interface ProjectGatewayFile {
+  holds: string;
+  kind: "machine" | "personal" | "team";
+  /** With the home folder as `~`. */
+  path: string;
+  problem: boolean;
+}
+
+/** One slot of a project's profile, over the machine's chain. */
+export interface ProjectProfileSlot {
+  fallback: boolean;
+  key: string;
+  /** The machine's chain in use; null while Claude answers the slot on the machine. */
+  machine: null | string[];
+  name: string;
+  /** The profile's own chain, `"claude"`, or null (the machine's chain applies). */
+  own: "claude" | null | string[];
+}
+
+/** The profile a project's address names, slot by slot. */
+export interface ProjectProfile {
+  /** False when the config holds no such profile: its requests answer as plain Claude. */
+  exists: boolean;
+  name: string;
+  slots: ProjectProfileSlot[];
+}
+
+/** One file's three states: null where the command would write, else its refusal. */
+export interface ProjectGatewayWrites {
+  default: null | string;
+  off: null | string;
+  on: null | string;
+}
+
+/** What `gateway project` would refuse before it writes, per file (its own planner). */
+export interface ProjectGatewayRefusals {
+  personal: ProjectGatewayWrites;
+  team: ProjectGatewayWrites;
+}
+
+/** A line the Gateway card shows beside the state. */
+export interface ProjectGatewayNote {
+  text: string;
+  tone: "bad" | "info" | "warn";
+}
+
+/** `GET /api/projects/<id>/gateway` (GP4b): the project's own state, what its sessions get, its profile. */
+export interface ProjectGatewayAnswer {
+  choice: ProjectGatewayDecision;
+  configured: boolean;
+  effective: ProjectGatewayDecision;
+  files: ProjectGatewayFile[];
+  notes: ProjectGatewayNote[];
+  /** True when git tracks the personal file; null when git could not tell. */
+  personalTracked: boolean | null;
+  /** What the command would refuse, per file and state; null where it writes. */
+  refusals: ProjectGatewayRefusals;
+  profile: null | ProjectProfile;
+  profiles: string[];
+  /** Whether the project is in a git checkout. */
+  writable: boolean;
 }
 
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────
@@ -831,6 +949,8 @@ export type HistoryBy = "target" | "slot" | "model" | "session";
 /** `src/gateway/history-read.ts` › `HistoryFilters`: each exact, `status` the one word. */
 export interface HistoryFilters {
   model?: string;
+  /** The profile a request's path named (`…/p/<profile>`, owner D29). */
+  profile?: string;
   session?: string;
   slot?: string;
   status?: "error";
@@ -848,11 +968,19 @@ export interface HistoryPoint {
   outputTokens: number;
   requests: number;
   t: number;
+  /** Rows that reported tokens and no price: in `requests`, never in `costUsd`. */
+  unpriced: number;
 }
 
 export interface HistorySeries {
   key: string;
   points: HistoryPoint[];
+}
+
+/** `src/portal/api/types.ts` › `SafetyChecks`: auto mode's checks, counted apart (F6). */
+export interface SafetyChecks {
+  checks: null | number;
+  days: number;
 }
 
 /** `GET /api/history?range=…&by=…&…`: one series per key, every bucket of the window. */
@@ -863,6 +991,7 @@ export interface HistoryAnswer {
   from: number;
   note: null | string;
   range: HistoryRange;
+  safetyChecks: SafetyChecks;
   series: HistorySeries[];
   to: number;
 }
@@ -980,6 +1109,7 @@ export const ACTION_NAMES = [
   "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
+  "claudemem.takeover",
   "companion.enable",
   "crew.answer",
   "crew.resume",
@@ -991,7 +1121,10 @@ export const ACTION_NAMES = [
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
+  "project.gateway.profile",
+  "project.gateway.set",
   "project.preview",
+  "project.workflow.propose",
   "project.write",
   "router.restart",
   "slot.breaker",
@@ -1017,6 +1150,8 @@ export interface ActionResult {
   preview?: ProjectInitPlan;
   filesHash?: string;
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
+  /** `project.workflow.propose` only: the pull request it opened, for the card's own link. */
+  url?: string;
 }
 
 // ── The live stream ────────────────────────────────────────────────────────────────────

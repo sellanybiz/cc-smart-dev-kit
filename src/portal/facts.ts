@@ -20,8 +20,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { legacyBrowserLeftovers, processCommandLinesAsync } from "../browser/legacy";
 import {
   type BrowserGuide,
+  type BrowserSetupDeps,
   type BrowserSetupState,
   browserGuide,
   browserSetup,
@@ -36,6 +38,7 @@ import { judgeDefaultWords } from "../gateway/commands";
 import {
   breakerOn,
   DEFAULT_PORT,
+  effortPin,
   fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
@@ -58,7 +61,7 @@ import {
 import { maskedLine } from "../gateway/plain-text";
 import { routerServiceKind, SOCKET_NAME, UNIT_NAME } from "../gateway/service";
 import { TASK_NAME } from "../gateway/service-windows";
-import { settingsReport, shownBackendUrl } from "../gateway/settings";
+import { baseUrlPointsAtGateway, settingsReport, shownBackendUrl } from "../gateway/settings";
 import {
   FAMILY_SLOTS,
   isClaudeModelId,
@@ -67,12 +70,12 @@ import {
   parseTarget,
 } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
-import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { detectSystem, warpAppCommand, warpAppFrom, warpCheckFrom } from "../machine/warp";
 import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
 import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
-import { locateCheckout, resolveProject } from "../project/resolve";
+import { locateCheckoutAsync, resolveProjectAsync } from "../project/resolve";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import { commandContext } from "../update/apply";
 // Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
@@ -363,13 +366,15 @@ function clockOf(ms: number, nowMs: number): string {
 /**
  * The router's recent log lines, newest last. `journalctl --user` only: the router runs as a
  * user unit. A machine without journald, or with no unit yet, gets no lines and a note.
+ * **Awaits the context's read runner** (`Bun.spawn`): a synchronous `journalctl` here froze
+ * every page and the live stream for 20–65 ms on each Health or Overview load (B6e).
  */
-export function routerLog(
+export async function routerLog(
   ctx: PortalContext,
   count: number,
-): { lines: LogLine[]; note: null | string } {
+): Promise<{ lines: LogLine[]; note: null | string }> {
   if (!ctx.systemd) return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
+  const result = await ctx.runRead([
     "journalctl",
     "--user",
     "-u",
@@ -398,6 +403,8 @@ export function routerLog(
 // ── Slots ───────────────────────────────────────────────────────────────────────
 
 export interface SlotTarget {
+  /** The backend's pinned effort, absent while following Claude Code. */
+  effort?: string;
   /** The target as the config spells it. */
   target: string;
   /** `Claude login`, or the backend's name. */
@@ -499,10 +506,22 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
     const on = targets !== undefined;
-    const targetRow = (target: string): SlotTarget => {
+    const targetRow = (target: string, saved = false): SlotTarget => {
+      const kept = keptChain(config, key);
+      const pin = effortPin(
+        saved && kept !== null
+          ? {
+              slots: { [key]: kept.targets },
+              effort: kept.effort === undefined ? {} : { [key]: kept.effort },
+            }
+          : config,
+        key,
+        target,
+      );
       const parsed = parseTarget(target);
       const known = "target" in parsed ? parsed.target : null;
       return {
+        ...(pin === undefined ? {} : { effort: pin }),
         from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
         restingFor: resting.get(target) ?? null,
         target,
@@ -520,7 +539,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
           : {
               // The switch saved with the chain, else the slot's own default.
               fallback: kept.fallback ?? fallbackOn({}, key),
-              targets: kept.targets.map(targetRow),
+              targets: kept.targets.map((target) => targetRow(target, true)),
             },
       key,
       kind: on ? meta.kind : "off",
@@ -529,7 +548,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
       note: slotNote(config, key),
       role: meta.kind,
       stamp: slotStamp(config, key),
-      targets: (targets ?? []).map(targetRow),
+      targets: (targets ?? []).map((target) => targetRow(target)),
     });
   }
   return rows;
@@ -734,7 +753,8 @@ export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFa
   }
   const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
   return {
-    gateway: report.baseUrl !== null,
+    // `gateway off` leaves Anthropic's own address in the settings (GP5): that is off, not on.
+    gateway: baseUrlPointsAtGateway(report.baseUrl),
     judge:
       judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
@@ -866,6 +886,11 @@ export interface OmnirouteRow {
  * What the Machine page's Browser card shows. The guide and the state come from the same module
  * `browser setup` prints from (`src/browser/setup.ts`), so the card can never describe a different
  * browser than the command does; the check lines beside them are doctor's own (`section: "browser"`).
+ *
+ * **Awaits the context's read runner** for the 0.3.0 leftovers' process list: `ps` (macOS) or
+ * PowerShell (Windows) ran synchronously here on every Machine load, which blocked every page
+ * and the stream — the same debt as `journalctl` and `systemctl`. It is read only when 0.3.0
+ * left something (its own first question), so a machine that never ran it spawns nothing.
  */
 export interface BrowserCardData {
   /** The whole guide, structured: the card draws its numbered steps. */
@@ -875,10 +900,15 @@ export interface BrowserCardData {
   state: BrowserSetupState;
 }
 
-export function browserCardData(ctx: PortalContext): BrowserCardData {
-  const result = browserSetup(ctx.paths, realBrowserSetupDeps(ctx.machine, ctx.paths.home), {
-    apply: false,
-  });
+export async function browserCardData(ctx: PortalContext): Promise<BrowserCardData> {
+  const processes = legacyBrowserLeftovers(ctx.paths)
+    ? await processCommandLinesAsync(ctx.machine.platform, ctx.runRead)
+    : null;
+  const deps: BrowserSetupDeps = {
+    ...realBrowserSetupDeps(ctx.machine, ctx.paths.home),
+    processes: () => processes,
+  };
+  const result = browserSetup(ctx.paths, deps, { apply: false });
   const state = result.state;
   // A browser-less machine's note is the same sentence as the check line above it: the check
   // lines win, so the note is left out then (one home per sentence, on the page too).
@@ -888,6 +918,10 @@ export function browserCardData(ctx: PortalContext): BrowserCardData {
 /**
  * What the Machine page's Warp card shows. Warp is optional, and installing or removing it
  * needs `sudo`: the card shows the two commands to copy, and the page never runs them.
+ * **Awaits the context's read runner** for the package manager's version: `dpkg-query`, `rpm`
+ * or `brew list` ran synchronously here on every Machine load (twice: once for the card's own
+ * line), which blocked every page and the stream — the same debt as `journalctl` and
+ * `systemctl` above.
  */
 export interface WarpRow {
   /** Doctor's own line for it: what is installed, and which command to run. */
@@ -896,12 +930,15 @@ export interface WarpRow {
   installed: boolean;
 }
 
-export function warpRow(ctx: PortalContext): WarpRow {
+export async function warpRow(ctx: PortalContext): Promise<WarpRow> {
   const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed,
-  };
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(
+    system,
+    ctx.machine,
+    command === null ? null : await ctx.runRead(command),
+  );
+  return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
 
 // ── The project: the Settings page, and the card on Machine ─────────────────────
@@ -929,9 +966,9 @@ export interface ProjectRead {
   why: null | string;
 }
 
-export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
+export async function readProject(ctx: PortalContext, cwd: string): Promise<ProjectRead> {
   try {
-    const project = resolveProject(cwd, { env: ctx.env });
+    const project = await resolveProjectAsync(cwd, { env: ctx.env });
     if (project === null) {
       return {
         config: null,
@@ -952,7 +989,7 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
     // A file that fails only on a retired worktree engine field keeps its root: the Project
     // card's write is the fix (the same plan as `project init`, which takes the field out).
     if (error instanceof CcSmartDevKitRetiredFieldError) {
-      const root = rootOf(cwd, ctx.env);
+      const root = await rootOf(cwd, ctx.env);
       if (root !== null) {
         return { config: null, configFile: null, retired: true, root, why: messageOf(error) };
       }
@@ -970,9 +1007,9 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
 }
 
 /** The checkout's root, or null when it cannot be found (the file's own error is the line). */
-function rootOf(cwd: string, env: Env): null | string {
+async function rootOf(cwd: string, env: Env): Promise<null | string> {
   try {
-    return locateCheckout(cwd, { env })?.root ?? null;
+    return (await locateCheckoutAsync(cwd, { env }))?.root ?? null;
   } catch {
     return null;
   }
@@ -1086,19 +1123,26 @@ export interface ProjectCardData {
  * and, when `gh` is on PATH, GitHub itself, so the server hands in the remembered reader
  * (`server.ts`) instead of calling the module for every form change.
  */
-export type ProjectDefaultsReader = (input: { env: Env; root: string }) => ProjectInitDefaults;
+export type ProjectDefaultsReader = (input: {
+  env: Env;
+  root: string;
+}) => ProjectInitDefaults | Promise<ProjectInitDefaults>;
 
 /**
  * The card's facts, read through the workflow adapter: the CLI's own detection for the form's
  * defaults, and the same pure plan the write will make. A project that cannot be read — no
  * git, a broken file — is one line in words and no form.
+ *
+ * **Awaited**: git and, when `gh` is on PATH, GitHub itself run inside the server's own process
+ * (`resolveProjectAsync`, `realRunnerAsync`), where a blocking spawn freezes every page and the
+ * live stream.
  */
-export function projectCardData(
+export async function projectCardData(
   ctx: PortalContext,
   cwd: string,
   readDefaults: ProjectDefaultsReader,
   workflow: WorkflowAdapter,
-): ProjectCardData {
+): Promise<ProjectCardData> {
   const base: ProjectCardData = {
     answers: null,
     error: null,
@@ -1109,7 +1153,7 @@ export function projectCardData(
     root: null,
     set: false,
   };
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   if (project.root === null) return { ...base, error: project.why };
   // The root is there: a missing file is the card's "not set up" state, never an error. A file
   // that is there but cannot be read is `readProject`'s own line, above.
@@ -1125,7 +1169,7 @@ export function projectCardData(
   try {
     // The defaults are the CLI's own detection over the project's file; the plan is then made
     // against the same file text this page read, so the preview and the answers agree.
-    const defaults = readDefaults({ env: ctx.env, root: project.root });
+    const defaults = await readDefaults({ env: ctx.env, root: project.root });
     return {
       ...head,
       answers: defaults.answers,
@@ -1175,11 +1219,11 @@ export interface SettingsData {
  * the page and `cc-smart-dev-kit workflow show` can never disagree; a file of the person's own
  * that is broken is a notice — never a row showing a default it does not have.
  */
-export function settingsData(
+export async function settingsData(
   ctx: PortalContext,
   cwd: string,
   workflow: WorkflowAdapter,
-): SettingsData {
+): Promise<SettingsData> {
   const empty = (why: string | null): SettingsData => ({
     autoMerge: null,
     clashes: [],
@@ -1187,7 +1231,7 @@ export function settingsData(
     projectNote: null,
     rows: [],
   });
-  const project = readProject(ctx, cwd);
+  const project = await readProject(ctx, cwd);
   // Named whether there is no project at all or its file cannot be read: a row may not show
   // `default` for a value the project really sets, and a broken file must not read as silence.
   const projectNote = project.why === null ? null : `No project's own values here: ${project.why}.`;
@@ -1208,7 +1252,7 @@ export function settingsData(
             resolved,
             project.config,
             base,
-            workflow.repositoryDefaultBranch(project.root, ctx.env),
+            await workflow.repositoryDefaultBranch(project.root, ctx.env),
           ),
         base,
       }
@@ -1339,12 +1383,17 @@ export interface PortHolder {
   state: SocketState;
 }
 
-/** The port holder for the config's port; null where this machine runs no service for it. */
-export function portHolder(ctx: PortalContext, port: number): null | PortHolder {
+/**
+ * The port holder for the config's port; null where this machine runs no service for it.
+ * **Awaits the context's read runner** (`Bun.spawn`): `portHolderCheck` asks `systemctl` (or the
+ * Windows task), and a synchronous spawn here froze every page and the live stream while it ran
+ * (B6e).
+ */
+export async function portHolder(ctx: PortalContext, port: number): Promise<null | PortHolder> {
   const kind = routerServiceKind(ctx.machine.platform, ctx.which);
   if (kind === "none") return null;
-  const { check, state } = portHolderCheck(
-    { paths: ctx.paths, runner: ctx.runner, service: kind },
+  const { check, state } = await portHolderCheck(
+    { paths: ctx.paths, runner: ctx.runRead, service: kind },
     port,
   );
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };

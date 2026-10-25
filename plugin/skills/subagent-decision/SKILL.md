@@ -35,6 +35,12 @@ below.
 
 Review is your own job first: an agent is a second reader, never a substitute for your pass.
 
+**When the project runs crew sessions, the queue comes before a builder subagent.** A
+session registered as a lead that would have to queue a `crew start` cannot put that work into a
+subagent instead: the agent guard refuses one that can change files, with the cap and the start
+step, so the phase waits for its place like any other. A read-only agent — `Explore`, `Plan`, a
+reviewer, an auditor, a `ui-verifier` — is never held back.
+
 ## How to brief
 
 A subagent has none of your conversation, and an under-briefed agent costs more than doing the
@@ -68,8 +74,9 @@ work yourself. Treat it as a smart colleague who just walked in:
 
 ### Briefing an affordable model
 
-An affordable slot (`haiku`, `sonnet` while the gateway is on) reasons less than Claude, so carry
-the judgment for it in the brief:
+An affordable slot (one the person gave a chain of their own, so a `haiku` or `sonnet` request
+is answered by a gateway model, not by Claude) reasons less than Claude, so carry the judgment
+for it in the brief:
 
 - **One job, small scope.** A big phase becomes two or three agents, each with one clear
   outcome — never "figure out the codebase".

@@ -26,7 +26,11 @@ import type {
   ModelRow,
   OpenBreaker,
   PortHolder,
+  ProjectGatewayAnswer,
+  ProjectGatewayNote,
+  ProjectGatewayStateName,
   ProjectInitPlan,
+  ProjectProfileSlot,
   RequestsAnswer,
   RouterFacts,
   SessionSummary,
@@ -49,7 +53,10 @@ export type {
   ModelRow,
   OpenBreaker,
   PortHolder,
+  ProjectGatewayNote,
+  ProjectGatewayStateName,
   ProjectInitPlan,
+  ProjectProfileSlot,
   RouterFacts,
   SlotRow,
   SlotTarget,
@@ -205,6 +212,14 @@ export interface OverviewData {
   crewRunning: number;
   /** The heavy-job queue in one line: GB held of the budget, and jobs waiting. */
   jobs: { heldGb: number; budgetGb: number; waiting: number };
+  /** The history's model requests: the rate, and the count since the router started (F4, F5). */
+  requests: OverviewRequests;
+}
+
+/** `src/portal/views.ts` › `OverviewRequests`. */
+export interface OverviewRequests {
+  perMinute: null | number;
+  sinceRouterStart: null | number;
 }
 
 // ── Work: the crew store ───────────────────────────────────────────────────────────────
@@ -531,6 +546,41 @@ export interface SettingsRow {
   why: null | string;
 }
 
+/** What a `gh` on this machine can do now (`src/workflow/propose.ts` › `ghLoginState`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/** One setting of a project that has no row of its own: shown with its value, changed elsewhere. */
+export interface ProjectWorkflowValue {
+  key: string;
+  source: WorkflowSource;
+  /** What `workflow show` prints for an unset value, when the server sent it (`unsetWords`). */
+  unsetWords?: string;
+  value: unknown;
+}
+
+/**
+ * A project's Workflow card (D57): `/api/projects/<id>/workflow`, its settings drawn as
+ * Settings → This machine draws them (each row's words and control from `/api/settings`).
+ */
+export interface ProjectWorkflowData {
+  /** The branch a change's pull request goes into; null when the project names none. */
+  base: null | string;
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. */
+  note: null | string;
+  /** The settings with a row of their own, in the rows' order; read-only without a gh login. */
+  rows: SettingsRow[];
+  /** The settings with no row of their own, in the answer's order: their value only. */
+  others: ProjectWorkflowValue[];
+}
+
+/**
+ * A project's Gateway card (GP4b): `/api/projects/<id>/gateway` as the server sends it — the
+ * project's own choice and what its sessions get, in the command line's words, the files read,
+ * the notes, and the profile its address names with its chains over the machine's.
+ */
+export type ProjectGatewayData = ProjectGatewayAnswer;
+
 /** `src/portal/facts.ts` › `SettingsData`. */
 export interface SettingsData {
   autoMerge: null | { allowed: boolean; base: null | string };
@@ -626,11 +676,6 @@ export interface ProjectData {
   branchesNote: null | string;
   /** ISO 8601: when the verdicts were read (the server keeps them about a minute). */
   checkedAt: string;
-  /**
-   * The resolved work-flow rows. Only the portal's own project has them (`/api/settings`
-   * reads the folder the portal runs in); null for every other project.
-   */
-  settings: null | SettingsData;
 }
 
 // ── The heavy-job queue (planned: `GET /api/jobs` and the `jobs` event) ───────────────

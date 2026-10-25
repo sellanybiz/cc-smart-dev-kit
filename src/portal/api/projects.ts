@@ -30,12 +30,14 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
+import { COMMAND } from "../../build-info";
 import type { CliPaths } from "../../cli/paths";
 import { type CrewRecord, listCrew } from "../../crew/store";
 import { GUARD_GIT_TIMEOUT_MS, parseWorktreeList, runGitAsync, samePath } from "../../hooks/git";
 import type { Env } from "../../hooks/run";
-import { locateCheckoutAsync } from "../../project/resolve";
+import { type CcSmartDevKitConfig, loadCcSmartDevKitConfig } from "../../project/config";
+import { CONFIG_PATH, locateCheckoutAsync } from "../../project/resolve";
 import { sessionWorkFolderTimes } from "../../sessions/command";
 import { withLock } from "../../setup/lock";
 import { atomicWrite } from "../../setup/write";
@@ -51,10 +53,18 @@ import {
   type MergeWorld,
   spawnGh,
 } from "../../workflow/merge-check";
-import { type GateRead, resolveGateAsync } from "../../workflow/resolve";
+import { type GhLoginState, ghLoginState } from "../../workflow/propose";
+import { type GateRead, resolvedValueOf, resolveGateAsync } from "../../workflow/resolve";
+import { isProjectKey, showValue, WORKFLOW_KEYS } from "../../workflow/schema";
 import { projectCardData, projectFiles } from "../facts";
 import type { PageDataDeps } from "../page-data";
-import type { ProjectAnswer, ProjectBranch, ProjectSummary, ProjectsAnswer } from "./types";
+import type {
+  ProjectAnswer,
+  ProjectBranch,
+  ProjectSummary,
+  ProjectsAnswer,
+  ProjectWorkflowAnswer,
+} from "./types";
 import { mergeVerdictOf } from "./work";
 
 /** How many hex characters of the root's hash name a project: short, stable, one helper. */
@@ -684,7 +694,12 @@ export async function projectAnswerFor(
   return {
     branches: branches.branches,
     branchesNote: branches.note,
-    card: projectCardData(deps.action.portal, project.root, deps.projectDefaults, deps.workflow),
+    card: await projectCardData(
+      deps.action.portal,
+      project.root,
+      deps.projectDefaults,
+      deps.workflow,
+    ),
     checkedAt: branches.checkedAt,
     project,
   };
@@ -699,9 +714,126 @@ export async function projectRootById(world: ProjectsWorld, id: string): Promise
   return list.projects.find((one) => one.id === id)?.root ?? null;
 }
 
+// ── A project's workflow settings (D57) ─────────────────────────────────────────
+
+/** How long one `gh` login answer is kept: about a minute, as a project's branches are. */
+export const PROJECT_GH_LOGIN_CACHE_MS = 60_000;
+
+/** The gh login answers kept, by project root. */
+const keptGhLogins = new Map<string, { at: number; state: GhLoginState }>();
+
+/** Forgets the kept gh login answers: a test moves its fake gh between reads. */
+export function forgetGhLogin(): void {
+  keptGhLogins.clear();
+}
+
+/**
+ * Whether a pull request can be opened from `root` now, asked of `gh` at most once a minute:
+ * the project's page and the Workflow card read one answer, and a login made meanwhile shows
+ * at the next minute at the latest.
+ */
+export async function ghLoginOf(world: ProjectsWorld, root: string): Promise<GhLoginState> {
+  const now = world.now();
+  const kept = keptGhLogins.get(root);
+  if (kept !== undefined && now - kept.at < PROJECT_GH_LOGIN_CACHE_MS) return kept.state;
+  const state = await ghLoginState(root, world.env, world.gh ?? spawnGh);
+  keptGhLogins.set(root, { at: now, state });
+  return state;
+}
+
+/** A project's own file, read from its root: a plain file read, never a git child. */
+function configAt(
+  root: string,
+): { ok: true; base: null | string; config: CcSmartDevKitConfig } | { ok: false; why: string } {
+  try {
+    const config = loadCcSmartDevKitConfig(join(root, CONFIG_PATH));
+    return config === null
+      ? {
+          ok: false,
+          why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`,
+        }
+      : { ok: true, base: config.worktrees?.base ?? null, config };
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * `GET /api/projects/<id>/workflow` (D57): every workflow setting a project's own file can hold
+ * (`isProjectKey`), with its value and where that value came from, plus the base a change's pull
+ * request would go into and whether `gh` can open one now.
+ *
+ * **The values are the base's, not the checkout's.** A proposal changes the file committed on
+ * `origin/<worktrees.base>` — the file the merge guard reads, and the one `workflow propose`
+ * compares against — so the answer is `resolveGateAsync` (the gate's own non-blocking reader:
+ * `readCommittedConfigAsync` + `resolveWorkflow`) over that file, then `resolvedValueOf` (the
+ * map `workflow show` prints through). An uncommitted edit in the person's checkout, or another
+ * branch's file, is never shown as the project's policy. The ref is as fresh as the last fetch
+ * (nothing is fetched for a read): after a merge on GitHub the card shows the old value until
+ * the checkout fetches, as the gate itself does.
+ *
+ * A project with no file, no base, or no committed file on it, or a file or a personal
+ * `workflow.json` that cannot be read, is a `note` and no settings: a page is never shown a
+ * `default` for a value the project really sets.
+ */
+export async function projectWorkflowAnswerFor(
+  deps: PageDataDeps,
+  id: string,
+): Promise<ProjectWorkflowAnswer | { error: string }> {
+  const world = projectsWorldOf(deps);
+  const list = await projectsList(world);
+  const project = list.projects.find((one) => one.id === id);
+  if (project === undefined) {
+    return { error: `no project has the id "${id}"; the list on /api/projects names them` };
+  }
+  const gh = await ghLoginOf(world, project.root);
+  // The working copy names the base (as `workflow show`'s gate lines read it) and says whether
+  // the project is set up at all; what the settings are comes from the committed file below.
+  const own = configAt(project.root);
+  if (!own.ok) return { base: null, gh, note: own.why, settings: [] };
+  const { base } = own;
+  if (base === null) {
+    return {
+      base,
+      gh,
+      note: `${project.root} names no worktrees.base, so a change has no branch to go into: run \`${COMMAND} project init\` there.`,
+      settings: [],
+    };
+  }
+  try {
+    const checkout = await locateCheckoutAsync(project.root, { env: world.env });
+    if (checkout === null) {
+      return { base, gh, note: `${project.root} is not in a git checkout.`, settings: [] };
+    }
+    const read = await resolveGateAsync(world.paths, checkout, base, { env: world.env });
+    if (!read.ok) return { base, gh, note: read.why, settings: [] };
+    return {
+      base,
+      gh,
+      note: null,
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => {
+        const resolved = resolvedValueOf(read.gate.resolved, key);
+        // What `workflow show` prints for an unset key that something stands in for; any other
+        // key prints its plain value, and the card words that one itself.
+        const unsetWords = resolved.value === null ? showValue(key, null) : "null";
+        return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
+      }),
+    };
+  } catch (error) {
+    // A broken workflow.json of the person's own, or git that cannot run: a note, as the
+    // Settings page shows one — never defaults.
+    return {
+      base,
+      gh,
+      note: error instanceof Error ? error.message : String(error),
+      settings: [],
+    };
+  }
+}
+
 /** `/api/projects`: the current card, every row, and why the list may be short (B8). */
 export async function projectsAnswerFor(deps: PageDataDeps): Promise<ProjectsAnswer> {
-  const current = projectCardData(
+  const current = await projectCardData(
     deps.action.portal,
     deps.action.cwd,
     deps.projectDefaults,

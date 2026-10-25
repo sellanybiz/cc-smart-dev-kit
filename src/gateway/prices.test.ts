@@ -8,6 +8,7 @@ import { describe, expect, it } from "bun:test";
 import { parseModelList } from "./backends";
 import {
   backendCost,
+  CLAUDE_PRICES,
   claudeCost,
   claudePrice,
   costUsd,
@@ -25,8 +26,9 @@ describe("Claude's list price", () => {
       input: 4,
       output: 20,
     });
+    // $2 / $10 per MTok, cache reads $0.20: a tenth of the input rate, as Sonnet 5's row has.
     expect(claudePrice("claude-sonnet-5-5")).toEqual({
-      cacheRead: 0.1,
+      cacheRead: 0.2,
       cacheWrite: 2.5,
       input: 2,
       output: 10,
@@ -54,8 +56,8 @@ describe("Claude's list price", () => {
   });
 
   it("costs an answer: input, output, cache read and 5-minute cache write", () => {
-    // (1000×2 + 500×10 + 2000×0.1 + 100×2.5) / 1,000,000 = 0.00745
-    expect(claudeCost("claude-sonnet-5-5", TOKENS)).toEqual({ estimated: true, usd: 0.00745 });
+    // (1000×2 + 500×10 + 2000×0.2 + 100×2.5) / 1,000,000 = 0.00765
+    expect(claudeCost("claude-sonnet-5-5", TOKENS)).toEqual({ estimated: true, usd: 0.00765 });
     // (1000×4 + 500×20 + 2000×0.2 + 100×5) / 1,000,000 = 0.0149
     expect(claudeCost("claude-opus-5-5", TOKENS)).toEqual({ estimated: true, usd: 0.0149 });
   });
@@ -85,6 +87,56 @@ describe("Claude's list price", () => {
     ).toBe(0.000001);
     expect(costUsd({ cacheRead: 0, cacheWrite: 0, input: 0, output: 0 }, TOKENS)).toBe(0);
   });
+
+  /**
+   * The published cache-read price as a share of the input rate: a tenth of a new token for
+   * every family and version, except the two rows that price caching more cheaply — Claude
+   * Opus 5.5's a twentieth, Claude Fable 5.1's a fortieth. Anthropic's list gives each current
+   * row's cache-read price (`claude-api` › `shared/models.md`, read 2026-10-24): Fable 5.1
+   * $0.25 on $10, Opus 5.5 $0.20 on $4, Sonnet 5.5 and Haiku 5.5 $0.20 and $0.01 on $2 and
+   * $0.10. Every row of the table is held to the share its own row was written from, so a
+   * later edit cannot quietly change one of them — which is how Sonnet 5.5's came to be half
+   * its list price.
+   */
+  const CACHE_READ_SHARE: Readonly<Record<string, number>> = {
+    "fable 5.0": 0.1,
+    "fable 5.1": 0.025,
+    "haiku 3.5": 0.1,
+    "haiku 4.5": 0.1,
+    "haiku 5.5": 0.1,
+    "opus 4.0": 0.1,
+    "opus 4.1": 0.1,
+    "opus 4.5": 0.1,
+    "opus 4.6": 0.1,
+    "opus 4.7": 0.1,
+    "opus 4.8": 0.1,
+    "opus 5.0": 0.1,
+    "opus 5.5": 0.05,
+    "sonnet 4.0": 0.1,
+    "sonnet 4.5": 0.1,
+    "sonnet 4.6": 0.1,
+    "sonnet 5.0": 0.1,
+    "sonnet 5.5": 0.1,
+  };
+
+  it("every row's cache read is its family's published share of its input rate", () => {
+    expect(CLAUDE_PRICES).toHaveLength(Object.keys(CACHE_READ_SHARE).length);
+    // Rounded past a float's noise: a tenth of $0.30 is 0.09999999999999999.
+    const shareOf = (cacheRead: number, input: number): number =>
+      Math.round((cacheRead / input) * 100_000) / 100_000;
+    for (const row of CLAUDE_PRICES) {
+      const key = `${row.family} ${row.major}.${row.minor}`;
+      const share = CACHE_READ_SHARE[key];
+      if (share === undefined) {
+        throw new Error(`the published list has no cache-read share for ${key}`);
+      }
+      // The key in the object makes a failure name the row it is about.
+      expect({ [key]: shareOf(row.price.cacheRead, row.price.input) }).toEqual({ [key]: share });
+      if (row.over !== undefined) {
+        expect({ [key]: shareOf(row.over.cacheRead, row.over.input) }).toEqual({ [key]: share });
+      }
+    }
+  });
 });
 
 describe("a backend's own listed price", () => {
@@ -109,6 +161,40 @@ describe("a backend's own listed price", () => {
         },
       }),
     ).toEqual({ cacheRead: 0.1, cacheWrite: 0.6, input: 1, output: 2 });
+  });
+
+  it("reads OmniRoute's own shape as USD per million tokens, cached included", () => {
+    // The live answer for its `dva/claude-opus-5-max`: $5 / $25 a million, cache reads $0.50.
+    expect(listedPrice({ pricing: { cached: 0.5, input: 5, output: 25 } })).toEqual({
+      // No cache-write price: the input rate, never less.
+      cacheRead: 0.5,
+      cacheWrite: 5,
+      input: 5,
+      output: 25,
+    });
+    // A real entry of its list, with the keys around the price.
+    expect(
+      listedPrice({
+        context_length: 1_000_000,
+        id: "dva/deepseek-v4-flash-max",
+        object: "model",
+        owned_by: "devin-cli-agentic",
+        pricing: { cached: 0.03, input: 0.14, output: 0.28 },
+      }),
+    ).toEqual({ cacheRead: 0.03, cacheWrite: 0.14, input: 0.14, output: 0.28 });
+  });
+
+  it("reads OmniRoute's cache_creation as the cache-write price", () => {
+    expect(
+      listedPrice({ pricing: { cache_creation: 6.25, cached: 0.5, input: 5, output: 25 } }),
+    ).toEqual({ cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 });
+  });
+
+  it("half of a shape, or neither, gives no price rather than a guessed one", () => {
+    expect(listedPrice({ pricing: { input: 5 } })).toBeNull();
+    expect(listedPrice({ pricing: { cached: 0.5, input: 5 } })).toBeNull();
+    expect(listedPrice({ pricing: { prompt: "0.000001" } })).toBeNull();
+    expect(listedPrice({ pricing: { cached: 0.5, output: 25 } })).toBeNull();
   });
 
   it("a list with no price for the model gives none", () => {

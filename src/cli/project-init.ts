@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
-import { runGit } from "../hooks/git";
+import { runGit, runGitAsync } from "../hooks/git";
 import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import {
   applyProjectInit,
@@ -65,54 +65,96 @@ export interface ProjectInitContext {
   error: (line: string) => void;
 }
 
+/** One `git` or `gh` answer. A runner may answer with a promise: the portal's does. */
+export interface RunnerAnswer {
+  ok: boolean;
+  out: string;
+  err: string;
+}
+
 /** The git and `gh` calls, so a test runs with fakes and never a network. */
 export interface ProjectInitRunner {
-  git: (cwd: string, args: string[]) => { ok: boolean; out: string; err: string };
+  git: (cwd: string, args: string[]) => Promise<RunnerAnswer> | RunnerAnswer;
   /** `gh api <path…>`, or null when `gh` is not on PATH. */
-  gh: ((args: string[]) => { ok: boolean; out: string; err: string }) | null;
+  gh: ((args: string[]) => Promise<RunnerAnswer> | RunnerAnswer) | null;
 }
 
 const RUN_TIMEOUT_MS = 10_000;
+
+/** One `gh` command, awaited: what `runGhSync` does without blocking the caller. */
+async function runGh(ghPath: string, args: string[], env: Env): Promise<RunnerAnswer> {
+  try {
+    const child = Bun.spawn([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS,
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { ok: code === 0, out, err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
+
+/** One `gh` command, where it stands (`runGh` is its awaited twin). */
+function runGhSync(ghPath: string, args: string[], env: Env): RunnerAnswer {
+  try {
+    const run = Bun.spawnSync([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS,
+    });
+    return { ok: run.exitCode === 0, out: run.stdout.toString(), err: run.stderr.toString() };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
 
 /** The real runner: git in the repo, `gh` only when it is on PATH. */
 export function realRunner(env: Env): ProjectInitRunner {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS),
-    gh:
-      ghPath === null
-        ? null
-        : (args) => {
-            try {
-              const run = Bun.spawnSync([ghPath, ...args], {
-                env,
-                stdin: "ignore",
-                stdout: "pipe",
-                stderr: "pipe",
-                timeout: RUN_TIMEOUT_MS,
-              });
-              return {
-                ok: run.exitCode === 0,
-                out: run.stdout.toString(),
-                err: run.stderr.toString(),
-              };
-            } catch (error) {
-              return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-            }
-          },
+    gh: ghPath === null ? null : (args) => runGhSync(ghPath, args, env),
+  };
+}
+
+/**
+ * `realRunner`, without blocking the caller: the same questions, the same answers, spawned with
+ * `Bun.spawn` (`runGitAsync`, `runGh`). The portal's Project card asks these — git, and `gh api`
+ * for the protected branches — inside its own process, where a blocking spawn freezes every
+ * page and the live stream (`.claude/rules/portal.md`).
+ */
+export function realRunnerAsync(env: Env): ProjectInitRunner {
+  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
+  return {
+    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS),
+    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env),
   };
 }
 
 /** The branch HEAD is on; null when it is detached, or git cannot say. */
-function currentBranchOf(runner: ProjectInitRunner, root: string): null | string {
-  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+async function currentBranchOf(runner: ProjectInitRunner, root: string): Promise<null | string> {
+  const head = await runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = head.ok ? head.out.trim() : "";
   return branch === "" ? null : branch;
 }
 
 /** Every local branch name; empty when git cannot say (no git, not a repo). */
-function localBranchesOf(runner: ProjectInitRunner, root: string): string[] {
-  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+async function localBranchesOf(runner: ProjectInitRunner, root: string): Promise<string[]> {
+  const listed = await runner.git(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads",
+  ]);
   if (!listed.ok) return [];
   return listed.out
     .split("\n")
@@ -133,8 +175,8 @@ function localBranchesOf(runner: ProjectInitRunner, root: string): string[] {
  *
  * A git that cannot answer at all (no git, not a repo) leaves `main`, as it always did.
  */
-export function defaultBranchOf(runner: ProjectInitRunner, root: string): string {
-  const known = runner.git(root, [
+export async function defaultBranchOf(runner: ProjectInitRunner, root: string): Promise<string> {
+  const known = await runner.git(root, [
     "symbolic-ref",
     "--quiet",
     "--short",
@@ -144,20 +186,20 @@ export function defaultBranchOf(runner: ProjectInitRunner, root: string): string
     const branch = known.out.trim().replace(/^origin\//, "");
     if (branch !== "") return branch;
   }
-  const locals = localBranchesOf(runner, root);
+  const locals = await localBranchesOf(runner, root);
   const only = locals.length === 1 ? locals[0] : undefined;
   if (only !== undefined) return only;
   if (locals.includes("main")) return "main";
   if (locals.includes("master")) return "master";
-  return currentBranchOf(runner, root) ?? "main";
+  return (await currentBranchOf(runner, root)) ?? "main";
 }
 
 /** `owner/name` from the `origin` remote, however it is written; null when it cannot be read. */
-function originRepository(
+async function originRepository(
   runner: ProjectInitRunner,
   root: string,
-): { owner: string; name: string } | null {
-  const origin = runner.git(root, ["remote", "get-url", "origin"]);
+): Promise<{ owner: string; name: string } | null> {
+  const origin = await runner.git(root, ["remote", "get-url", "origin"]);
   if (!origin.ok) return null;
   const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(origin.out.trim());
   if (match?.[1] === undefined || match[2] === undefined) return null;
@@ -170,11 +212,14 @@ function originRepository(
  * `gh api` prints an error and exits non-zero when it is not authenticated: that is the
  * quiet skip.
  */
-export function protectedFromGithub(runner: ProjectInitRunner, root: string): string[] {
+export async function protectedFromGithub(
+  runner: ProjectInitRunner,
+  root: string,
+): Promise<string[]> {
   if (runner.gh === null) return [];
-  const repo = originRepository(runner, root);
+  const repo = await originRepository(runner, root);
   if (repo === null) return [];
-  const rules = runner.gh([
+  const rules = await runner.gh([
     "api",
     `repos/${repo.owner}/${repo.name}/rulesets?per_page=100`,
     "--jq",
@@ -241,10 +286,10 @@ export function defaultFastCheck(root: string): string | null {
 }
 
 /** Reads the repo's own facts. A failed git call answers as an empty repo does. */
-export function detectFacts(runner: ProjectInitRunner, root: string): DetectedFacts {
+export async function detectFacts(runner: ProjectInitRunner, root: string): Promise<DetectedFacts> {
   return {
-    defaultBranch: defaultBranchOf(runner, root),
-    protectedFromGithub: protectedFromGithub(runner, root),
+    defaultBranch: await defaultBranchOf(runner, root),
+    protectedFromGithub: await protectedFromGithub(runner, root),
     fastCheck: defaultFastCheck(root),
   };
 }
@@ -747,11 +792,11 @@ The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
  * verdict line, and after a write the next steps: commit the files, and the version every
  * teammate needs.
  */
-export function runProjectInit(
+export async function runProjectInit(
   argv: string[],
   context: ProjectInitContext,
   runner: ProjectInitRunner = realRunner(context.env),
-): number {
+): Promise<number> {
   const out = context.out;
   if (argv.includes("--help") || argv.includes("-h")) {
     out.say(PROJECT_INIT_USAGE);
@@ -765,7 +810,7 @@ export function runProjectInit(
   const flags = parsed.flags;
   const file = join(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText(file);
-  const facts = detectFacts(runner, context.root);
+  const facts = await detectFacts(runner, context.root);
   // A dry run asks nothing: it shows what the flags and the defaults would write (UX-12).
   const prompts = flags.yes || flags.dryRun ? null : context.prompts;
   out.heading(

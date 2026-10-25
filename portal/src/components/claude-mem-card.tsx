@@ -1,13 +1,32 @@
 "use client";
 
-import { ArrowRightLeftIcon, KeyRoundIcon, LifeBuoyIcon, Undo2Icon } from "lucide-react";
+import {
+  ArrowRightLeftIcon,
+  KeyRoundIcon,
+  LifeBuoyIcon,
+  TriangleAlertIcon,
+  Undo2Icon,
+} from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 import { useResource } from "@/api/hooks";
 import type { ClaudeMemCurrent, ClaudeMemFacts, ClaudeMemSource, ModelRow } from "@/api/types";
-import { ActionButton, ActionResultLine, useAction } from "@/components/action-button";
+import {
+  ActionButton,
+  ActionResultLine,
+  type ActionState,
+  useAction,
+} from "@/components/action-button";
+import {
+  CLAUDE,
+  fallbackWords,
+  handSetWords,
+  OFF,
+  ownClaudeModelWords,
+} from "@/components/claude-mem-words";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CommandLine } from "@/components/copy-button";
 import { StatusMark, TonePill } from "@/components/status";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,10 +60,6 @@ const SOURCE_WORDS: Record<ClaudeMemSource, string> = {
   setup: "set by setup, from the scout slot",
 };
 
-/** The value the Claude route and the Claude fallback send: the provider's own name. */
-const CLAUDE = "claude";
-const OFF = "off";
-
 function routeWords(route: ClaudeMemCurrent["route"]): string {
   if (route.kind === "claude") {
     return `Claude, on your own login${route.model === null ? "" : ` (${route.model})`}`;
@@ -58,17 +73,6 @@ function routeWords(route: ClaudeMemCurrent["route"]): string {
     : `${route.provider}, set by hand`;
 }
 
-function fallbackWords(fallback: ClaudeMemCurrent["fallback"]): string {
-  if (fallback.provider === OFF) return "Off: claude-mem waits for its route's provider";
-  if (fallback.provider === CLAUDE) {
-    return `Claude, on your own login (${fallback.model ?? "claude-mem's own model"})`;
-  }
-  if (fallback.target !== null) {
-    return `${targetModel(fallback.target)} on ${targetBackend(fallback.target)}`;
-  }
-  return fallback.provider;
-}
-
 /** One part of the card: its name, what holds now and who set it, then its control. */
 function Part({
   icon,
@@ -77,6 +81,7 @@ function Part({
   source,
   children,
   note,
+  refused = false,
 }: {
   icon: ReactNode;
   title: string;
@@ -85,6 +90,12 @@ function Part({
   source?: ClaudeMemSource;
   children: ReactNode;
   note?: ReactNode;
+  /**
+   * A change here may be refused now: a value it can write was set by hand (`refusedByHand`).
+   * Its button stays on: which keys a choice writes depends on the choice, so the server's own
+   * refusal names the one that stops it.
+   */
+  refused?: boolean;
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-3 rounded-lg border p-4">
@@ -95,11 +106,14 @@ function Part({
         </h3>
         <p className="text-sm text-pretty wrap-anywhere">{now}</p>
         {source !== undefined && (
-          <p className="text-xs text-muted-foreground">
-            {SOURCE_WORDS[source]}
-            {/* The kit never overwrites a value the person set by hand: say so before they try. */}
-            {source === "hand" && ": change it there, or remove it there to set it here"}
-          </p>
+          <p className="text-xs text-muted-foreground">{SOURCE_WORDS[source]}</p>
+        )}
+        {/* The kit never overwrites a value the person set by hand: say so before they try. */}
+        {refused && (
+          <StatusMark tone="warn" className="text-xs text-pretty">
+            A value this part can write was set by hand, so a change here may be refused: let the
+            kit manage it (above), or change it in the file.
+          </StatusMark>
         )}
         {note}
       </div>
@@ -149,6 +163,7 @@ function RoutePart({ current, models }: { current: ClaudeMemCurrent; models: Mod
       title="Route and model"
       now={routeWords(current.route)}
       source={current.route.source}
+      refused={current.route.refusedByHand}
     >
       <div className="flex flex-col gap-2">
         <Label htmlFor={id}>Send its summaries to</Label>
@@ -216,6 +231,7 @@ function KeyPart({ current }: { current: ClaudeMemCurrent }) {
     if (result.ok) setKey("");
   });
   const sending = state.phase === "sending";
+  const refused = current.key.refusedByHand;
   // The backend the key opens: the route's, or a Claude route's backend fallback.
   const target = current.route.target ?? current.fallback.target;
   const name = target === null ? "its backend" : targetBackend(target);
@@ -235,6 +251,7 @@ function KeyPart({ current }: { current: ClaudeMemCurrent }) {
       title="Key"
       now={now}
       source={current.key.source}
+      refused={refused}
       note={
         current.key.pool && (
           <p className="text-xs text-pretty text-muted-foreground">
@@ -317,7 +334,9 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
   const claudeRoute = route.kind === "claude";
   const backendRoute = route.kind === "backend";
   const claudeModels = ready.filter((row) => row.plan);
-  const groups = backendRoute ? [] : backendGroups(ready);
+  // Every route takes a backend fallback: on a backend route the kit writes it through
+  // claude-mem's other OpenAI-shaped provider (`chooseFallback`, MS1).
+  const groups = backendGroups(ready);
   // Every value the list offers: the one in use now is shown even when it is not among them
   // (Claude as a Claude route's own fallback, a model the list does not name), so the list
   // never reads as a value that is not set.
@@ -332,6 +351,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
       title="Fallback"
       now={fallbackWords(fallback)}
       source={fallback.source}
+      refused={fallback.refusedByHand}
       note={
         fallback.idle !== null && (
           <StatusMark tone="warn" className="text-xs text-pretty">
@@ -352,7 +372,9 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
           <NativeSelectOption value={OFF}>Off: wait for it</NativeSelectOption>
           {!claudeRoute && (
             <NativeSelectOptGroup label="Claude, on your own login">
-              <NativeSelectOption value={CLAUDE}>claude-mem's own Claude model</NativeSelectOption>
+              <NativeSelectOption value={CLAUDE}>
+                {ownClaudeModelWords(fallback)}
+              </NativeSelectOption>
               {claudeModels.map((row) => (
                 <NativeSelectOption key={row.id} value={row.id}>
                   {row.id}
@@ -375,7 +397,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         </NativeSelect>
         <p className="text-xs text-pretty text-muted-foreground">
           {backendRoute
-            ? "claude-mem has one backend setting, and the route uses it: the fallback can be Claude, or off."
+            ? "The fallback can be Claude, a backend model, or off. A backend model goes through claude-mem's OpenRouter setting, pointed at the backend of the model you pick: the route keeps its own."
             : claudeRoute
               ? "On the Claude route, the fallback can be a backend model, or off."
               : "The fallback can be Claude, a backend model, or off."}
@@ -406,6 +428,88 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
   );
 }
 
+/**
+ * The take-over (MS1, D63): the values set by hand that refuse a choice now, by name, and the
+ * offer to let the kit manage them. It asks first, naming the keys; nothing in the file changes.
+ * Once they are the kit's, only its result stays, until it clears itself.
+ */
+function TakeOver({
+  facts,
+  state,
+  run,
+}: {
+  facts: ClaudeMemFacts;
+  state: ActionState;
+  run: (body: Record<string, unknown>) => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const keys = facts.handKeys;
+  const sending = state.phase === "sending";
+  if (keys.length === 0) return <ActionResultLine state={state} />;
+  const keyList = (
+    <ul className="flex flex-col gap-0.5 font-mono text-xs wrap-anywhere">
+      {keys.map((key) => (
+        <li key={key}>{key}</li>
+      ))}
+    </ul>
+  );
+  return (
+    <>
+      {/* A note, not an alert: it is the card's state on every load, not news to announce. */}
+      <Alert role="note" className="border-warn/40">
+        <TriangleAlertIcon className="text-warn" aria-hidden="true" />
+        <AlertTitle className="text-pretty">
+          {handSetWords(keys.length)}, so the kit changes none of them
+        </AlertTitle>
+        <div className="flex min-w-0 flex-col items-start gap-2 text-sm text-muted-foreground">
+          <p className="text-pretty">
+            A change that writes one of them is refused (the parts marked below). Let the kit manage
+            them to change claude-mem's route, key and fallback here:
+          </p>
+          {keyList}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={sending}
+            aria-busy={sending}
+            onClick={() => setAsking(true)}
+          >
+            Let the kit manage these
+          </Button>
+          <ActionResultLine state={state} onRetry={() => setAsking(true)} />
+        </div>
+      </Alert>
+      <ConfirmDialog
+        open={asking}
+        title="Let the kit manage these values?"
+        yes="Let the kit manage them"
+        onCancel={() => setAsking(false)}
+        onYes={() => {
+          setAsking(false);
+          run({ confirm: true });
+        }}
+      >
+        <div className="flex flex-col gap-2">
+          <p>
+            The kit records these values in{" "}
+            <span className="font-mono wrap-anywhere">{facts.file}</span> as its own:
+          </p>
+          {keyList}
+          <p>
+            Nothing in the file changes now: each value stays exactly as it is until you pick
+            another here.
+          </p>
+          <p>
+            <span className="font-mono">{KIT_NAME} restore</span> puts them back as they were. A
+            key's value is never written down: restore leaves a taken-over key as you set it, or,
+            once the kit replaced it, names the backup that holds yours.
+          </p>
+        </div>
+      </ConfirmDialog>
+    </>
+  );
+}
+
 /** The card. Blocked (not installed, too old, a file it cannot read): the reason and the fix. */
 export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
   const gateway = facts.backends !== null && facts.current !== null;
@@ -428,6 +532,9 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
   const chosen =
     current !== null &&
     [current.route.source, current.key.source, current.fallback.source].includes("portal");
+  // Here, not in the take-over's own box: the box goes once the values are the kit's, and its
+  // result must stay in place after it.
+  const takeOver = useAction("claudemem.takeover");
   return (
     <Card className="@4xl/main:col-span-2">
       <CardHeader>
@@ -460,6 +567,7 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
           </div>
         ) : (
           <>
+            <TakeOver facts={facts} state={takeOver.state} run={takeOver.run} />
             <div className="grid gap-4 @3xl/main:grid-cols-3">
               <RoutePart current={current} models={models} />
               {needsKey ? (
@@ -493,7 +601,7 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
               icon={<Undo2Icon data-icon="inline-start" aria-hidden="true" />}
               confirm={{
                 title: "Hand claude-mem back to setup?",
-                body: "Your choices here are forgotten, and setup's own claude-mem step runs now: claude-mem follows the gateway's scout slot again (after one tiny request to its model), and its fallback goes back to claude-mem's own default. A value you set by hand in the file stays yours.",
+                body: "Your choices here are forgotten, and setup's own claude-mem step runs now: claude-mem follows the gateway's scout slot again (after one tiny request to its model), and its fallback goes back to claude-mem's own default. A value you set by hand and did not let the kit manage stays yours; one the kit manages is setup's again.",
                 yes: "Hand it back",
               }}
             >

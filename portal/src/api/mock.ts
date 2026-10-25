@@ -14,6 +14,7 @@ import {
   seeded,
   TRAFFIC,
 } from "./mock-history";
+import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
 import { type ProjectMocks, projectMocks } from "./mock-projects";
 import type {
   AskerCount,
@@ -35,6 +36,7 @@ import type {
   NeedsData,
   OpenBreaker,
   OverviewData,
+  OverviewRequests,
   PortalFacts,
   ProjectData,
   ProjectList,
@@ -109,15 +111,14 @@ function crewRecord(
   now: number,
   fields: Partial<CrewRecord> & Pick<CrewRecord, "id" | "phase" | "slug" | "state" | "kind">,
 ): CrewRecord {
-  const tag = "my-app";
   return {
-    name: `C ${tag} ${fields.phase} ${fields.slug}`,
+    name: mockCrewName(fields.phase, fields.slug),
     sessionId: `${fields.id}-0000-4000-8000-000000000000`,
     shortId: fields.id.slice(0, 8),
     leadSessionId: "9c3a7e5d-lead",
-    leadName: "LEAD my-app release-1.1.0",
-    repo: `${PATH}/my-app`,
-    plan: ".claude/plans/release-1.1.0.md",
+    leadName: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    repo: `${PATH}/${MOCK_TAG}`,
+    plan: MOCK_PLAN,
     model: {
       named: "sonnet",
       slot: "cc-smart-dev-kit-worker",
@@ -126,9 +127,9 @@ function crewRecord(
     },
     effort: "high",
     permissionMode: "auto",
-    worktree: `${PATH}/my-app/.claude/worktrees/${fields.phase.toLowerCase()}-${fields.slug}`,
+    worktree: `${PATH}/${MOCK_TAG}/.claude/worktrees/${fields.phase.toLowerCase()}-${fields.slug}`,
     branch: `crew/${fields.phase.toLowerCase()}-${fields.slug}`,
-    baseRef: "release-1.1.0",
+    baseRef: MOCK_PLAN,
     waitsFor: [],
     files: [],
     lastLine: null,
@@ -147,11 +148,11 @@ function workData(now: number, empty: boolean): WorkData {
   }
   const lead: LeadRecord = {
     sessionId: "9c3a7e5d-lead",
-    name: "LEAD my-app release-1.1.0",
-    repo: `${PATH}/my-app`,
-    plan: ".claude/plans/release-1.1.0.md",
-    tag: "my-app",
-    cwd: `${PATH}/my-app`,
+    name: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    repo: `${PATH}/${MOCK_TAG}`,
+    plan: MOCK_PLAN,
+    tag: MOCK_TAG,
+    cwd: `${PATH}/${MOCK_TAG}`,
     createdAt: iso(now - 3 * HOUR),
     updatedAt: iso(now - MINUTE),
   };
@@ -243,14 +244,24 @@ function workData(now: number, empty: boolean): WorkData {
         lead,
         crew,
         lastStep: {
-          a1f04c2e: step("a1f04c2e", "C my-app B6b live-stream", 3, "GET /events behind the door"),
+          a1f04c2e: step(
+            "a1f04c2e",
+            mockCrewName("B6b", "live-stream"),
+            3,
+            "GET /events behind the door",
+          ),
           b7c19d03: step(
             "b7c19d03",
-            "C my-app B6c slots-page",
+            mockCrewName("B6c", "slots-page"),
             18,
             "The chain editor's draft state",
           ),
-          d9e2f7a4: step("d9e2f7a4", "C my-app C2 skills-agents", 9, "Agents' tool lists per R7"),
+          d9e2f7a4: step(
+            "d9e2f7a4",
+            mockCrewName("C2", "skills-agents"),
+            9,
+            "Agents' tool lists per R7",
+          ),
         },
       },
     ],
@@ -362,14 +373,13 @@ function flowReport(now: number, window: FlowWindow, empty: boolean): FlowReport
   };
 }
 
-function settingsRows(project: boolean): SettingsRow[] {
+/** The portal's own folder is the set-up `my-app` (the projects' current one): it sets a few rows. */
+function settingsRows(): SettingsRow[] {
   const row = (
     fields: Omit<SettingsRow, "readOnly" | "why" | "source"> &
       Partial<Pick<SettingsRow, "readOnly" | "why" | "source">>,
   ): SettingsRow => ({ readOnly: false, why: null, source: "default", ...fields });
-  const projectSets = project
-    ? { readOnly: true, source: "project" as const, why: "this project sets it" }
-    : {};
+  const projectSets = { readOnly: true, source: "project" as const, why: "this project sets it" };
   return [
     row({
       card: "flow",
@@ -521,9 +531,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       label: "Session names",
       where: "project",
       value: true,
-      ...(project
-        ? projectSets
-        : { readOnly: true, why: "this project has no .claude/cc-smart-dev-kit.json yet" }),
+      ...projectSets,
     }),
     row({
       card: "switches",
@@ -534,9 +542,7 @@ function settingsRows(project: boolean): SettingsRow[] {
       label: "Heavy jobs through the queue",
       where: "project",
       value: true,
-      ...(project
-        ? projectSets
-        : { readOnly: true, why: "this project has no .claude/cc-smart-dev-kit.json yet" }),
+      ...projectSets,
     }),
     row({
       card: "switches",
@@ -634,6 +640,8 @@ export interface MockData {
   facts: PortalFacts;
   overview: OverviewData;
   history: (query: HistoryQuery) => History;
+  /** The Overview's rate alone, as `/api/history/rate` answers it. */
+  historyRate: OverviewRequests;
   requests: (query: RequestQuery) => RequestPage;
   keys: HistoryKeys;
   needs: NeedsData;
@@ -650,6 +658,8 @@ export interface MockData {
   settings: SettingsData;
   projects: ProjectList;
   projectPages: Record<string, ProjectData>;
+  gatewayPages: ProjectMocks["gatewayPages"];
+  workflowPages: ProjectMocks["workflowPages"];
   /** A `project.*` action's mock answer; null: the generic "sent nothing" line. */
   act: ProjectMocks["act"];
 }
@@ -658,6 +668,12 @@ export function mockData(empty: boolean): MockData {
   const now = Date.now();
   const work = workData(now, empty);
   const jobs = jobsData(now, empty);
+  // The model requests the history holds: fewer than the router's own count, which also counts
+  // Claude Code's pings to it. One home in the mock: the Overview answer carries it, and
+  // `/api/history/rate` returns it on its own.
+  const historyRate = empty
+    ? { perMinute: null, sinceRouterStart: null }
+    : { perMinute: 21.6, sinceRouterStart: 892 };
   const recent = empty ? [] : recentRequests(now, 200);
   const breakers: Record<string, OpenBreaker> = empty
     ? {}
@@ -788,12 +804,7 @@ export function mockData(empty: boolean): MockData {
     tested: {},
   };
 
-  const projects = projectMocks(now, empty, {
-    autoMerge: { allowed: false, base: "main" },
-    error: null,
-    projectNote: null,
-    rows: settingsRows(true),
-  });
+  const projects = projectMocks(now, empty);
 
   return {
     act: projects.act,
@@ -819,11 +830,13 @@ export function mockData(empty: boolean): MockData {
       ),
     worktrees: worktreesData(now, empty),
     update: updateData(now),
+    historyRate,
     overview: {
       health,
       fallbacks: fallbackRows,
       limits,
       fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
+      requests: historyRate,
       switches: slots.switches,
       crewRunning: empty ? 0 : 3,
       jobs: {
@@ -913,23 +926,27 @@ export function mockData(empty: boolean): MockData {
         blocked: null,
         current: {
           fallback: {
+            claudeModel: null,
             idle: null,
             model: null,
             provider: "claude",
+            refusedByHand: false,
             source: "default",
             target: null,
           },
-          key: { pool: false, source: "setup", state: "gateway" },
+          key: { pool: false, refusedByHand: false, source: "setup", state: "gateway" },
           route: {
             address: "http://127.0.0.1:20128/v1",
             kind: "backend",
             model: "glm-5.3-flash",
             provider: "openai-compatible",
+            refusedByHand: false,
             source: "setup",
             target: "omniroute:glm-5.3-flash",
           },
         },
         file: "~/.claude-mem/settings.json",
+        handKeys: [],
         minVersion: "13.29.0",
         version: "13.40.0",
       },
@@ -1038,8 +1055,10 @@ export function mockData(empty: boolean): MockData {
         },
       ],
     },
-    settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows(false) },
+    settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows() },
     projects: projects.projects,
     projectPages: projects.projectPages,
+    gatewayPages: projects.gatewayPages,
+    workflowPages: projects.workflowPages,
   };
 }

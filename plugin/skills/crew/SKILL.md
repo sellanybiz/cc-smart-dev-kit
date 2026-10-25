@@ -19,8 +19,12 @@ branch, how you report and ask).
   dependency install, is your first step.
 - **Your role card** comes at the start, and again on a resume and after a compaction: it names
   your phase, the files it owns, your brief's path, how you report and ask, and the git rule.
-- **Write your task list** from the brief (`/cc-smart-dev-kit:memory-routing`): each part and
-  its done-check. You resume from it, and from your commits, after a compaction.
+- **Write your task list before you change any file** (`/cc-smart-dev-kit:memory-routing`): one
+  `TaskCreate` per part of the brief, each with its done-check. **The `crew-role` hook refuses your
+  first `Edit`, `Write` or `NotebookEdit` until one task exists**, and a `done` report is refused
+  while any task is still `pending` or `in_progress`. Claude Code leaves the task tools out until
+  you look them up: `ToolSearch` with `select:TaskCreate,TaskUpdate,TaskList` first. You resume
+  from the list, and from your commits, after a compaction.
 - **Your own subagents** — a search, a separable piece — run in the background
   (`run_in_background: true`), so your turn goes on while they work.
 
@@ -128,7 +132,9 @@ contract accepts.
 ## 7. Hand-off
 
 When the `crew-self` monitor says you reached the hand-off line (your context, or your time
-cap): commit your work in progress, step `handoff`, then `crew report --status handoff` —
+cap): your context line is `crew.handoffTokens` (400 000 tokens) or `crew.handoffPercent` (70 %) of
+your window, whichever comes first, and before the point Claude Code would auto-compact you at —
+so a 1M window hands off at 400k and a 200k window at 140k. Commit your work in progress, step `handoff`, then `crew report --status handoff` —
 what is done, what is next, and what the next crew session must know. The lead starts it from your
 head.
 

@@ -15,11 +15,13 @@ import {
   machineAnswer,
   overviewAnswer,
   projectsAnswer,
+  rateAnswer,
   settingsAnswer,
   slotsAnswer,
   updateAnswer,
 } from "./data";
-import { projectAnswerFor } from "./projects";
+import { projectGatewayAnswerFor } from "./project-gateway";
+import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
   crewAnswerFor,
@@ -103,7 +105,7 @@ export const API_READS: Readonly<
   "/api/slots": async (deps) => ok(await slotsAnswer(deps)),
   "/api/health": async (deps) => ok(await healthAnswer(deps)),
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
-  "/api/settings": (deps) => ok(settingsAnswer(deps)),
+  "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),
@@ -111,6 +113,9 @@ export const API_READS: Readonly<
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),
+  // The Overview's rate, on its own: the card reads again with each routed request, and the
+  // whole Overview answer is too heavy to ask at that cadence (`src/portal/api/data.ts`).
+  "/api/history/rate": async (deps) => ok(await rateAnswer(deps)),
   "/api/history/keys": (deps, query) => {
     const range = rangeOf(query.get("range"));
     if (range === null) return badRange();
@@ -155,12 +160,14 @@ export const API_READS: Readonly<
     }
   },
   "/api/requests": (deps, query) => {
+    const range = rangeOf(query.get("range"));
     const status = query.get("status");
     const cursor = cursorOf(query.get("cursor"));
+    if (range === null) return badRange();
     if ((status !== null && status !== "error") || cursor === "bad") {
       return {
         body: {
-          error: `requests takes cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
+          error: `requests takes range=${Object.keys(HISTORY_RANGES).join("|")}, cursor=<the id the page before ended at>, limit=1..${RECENT_PAGE_MAX}, slot, target, model, session and status=error`,
         },
         status: 400,
       };
@@ -169,6 +176,8 @@ export const API_READS: Readonly<
       return ok(
         requestsAnswer(deps, {
           filters: historyFilters(query),
+          // The range bounds the rows, as it does the charts: the page's switch changes both.
+          from: deps.action.portal.now() - HISTORY_RANGES[range],
           limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
           ...(cursor === null ? {} : { cursor }),
         }),
@@ -202,6 +211,14 @@ export const API_READS: Readonly<
   },
 };
 
+/** The parts of one project a card reads on its own: `/api/projects/<id>/<part>`. */
+export const PROJECT_PARTS: Readonly<
+  Record<string, (deps: PageDataDeps, id: string) => Promise<object | { error: string }>>
+> = {
+  gateway: projectGatewayAnswerFor,
+  workflow: projectWorkflowAnswerFor,
+};
+
 /**
  * The answer for one GET under `/api/`, or null when no read route lives there (the server
  * then answers the path as it always did: an action is a POST).
@@ -218,7 +235,18 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       return { body: { error: "name a project" }, status: 400 };
     }
     if (id === "" || id.includes("/")) {
-      return { body: { error: "name a project" }, status: 400 };
+      // `/api/projects/<id>/<part>`: one card's own read. `workflow` (D57): the project's
+      // workflow settings, its base and whether gh can open a pull request; `gateway` (GP4b):
+      // its gateway state, the file that decides it, and its profile's chains.
+      const slash = id.indexOf("/");
+      const named = slash < 0 ? "" : id.slice(0, slash);
+      const part = slash < 0 ? "" : id.slice(slash + 1);
+      const read = Object.hasOwn(PROJECT_PARTS, part) ? PROJECT_PARTS[part] : undefined;
+      if (named === "" || read === undefined) {
+        return { body: { error: "name a project" }, status: 400 };
+      }
+      const answer = await read(deps, named);
+      return "error" in answer ? { body: answer, status: 404 } : ok(answer);
     }
     const answer = await projectAnswerFor(deps, id);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);

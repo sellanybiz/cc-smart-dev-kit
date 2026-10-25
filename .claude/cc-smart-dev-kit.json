@@ -14,8 +14,7 @@
     "reviewBeforePush": true,
     "autoMerge": false,
     "crew": {
-      "enabled": true,
-      "handoffPercent": 80
+      "enabled": true
     }
   }
 }

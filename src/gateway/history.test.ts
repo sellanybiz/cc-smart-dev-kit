@@ -17,7 +17,7 @@ import {
   type HistoryRow,
   historyDbExists,
 } from "./history";
-import { recentRequests } from "./history-read";
+import { historyKeys, historySeries, recentRequests, requestsSince } from "./history-read";
 import { createRouter, type FetchLike, type RouterDeps, type UpstreamInit } from "./router";
 import { GUARD_PROMPT } from "./targets";
 
@@ -38,6 +38,7 @@ function row(overrides: Partial<HistoryRow> = {}): HistoryRow {
     model: "claude-sonnet-5-5",
     ms: 12,
     nextTarget: null,
+    profile: null,
     session: "sess-1",
     slot: "cc-smart-dev-kit-worker",
     status: 200,
@@ -45,6 +46,80 @@ function row(overrides: Partial<HistoryRow> = {}): HistoryRow {
     tokens: null,
     ...overrides,
   };
+}
+
+/**
+ * The version-1 table, exactly as 1.1.0 made it, with two rows already in it: what a 1.1.x
+ * router keeps writing until `gateway setup` restarts it on the 1.2.0 copy.
+ */
+function schemaOneDatabase(file: string): void {
+  const old = new Database(file, { create: true });
+  old.run(`CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    session TEXT,
+    model TEXT NOT NULL,
+    slot TEXT,
+    target TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    next_target TEXT,
+    breaker TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cost_usd REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0
+  )`);
+  old.run("CREATE INDEX requests_at ON requests(at)");
+  old.run("CREATE INDEX requests_session_at ON requests(session, at)");
+  old.run(
+    `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      START - 2000,
+      "s-1",
+      "old-one",
+      "cc-smart-dev-kit-worker",
+      "claude-sonnet-5-5",
+      200,
+      12,
+      null,
+      null,
+      10,
+      20,
+      0,
+      0,
+      0.1,
+      1,
+    ],
+  );
+  old.run(
+    `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      START - 1000,
+      null,
+      "old-two",
+      null,
+      "anthropic",
+      500,
+      30,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      0,
+    ],
+  );
+  old.run("PRAGMA user_version = 1");
+  old.close();
 }
 
 describe("the history writer", () => {
@@ -103,6 +178,7 @@ describe("the history writer", () => {
         inputTokens: 1000,
         model: "claude-sonnet-5-5",
         ms: 42,
+        profile: null,
         nextTarget: "claude-sonnet-5-5",
         outputTokens: 500,
         session: "sess-1",
@@ -179,7 +255,35 @@ describe("the history writer", () => {
     const db = new Database(file, { readonly: true });
     expect(db.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     expect(db.query("PRAGMA auto_vacuum").get()).toEqual({ auto_vacuum: 2 });
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    db.close();
+  });
+
+  it("a database from schema 1 keeps every row: the profile column is added beside them", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+
+    // The writer opens it: the column is added, the two rows stay, and they read as the
+    // machine's default (no profile).
+    const writer = createHistoryWriter({
+      file,
+      flushAfterMs: 60_000,
+      log: () => {},
+      now: () => START,
+      retentionDays: () => 90,
+    });
+    writer.record(row({ at: START, model: "new-one", profile: "proj" }));
+    writer.flush();
+    writer.close();
+
+    const page = recentRequests(file, { limit: 10 });
+    expect(page.rows.map((entry) => [entry.model, entry.profile])).toEqual([
+      ["new-one", "proj"],
+      ["old-two", null],
+      ["old-one", null],
+    ]);
+    const db = new Database(file, { readonly: true });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     db.close();
   });
 
@@ -388,11 +492,12 @@ describe("the router's request history", () => {
       {
         at: START,
         breaker: null,
-        // Sonnet 5.5 list price: (1000×2 + 500×10 + 2000×0.1 + 100×2.5) / 1,000,000.
-        cost: { estimated: true, usd: 0.00745 },
+        // Sonnet 5.5 list price: (1000×2 + 500×10 + 2000×0.2 + 100×2.5) / 1,000,000.
+        cost: { estimated: true, usd: 0.00765 },
         model: "claude-sonnet-5-5",
         ms: 42,
         nextTarget: null,
+        profile: null,
         session: "sess-1",
         slot: "cc-smart-dev-kit-worker",
         status: 200,
@@ -402,7 +507,29 @@ describe("the router's request history", () => {
     ]);
   });
 
-  it("a streamed answer: the tokens come from message_start and the last message_delta", async () => {
+  it("a request under a profile's path writes the profile in its row; a plain one writes none", async () => {
+    const history = collector();
+    const config = testConfig({
+      profiles: { proj: { slots: { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] } } },
+    });
+    const { handle, settled } = routerWithHistory([answerWithUsage, answerWithUsage], {
+      config,
+      history: history.recorder,
+    });
+    const profiled = await handle(
+      request({ body: message("claude-sonnet-5-5"), path: "/p/proj/v1/messages", session: "s" }),
+    );
+    await profiled.text();
+    const plain = await handle(request({ body: message("claude-sonnet-5-5"), session: "s" }));
+    await plain.text();
+    await settled();
+    expect(history.rows.map((entry) => [entry.profile, entry.target])).toEqual([
+      ["proj", "claude-sonnet-5-5"],
+      [null, "claude-sonnet-5-5"],
+    ]);
+  });
+
+  it("a streamed answer: the start's counts stand, and the last message_delta's output wins", async () => {
     const history = collector();
     const sse = [
       "event: message_start",
@@ -445,8 +572,8 @@ describe("the router's request history", () => {
     });
     expect(history.rows[0]?.cost).toEqual({
       estimated: true,
-      // (1234×2 + 7×10 + 500×0.1) / 1,000,000 = 0.002588
-      usd: 0.002588,
+      // (1234×2 + 7×10 + 500×0.2) / 1,000,000 = 0.002638: Sonnet 5.5's cache read is $0.20.
+      usd: 0.002638,
     });
   });
 
@@ -493,6 +620,8 @@ describe("the router's request history", () => {
     const history = collector();
     const config = testConfig({
       backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:1" } },
+      // The next target answers only with the slot's fallback switch on (off by default, D66).
+      fallback: { "cc-smart-dev-kit-worker": true },
       slots: { "cc-smart-dev-kit-worker": ["omniroute:m1", "claude-sonnet-5-5"] },
     });
     const { handle, settled } = routerWithHistory(
@@ -649,5 +778,77 @@ describe("the request history never holds the conversation", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toStartWith("ERROR cannot write the request history:");
     writer.close();
+  });
+});
+
+describe("the readers on a schema-1 database (a 1.1.x router still writes it)", () => {
+  // After the background self-update the portal and the CLI are 1.2.0, while the running router
+  // stays 1.1.x until `gateway setup`: it keeps the file at schema 1, and the readers open it
+  // read-only, so they cannot add the column. They read its rows as the machine's default.
+
+  it("recentRequests reads every row with no profile, and a profile filter matches none", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    const page = recentRequests(file, { limit: 10 });
+    expect(page.rows.map((entry) => [entry.model, entry.profile])).toEqual([
+      ["old-two", null],
+      ["old-one", null],
+    ]);
+    expect(recentRequests(file, { filters: { profile: "proj" }, limit: 10 })).toEqual({
+      nextCursor: null,
+      rows: [],
+    });
+    const worker = recentRequests(file, {
+      filters: { slot: "cc-smart-dev-kit-worker" },
+      limit: 10,
+    });
+    expect(worker.rows.map((entry) => entry.model)).toEqual(["old-one"]);
+  });
+
+  it("historySeries groups the rows, and a profile filter matches none", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    const answer = historySeries(file, { by: "target", now: START, range: "1h" });
+    expect(
+      answer.series.map((series) => [
+        series.key,
+        series.points.reduce((sum, point) => sum + point.requests, 0),
+        series.points.reduce((sum, point) => sum + point.errors, 0),
+      ]),
+    ).toEqual([
+      ["anthropic", 1, 1],
+      ["claude-sonnet-5-5", 1, 0],
+    ]);
+    const filtered = historySeries(file, {
+      by: "target",
+      filters: { profile: "proj" },
+      now: START,
+      range: "1h",
+    });
+    expect(filtered.series).toEqual([]);
+  });
+
+  it("historyKeys and requestsSince read it as they read schema 2", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    expect(historyKeys(file, { now: START, range: "1h" })).toEqual({
+      models: ["old-one", "old-two"],
+      sessions: ["s-1"],
+      slots: ["cc-smart-dev-kit-worker"],
+      targets: ["anthropic", "claude-sonnet-5-5"],
+    });
+    expect(requestsSince(file, { from: START - 1500 })).toBe(1);
+  });
+
+  it("a read never migrates the file: it stays at schema 1, with no profile column", () => {
+    const file = historyFile();
+    schemaOneDatabase(file);
+    recentRequests(file, { filters: { profile: "proj" }, limit: 10 });
+    historySeries(file, { by: "slot", filters: { profile: "proj" }, now: START, range: "1h" });
+    const db = new Database(file, { readonly: true });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+    expect(columns.map((column) => column.name)).not.toContain("profile");
+    db.close();
   });
 });

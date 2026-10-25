@@ -5,6 +5,8 @@
  * - `claude -p` is judged by the launch policy every Agent launch meets: no model denies, the
  *   `opus` tier at `max` asks, the `fable` tier with its reason line asks;
  * - a crew session's `crew start` is denied;
+ * - a crew session's `workflow propose` is denied, however the line is spelled, and the rest of
+ *   the command passes;
  * - a polling loop over `crew list|status` or `claude agents --json` is denied, a single read
  *   passes;
  * - the judge runs with `jobs.route` off, with no project file, with a broken one, and outside
@@ -18,8 +20,19 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
-import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import { shellQuote } from "../setup/launcher";
+import {
+  commitConfig,
+  hookEnv,
+  makeRepo,
+  runHook,
+  slowGitEnv,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
+import { judgeBash, readBash } from "./bash-judge";
+import { GUARD_BUDGET_ENV } from "./budget";
 import type { HookResult } from "./io";
 import { jobRouteHook } from "./specs";
 
@@ -267,6 +280,12 @@ describe("a crew session running a lead's command", () => {
     ],
     // A program the line works out when it runs is read from its own words, as a launch is.
     ["$BIN crew answer C-x 'yes'", "answers its lead's questions"],
+    ["$(command -v cc-smart-dev-kit) crew answer C-x 'yes'", "answers its lead's questions"],
+    // The kit's own spellings, through the one recogniser both guards read (`kit-invocation`).
+    [
+      "bun $HOME/.claude/plugins/cache/cc-smart-dev-kit/1.0.0/dist/cli.js crew answer C-x 'yes'",
+      "answers its lead's questions",
+    ],
     ["cc-smart-dev-kit crew watch", "watches its lead's crew sessions"],
     ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
     ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
@@ -319,6 +338,374 @@ describe("a crew session running a lead's command", () => {
     );
     expect(answer.decision).toBe("deny");
     expect(answer.reason).toContain("answers its lead's questions");
+  });
+});
+
+describe("a crew session proposing a workflow change", () => {
+  // `workflow propose` pushes a branch and opens a pull request in children no hook sees, so
+  // the guards that deny the session's own `git push` and `gh pr create` (D24) never see them.
+  // The hook's environment is the session's own, so a line that unsets the variable itself is
+  // still this crew session's; the reader steps over the wrappers and the inner shells, so
+  // every spelling of the line meets the same denial.
+  const denied: [string, string][] = [
+    ["cc-smart-dev-kit workflow propose autoCommit true", "the plain line"],
+    [
+      "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow propose autoCommit true",
+      "the variable unset on the line itself",
+    ],
+    ["timeout 60 cc-smart-dev-kit workflow propose autoCommit true", "`timeout`"],
+    ["nohup setsid cc-smart-dev-kit workflow propose autoCommit true", "`nohup` and `setsid`"],
+    ["sudo -u me cc-smart-dev-kit workflow propose autoCommit true", "`sudo`"],
+    ["bash -c 'cc-smart-dev-kit workflow propose autoCommit true'", "an inner shell"],
+    ["eval 'cc-smart-dev-kit workflow propose autoCommit true'", "`eval`"],
+    ["$KIT workflow propose autoCommit true", "a computed program"],
+    ["$(command -v cc-smart-dev-kit) workflow propose autoCommit true", "a computed program"],
+    ["cc-smart-dev-kit workflow propose autoMerge --unset", "an `--unset`"],
+    // The kit under every spelling its own guards recognise (`kit-invocation`): its bundle
+    // behind a runner, the launcher behind `sh`, and a program that runs its arguments.
+    [
+      "bun $HOME/.claude/plugins/cache/cc-smart-dev-kit/1.0.0/dist/cli.js workflow propose autoCommit true",
+      "the bundle behind `bun`",
+    ],
+    [
+      "sh $HOME/.local/bin/cc-smart-dev-kit workflow propose autoCommit true",
+      "the launcher behind `sh`",
+    ],
+    [
+      "find . -maxdepth 0 -exec cc-smart-dev-kit workflow propose autoCommit true ;",
+      "`find -exec`",
+    ],
+    [
+      "watch -n 600 env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow propose autoCommit true",
+      "`watch`",
+    ],
+    // The argv the command itself gets: a redirect before the subcommand is not an argument,
+    // and a redirect's target is not a flag (`> -h` used to pass for a help read).
+    ["cc-smart-dev-kit 2>/dev/null workflow propose autoCommit true", "a redirect before it"],
+    ["cc-smart-dev-kit workflow propose autoCommit true > -h", "a redirect target"],
+    ["cc-smart-dev-kit workflow propose autoCommit true 2> --help", "a redirect target"],
+    // A subcommand the judge cannot read may be `propose`.
+    [
+      "P=propose; env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit workflow $P autoCommit true",
+      "a computed subcommand",
+    ],
+    // A `--help` after a `--` is the command's own word (`asksForHelp`'s rule): the line is no
+    // help read, and the command refuses the `--` itself.
+    ["cc-smart-dev-kit workflow propose -- -h", "a `--help` after a `--`"],
+    ["echo propose autoCommit true | xargs cc-smart-dev-kit workflow", "no subcommand at all"],
+  ];
+  for (const [command, what] of denied) {
+    test(`denied: ${what} — ${command}`, async () => {
+      const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain("a crew session never proposes a workflow change");
+      expect(answer.reason).toContain("cc-smart-dev-kit crew report --question");
+    });
+  }
+
+  test("the deny is the hook's own: no file, a broken file and ownHooks cannot soften it", async () => {
+    for (const config of [
+      undefined,
+      { ownHooks: ["job-route"] },
+      { worktree: {} },
+      { requires: ">=99" },
+    ]) {
+      const { env, repo } = project(config);
+      const answer = await judge(repo, "cc-smart-dev-kit workflow propose autoCommit true", {
+        ...env,
+        CC_SMART_DEV_KIT_CREW: CREW_ID,
+      });
+      expect({ config, decision: answer.decision }).toEqual({ config, decision: "deny" });
+    }
+  });
+
+  test("in PowerShell it is denied too", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit workflow propose autoCommit true",
+      { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("a crew session never proposes a workflow change");
+  });
+
+  test("the rest of the workflow command passes: reading it, and changing this checkout's policy", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "cc-smart-dev-kit workflow show",
+      "cc-smart-dev-kit workflow set autoCommit true --project",
+      "cc-smart-dev-kit workflow unset autoCommit --project",
+      "cc-smart-dev-kit workflow merge-check 5",
+      "cc-smart-dev-kit workflow review-done --sha abc1234",
+      // Reading the usage proposes nothing, as for a lead command's help: both spellings, and
+      // a `--help` after a `--` is the command's own word, not the dispatcher's.
+      "cc-smart-dev-kit workflow propose --help",
+      "cc-smart-dev-kit workflow propose -h",
+      // A crew session's own command that merely names it: the words are read, and they are not
+      // the words of a command the line runs.
+      "cc-smart-dev-kit crew report --question 'workflow propose' --option a --option b",
+      "$KIT crew report --question 'workflow propose' --option a --option b",
+      // A path that only holds the kit's name in a test file's own name is no kit command, and
+      // a program that runs no argument of its own (`git commit -m …`) never is.
+      "bun test src/workflow/propose.test.ts",
+      "git commit -m 'workflow propose: the deny'",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("RV4 finding 7: a computed program that merely ends in the word `workflow` is no proposal", async () => {
+    // Nothing on these lines names the kit: the word is a test filter and `gh`'s own subcommand.
+    // They were read as `workflow` with no subcommand, which `xargs cc-smart-dev-kit workflow`
+    // needs to be a possible proposal, and a crew session's test run was denied.
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      '"$PY" -m pytest -k workflow',
+      "$(which gh) workflow",
+      // A word after `workflow` that the line works out is as likely another program's argument
+      // (`$EXTRA` a flag, `$SUB` gh's workflow id) as the kit's subcommand (RV4 finding F4).
+      '"$PY" -m pytest -k workflow $EXTRA',
+      "$(which gh) workflow $SUB",
+      '"$PY" -m pytest -k workflow "$(cat extra-args)"',
+    ]) {
+      expect({ command, propose: readBash(command).workflowPropose }).toEqual({
+        command,
+        propose: false,
+      });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("RV4 finding 7: a computed program the line names as the kit, with no subcommand, is still a possible proposal", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "K=cc-smart-dev-kit; $K workflow",
+      "echo propose | $(command -v cc-smart-dev-kit) workflow",
+      // The words `workflow propose` are the domain words: a computed program asks without them
+      // naming the kit anywhere.
+      "$KIT workflow propose autoCommit true",
+      // A subcommand worked out at run time is as unreadable as a missing one, when the line
+      // names the kit (RV4 finding F4: a line that does not name it proposes nothing there).
+      "K=cc-smart-dev-kit; $K workflow $SUB autoCommit true",
+      "$(command -v cc-smart-dev-kit) workflow $SUB autoCommit true",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "deny" });
+    }
+  });
+});
+
+describe("RF1-4: a session that is not a crew session proposing a workflow change", () => {
+  // `workflow propose` pushes a branch and opens a pull request that is ready for review, in
+  // children no hook sees: the git and merge guards never ask about them. So the judge asks first
+  // whenever the gate those guards read says either is the person's to approve.
+  const BASE = { requires: ">=0.4", worktrees: { base: "dev" } };
+  const PROPOSE = "cc-smart-dev-kit workflow propose autoCommit true";
+  const ACTS =
+    "This runs `cc-smart-dev-kit workflow propose`: it pushes a new branch to origin and opens a pull request into `dev` that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.";
+
+  /** A repo whose `origin/dev` holds the project's file with `workflow`, and the hook's env. */
+  function gated(workflow: unknown = {}): { env: Record<string, string>; repo: string } {
+    const repo = makeRepo();
+    commitConfig(repo, { ...BASE, workflow }, ["dev"]);
+    return { env: hookEnv(), repo };
+  }
+
+  test("the default gate (autoPush off, openPr off) asks, naming both switches, the push and the pull request", async () => {
+    const { env, repo } = gated();
+    expect(await judge(repo, PROPOSE, env)).toEqual({
+      decision: "ask",
+      reason: `${ACTS}\nautoPush is off (default), and openPr is off (default), so the push and the pull request are yours to approve. Approve it if you meant it.`,
+    });
+  });
+
+  test("each gate value short of both: an ask that names the switch that says no", async () => {
+    for (const [workflow, says] of [
+      [{ autoPush: true }, "openPr is off (default)"],
+      [{ autoPush: true, openPr: "off" }, "openPr is off (project, committed on origin/dev)"],
+      [{ autoPush: true, openPr: "draft" }, "openPr is draft (project, committed on origin/dev)"],
+      [{ openPr: "ready" }, "autoPush is off (default)"],
+    ] as const) {
+      const { env, repo } = gated(workflow);
+      expect({ workflow, answer: await judge(repo, PROPOSE, env) }).toEqual({
+        workflow,
+        answer: {
+          decision: "ask",
+          reason: `${ACTS}\n${says}, so the push and the pull request are yours to approve. Approve it if you meant it.`,
+        },
+      });
+    }
+  });
+
+  test("autoPush on and openPr ready, committed on the base: silent", async () => {
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    expect((await judge(repo, PROPOSE, env)).decision).toBeUndefined();
+  });
+
+  test("the person's own workflow file counts as the guards read it; a worktree's own file never does", async () => {
+    const own = gated();
+    writePersonalWorkflow(own.env, { autoPush: true, openPr: "ready" });
+    expect((await judge(own.repo, PROPOSE, own.env)).decision).toBeUndefined();
+    const edited = gated();
+    writeClaudeFile(edited.repo, "cc-smart-dev-kit.json", {
+      ...BASE,
+      workflow: { autoPush: true, openPr: "ready" },
+    });
+    expect((await judge(edited.repo, PROPOSE, edited.env)).decision).toBe("ask");
+  });
+
+  test("--folder names the project whose gate counts", async () => {
+    const open = gated({ autoPush: true, openPr: "ready" });
+    const closed = gated();
+    // Quoted as a person would write it in Bash: unquoted, a Windows path's `\` are escapes.
+    const into = (repo: string) => `${PROPOSE} --folder ${shellQuote(repo)}`;
+    expect((await judge(open.repo, into(closed.repo), open.env)).decision).toBe("ask");
+    expect((await judge(closed.repo, into(open.repo), closed.env)).decision).toBeUndefined();
+  });
+
+  // job-route has 10 s in hooks.json, and a hook Claude Code kills answers nothing: the git calls
+  // the question makes (the project's folder, then the committed file) share one budget counted
+  // from the hook's start, and a call with no time left is not made (`budget.ts`). A fake git
+  // that waits stands in for a hung one; it is a POSIX script, so Windows skips these.
+  const POSIX_ONLY = process.platform === "win32";
+  const hangingGit = (env: Record<string, string>, on: string) =>
+    slowGitEnv(env, on, "exec sleep 30");
+  const TIMED_OUT = "git did not answer in time";
+
+  // A test's budget is a few seconds so the proof does not wait: the variable can only shorten
+  // the budget, as in the merge guard's test.
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on every call: asks inside the budget, saying git did not answer in time",
+    () => {
+      // The judge alone: the frame's own project lookup (`run.ts`) comes before it.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const verdict = judgeBash(readBash(PROPOSE), {
+        env: { ...hangingGit(env, ""), [GUARD_BUDGET_ENV]: "3000" },
+        input: call(repo, PROPOSE),
+        paths: cliPaths(env),
+      });
+      expect(verdict).toEqual({
+        decision: "ask",
+        reason: `${ACTS.replace("into `dev`", "into the project's integration base (worktrees.base)")}\ncc-smart-dev-kit cannot tell which project's workflow this line proposes into (${TIMED_OUT}), so it cannot read the gate. Approve it if you meant it.`,
+        why: "propose",
+      });
+      // One call may take the budget less the margin (1 s here), and none is made after it.
+      expect(Date.now() - started).toBeLessThan(2_500);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on the committed file only, at the real budget: the gate read asks, saying git did not answer",
+    async () => {
+      // No budget variable: one call gets its own 5 s (8 s less the 2 s margin leaves 6), the hung
+      // call is stopped there and says so, where the old reason was a ref that is not there.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, PROPOSE, hangingGit(env, "rev-parse --verify"));
+      expect(answer).toEqual({
+        decision: "ask",
+        reason: `${ACTS}\ncc-smart-dev-kit cannot tell whether the push and the pull request are allowed: the workflow committed on dev cannot be read (${TIMED_OUT}). Approve it if you meant it.`,
+      });
+      expect(Date.now() - started).toBeLessThan(8_000);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a git that hangs on the frame's own lookup: the budget counts from the hook's start, so the hook still answers in time",
+    async () => {
+      // The frame looks the project up first and spends its 5 s (`rev-parse --path-format`, which
+      // only the lookups run). The judge's lookup then has what is left of 8 s less the margin
+      // (about 1 s), not a fresh 5 s: the whole run stays well inside the hook's 10 s.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, PROPOSE, hangingGit(env, "rev-parse --path-format"));
+      expect(answer.decision).toBe("ask");
+      expect(answer.reason).toContain(`(${TIMED_OUT})`);
+      expect(Date.now() - started).toBeLessThan(8_000);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "two proposals on one line share the budget: the second asks when the first spent it",
+    async () => {
+      // Each `rev-parse --verify` takes 0.7 s and answers, so the first proposal reads its gate in
+      // 1.4 s and is allowed. With the budget's 4 s less its 2 s margin, the second finds under a
+      // second left for its first call: the call is cut, and the line asks. Own budgets would
+      // read both gates and stay silent.
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const started = Date.now();
+      const answer = await judge(repo, `${PROPOSE} && ${PROPOSE}`, {
+        ...slowGitEnv(env, "rev-parse --verify", "sleep 0.7"),
+        [GUARD_BUDGET_ENV]: "4000",
+      });
+      expect(answer.decision).toBe("ask");
+      expect(answer.reason).toContain(
+        `the workflow committed on dev cannot be read (${TIMED_OUT})`,
+      );
+      expect(Date.now() - started).toBeLessThan(3_500);
+    },
+    20_000,
+  );
+
+  test.skipIf(POSIX_ONLY)(
+    "a slow git inside the budget changes nothing: the gate is read and the proposal allowed",
+    async () => {
+      const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+      const answer = await judge(repo, PROPOSE, slowGitEnv(env, "rev-parse --verify", "sleep 0.2"));
+      expect(answer.decision).toBeUndefined();
+    },
+    20_000,
+  );
+
+  test("a gate it cannot read, or a project it cannot name, asks with the reason", async () => {
+    const lost = gated();
+    git(lost.repo, "update-ref", "-d", "refs/remotes/origin/dev");
+    expect((await judge(lost.repo, PROPOSE, lost.env)).reason).toStartWith(
+      `${ACTS}\ncc-smart-dev-kit cannot tell whether the push and the pull request are allowed: the workflow committed on dev cannot be read`,
+    );
+    const { env, repo } = gated({ autoPush: true, openPr: "ready" });
+    for (const command of [
+      "$KIT workflow propose autoCommit true",
+      "P=propose; cc-smart-dev-kit workflow $P autoCommit true",
+      `${PROPOSE} --folder $HOME/app`,
+      `cd ../other && ${PROPOSE}`,
+    ]) {
+      const answer = await judge(repo, command, env);
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "ask" });
+      expect(answer.reason).toContain(
+        "cc-smart-dev-kit cannot tell which project's workflow this line proposes into",
+      );
+    }
+  });
+
+  test("nobody answers in `claude -p`: where it would ask, it is refused", async () => {
+    const { env, repo } = gated();
+    const answer = await judge(repo, PROPOSE, { ...env, CLAUDE_CODE_SESSION_ATTENDED: "0" });
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toEndWith(
+      "Nobody answers a question in `claude -p`, so the proposal is refused.",
+    );
+    const open = gated({ autoPush: true, openPr: "ready" });
+    expect(
+      (await judge(open.repo, PROPOSE, { ...open.env, CLAUDE_CODE_SESSION_ATTENDED: "0" }))
+        .decision,
+    ).toBeUndefined();
+  });
+
+  test("reading its help asks nothing", async () => {
+    const { env, repo } = gated();
+    expect((await judge(repo, "cc-smart-dev-kit workflow propose --help", env)).decision).toBe(
+      undefined,
+    );
   });
 });
 

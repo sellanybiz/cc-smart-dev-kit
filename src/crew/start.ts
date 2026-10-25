@@ -42,7 +42,7 @@ import { basename, join, resolve } from "node:path";
 import { DEPENDENCIES } from "../build-info";
 import { COMMAND, MARKETPLACE } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
-import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
+import { judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
 import type { McpContext } from "../mcp/servers";
 import { readTavilyKey } from "../mcp/tavily";
@@ -125,9 +125,10 @@ import {
   readLead,
   readReport,
   updateCrew,
+  writeJsonFile,
   writeStoreFile,
 } from "./store";
-import { usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewGatewayOf, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
@@ -214,8 +215,10 @@ export function chooseLaunch(
   kind: CrewKind,
   override: { effort: null | string; model: null | string },
   ctx: Pick<CrewContext, "env" | "paths">,
+  /** The project the session starts in: its gateway is the project's own (`crewGatewayOf`). */
+  folder: string,
 ): Chosen | { refusal: string } {
-  const gateway = gatewayFactsOf(ctx.paths);
+  const gateway = crewGatewayOf(ctx.paths, folder);
   const own = crewLaunch(kind, gateway, ctx.env);
   const model = override.model ?? own.model;
   const real = override.model === null ? own.real : resolveLaunchModel(model, gateway, ctx.env);
@@ -227,7 +230,15 @@ export function chooseLaunch(
     return { refusal: uiRefusal() };
   }
   const verdict = judgeLaunch(
-    { effort, fork: false, model, prompt: "", subagentType: CREW_AGENT_TYPE, tool: "Agent" },
+    {
+      effort,
+      fork: false,
+      isolation: null,
+      model,
+      prompt: "",
+      subagentType: CREW_AGENT_TYPE,
+      tool: "Agent",
+    },
     { ...gateway, sessionModel: null },
     ctx.env,
   );
@@ -430,7 +441,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     return await planContinuation(args, ctx, caller, lead, claude);
   }
   const briefGiven = await readBrief(args, ctx);
-  const chosen = chooseLaunch(args.kind, args, ctx);
+  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
@@ -525,7 +536,12 @@ async function planContinuation(
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
-  const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
+  const chosen = chooseLaunch(
+    old.kind,
+    { effort: old.effort, model: old.model.named },
+    ctx,
+    caller.repo,
+  );
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -626,7 +642,10 @@ export function holdsName(record: CrewRecord): boolean {
   return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
 }
 
-/** Why the name is in use already, or null when it is free: the store, the branch, the folder. */
+/**
+ * Why the name is in use already, or null when it is free: the record of that branch, the name
+ * itself, the branch on disk, the folder.
+ */
 function inUse(planned: Plan, records: readonly CrewRecord[], ctx: CrewContext): null | Refusal {
   const { branch, caller, name, worktree } = planned;
   const recorded = records.find(
@@ -636,6 +655,21 @@ function inUse(planned: Plan, records: readonly CrewRecord[], ctx: CrewContext):
     return refusal(
       `${recorded.name} is recorded already, ${recorded.state}, on ${branch}`,
       `remove it first (${COMMAND} crew rm "${recorded.name}"), or pick another --slug`,
+    );
+  }
+  // **The name is an address**, and it is not the branch: a long tag, plan and phase leave only
+  // 17-19 characters of the slug, so two slugs of one phase that share a longer prefix make the
+  // SAME name on two DIFFERENT branches — the branch check above passes. `findCrew` then asks for
+  // an id, but the message guard's own lookup (`crewTellProblem`) takes whichever record it finds
+  // first, and the board and the portal show one name for two sessions. So the name is checked on
+  // its own, against the same live records.
+  const sameName = records.find(
+    (one) => one.repo === caller.repo && one.name === name && holdsName(one),
+  );
+  if (sameName !== undefined) {
+    return refusal(
+      `${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`,
+      `pick a shorter --slug, another plan or another tag, so this name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`,
     );
   }
   if (
@@ -703,7 +737,7 @@ async function failed(
  * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
  * servers out (`docs/claude-code-contract.md`).
  */
-function crewSettingsText(id: string, off: readonly string[]): string {
+function crewSettings(id: string, off: readonly string[]): Record<string, unknown> {
   const settings: Record<string, unknown> = {
     env: {
       [CREW_ENV]: id,
@@ -715,7 +749,7 @@ function crewSettingsText(id: string, off: readonly string[]): string {
     settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
   }
   settings.disableClaudeAiConnectors = true;
-  return `${JSON.stringify(settings, null, 2)}\n`;
+  return settings;
 }
 
 /** Step 6: the worktree, the session, and the session id it records. */
@@ -729,7 +763,7 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   // Its neighbour, from the one home both the start and a resume read it from (`crewMcpFile`).
   const mcpFile = crewMcpFile(ctx.paths.stateDir, spec.repo, record.id);
   try {
-    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeJsonFile(settingsFile, crewSettings(record.id, spec.lean.off));
     writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
   } catch (error) {
     return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
@@ -1106,7 +1140,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const crew = caller.resolved.crew;
   // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
   // nothing about who takes which place.
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
   let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -1267,7 +1301,7 @@ export async function startQueued(
 ): Promise<void> {
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);

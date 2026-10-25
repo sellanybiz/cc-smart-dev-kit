@@ -24,6 +24,11 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
+import {
+  legacyBrowserLeftovers,
+  legacyBrowserPaths,
+  processCommandLinesAsync,
+} from "../browser/legacy";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import {
@@ -34,13 +39,15 @@ import {
   readCrew,
 } from "../crew/store";
 import { upgradeConfig } from "../gateway/commands";
-import { loadConfigFile, saveConfig } from "../gateway/config";
+import { DEFAULT_ANTHROPIC_BASE_URL, loadConfigFile, saveConfig } from "../gateway/config";
 import { createHistoryWriter, type HistoryRow } from "../gateway/history";
 import { askLogFile } from "../hooks/ask-log";
 import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
+import { realMcpDoctorDeps } from "../mcp/doctor";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { projectFolderName } from "../sessions/saved-sessions";
+import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -49,7 +56,7 @@ import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { NO_SESSION_RECORDS, projectId } from "./api/projects";
-import { API_READS } from "./api/routes";
+import { API_READS, PROJECT_PARTS } from "./api/routes";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -223,6 +230,38 @@ async function open(options: {
    * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
    */
   journal?: { level: "ERROR" | "INFO" | "WARN"; text: string }[];
+  /**
+   * Held open until the test releases it: the journal read waits on it, so a test can prove
+   * another request answers while `journalctl` is still out.
+   */
+  journalGate?: Promise<void>;
+  /** Runs when the journal read starts: the test's sign that it is really in flight. */
+  onJournalRead?: () => void;
+  /**
+   * Held open until the test releases it: the doctor pass's service read waits on it, so a
+   * test can prove another request answers while `systemctl` is still out.
+   */
+  systemctlGate?: Promise<void>;
+  /** Runs when the doctor pass's service read starts: the test's sign that it is in flight. */
+  onSystemctlRead?: () => void;
+  /**
+   * A launcher of this version's own in the temp `bin` folder, valid enough for the pass's
+   * launcher check to reach its read (its `version`). Left out: the check answers "no launcher".
+   */
+  launcher?: boolean;
+  /**
+   * Held open until the test releases it: the doctor pass's launcher read waits on it, so a test
+   * can prove another request answers while the launcher's own command is still out.
+   */
+  launcherGate?: Promise<void>;
+  /** Runs when the launcher read starts: the test's sign that it is in flight. */
+  onLauncherRead?: () => void;
+  /**
+   * 0.3.0's browser left its shared profile and picker here, and a Chrome still runs with that
+   * profile: what the Browser card and doctor's legacy lines read. The listing is answered by
+   * the world's own read runner, and `Machine.run` refuses it (the blocking path).
+   */
+  legacyBrowser?: boolean;
   /** The open breakers the router's health page reports: where `heldNow` comes from. */
   routerBreakers?: Record<
     string,
@@ -260,6 +299,22 @@ async function open(options: {
     }
   }
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  /** This version's own launcher: the path the doctor pass's launcher check reads. */
+  const launcherPath = join(paths.binDir, LAUNCHER_NAME);
+  if (options.launcher === true) {
+    // This version's own launcher script, with this test's bun baked in: the pass's launcher
+    // check accepts it and goes on to ask its `version`.
+    mkdirSync(paths.binDir, { recursive: true });
+    writeFileSync(launcherPath, launcherScript(process.execPath));
+    chmodSync(launcherPath, 0o755);
+  }
+  if (options.legacyBrowser === true) {
+    // What 0.3.0 left: its shared profile folder and its picker, so the legacy check asks the
+    // running processes for a Chrome on that profile.
+    const legacy = legacyBrowserPaths(paths);
+    mkdirSync(legacy.profile, { recursive: true });
+    writeFileSync(legacy.picker, "// 0.3.0's file picker\n");
+  }
   // The plugin's own folder, as a machine really has it: the repo's `plugin/` here.
   const pluginFolder = join(import.meta.dir, "..", "..", "plugin");
   if (options.omniroute !== undefined) {
@@ -310,7 +365,15 @@ async function open(options: {
     macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: options.platform ?? "linux",
-    run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
+    run: (argv) => {
+      // The 0.3.0 leftovers' process list is a page's read (`processCommandLinesAsync`,
+      // awaited through `runRead`): `Machine.run` is `Bun.spawnSync`, and asking it here froze
+      // every page and the stream — the debt this phase's browser change fixes.
+      if (argv[0] === "ps" || argv.join(" ").includes("Get-CimInstance Win32_Process")) {
+        throw new Error("the process list was read through the blocking machine runner");
+      }
+      return { exitCode: 0, output: `ran ${argv.join(" ")}` };
+    },
     runOnTerminal: () => 0,
     spawnDetached: () => undefined,
     which: () => null,
@@ -358,23 +421,36 @@ async function open(options: {
     },
     // A machine with systemd: the fake systemctl answers. Without it, every command is
     // refuted, as it is on a machine that has no such program.
-    runner: (cmd) => {
-      if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
-      if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
-      // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
-      // the journal's own order (oldest first). `__REALTIME_TIMESTAMP` is microseconds.
-      if (cmd[0] === "journalctl") {
-        const at = Date.UTC(2026, 9, 17, 9, 0, 0);
-        const lines = (options.journal ?? []).map((one, index) =>
-          JSON.stringify({
-            __REALTIME_TIMESTAMP: String((at + index * 60_000) * 1000),
-            MESSAGE: `${one.level} ${one.text}`,
-            PRIORITY: one.level === "ERROR" ? "3" : one.level === "WARN" ? "4" : "6",
-          }),
-        );
-        return { exitCode: 0, output: lines.join("\n") };
+    runRead: async (cmd) => {
+      if (cmd[0] === "journalctl" && options.journalGate !== undefined) {
+        options.onJournalRead?.();
+        await options.journalGate;
       }
-      return { exitCode: 1, output: `no ${cmd[0]} here` };
+      if (cmd[0] === "systemctl" && options.systemctlGate !== undefined) {
+        options.onSystemctlRead?.();
+        await options.systemctlGate;
+      }
+      if (cmd[0] === launcherPath && options.launcherGate !== undefined) {
+        options.onLauncherRead?.();
+        await options.launcherGate;
+      }
+      return fakeRunner(cmd);
+    },
+    runner: (cmd) => {
+      // A page's reads are awaited off the loop (`runRead`). A journal read on this path would
+      // hold the whole server while it ran — the bug this seam exists to prevent.
+      if (cmd[0] === "journalctl" && options.journalGate !== undefined) {
+        throw new Error("the journal was read through the blocking runner");
+      }
+      // The same for the doctor pass's own reads: a `systemctl` on this path froze every page
+      // and the stream (B6e's rule, `.claude/rules/portal.md`).
+      if (cmd[0] === "systemctl" && options.systemctlGate !== undefined) {
+        throw new Error("the service was read through the blocking runner");
+      }
+      if (cmd[0] === launcherPath && options.launcherGate !== undefined) {
+        throw new Error("the launcher was read through the blocking runner");
+      }
+      return fakeRunner(cmd);
     },
     // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
     systemFolders: [],
@@ -383,23 +459,69 @@ async function open(options: {
     // from the project's checkout).
     which: (name) => (options.gitOnPath === true && name === "git" ? Bun.which("git") : null),
   };
+
+  /** The machine's commands: a fake `systemctl` and `journalctl`, and nothing else. */
+  function fakeRunner(cmd: string[]): { exitCode: number; output: string } {
+    // The legacy listing (macOS): a Chrome still running on 0.3.0's own profile, when the test
+    // set the leftovers up. The line has the shape `ps -ww -axo pid=,command=` prints.
+    if (cmd[0] === "ps" && options.legacyBrowser === true) {
+      const profile = legacyBrowserPaths(paths).profile;
+      return {
+        exitCode: 0,
+        output: `4242 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profile}\n`,
+      };
+    }
+    if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
+    if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
+    // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
+    // the journal's own order (oldest first). `__REALTIME_TIMESTAMP` is microseconds.
+    if (cmd[0] === "journalctl") {
+      const at = Date.UTC(2026, 9, 17, 9, 0, 0);
+      const lines = (options.journal ?? []).map((one, index) =>
+        JSON.stringify({
+          __REALTIME_TIMESTAMP: String((at + index * 60_000) * 1000),
+          MESSAGE: `${one.level} ${one.text}`,
+          PRIORITY: one.level === "ERROR" ? "3" : one.level === "WARN" ? "4" : "6",
+        }),
+      );
+      return { exitCode: 0, output: lines.join("\n") };
+    }
+    return { exitCode: 1, output: `no ${cmd[0]} here` };
+  }
   const portal = await startPortal(ctx, {
     cwd,
     doctor:
       options.doctor ??
-      (() => ({
-        browser: realBrowserDoctorDeps(machine, paths.home),
-        bun: { path: process.execPath, version: Bun.version },
-        gateway: {
-          bundle: join(pluginFolder, "dist", "router.js"),
-          machine,
-          runner: ctx.runner,
-          service: options.systemd === true ? "systemd" : "none",
-        },
-        live: null,
-        local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
-        project: null,
-      })),
+      (async () => {
+        // The pass's own reads run through the portal's read runner, as the entry's do: the
+        // 0.3.0 leftovers' process list is read here, off the loop, and handed in.
+        const processes = legacyBrowserLeftovers(paths)
+          ? await processCommandLinesAsync(machine.platform, ctx.runRead)
+          : null;
+        return {
+          browser: { ...realBrowserDoctorDeps(machine, paths.home), processes: () => processes },
+          bun: { path: process.execPath, version: Bun.version },
+          gateway: {
+            bundle: join(pluginFolder, "dist", "router.js"),
+            // The router's health page, answered by the world's own probe: a test's doctor pass
+            // never reaches a port of this machine.
+            fetch: ctx.probe.fetch,
+            machine,
+            // The pass's own reads go through the portal's read runner, as the entry does: a
+            // `systemctl` on the blocking runner is what the test's `runner` refuses.
+            read: ctx.runRead,
+            runner: ctx.runner,
+            service: options.systemd === true ? "systemd" : "none",
+          },
+          live: null,
+          local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
+          mcp: realMcpDoctorDeps(ctx.runRead),
+          project: null,
+          // The pass's own reads (the launcher's `version`, Warp's package manager) run through
+          // the portal's read runner, as the entry does; the test's sync `runner` refuses them.
+          read: ctx.runRead,
+        };
+      }),
     port: 0,
     // No poller in a test: the live stream's sources are driven by their own test
     // (`src/portal/live/sources.test.ts`), so no timer runs beside an assertion here.
@@ -781,6 +903,10 @@ describe("every answer", () => {
         ...Object.keys(API_READS),
         "/api/crew/crew-K-contracts",
         `/api/projects/${projectId(world.cwd)}`,
+        // Every part a card reads, from the table itself: the next part cannot be missed.
+        ...Object.keys(PROJECT_PARTS).map(
+          (part) => `/api/projects/${projectId(world.cwd)}/${part}`,
+        ),
       ];
       for (const path of reads) {
         const answer = await world.call(path);
@@ -1057,6 +1183,174 @@ describe("every answer", () => {
       const [firstWarn = -1, secondWarn = -1] = warnOrder;
       expect(firstWarn).toBeGreaterThan(secondWarn);
       expect(warnings).not.toContain("the oldest line");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the journal read is off the loop: another page answers while journalctl is still out", async () => {
+    // A synchronous `journalctl` in the server held every page, every action and the live
+    // stream for as long as the command ran (B6e: 20–65 ms a load, and slower on a busy
+    // machine). The read is awaited through `runRead` (`Bun.spawn`), so this second request
+    // answers while the first one's journal read has not come back.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const journalGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      journal: [{ level: "ERROR", text: "the router said no" }],
+      journalGate,
+      onJournalRead: () => readingStarted(),
+      systemd: true,
+    });
+    try {
+      const health = world.call("/api/health");
+      await readStarted;
+      // The read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      const settings = await world.call("/api/settings");
+      expect(settings.status).toBe(200);
+      release();
+      const answer = await health;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        log: { lines: { text: string }[]; note: null | string };
+      };
+      expect(body.log.note).toBe(null);
+      // The journal's line, as the answer holds it (`ERROR <the router's words>`).
+      expect(body.log.lines.map((line) => line.text)).toEqual(["ERROR the router said no"]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the doctor pass's service read is off the loop: a page answers while systemctl is still out", async () => {
+    // The pass asked the service through the command line's synchronous runner
+    // (`service.state` and `service.running`, `Bun.spawnSync`): one Machine page load held every
+    // page, every action and the live stream while `systemctl` ran. It reads through the pass's
+    // own read runner now (`runRead`, `Bun.spawn`), so this second request answers while the
+    // first one's service read has not come back.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const systemctlGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      onSystemctlRead: () => readingStarted(),
+      systemctlGate,
+      systemd: true,
+    });
+    // A gateway this machine has installed: its socket unit's file is one of the four the
+    // checks look for, so the pass asks the service instead of returning "not set up".
+    mkdirSync(dirname(world.paths.routerSocketFile), { recursive: true });
+    writeFileSync(world.paths.routerSocketFile, "# the socket unit\n");
+    try {
+      const machine = world.call("/api/machine");
+      await readStarted;
+      // The service read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      const settings = await world.call("/api/settings");
+      expect(settings.status).toBe(200);
+      release();
+      const answer = await machine;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        doctor: null | { checks: { text: string }[] };
+      };
+      expect(body.doctor?.checks.map((check) => check.text)).toContain(
+        "the router service (cc-smart-dev-kit-router.service) is active",
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the doctor pass's launcher read is off the loop: a page answers while it is still out", async () => {
+    // `checkLauncher` asked the launcher's `version` through the command line's synchronous
+    // runner (`Bun.spawnSync`): one Machine page load held every page, every action and the
+    // stream while it ran. The pass's own reads go through its `read` runner now — the portal's
+    // `ReadRunner` — as the service read above does.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const launcherGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      launcher: true,
+      launcherGate,
+      onLauncherRead: () => readingStarted(),
+    });
+    try {
+      const machine = world.call("/api/machine");
+      await readStarted;
+      // The launcher read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      release();
+      const answer = await machine;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        doctor: null | { checks: { text: string }[] };
+      };
+      // The check reached that read and says so in the command line's own words (the world's
+      // fake answers every unknown command with "no <program> here", exit 1).
+      expect(body.doctor?.checks.map((check) => check.text)).toContain(
+        `the launcher ~/.local/bin/${LAUNCHER_NAME} does not run: no ${join(
+          world.paths.binDir,
+          LAUNCHER_NAME,
+        )} here`,
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the 0.3.0 leftovers' process list is a read off the loop, never through Machine.run", async () => {
+    // On macOS the legacy listing is `ps` (Windows: PowerShell), and `Machine.run` is
+    // `Bun.spawnSync`: run on the path of the Browser card and the doctor pass, one Machine load
+    // froze every page and the stream. Both read it through `runRead` now, and this world's
+    // `Machine.run` throws when anything asks it for that listing.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      legacyBrowser: true,
+      platform: "darwin",
+    });
+    try {
+      const page = await world.call("/machine");
+      expect(page.status).toBe(200);
+      // The doctor's own browser line, drawn on the card: the Chrome on 0.3.0's profile, read
+      // by the awaited listing.
+      expect(page.body).toContain("the 0.3.0 shared Chrome is still running");
+      const api = JSON.parse((await world.call("/api/machine")).body) as {
+        doctor: null | { checks: { section?: string; text: string }[] };
+      };
+      const legacy = api.doctor?.checks.find((check) =>
+        check.text.startsWith("the 0.3.0 shared Chrome is still running"),
+      );
+      expect(legacy?.text).toContain("(pid 4242, --user-data-dir=~/.local/share");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -1559,13 +1853,16 @@ describe("the actions", () => {
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20199");
       // No model is pinned: Claude Code sends each model's own id, the router finds its slot.
       expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
-      // And off removes exactly what on wrote.
+      // And off points the address back at Anthropic instead of removing the key (GP5): a
+      // running session follows a changed value within about a second, where a removed key
+      // reach it only if another file sets the key. The tool-search key is removed as before.
       const off = await world.post("switch", { name: "gateway", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
       const after = JSON.parse(readFileSync(world.paths.settingsFile, "utf8")) as {
         env?: Record<string, string>;
       };
-      expect(after.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(after.env?.ANTHROPIC_BASE_URL).toBe(DEFAULT_ANTHROPIC_BASE_URL);
+      expect(after.env?.ENABLE_TOOL_SEARCH).toBeUndefined();
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2041,7 +2338,23 @@ describe("the actions", () => {
     }
   });
 
-  test("an off scout or worker shows its switch's own default on the Slots page, not off", async () => {
+  test("D66: an off scout or worker shows its switch's default, off, on the Slots page", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.call("/");
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain("&quot;worker&quot;:false");
+      expect(slots.body).toContain("&quot;scout&quot;:false");
+      expect(slots.body).toContain("&quot;opus&quot;:false");
+      expect(slots.body).not.toContain("&quot;worker&quot;:true");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("an off worker shows its switch's default on the Slots page, and its saved chain keeps the person's on", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
@@ -2053,18 +2366,20 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(off.body).ok).toBe(true);
-      // The CLI turns worker off; the page must not read that as "fallback off".
-      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
-        slots: Record<string, string[]>;
-      };
-      delete config.slots["cc-smart-dev-kit-worker"];
-      writeFileSync(world.paths.gatewayConfigFile, JSON.stringify(config, null, 2), {
-        mode: 0o600,
-      });
+      // The person turned the worker's fallback switch on (it is off by default, D66).
+      const on = await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
+      expect(JSON.parse(on.body).ok).toBe(true);
+      // The worker answers as Claude now: its chain and its on switch move to `kept` (a
+      // `fallback` entry for a slot with no chain would be an invalid config).
+      const toClaude = await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
+      expect(JSON.parse(toClaude.body).ok).toBe(true);
       const slots = await world.call("/slots");
-      expect(slots.body).toContain("&quot;worker&quot;:true");
-      // Opus has no chain either, and its default is off.
+      expect(slots.body).toContain("&quot;worker&quot;:false");
+      // Opus has no chain either, and its switch was never set: off, the default.
       expect(slots.body).toContain("&quot;opus&quot;:false");
+      // The saved chain still holds the switch the person set.
+      const overview = await world.call("/");
+      expect(overview.body).toContain("saved, not in use: omniroute:glm-5.3-flash (fallback on)");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2130,8 +2445,8 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
-      const off = await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
-      expect(JSON.parse(off.body).ok).toBe(true);
+      const on = await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
+      expect(JSON.parse(on.body).ok).toBe(true);
       // The one home: the config, read fresh by the same reader every command uses
       // (`gateway status`, `doctor`, the router).
       const config = loadConfigFile(world.paths.gatewayConfigFile);
@@ -2139,7 +2454,7 @@ describe("the actions", () => {
         "omniroute:glm-5.3-flash",
         "omniroute:deepseek-v4.1-flash",
       ]);
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
       // The portal keeps no copy of its own: no `portal.json` was made.
       expect(existsSync(world.paths.portalStateFile)).toBe(false);
       // And the page shows that chain next.
@@ -2163,7 +2478,7 @@ describe("the actions", () => {
         { slot: "worker", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
         csrf,
       );
-      await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
+      await world.post("slot.fallback", { on: true, slot: "worker" }, csrf);
       // To Claude: the chain and its switch move to `kept`.
       const toClaude = await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
       expect(JSON.parse(toClaude.body).ok).toBe(true);
@@ -2171,7 +2486,7 @@ describe("the actions", () => {
       expect(off.slots).not.toHaveProperty("cc-smart-dev-kit-worker");
       expect(off.kept).toEqual({
         "cc-smart-dev-kit-worker": {
-          fallback: false,
+          fallback: true,
           targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"],
         },
       });
@@ -2184,7 +2499,7 @@ describe("the actions", () => {
         "omniroute:glm-5.3-flash",
         "omniroute:deepseek-v4.1-flash",
       ]);
-      expect(back.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      expect(back.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
       expect(back).not.toHaveProperty("kept");
     } finally {
       world.portal.stop();
@@ -2279,10 +2594,10 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
-      // Off is the judge's non-default switch since D44 (on is the default, so "on" would be
+      // On is the judge's non-default switch since D66 (off is the default, so "off" would be
       // written as no entry and there would be nothing to put back).
       expect(
-        JSON.parse((await world.post("slot.fallback", { on: false, slot: "judge" }, csrf)).body).ok,
+        JSON.parse((await world.post("slot.fallback", { on: true, slot: "judge" }, csrf)).body).ok,
       ).toBe(true);
       expect(
         JSON.parse((await world.post("switch", { name: "judge", on: false }, csrf)).body).ok,
@@ -2292,7 +2607,7 @@ describe("the actions", () => {
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         fallback?: Record<string, boolean>;
       };
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": false });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": true });
     } finally {
       world.portal.stop();
       backend.stop();
@@ -3944,6 +4259,7 @@ describe("the JSON API", () => {
         },
         current: null,
         file: "~/.claude-mem/settings.json",
+        handKeys: [],
         minVersion: "13.29.0",
         version: null,
       });
@@ -4758,6 +5074,7 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
         model: "claude-sonnet-5-5",
         ms: 100,
         nextTarget: null,
+        profile: null,
         session: "session-a",
         slot: "cc-smart-dev-kit-worker",
         status: 200,
@@ -4828,6 +5145,7 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
       model: "claude-haiku-5-5",
       ms: 100,
       nextTarget: null,
+      profile: null,
       session: "s1",
       slot: "cc-smart-dev-kit-worker",
       status: 200,
@@ -4879,6 +5197,7 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
         p95Ms: number;
         requests: number;
         t: number;
+        unpriced: number;
       }
       const history = JSON.parse((await world.call("/api/history?range=1h&by=target")).body) as {
         available: boolean;
@@ -4913,6 +5232,8 @@ console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note
         p95Ms: 300,
         requests: 2,
         t: NOW - 10 * MIN,
+        // Both rows were priced: nothing of the bucket is missing from its sum.
+        unpriced: 0,
       });
       expect(glm?.points.find((point) => point.t === NOW - 5 * MIN)).toMatchObject({
         cacheReadTokens: 0,

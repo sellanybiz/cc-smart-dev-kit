@@ -40,7 +40,13 @@
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import { slotShortName } from "../gateway/breaker";
-import { fallbackOn, type GatewayConfig, loadConfigFile } from "../gateway/config";
+import {
+  fallbackOn,
+  type GatewayConfig,
+  loadConfigFile,
+  profileNames,
+  profileView,
+} from "../gateway/config";
 import { type HealthFetch, routerHealth } from "../gateway/health";
 import {
   type BreakerRecord,
@@ -51,6 +57,8 @@ import {
   type LimitRecord,
   type LimitState,
   parseLimitState,
+  scopeOfStateKey,
+  stateKeyFor,
 } from "../gateway/limit-state";
 import { familySlotFor, targetsInUse, withoutContextSuffix } from "../gateway/targets";
 import type { CrewRecord, WaitingFor } from "./store";
@@ -148,14 +156,25 @@ export function readWaitFacts(paths: Pick<CliPaths, "gatewayStateFile">, nowMs: 
   };
 }
 
-/** The targets each slot would use now, from the config; null when the config cannot be read. */
+/**
+ * The targets each slot would use now, from the config, keyed like the breakers are (the
+ * router's state key: `<slot>` for the machine's chain, `<profile>/<slot>` for a profile's —
+ * a profile's view of the machine's config, so a slot it does not name shows the machine's
+ * chain under its own key too).
+ */
 export function targetsNow(config: GatewayConfig): Record<string, string[]> {
-  return Object.fromEntries(
-    Object.entries(config.slots).map(([slot, chain]) => [
-      slot,
-      targetsInUse(chain, fallbackOn(config, slot)),
-    ]),
-  );
+  const inUse = (view: GatewayConfig, profile: null | string): [string, string[]][] =>
+    Object.entries(view.slots).map(([slot, chain]) => [
+      stateKeyFor(slot, profile),
+      targetsInUse(chain, fallbackOn(view, slot)),
+    ]);
+  return Object.fromEntries([
+    ...inUse(config, null),
+    ...profileNames(config).flatMap((name) => {
+      const view = profileView(config, name);
+      return view === null ? [] : inUse(view, name);
+    }),
+  ]);
 }
 
 /** What the health page's answer says, when it is this router's; null for anything else. */
@@ -274,9 +293,20 @@ export function limitForStop(
 /**
  * What a stop of `record` waits for, recorded on its pause: the slot's breaker first, then
  * Claude's plan limit, else `unknown`. Every wait starts now.
+ *
+ * `profile` is the profile the crew session's URL names (`…/p/<name>`), null for the machine's
+ * chains: the router keeps a profile's breaker under `<profile>/<slot>` (`stateKeyFor`), so a
+ * session in a profile project looks for that key and never takes the machine's breaker, or
+ * another profile's, for its own. A `slot` wait's `slot` holds that key; `waitOver` and
+ * `pauseText` read it back with `scopeOfStateKey`.
  */
-export function waitFor(record: CrewRecord, facts: WaitFacts, nowMs: number): WaitingFor {
-  const slot = record.model.slot;
+export function waitFor(
+  record: CrewRecord,
+  facts: WaitFacts,
+  nowMs: number,
+  profile: null | string = null,
+): WaitingFor {
+  const slot = record.model.slot === null ? null : stateKeyFor(record.model.slot, profile);
   const breaker = slot === null ? undefined : facts.breakers[slot];
   if (slot !== null && breaker !== undefined) {
     return { kind: "slot", since: iso(breaker.since), slot };
@@ -289,7 +319,7 @@ export function waitFor(record: CrewRecord, facts: WaitFacts, nowMs: number): Wa
       resetsAt: limit[1].resetsAt === null ? null : iso(limit[1].resetsAt * 1000),
     };
   }
-  return { kind: "unknown", since: iso(nowMs) };
+  return { kind: "unknown", since: iso(nowMs), ...(slot === null ? {} : { slot }) };
 }
 
 /**
@@ -331,8 +361,11 @@ export function pauseText(
 ): string {
   const goesOn = "goes on by itself when it answers";
   switch (waiting.kind) {
-    case "slot":
-      return `${slotShortName(waiting.slot)} slot limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    case "slot": {
+      const { profile, slot } = scopeOfStateKey(waiting.slot);
+      const where = profile === null ? "slot" : `slot in profile ${profile}`;
+      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    }
     case "claude-limit": {
       const reset =
         waiting.resetsAt === null
@@ -391,13 +424,13 @@ export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): b
     }
     default: {
       // Nothing the pause named: no breaker on its slot, no limit on its model, and the
-      // backoff has passed.
+      // backoff has passed. The slot is the key the pause looked under (`<profile>/<slot>` in
+      // a profile): the machine's breaker is another session's.
       const limited = [record.model.resolved, record.model.named].some(
         (name) => facts.limits[withoutContextSuffix(name)] !== undefined,
       );
-      return (
-        (record.model.slot === null || facts.breakers[record.model.slot] === undefined) && !limited
-      );
+      const key = waiting.slot ?? record.model.slot;
+      return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }
 }

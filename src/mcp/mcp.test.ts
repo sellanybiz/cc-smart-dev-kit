@@ -1185,7 +1185,7 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(overridingServer(paths_.userConfigFile, sub, "sequential-thinking")).toBeNull();
   });
 
-  test("doctor's line names the file and what runs instead", () => {
+  test("doctor's line names the file and what runs instead", async () => {
     const home = tempDir("mcp-doctor-override");
     const paths_ = paths(home);
     const project = join(home, "repo");
@@ -1204,7 +1204,7 @@ describe("a same-name server one scope down wins over the user scope", () => {
       JSON.stringify({ mcpServers: { playwright: JSON.parse(ours.json) } }),
     );
     recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
-    const checks = mcpChecks(
+    const checks = await mcpChecks(
       paths_,
       {
         run: () => ({ ok: true, output: "Scope: User config\nStatus: ✓ Connected" }),
@@ -1226,6 +1226,29 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(line?.fix).toBe(
       "remove it from that file (or merge the base branch when it came from one), then run: cc-smart-dev-kit doctor",
     );
+  });
+
+  test("an awaited run (the portal's own) answers exactly the lines a synchronous one does", async () => {
+    // The Machine page's pass hands `realMcpDoctorDeps` the portal's asynchronous runner
+    // (`Bun.spawn`): `claude mcp get` starts the server, and a page load must never freeze on
+    // it. The deps' `run` may answer with a promise, and the lines are the command line's own.
+    const home = tempDir("mcp-doctor-async");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    const ours = servers.find((one) => one.name === "playwright");
+    if (ours === undefined) throw new Error("the servers table moved");
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({ mcpServers: { playwright: JSON.parse(ours.json) } }),
+    );
+    recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
+    const deps = { which: () => "/usr/bin/claude" };
+    const answered = { ok: true, output: "Scope: User config\nStatus: ✓ Connected" };
+    const sync = await mcpChecks(paths_, { ...deps, run: () => answered }, {}, home);
+    const awaited = await mcpChecks(paths_, { ...deps, run: async () => answered }, {}, home);
+    expect(awaited).toEqual(sync);
+    expect(awaited.map((check) => check.text)).toContain('MCP server "playwright": Connected');
   });
 });
 
@@ -1659,7 +1682,7 @@ describe("doctor: what Serena left", () => {
     expect(retiredChecks(paths(tempDir("mcp-retired-none")))).toEqual([]);
   });
 
-  test("one ✗ line while setup owes the removal, and none after setup", () => {
+  test("one ✗ line while setup owes the removal, and none after setup", async () => {
     const home = tempDir("mcp-retired-doctor");
     const { fake } = olderMachine(home);
     const owed = [
@@ -1671,7 +1694,7 @@ describe("doctor: what Serena left", () => {
     ];
     expect(retiredChecks(fake.paths)).toEqual(owed);
     // The same line among the MCP checks doctor prints.
-    const checks = mcpChecks(
+    const checks = await mcpChecks(
       fake.paths,
       {
         run: () => ({ ok: true, output: "Scope: User config\nStatus: ✓ Connected" }),

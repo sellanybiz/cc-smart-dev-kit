@@ -31,10 +31,15 @@ type Env = Record<string, string | undefined>;
 export const CLAUDE_TIMEOUT_MS = 30_000;
 
 /**
- * The `--autocompact` a crew session gets: `auto`, Claude Code's own window for the model. The kit
- * reads that window to measure the hand-off (`context-window.ts`: Claude Code's own report, one
- * table, a backend's listed window), but it never sets a token count of its own here. The
- * hand-off at `workflow.crew.handoffPercent` comes before Claude Code's own compaction either way.
+ * The `--autocompact` a crew session gets: `auto`, Claude Code's own window for the model. `auto`
+ * makes Claude Code skip every `autoCompactWindow` and `modelSettings.<model>.autoCompactWindow`
+ * setting of the person's, so none of them can pull a crew session's compaction below its
+ * hand-off; only `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` still
+ * apply (proved on 2.1.308 and 2.1.310, `docs/claude-code-contract.md`). The kit reads that window
+ * to measure the hand-off (`context-window.ts`: Claude Code's own report, one table, a backend's
+ * listed window), but it never sets a token count of its own here. The hand-off at
+ * `workflow.crew.handoffTokens` or `workflow.crew.handoffPercent`, whichever comes first, stays a
+ * margin below the point Claude Code compacts at (`self-watch.ts`, `claude-settings.ts`).
  */
 export const CREW_AUTOCOMPACT = "auto";
 
@@ -206,6 +211,10 @@ export function sessionFlags(
  * **`--mcp-config` comes before `--settings`, never last:** it takes any number of files, so a
  * prompt after it would be read as another config file (proved live on 2.1.309: `Say ok` became
  * `MCP config file not found: …/Say ok`). `--settings` takes one value and ends the list.
+ *
+ * **The first line comes after a bare `--`**, like a resume's text (`resumeArgs`): a first line
+ * that starts with `-` would be read as a flag, and `claude -p` refuses such a prompt with
+ * `unknown option` (proved live on 2.1.309, `docs/claude-code-contract.md`).
  */
 export function launchArgs(spec: CrewLaunchSpec): string[] {
   return [
@@ -220,6 +229,7 @@ export function launchArgs(spec: CrewLaunchSpec): string[] {
     spec.mcpFile,
     "--settings",
     spec.settingsFile,
+    "--",
     spec.prompt,
   ];
 }

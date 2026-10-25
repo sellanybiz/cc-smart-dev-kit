@@ -69,7 +69,8 @@ place (`auto-merge.ts`).
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 | `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
-| the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
+| `crew.handoffTokens`, `crew.handoffPercent`, `crew.softHours`, `crew.maxHours` | `crew self-watch` (`src/crew/self-watch.ts`, `docs/design/crew.md` § The crew session's steps, its report, and the lead's watch): the crew session's own hand-off line and its time lines. |
+| the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
@@ -153,6 +154,49 @@ show` prints the gate's own lines (`gate autoMerge = …`) from the same read, s
 disagrees with the guard, even while the checkout's file says something else; `workflow
 set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) refuses inside Claude Code, and
 the guard's "autoMerge is off" question says to commit the change to the base and push it.
+
+**A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
+Because the gate is read from the base's committed file, a change that counts must be merged,
+and the plugin never writes the project's main checkout. `cc-smart-dev-kit workflow propose
+<setting> <value>` (and the portal's Workflow card, through the same command in a child):
+
+1. finds the project (`--folder`, else the current folder) and its `worktrees.base`;
+2. fetches `origin/<base>` and reads **the value the base commits** (`resolveWorkflow` over the
+   file at `origin/<base>`, not this checkout's working copy: an uncommitted edit here is not a
+   policy) — one the base already holds, or an `--unset` of one it does not set, ends with one
+   line and no branch. It checks `gh` too (`ghLoginState`: installed, and `gh repo view` answers
+   for this repository), so no branch is made for a pull request that could not open;
+3. cuts a branch and a worktree from `origin/<base>` in Claude Code's own layout: the folder
+   `.claude/worktrees/workflow-<setting>-<YYYYMMDD>` on the branch `worktree-<folder name>`,
+   so the auto-clean removes it after the merge (the same day's second change takes `-2`); it
+   refuses when the base's own commit has no project file — a change counts only once merged;
+4. checks that the new worktree holds its **own** `.claude/cc-smart-dev-kit.json` before writing
+   — the guard that keeps the writer's fallback (`loadProjectConfig` reads the main checkout's
+   file when a worktree has none) from ever writing the person's checkout — then writes the one
+   value with `writeProjectSetting`, the writer `set --project` uses, and refuses unless the
+   worktree's own `git status` shows the change;
+5. commits (the person's identity, `workflow: <setting> <from> → <to>`, where `from` is the
+   project's own value or `(unset)`: the person's defaults are never published), pushes, and
+   opens the pull request with `gh pr create` into the base, with a body saying it counts once
+   merged. `--json` prints `{ url, branch, worktree, setting, from, to }`.
+
+A setting the project's file cannot hold — the status-line and update-hold switches, which are
+the person's, per machine — is refused before the fetch, with the command that does change it.
+
+A step that fails after the branch exists takes the worktree, the branch, and the pushed
+branch back, and the line says what is left if any of that fails. Two exceptions, both to
+avoid destroying what may be another run's: a `gh pr create` that does not answer in time
+leaves the pushed branch and the pull request it may have made, and a name another proposal
+took between the check and the add is skipped for the next free one rather than reused. A
+crew session never runs the command (D24): it pushes a branch and opens a pull request, in
+children no hook sees, and a crew session does neither — the guards deny its own `git push` and
+`gh pr create`, but they never see these children. **The shell judge denies the command** by the
+hook's own environment, under every spelling it reads (`src/hooks/bash-judge.ts`): the kit by
+name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that
+runs its arguments (`find -exec`, `watch`), a computed program or subcommand, and `env -u`,
+with redirections dropped. The command's own check is the second belt, and it says the same
+words. Inside Claude Code a gate key refuses, as `set` does; outside it — a terminal, the
+portal — every key is allowed: the pull request's review is the gate.
 
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request

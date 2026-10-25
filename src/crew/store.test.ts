@@ -768,6 +768,34 @@ describe("what a paused crew session waits for", () => {
     expect(after?.lastPause?.backoffMs).toBe(300_000);
   });
 
+  test("an unknown wait keeps the state key of the session's own slot, in a profile too (RV3)", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const unknown = {
+      kind: "unknown",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "my-project/cc-smart-dev-kit-worker",
+    } as const;
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "paused", waitingFor: unknown }, T1);
+    const saved = JSON.parse(readFileSync(crewFile(state, REPO, "crew-K-contracts"), "utf8"));
+    expect(saved.waitingFor).toEqual(unknown);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.waitingFor).toEqual(unknown);
+    // The field is declared, not just kept as an extra of a loose object: a key that is empty or
+    // not a text is a broken record, named, as for the `slot` wait's own key.
+    const fail = (slot: unknown, id: string) => {
+      const file = onDisk(state, { waitingFor: { kind: "unknown", since: "t", slot } }, id);
+      return { file, read: () => readCrew(state, REPO, id) };
+    };
+    const empty = fail("", "crew-empty");
+    expect(empty.read).toThrow(
+      `Invalid ${empty.file}: waitingFor.slot: Too small: expected string to have >=1 characters`,
+    );
+    const number = fail(42, "crew-number");
+    expect(number.read).toThrow(
+      `Invalid ${number.file}: waitingFor.slot: Invalid input: expected string, received number`,
+    );
+  });
+
   test("when the crew session goes on, the wait is cleared and leaves nothing in the file", async () => {
     const state = tempDir("state");
     await createCrew(state, queued(), T0);

@@ -43,6 +43,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CliPaths, tildify } from "../cli/paths";
 import type { Runner } from "../gateway/service";
+import type { CommandRunner } from "../update/apply";
 
 /** The shared profile folder 0.3.0 kept under the data folder: `<dataDir>/playwright`. */
 const LEGACY_PROFILE_NAME = "playwright";
@@ -102,13 +103,27 @@ export function processCommandLines(
 ): null | ProcessCommandLine[] {
   if (platform === "linux") return linuxProcessCommandLines();
   if (platform === "darwin") {
-    return run === undefined ? null : parsedLines(run(["ps", "-ww", "-axo", "pid=,command="]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.darwin));
   }
   if (platform === "win32") {
-    return run === undefined
-      ? null
-      : parsedLines(run(["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.win32));
   }
+  return null;
+}
+
+/**
+ * `processCommandLines`, awaited: the same answers, the same argv and the same parse, for a
+ * caller that must not block (the portal's Machine page). On Linux the listing is `/proc`,
+ * read here as it is; macOS's `ps` and Windows' PowerShell run through `run` (`Bun.spawn` in
+ * the portal, `Bun.spawnSync` on the command line — `await` takes a value as it is).
+ */
+export async function processCommandLinesAsync(
+  platform: NodeJS.Platform,
+  run: CommandRunner,
+): Promise<null | ProcessCommandLine[]> {
+  if (platform === "linux") return linuxProcessCommandLines();
+  if (platform === "darwin") return parsedLines(await run(PROCESS_LIST_ARGV.darwin));
+  if (platform === "win32") return parsedLines(await run(PROCESS_LIST_ARGV.win32));
   return null;
 }
 
@@ -137,6 +152,12 @@ const WINDOWS_LIST =
   "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
   "Get-CimInstance Win32_Process | Where-Object CommandLine | " +
   'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+
+/** The listing command per platform, one home for both readers of it. */
+const PROCESS_LIST_ARGV: Record<"darwin" | "win32", string[]> = {
+  darwin: ["ps", "-ww", "-axo", "pid=,command="],
+  win32: ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST],
+};
 
 /**
  * The same shape, from `/proc` (Linux): each process's command line is its arguments joined by
@@ -250,6 +271,19 @@ function unknownLine(profile: string, home: string): string {
 }
 
 /**
+ * True when 0.3.0's browser left something here: its shared profile folder, or the picker.
+ * One question with two askers — `legacyBrowserFacts` itself, and a caller that must read the
+ * process list BEFORE it (the portal, off its event loop) and should not spawn for nothing.
+ */
+export function legacyBrowserLeftovers(
+  paths: Pick<CliPaths, "dataDir" | "home">,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  const { picker, profile } = legacyBrowserPaths(paths);
+  return exists(profile) || exists(picker);
+}
+
+/**
  * What 0.3.0 left on this machine, in the words `doctor` prints (`!` for a warning, `·` when the
  * answer could not be read) and `cc-smart-dev-kit setup` prints as information. Nothing when
  * 0.3.0's browser never ran here — and then no process is listed.
@@ -259,10 +293,10 @@ export function legacyBrowserFacts(
   deps: LegacyBrowserDeps,
 ): LegacyBrowserFact[] {
   const exists = deps.exists ?? existsSync;
+  if (!legacyBrowserLeftovers(paths, exists)) return [];
   const { picker, profile } = legacyBrowserPaths(paths);
   const profileThere = exists(profile);
   const pickerThere = exists(picker);
-  if (!profileThere && !pickerThere) return [];
   const facts: LegacyBrowserFact[] = [];
   if (profileThere) {
     facts.push({

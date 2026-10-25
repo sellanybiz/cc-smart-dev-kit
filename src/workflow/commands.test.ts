@@ -19,6 +19,7 @@ import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
+import { WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
@@ -89,6 +90,7 @@ describe("workflow show", () => {
       "crew.usagePercent = 85 (default)",
       "crew.quietMinutes = 20 (default)",
       "crew.handoffPercent = 70 (default)",
+      "crew.handoffTokens = 400000 (default)",
       "crew.softHours = 2 (default)",
       "crew.maxHours = 4 (default)",
       "crew.tag = (the main checkout's folder name) (default)",
@@ -973,5 +975,44 @@ describe("workflow merge-check", () => {
     expect(run.errors).toEqual([
       `cc-smart-dev-kit workflow merge-check: ${repo} has no .claude/cc-smart-dev-kit.json, so there is no merge policy to check`,
     ]);
+  });
+});
+
+describe("workflow propose: the arguments", () => {
+  test("a setting, a value or --unset, a folder and JSON; anything else is refused before a run", async () => {
+    const repo = makeRepo();
+    const env = hookEnv();
+    for (const [argv, why] of [
+      [["propose"], "propose needs a setting"],
+      [
+        ["propose", "worktree.base", "main"],
+        `Unknown setting: worktree.base. The settings are: ${WORKFLOW_KEYS.join(", ")}`,
+      ],
+      [["propose", "autoCommit"], "propose needs one value, or --unset"],
+      [
+        ["propose", "openPr", "draft", "ready"],
+        'propose needs one value (quote a list, like "needs-you, question"), or --unset',
+      ],
+      [["propose", "autoCommit", "true", "--unset"], "propose takes a value, or --unset, not both"],
+      [["propose", "autoCommit", "true", "--folder"], "--folder needs the project's folder"],
+      [["propose", "autoCommit", "true", "--yes"], "Unknown option: --yes"],
+      [["propose", "autoCommit", "yes"], "autoCommit is true or false"],
+    ] as [string[], string][]) {
+      const run = context(repo, env);
+      expect(await runWorkflow(argv, run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith(`${why}\n\n`);
+      expect(run.lines).toEqual([]);
+    }
+  });
+
+  test("inside Claude Code a review-gate key refuses with the pull request as its fix", async () => {
+    const repo = makeRepo();
+    const env = { ...hookEnv(), CLAUDECODE: "1" };
+    const run = context(repo, env);
+    expect(await runWorkflow(["propose", "autoMerge", "true"], run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `cc-smart-dev-kit workflow propose autoMerge cannot run inside a Claude Code session: autoMerge is part of the merge guard's review gate, which only you change. Run it in your own terminal (\`${COMMAND} workflow propose autoMerge <value>\`): the pull request is the gate.`,
+    ]);
+    expect(run.lines).toEqual([]);
   });
 });

@@ -203,19 +203,39 @@ Each of them:
   line until it is done.
 - **A service is a managed change too.** When `gateway setup` installed the router (its
   copy or unit is in `changed.json`), `restore` works in two stages, because running
-  sessions are taken to keep pointing at the router until they restart (one live look
-  saw otherwise: `docs/claude-code-contract.md`; the stages stay until it is repeated):
-  - **stage 1**, while cc-smart-dev-kit's gateway env keys are in `settings.json`
-    (`ownedGatewayEnvKeys`): it restores everything except the router's files
-    (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
-    every running session, then run `restore` again. Nothing stops, nothing is asked.
-  - **stage 2**, with no such key left: it stops the router before it restores its files
-    (`stopRouter`; how the stop works, and why it waits only for the unit's own router:
-    `gateway.md` § The service), then restores them, runs `systemctl --user daemon-reload`,
+  sessions must leave the router before it stops. A running session follows a **changed**
+  `ANTHROPIC_BASE_URL` within about a second; a **removed** key reaches it only when another
+  settings file still sets the key, and otherwise never (P7, re-proved on 2.1.310,
+  `.claude/research/2026-10-25-r6-recheck.md`). A worktree's copy of a personal file we wrote
+  that holds the router (a `.worktreeinclude` makes one) is such a file: restore names it and
+  never changes it, because the kit did not write it:
+  - **stage 1**, while cc-smart-dev-kit's gateway env keys still hold its value in **any
+    settings file it wrote** — the user's `settings.json`, a project's own
+    `settings.local.json` or team `.claude/settings.json` (`ownedGatewayEnvKeys` over
+    `changed.json`'s `json-keys` entries; a file whose address is Anthropic's, from
+    `gateway project off` or `gateway off`, does not count): it restores everything except
+    the router's files (`restore(stateDir, { except })`, which leaves them tracked) and
+    **writes Anthropic's own address into each file's `env.ANTHROPIC_BASE_URL` instead of
+    removing the key** (`writeInstead`; the key stays owned, and the file stays tracked so
+    stage 2 takes it back). Every running session switches to Anthropic by itself, within
+    about a second — nothing to restart. Nothing stops, nothing is asked. The second run is
+    for the stop, not for the sessions: nothing proves a request in flight is safe when the
+    router stops, so it keeps running until the person starts the second run after the change
+    has had its second.
+  - **stage 2**, with no such key left (every file's address is Anthropic's now): it stops the
+    router before it restores its files (`stopRouter`; how the stop works, and why it waits
+    only for the unit's own router: `gateway.md` § The service), then restores them — the
+    address keys among them, now plain removals — runs `systemctl --user daemon-reload`,
     and removes the restart-pending marker. It waits only for the unit's own router.
     Stopping a running router cuts answers in flight, so it asks first, or needs `--yes`.
   - **`--now`**: both at once, after the warning that every running session fails until
-    it restarts; asked, or `--yes`.
+    it restarts; asked, or `--yes`. Nothing is written first: the keys are removed plainly.
+- **A key written again is not a key removed.** A key the person set, changed or removed since
+  is theirs: `restore` never writes it and never removes it. A file whose key was written
+  again stays tracked (its record stays in `changed.json`), so the next `restore` finds the
+  key; every other restored file is forgotten as usual. "Written again" means a key of the
+  `writeInstead` list only: a value a take-over recorded that comes back (`RestoreResult.putBack`)
+  is the person's own, leaves nothing of ours in the file, and does not keep it tracked.
 
 ## The launcher
 

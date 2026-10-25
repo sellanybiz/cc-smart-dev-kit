@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.1.2",
+  version: "1.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -737,6 +737,8 @@ function removeManagedFile(stateDir, file) {
 
 // src/setup/managed-json.ts
 var OWNED_FILE = "owned.json";
+var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
+var TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -784,6 +786,12 @@ function toRecord(entry, file) {
       record.value = entry.value;
     if (typeof entry.sha256 === "string")
       record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
+    if (entry.taken === true)
+      record.taken = true;
     return record;
   }
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
@@ -918,7 +926,17 @@ function applyOnce(file, options, owned) {
   const skipped = [];
   const updated = [];
   const dropped = [];
+  const released = [];
   let setsSecret = false;
+  const recordFor = (path, value) => {
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    return {
+      ...recordOf(path, value, isSecret(path)),
+      ...held?.was !== undefined && { was: held.was },
+      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+      ...held?.taken === true && { taken: true }
+    };
+  };
   for (const [path, value] of options.set ?? []) {
     if (path.length === 0)
       throw new Error("applyManagedJson: an empty key path");
@@ -936,7 +954,7 @@ function applyOnce(file, options, owned) {
         });
         dropped.push(path);
       } else {
-        updated.push(recordOf(path, value, isSecret(path)));
+        updated.push(recordFor(path, value));
       }
       continue;
     }
@@ -948,7 +966,64 @@ function applyOnce(file, options, owned) {
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
-    updated.push(recordOf(path, value, isSecret(path)));
+    updated.push(recordFor(path, value));
+  }
+  for (const [path, value] of options.claim ?? []) {
+    const current = getKey(data, path);
+    if (!current.found || !Bun.deepEquals(current.value, value, true)) {
+      skipped.push({ path, reason: "not the value it was taken over with; left alone" });
+      continue;
+    }
+    const record = recordFor(path, value);
+    record.taken = true;
+    if (isSecret(path))
+      record.wasSha256 = hashOf(value);
+    else
+      record.was = value;
+    updated.push(record);
+  }
+  for (const [path, value] of options.release ?? []) {
+    const current = getKey(data, path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    if (value === undefined) {
+      const held = ownedHere.find((entry) => samePath(entry.path, path));
+      if (held?.taken === true) {
+        dropped.push(path);
+        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+        continue;
+      }
+      skipped.push({ path, reason: "no value to write back; left as it is" });
+      continue;
+    }
+    dropped.push(path);
+    released.push(path);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      skipped.push({
+        path,
+        reason: "already holds that value; cc-smart-dev-kit's claim is dropped"
+      });
+      continue;
+    }
+    if (isSecret(path))
+      setsSecret = true;
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);
@@ -967,6 +1042,20 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    if (held?.was !== undefined) {
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
+      setKey(data, path, held.was);
+      changes.push({ path, before: current.value, after: held.was });
+      continue;
+    }
+    if (held?.wasSha256 !== undefined) {
+      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+      continue;
+    }
     const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
     for (const parentPath of emptied) {
@@ -985,11 +1074,19 @@ function applyOnce(file, options, owned) {
       delete next[file];
     return next;
   };
-  const changedPaths = changes.filter((change) => change.after !== undefined);
+  const changedPaths = changes.filter((change) => change.after !== undefined && !released.some((path) => samePath(path, change.path)));
   if (changedPaths.length > 0) {
     const pending = [
       ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
-      ...changedPaths.map((change) => ({ path: [...change.path] }))
+      ...changedPaths.map((change) => {
+        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
+        return {
+          path: [...change.path],
+          ...held?.was !== undefined && { was: held.was },
+          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+          ...held?.taken === true && { taken: true }
+        };
+      })
     ];
     writeOwned(options.stateDir, nextState(pending));
   }
@@ -1141,19 +1238,25 @@ function lsRemote(url, ref, baseEnv) {
     });
     if (result.exitCode === 0)
       return { ok: true, stdout: result.stdout.toString() };
-    const said = redactUrlsIn(result.stderr.toString().trim());
-    const detail = result.signalCode ? "timed out" : (said.split(`
-`).at(-1) ?? "").trim();
-    const output = said || `git exited with ${result.exitCode}`;
-    return {
-      detail: detail || `git exited with ${result.exitCode}`,
-      ok: false,
-      output
-    };
+    return lsRemoteFailure(result.exitCode, Boolean(result.signalCode), result.stderr.toString());
   } catch (error) {
-    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
-    return { detail: said, ok: false, output: said };
+    return lsRemoteUnspawned(error);
   }
+}
+function lsRemoteFailure(exitCode, timedOut, stderrText) {
+  const said = redactUrlsIn(stderrText.trim());
+  const detail = timedOut ? "timed out" : (said.split(`
+`).at(-1) ?? "").trim();
+  const output = said || `git exited with ${exitCode}`;
+  return {
+    detail: detail || `git exited with ${exitCode}`,
+    ok: false,
+    output
+  };
+}
+function lsRemoteUnspawned(error) {
+  const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+  return { detail: said, ok: false, output: said };
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
   const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;
@@ -1831,6 +1934,18 @@ function removeManagedLines(options) {
 }
 
 // src/setup/restore.ts
+function writeEach(file, keys, options) {
+  const remove = [];
+  const write = [];
+  for (const key of keys) {
+    const instead = options.writeInstead?.(file, key);
+    if (instead === undefined)
+      remove.push(key);
+    else
+      write.push([key, instead.value]);
+  }
+  return { remove, write };
+}
 function createdByUs(entry) {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
@@ -1863,19 +1978,31 @@ function isEmpty(file) {
   const text = readFileSync12(file, "utf8").trim();
   return text === "" || text === "{}";
 }
-function restorePartly(file, entry, stateDir) {
+function restorePartly(file, entry, stateDir, options) {
   const details = [];
+  const written = [];
+  const putBack = [];
   let savedAs = null;
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
+      const { remove, write } = writeEach(file, keys, options);
       const result = applyManagedJson({
         file,
         stateDir,
-        remove: keys,
+        ...write.length > 0 && { set: write },
+        remove,
         createdObject: createdObjects(stateDir, file)
       });
-      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      for (const change of result.changes) {
+        const path = formatKeyPath(change.path);
+        if (change.after === undefined)
+          details.push(path);
+        else if (write.some(([key]) => samePath(key, change.path)))
+          written.push({ path, value: change.after });
+        else
+          putBack.push(path);
+      }
       savedAs ??= result.backup;
     }
   }
@@ -1900,9 +2027,17 @@ function restorePartly(file, entry, stateDir) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0)
+  if (details.length === 0 && written.length === 0 && putBack.length === 0) {
     return { file, action: "unchanged", details };
-  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
+  }
+  return {
+    file,
+    action: "cleaned",
+    details,
+    ...written.length > 0 && { written },
+    ...putBack.length > 0 && { putBack },
+    ...savedAs && { savedAs }
+  };
 }
 function restore(stateDir, options = {}) {
   const except = new Set(options.except ?? []);
@@ -1910,7 +2045,7 @@ function restore(stateDir, options = {}) {
   const hooks = new Map(removeAllManagedHooks(stateDir, { except, only }).map((result) => [result.file, result]));
   const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
   const results = entries.map(([file, entry]) => {
-    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
+    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir, options);
     const hook = hooks.get(file);
     if (hook !== undefined) {
       hooks.delete(file);
@@ -1921,7 +2056,8 @@ function restore(stateDir, options = {}) {
       if (result.action === "unchanged" && hook.removed.length > 0)
         result.action = "cleaned";
     }
-    if (result.action !== "no-backup")
+    const holdsWritten = (result.written ?? []).length > 0;
+    if (result.action !== "no-backup" && !holdsWritten)
       forgetChange(stateDir, file);
     if (result.action === "removed")
       removeEmptyFolders(file, stateDir);
@@ -8588,6 +8724,7 @@ var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
 var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/targets.ts
+var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
@@ -8599,6 +8736,10 @@ function isSlotKey(name) {
 }
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
+}
+var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function isProfileName(name) {
+  return PROFILE_NAME.test(name);
 }
 function parseTarget(text) {
   const trimmed = text.trim();
@@ -8643,7 +8784,6 @@ function claudeFamily(model) {
   const id = name.slice(prefix[0].length - "claude-".length);
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/config.ts
@@ -8658,11 +8798,24 @@ var backendSchema = looseObject({
   baseUrl
 });
 var keptChainSchema = looseObject({
+  effort: record(string2(), _enum(BACKEND_EFFORT_LEVELS)).optional(),
   fallback: boolean2().optional(),
   targets: array(string2().min(1)).min(1)
 });
+var PROFILE_NAME_RULE = "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
+var SLOT_KEY_RULE = (slot) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
+var profileSlotSchema = union([literal("claude"), array(string2().min(1)).min(1)], {
+  error: 'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets'
+});
+var profileSchema = looseObject({
+  breaker: record(string2(), boolean2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
+  kept: record(string2(), keptChainSchema).optional(),
+  slots: record(string2(), profileSlotSchema).optional()
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
+  effort: record(string2(), record(string2(), _enum(BACKEND_EFFORT_LEVELS))).optional(),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
@@ -8674,26 +8827,75 @@ var gatewayConfigSchema = looseObject({
   }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
+  profiles: record(string2(), profileSchema).optional(),
+  slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
     firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
+  for (const [slot, pins] of Object.entries(config.effort ?? {})) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+    effortIssues(pins, ["effort", slot], ctx);
+  }
+  for (const [slot, saved] of Object.entries(config.kept ?? {})) {
+    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
+  }
+  for (const slot of Object.keys(config.slots)) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
+  }
   for (const [slot, targets] of Object.entries(config.slots)) {
-    targets.forEach((text, index) => {
-      const parsed = parseTarget(text);
-      if ("error" in parsed) {
-        ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-      } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+    chainIssues(config, targets, ["slots", slot], ctx);
+  }
+  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+    if (!isProfileName(name)) {
+      ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
+      continue;
+    }
+    for (const field of ["slots", "kept"]) {
+      for (const slot of Object.keys(profile[field] ?? {})) {
+        if (isSlotKey(slot))
+          continue;
         ctx.addIssue({
           code: "custom",
-          message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
-          path: ["slots", slot, index]
+          message: SLOT_KEY_RULE(slot),
+          path: ["profiles", name, field, slot]
         });
       }
-    });
+    }
+    for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
+      if (chain === "claude")
+        continue;
+      chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
+    }
+    const chained = new Set([...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter((slot) => profileSlotChain(config, profile, slot) !== null));
+    for (const slot of Object.keys(profile.fallback ?? {})) {
+      if (slot !== JUDGE_SLOT && !chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
+          path: ["profiles", name, "fallback", slot]
+        });
+      }
+    }
+    for (const slot of Object.keys(profile.breaker ?? {})) {
+      if (slot === JUDGE_SLOT) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      } else if (!chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      }
+    }
   }
   for (const [name, to] of Object.entries(config.aliases)) {
     const error = aliasError(name, to, config);
@@ -8731,6 +8933,36 @@ var gatewayConfigSchema = looseObject({
     }
   }
 });
+function chainIssues(config, targets, path, ctx) {
+  targets.forEach((text, index) => {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
+    } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+        path: [...path, index]
+      });
+    }
+  });
+}
+function effortIssues(pins, path, ctx) {
+  for (const target of Object.keys(pins)) {
+    const parsed = parseTarget(target);
+    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
+    if (error !== null)
+      ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
+  }
+}
+function profileSlotChain(config, profile, slot) {
+  const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
+  if (own === "claude")
+    return null;
+  if (own !== undefined)
+    return own;
+  return Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? null : null;
+}
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
     return `modelSlots key "${model}" is not a Claude model id`;
@@ -8765,7 +8997,7 @@ function aliasError(name, to, config) {
     return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
   }
   if (isSlotKey(to)) {
-    return Object.hasOwn(config.slots, to) ? null : `alias "${name}" points at slot "${to}", which is not in slots`;
+    return Object.hasOwn(config.slots, to) || Object.hasOwn(config.kept ?? {}, to) || Object.hasOwn(FAMILY_SLOTS, to) || to === JUDGE_SLOT ? null : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
   }
   const parsed = parseTarget(to);
   if ("error" in parsed)

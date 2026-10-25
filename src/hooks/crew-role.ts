@@ -18,13 +18,26 @@
  *   the person. The answer is a **deny**, not an ask: the fix is mechanical, and asking the person
  *   here would be the very thing the hook prevents. **No store read**, so the answer is the same
  *   when the project's file is broken or too new, and outside git.
+ * - **PreToolUse on `Edit`, `Write` and `NotebookEdit`**: the session's **first edit waits for
+ *   its task list** (D23). While the session's task folder holds no task file, the call is
+ *   **denied** with the step — look the task tools up, then one `TaskCreate` per part of the
+ *   brief, each with its done-check. Nobody watches a crew session, and its list is what it
+ *   resumes from after a compaction and what the person reads; the crew skill asked for one and
+ *   17 of 24 live sessions still skipped it, because Claude Code leaves the task tools out until
+ *   a session looks them up. Once a task file exists the hook answers from its own cache
+ *   (`taskGateFile`, `src/crew/tasks.ts`) and never lists the folder again for that list. A
+ *   subagent's edit is judged too: its `TaskCreate` writes into its parent session's folder, one
+ *   list for the whole session (proved live, `docs/claude-code-contract.md` § The to-do list).
+ *   A store or a folder the hook cannot read lets the edit through: a check that cannot be made
+ *   is no denial.
  * - **UserPromptSubmit (D55)**: the person typed into the crew session. Their word wins over the
  *   brief, so the lead has to hear it: one `person` event (the first line, masked and clipped)
  *   and one short line of context telling the session whose word it is. Only the person's own
  *   prompt counts — Claude Code runs this hook for every turn a session gets, and the input says
  *   nothing about where a prompt came from (proved live on 2.1.309, only `prompt`),
  *   so the prompt's own shape decides: a `SendMessage` delivery carries
- *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the three
+ *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, a subagent's
+ *   hand-back the session itself launched carries `<agent-message from=…>`, and the three
  *   prompts a lead's own transport gives a crew session bare — `crew start`'s launch line
  *   (`firstPrompt`, built for the record's own name, lead and brief file), `crew answer`'s
  *   resume of a stopped session, and the watch's `resumeText` of a paused one — are recognised
@@ -32,6 +45,11 @@
  *   in the kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no
  *   record — records nothing. Never a block, never a question: the person's prompt always goes
  *   on.
+ *
+ *   Whatever the turn is, the crew record's name is put back on the session's title when the
+ *   title says something else (`titleAnswer`): the name is the address its lead, `crew answer`
+ *   and the message guard reach it by, and `session-name` is silent here (D26, one owner per
+ *   title).
  * - **Stop**: records the session's last line on its record (masked and clipped: a record is read
  *   by a person and by the lead) and **never gives context** — a Stop hook's `additionalContext`
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
@@ -67,11 +85,20 @@ import {
   updateCrewIfState,
   writeStopState,
 } from "../crew/store";
+import {
+  readSessionTasks,
+  readTaskGate,
+  sessionTasksDir,
+  taskListId,
+  writeTaskGate,
+} from "../crew/tasks";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
+import { sessionGatewayOf } from "./agent-guard";
 import { isInside, realPath } from "./git";
 import {
   addContext,
+  addContextAndTitle,
   type HookInput,
   type HookResult,
   SILENT,
@@ -79,9 +106,13 @@ import {
   toolDecision,
 } from "./io";
 import type { Env } from "./run";
+import { isSessionId, titleToSetOrProblem } from "./session-name";
 
 /** The two tools a crew session never calls: each one asks the person (D36). */
 export const CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
+
+/** The tools whose call waits for a crew session's task list: every edit it makes (D23). */
+export const CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
 
 /** The longest piece of a line a record keeps: the session's last line, the person's first line. */
 export const LAST_LINE_MAX = 120;
@@ -89,6 +120,28 @@ export const LAST_LINE_MAX = 120;
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`;
+}
+
+/**
+ * The one step that makes a crew session's to-do list: look the task tools up (Claude Code
+ * leaves them out until a session does, so a session that skips this cannot make one at all),
+ * then one task per part of the brief, each with its done-check. The deny of the first edit
+ * and the role card both say it, from here.
+ */
+function taskListStep(): string {
+  return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+}
+
+/**
+ * The deny of a crew session's first edit, while its task folder holds no task file (D23). A
+ * deny and not an ask: the step is mechanical and the session can take it alone, and nobody is
+ * at the machine to answer a question (`.claude/rules/hooks-guards.md` § Fail safe). The last
+ * sentence is the way out for a session Claude Code gave no task tools (the legacy `TodoWrite`
+ * instead, a deny rule): it tells its lead, who tells the person, because the refusal would
+ * otherwise hold every edit it makes for good.
+ */
+function taskListRefusal(): string {
+  return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep()}\``;
 }
 
 /** The line a crew session gets instead of asking the person (D36). */
@@ -139,13 +192,14 @@ export const ANSWER_RESUME_MS = 60_000;
 
 /**
  * True when `prompt` is the person's own words. Every other turn a crew session gets is its
- * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), the kit's own Stop block
- * (a continuation that carries it), the line `crew start` launched this crew session with
- * (`firstPrompt`, built for this record — a hand-off's next crew session gets its own),
- * `crew answer`'s resume of a stopped crew session (with a question still open, or with the
- * answer the store recorded — the resume runs before the answer is written), and the watch's
- * resume of a paused one (the frame above). A bare prompt none of those explain is the person's:
- * nothing else in the kit gives a crew session a prompt.
+ * lead's or its own subagent's: a `SendMessage` delivery, a monitor's line, or a subagent's
+ * hand-back (the wrappers), the kit's own Stop block (a continuation that carries it), the line
+ * `crew start` launched this crew session with (`firstPrompt`, built for this record — a
+ * hand-off's next crew session gets its own), `crew answer`'s resume of a stopped crew session
+ * (with a question still open, or with the answer the store recorded — the resume runs before
+ * the answer is written), and the watch's resume of a paused one (the frame above). A bare
+ * prompt none of those explain is the person's: nothing else in the kit gives a crew session a
+ * prompt.
  */
 export function isPersonPrompt(
   record: CrewRecord,
@@ -237,6 +291,7 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
+    `${taskListStep()} Your first edit waits for it, and \`${REPORT_COMMAND} --status done\` waits until no task is open.`,
     `Hand the phase back with \`${REPORT_COMMAND} --status done\` (or \`--status failed\` and why), then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
@@ -244,9 +299,20 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
   ].join("\n");
 }
 
-/** Why the store could not be used, as the hook says it: one line, and never a block. */
+/** Why the store could not be used, as the hook says it: one line. */
+function problemLine(why: string): string {
+  return `cc-smart-dev-kit crew-role: ${why}`;
+}
+
+/** Why the store could not be used, as the hook's answer: one line, and never a block. */
 function storeProblem(why: string): HookResult {
-  return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
+  return { stderr: problemLine(why) };
+}
+
+/** `result`, with one more line about what could not be done beside what it already says. */
+function withProblem(result: HookResult, why: string): HookResult {
+  const line = problemLine(why);
+  return { ...result, stderr: result.stderr === undefined ? line : `${result.stderr}\n${line}` };
 }
 
 /** What went wrong, in words. */
@@ -422,30 +488,68 @@ async function stopAnswer(
 }
 
 /**
+ * The crew session's name to set at this turn, or null. **The crew record is the one owner of
+ * its session's title**: 1.1.1 let a crew session name itself after its task (`session-name`),
+ * and 1.1.2 refused new renames without setting the title back — so a session renamed then kept
+ * a task name while its lead, `crew answer` and the message guard went on addressing it by the
+ * record's name. `titleToSet` is the one rule and the one record (`session-name`, as for a
+ * lead's name in `lead-notes`), so a name the kit already set is never set twice, and a session
+ * whose title is already right is told nothing.
+ *
+ * **A name that cannot be recorded is not set** (`titleToSetOrProblem`): the failure is
+ * `problem`, one line beside whatever else the turn says — it never loses the person's event or
+ * their prompt.
+ */
+function titleAnswer(
+  input: HookInput,
+  record: CrewRecord,
+  env: Env,
+): { problem: null | string; title: null | string } {
+  const sessionId = stringField(input.session_id);
+  if (!isSessionId(sessionId)) return { problem: null, title: null };
+  return titleToSetOrProblem(env, sessionId, record.name, stringField(input.session_title));
+}
+
+/** The title alone in a `UserPromptSubmit` answer, or nothing to say at all. */
+function titleOnly(title: null | string): HookResult {
+  return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
+}
+
+/**
  * UserPromptSubmit: the person typed into the crew session (D55). One `person` event, so the
  * lead's watch says it and the lead reads the next report against it, and one line of context
  * telling the session whose word it is. Never a block and never a question: the prompt goes on
  * whatever the store does. A store that cannot record is one line, and the prompt still reaches
  * the session — only the lead's line is missing.
+ *
+ * Whatever the turn is — the person's, the lead's, a subagent's — the name goes back with it
+ * when the session's title says something else (`titleAnswer`): the name is the address every
+ * other part of the kit reaches this crew session by, so it is put right on the lead's turns
+ * too, not only on the turns the person types.
  */
 async function personPromptAnswer(
   input: HookInput,
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
   options: CrewRoleOptions,
 ): Promise<HookResult> {
-  const prompt = stringField(input.prompt);
-  if (prompt === null) return SILENT;
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const record = found.record;
+  const { problem: nameProblem, title } = titleAnswer(input, record, env);
+  // The name's own failure is one line beside whatever else this turn says.
+  const said = (result: HookResult): HookResult =>
+    nameProblem === null ? result : withProblem(result, nameProblem);
+  const prompt = stringField(input.prompt);
+  if (prompt === null) return said(titleOnly(title));
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
-  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return SILENT;
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return said(titleOnly(title));
   const line = personLine(prompt);
   // Nothing to say: a prompt of blank lines is the person's, but the lead gets no line for it.
-  if (line === "") return SILENT;
+  if (line === "") return said(titleOnly(title));
   try {
     await appendCrewEvent(
       paths.stateDir,
@@ -461,14 +565,67 @@ async function personPromptAnswer(
       nowMs,
     );
   } catch (error) {
-    return storeProblem(reasonOf(error));
+    // The event could not be written, and the name still goes out: `titleToSet` has already
+    // recorded this name as the kit's, so a turn that dropped it would never set it again — the
+    // address would stay lost for good, which is the very bug this is here to fix.
+    const problem = storeProblem(reasonOf(error));
+    const only = titleOnly(title);
+    return said(only.stdout === undefined ? problem : { ...problem, stdout: only.stdout });
   }
-  return addContext("UserPromptSubmit", personWroteLine());
+  return said(
+    title === null
+      ? addContext("UserPromptSubmit", personWroteLine())
+      : addContextAndTitle("UserPromptSubmit", personWroteLine(), title),
+  );
+}
+
+/**
+ * The first edit of a crew session waits for its task list (D23): while the session's task
+ * folder holds no task file, the call is denied with the step. The list is the session's own —
+ * `CLAUDE_CODE_TASK_LIST_ID` when the environment names one, else the input's `session_id`,
+ * which is the parent session's for a subagent's call too — and a subagent's `TaskCreate`
+ * writes into that same folder, so every edit of the session is judged against the one list
+ * it keeps (proved live, `docs/claude-code-contract.md` § The to-do list).
+ *
+ * Once a task file has been seen, the gate's own file answers (`taskGateFile`) and the folder
+ * is not read again for that list. **Every answer that cannot be made lets the edit through**:
+ * no session id names no folder, a folder the hook cannot read says nothing about the list, and
+ * a gate file it cannot write is one line on stderr — a denial on a guess would hold the
+ * session's work for nothing. Outside git (`repo` null) the gate has no store folder to
+ * remember in, so the folder is read on each call.
+ */
+function taskListGate(
+  input: HookInput,
+  id: string,
+  repo: null | string,
+  paths: CliPaths,
+  env: Env,
+): HookResult {
+  const listId = taskListId(env, stringField(input.session_id));
+  if (listId === "") return SILENT;
+  if (repo !== null && readTaskGate(paths.stateDir, repo, id)?.listId === listId) return SILENT;
+  const tasks = readSessionTasks(paths.claudeConfigDir, listId);
+  if (tasks.state === "unreadable") {
+    return storeProblem(
+      `the task folder ${sessionTasksDir(paths.claudeConfigDir, listId)} cannot be read, so the edit is not held for the task list`,
+    );
+  }
+  if (tasks.state === "none" || tasks.files === 0) {
+    return toolDecision("deny", taskListRefusal());
+  }
+  if (repo === null) return SILENT;
+  try {
+    writeTaskGate(paths.stateDir, repo, id, { listId });
+  } catch (error) {
+    // Only a cache: the next edit lists the folder again. The edit itself goes on.
+    return storeProblem(`the task list gate could not be recorded: ${reasonOf(error)}`);
+  }
+  return SILENT;
 }
 
 /**
  * Every answer of the hook, for every event it is wired for. `repo` is null outside a git checkout
- * (the PreToolUse answer needs none; a card, a stop, a pause and the person's prompt need the
+ * (the PreToolUse answers need none; a card, a stop, a pause and the person's prompt need the
  * store, so they stay silent there). Async because the Stop, the StopFailure and the
  * UserPromptSubmit answers write the store: `onConfigProblem` and `outsideGit` call it too, so a
  * broken or too new project file never changes an answer.
@@ -485,16 +642,19 @@ export async function crewRoleAnswer(
   if (id === null) return SILENT;
   if (event === "PreToolUse") {
     const tool = stringField(input.tool_name);
-    return tool !== null && (CREW_ASK_TOOLS as readonly string[]).includes(tool)
-      ? toolDecision("deny", questionStep())
-      : SILENT;
+    if (tool === null) return SILENT;
+    if ((CREW_ASK_TOOLS as readonly string[]).includes(tool))
+      return toolDecision("deny", questionStep());
+    if ((CREW_EDIT_TOOLS as readonly string[]).includes(tool))
+      return taskListGate(input, id, repo, paths, env);
+    return SILENT;
   }
   if (repo === null) return SILENT;
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
   if (event === "UserPromptSubmit")
-    return await personPromptAnswer(input, id, repo, paths, options);
+    return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
-  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
+  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
 
@@ -517,6 +677,7 @@ async function stopFailureAnswer(
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
   options: CrewRoleOptions,
 ): Promise<HookResult> {
   const error = stringField(input.error);
@@ -528,7 +689,9 @@ async function stopFailureAnswer(
   // stopped, or still waits in the queue has no turn to pause.
   if (!(RUNNING_STATES as readonly string[]).includes(record.state)) return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  // The profile the session's own URL names: the router keeps its breaker under `<profile>/<slot>`.
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(

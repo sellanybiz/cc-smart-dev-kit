@@ -117,16 +117,48 @@ export function describeFailures(failures: readonly BreakerFailure[], nowMs: num
     .join("; ");
 }
 
+/**
+ * The command that changes the chain that failed, without the program's name (the status line
+ * is short): `gateway slot worker <targets>` for the machine's chain, and for a profile
+ * `gateway profile <name> slot worker <targets>` — a profile's chain is not the `gateway slot`
+ * one, and the profile command works whether the profile names the slot or not.
+ */
+export function breakerChangeCommand(slot: string, profile: null | string): string {
+  const short = slotShortName(slot);
+  return profile === null
+    ? `gateway slot ${short} <targets>`
+    : `gateway profile ${profile} slot ${short} <targets>`;
+}
+
+/**
+ * What to change when a chain's every target is limited or down, as the words after
+ * "change it:". A profile that names no chain for the slot (`inherited`) uses the machine's, so
+ * there are two ways out and the words say what each changes; with the profile's own chain, or
+ * when the caller cannot tell, the profile command alone is the one that is always right.
+ */
+export function breakerChangeHint(
+  slot: string,
+  profile: null | string = null,
+  inherited = false,
+): string {
+  const own = `${COMMAND} ${breakerChangeCommand(slot, profile)}`;
+  if (profile === null || !inherited) return own;
+  return `${own} (a chain of its own for this profile), or ${COMMAND} ${breakerChangeCommand(slot, null)} (the machine's chain, which this profile uses)`;
+}
+
 /** The text of the breaker's answer, and of the line `gateway status` prints. */
 export function breakerMessage(
   slot: string,
   sinceMs: number,
   failures: readonly BreakerFailure[],
   nowMs: number,
+  profile: null | string = null,
+  inherited = false,
 ): string {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
-  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+  const where = profile === null ? slot : `${slot} in profile ${profile}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile, inherited)}`;
 }
 
 /**
@@ -138,6 +170,10 @@ export function breakerAnswer(answer: {
   /** Replaces the usual `retry-after` (whole seconds, capped and at least 1). */
   retryAfterSec?: number;
   slot: string;
+  /** The profile whose chain the slot's failure is about; null (or absent): the machine's. */
+  profile?: null | string;
+  /** The profile names no chain for the slot: it uses the machine's (`breakerChangeHint`). */
+  inherited?: boolean;
   sinceMs: number;
   nowMs: number;
   /** Replaces the usual message: a request released before its hold ended says why. */
@@ -151,7 +187,14 @@ export function breakerAnswer(answer: {
       error: {
         message:
           answer.message ??
-          breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+          breakerMessage(
+            answer.slot,
+            answer.sinceMs,
+            answer.failures,
+            answer.nowMs,
+            answer.profile ?? null,
+            answer.inherited ?? false,
+          ),
         type: "rate_limit_error",
       },
       type: "error",

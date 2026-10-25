@@ -65,6 +65,7 @@ const NUMBER_RULES = {
   "crew.usagePercent": PERCENT,
   "crew.quietMinutes": AT_LEAST_ONE,
   "crew.handoffPercent": PERCENT,
+  "crew.handoffTokens": AT_LEAST_ONE,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
@@ -209,8 +210,18 @@ export const workflowSchema = z.strictObject({
       usagePercent: numberField("crew.usagePercent"),
       /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
       quietMinutes: numberField("crew.quietMinutes"),
-      /** The share of its context, in percent, at which a crew session hands off to a next one. Default: 70. */
+      /**
+       * The share of its context window, in percent, at which a crew session hands off to a
+       * next one. It hands off at this share or at `handoffTokens`, whichever comes first.
+       * Default: 70.
+       */
       handoffPercent: numberField("crew.handoffPercent"),
+      /**
+       * The tokens of context at which a crew session hands off, whatever its window: a 1M
+       * window hands off here, a 200k window at `handoffPercent` first. It needs no window, so
+       * a model the kit cannot size still hands off at it. Default: 400000.
+       */
+      handoffTokens: numberField("crew.handoffTokens"),
       /** Hours after which the lead gets a note about a crew session still running. Default: 2. */
       softHours: numberField("crew.softHours"),
       /** Hours after which a crew session hands off. Default: 4. */
@@ -260,6 +271,7 @@ export const workflowDefaults = {
     usagePercent: 85,
     quietMinutes: 20,
     handoffPercent: 70,
+    handoffTokens: 400_000,
     softHours: 2,
     maxHours: 4,
     /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
@@ -308,6 +320,7 @@ export type WorkflowKey =
   | "crew.usagePercent"
   | "crew.quietMinutes"
   | "crew.handoffPercent"
+  | "crew.handoffTokens"
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.tag"
@@ -341,6 +354,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.usagePercent",
   "crew.quietMinutes",
   "crew.handoffPercent",
+  "crew.handoffTokens",
   "crew.softHours",
   "crew.maxHours",
   "crew.tag",
@@ -372,6 +386,22 @@ export const WORKFLOW_KEYS: readonly WorkflowKey[] = [...POLICY_KEYS, ...SWITCH_
 /** True when the key names a switch (which is read and written where it already lives). */
 export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
   return SWITCH_KEYS.includes(key as WorkflowKey);
+}
+
+/**
+ * The switches the project's own file holds (`sessionNames`, `jobs.route`). The other two — the
+ * status line and the update hold — are the person's, per machine: `workflow set --project`
+ * refuses them (`write.ts`), and so has nothing for a pull request to change.
+ */
+export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
+
+/**
+ * True when the project's own file can hold the key: every policy key, and the project's two
+ * switches. The one answer behind `workflow propose`'s refusal and the portal's list of what a
+ * project's card may change; `propose.test.ts` holds it equal to what the writer accepts.
+ */
+export function isProjectKey(key: WorkflowKey): boolean {
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
 }
 
 /** The switch's own name: `"switches.statusLine"` → `"statusLine"`. */

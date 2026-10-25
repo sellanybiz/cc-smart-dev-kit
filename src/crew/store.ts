@@ -292,6 +292,13 @@ const waitingForSchema = z.discriminatedUnion("kind", [
     kind: z.literal("unknown"),
     /** When the wait began (ISO 8601). */
     since: text,
+    /**
+     * The state key of the session's own slot (`my-project/cc-smart-dev-kit-worker` in a
+     * profile): the watch asks that breaker before it resumes. Absent on a session with no
+     * slot, and on a record an older kit wrote. Exact-optional: the portal's wire type
+     * says `slot?: string`, and a JSON file never holds `undefined`.
+     */
+    slot: text.exactOptional(),
   }),
 ]);
 
@@ -315,7 +322,7 @@ const crewFields = z.object({
   leadName: text,
   /** The repository: its main checkout's folder (the store's key). */
   repo: text,
-  /** The plan file the phase belongs to. */
+  /** The plan the phase belongs to: the lead's plan's word (`lead.plan`), the one the name carries too. */
   plan: text,
   /** The phase and the slug its name and branch carry. */
   phase: text,
@@ -613,8 +620,13 @@ export function writeStoreFile(file: string, text: string): void {
   atomicWrite(file, text, 0o600);
 }
 
-/** Writes `value` whole, as JSON (`writeStoreFile`). */
-function writeRecord(file: string, value: unknown): void {
+/**
+ * Writes `value` whole, as JSON (`writeStoreFile`). One home for the kit's JSON state: a
+ * record, and a session's `--settings` file, which `crew start` and `cc-smart-dev-kit launch`
+ * both pass to `claude --settings` (mode 0600, so a file a session reads is never another
+ * user's to read).
+ */
+export function writeJsonFile(file: string, value: unknown): void {
   writeStoreFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
@@ -703,7 +715,7 @@ export async function createCrew(
         `a crew session "${crew.id}" is already recorded for ${crew.repo} (${file})`,
       );
     }
-    writeRecord(file, record);
+    writeJsonFile(file, record);
     appendEvent(stateDir, crew.repo, eventOf(record, at, "created", null));
     return record;
   });
@@ -896,7 +908,7 @@ async function changeCrew(
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
     const after = checked(crewRecordSchema, merged, file);
-    writeRecord(file, after);
+    writeJsonFile(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
     return { changed: true, record: after };
@@ -937,7 +949,7 @@ export async function writeLead(
       },
       file,
     );
-    writeRecord(file, record);
+    writeJsonFile(file, record);
     return record;
   });
 }
@@ -1015,7 +1027,7 @@ export async function writeReport(
 ): Promise<string> {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
-  await underStoreLock(stateDir, repo, () => writeRecord(file, value));
+  await underStoreLock(stateDir, repo, () => writeJsonFile(file, value));
   return file;
 }
 
@@ -1037,7 +1049,7 @@ export async function setCrewMemory(
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     const after = checked(crewRecordSchema, { ...before, memoryMb }, file);
-    writeRecord(file, after);
+    writeJsonFile(file, after);
     return after;
   });
 }
@@ -1100,8 +1112,8 @@ export async function recordCrewReport(
       recordFile,
     );
     // The report file first: a record that names a report the file lacks is the worse half-write.
-    writeRecord(file, value);
-    writeRecord(recordFile, after);
+    writeJsonFile(file, value);
+    writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
     return after;
   });

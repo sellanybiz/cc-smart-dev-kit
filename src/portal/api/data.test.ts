@@ -12,12 +12,14 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew, updateCrew } from "../../crew/store";
+import { createHistoryWriter } from "../../gateway/history";
+import { renderSocket, SOCKET_NAME } from "../../gateway/service";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PortalContext } from "../context";
-import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
+import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder, warpRow } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { gatewayKeyState, overviewAnswer, settingsAnswer } from "./data";
 import { testPortalContext } from "./test-context";
@@ -142,13 +144,13 @@ describe("the MCP servers", () => {
 });
 
 describe("what holds the router's port", () => {
-  test("no service on this machine: nothing to show", () => {
-    expect(portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
+  test("no service on this machine: nothing to show", async () => {
+    expect(await portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
   });
 
-  test("systemd with no socket unit: doctor's own failure, with its fix", () => {
+  test("systemd with no socket unit: doctor's own failure, with its fix", async () => {
     const { ctx } = world({ systemctl: "exit 0" });
-    const holder = portHolder(ctx, 20_999);
+    const holder = await portHolder(ctx, 20_999);
     expect(holder?.kind).toBe("systemd");
     expect(holder?.name).toBe("cc-smart-dev-kit-router.socket");
     expect(holder?.state).toBe("other");
@@ -156,6 +158,73 @@ describe("what holds the router's port", () => {
     expect(holder?.check.text).toBe(
       "no socket unit at ~/.config/systemd/user/cc-smart-dev-kit-router.socket: a router restart makes new requests fail while the old router drains",
     );
+  });
+
+  test("the socket's systemctl is awaited off the loop: the blocking runner is never asked", async () => {
+    // A socket unit of the port's own: the check reaches `systemctl --user is-active`, and that
+    // read must go through `runRead` (`Bun.spawn`), never through the synchronous runner.
+    const port = 20_999;
+    const { ctx, paths } = world(
+      {},
+      {
+        runRead: async (cmd) => {
+          expect(cmd).toEqual(["systemctl", "--user", "is-active", SOCKET_NAME]);
+          return { exitCode: 0, output: "active\n" };
+        },
+        runner: () => {
+          throw new Error("the socket was read through the blocking runner");
+        },
+        which: (name) => (name === "systemctl" ? "/usr/bin/systemctl" : null),
+      },
+    );
+    mkdirSync(dirname(paths.routerSocketFile), { recursive: true });
+    writeFileSync(paths.routerSocketFile, renderSocket(port));
+    const holder = await portHolder(ctx, port);
+    expect(holder?.state).toBe("open");
+    expect(holder?.check).toEqual({
+      ok: true,
+      text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}`,
+    });
+  });
+});
+
+describe("the Warp card's version read", () => {
+  test("the package manager is asked off the loop, and doctor's line is the card's line", async () => {
+    // An Ubuntu machine with dpkg: the card's version comes from `dpkg-query`, awaited through
+    // `runRead`; `Machine.run` (Bun.spawnSync) throws if it is ever reached.
+    const which = (name: string) =>
+      name === "apt-get" || name === "dpkg-query" ? `/usr/bin/${name}` : null;
+    const machine: PortalContext["machine"] = {
+      arch: "x64",
+      confirm: null,
+      exists: () => false,
+      fetchText: async () => "",
+      macApp: "/Applications/Warp.app",
+      osRelease: () => 'NAME="Ubuntu"\nID=ubuntu\n',
+      platform: "linux",
+      run: () => {
+        throw new Error("the Warp version was read through the blocking machine runner");
+      },
+      runOnTerminal: () => 1,
+      spawnDetached: () => undefined,
+      which,
+    };
+    const { ctx } = world(
+      {},
+      {
+        machine,
+        runRead: async (cmd) => {
+          expect(cmd).toEqual(["dpkg-query", "--status", "warp-terminal"]);
+          return { exitCode: 0, output: "Status: install ok installed\nVersion: 0.1.0\n" };
+        },
+        which,
+      },
+    );
+    expect(await warpRow(ctx)).toEqual({
+      detail:
+        "Warp 0.1.0 is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)",
+      installed: true,
+    });
   });
 });
 
@@ -201,6 +270,114 @@ describe("the plan's 5-hour window", () => {
     const answer = await overviewAnswer(depsOf(ctx));
     expect(answer.configured).toBe(false);
     expect(answer.fiveHour).toEqual({ percent: 12, resetsAt: null });
+  });
+});
+
+describe("the Overview's request numbers (F4, F5)", () => {
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  /** A gateway config on a port no real router holds: the port guard's own rule. */
+  const config = {
+    aliases: {},
+    anthropicBaseUrl: "https://api.anthropic.com" as const,
+    backends: {},
+    port: 20_197,
+    slots: {},
+    timeouts: { firstByteMs: 60_000 },
+    version: 1 as const,
+  };
+
+  /** A router that answers its health page, up for `uptimeSec` and having taken `requests`. */
+  function answeringRouter(uptimeSec: number, requests: number): Partial<PortalContext> {
+    return {
+      probe: {
+        fetch: async () =>
+          new Response(JSON.stringify({ ok: true, requests, uptimeSec }), {
+            headers: { "content-type": "application/json" },
+          }),
+        now: () => NOW,
+        sleep: async () => undefined,
+      },
+    };
+  }
+
+  /** `count` model requests written at `at`, through the history's own writer. */
+  function seedHistory(paths: CliPaths, at: number, count: number): void {
+    const writer = createHistoryWriter({
+      file: paths.historyDbFile,
+      flushAfterMs: 60_000,
+      log: () => {},
+      now: () => NOW,
+      retentionDays: () => 90,
+    });
+    for (let index = 0; index < count; index += 1) {
+      writer.record({
+        at,
+        breaker: null,
+        cost: null,
+        model: "claude-sonnet-5-5",
+        ms: 100,
+        nextTarget: null,
+        profile: null,
+        session: "session-1",
+        slot: null,
+        status: 200,
+        target: "claude-sonnet-5-5",
+        tokens: null,
+      });
+    }
+    writer.flush();
+    writer.close();
+  }
+
+  test("the rate is the history's model requests, past what the router's capped list could give", async () => {
+    const { ctx, paths } = world({}, answeringRouter(3600, 1550));
+    seedHistory(paths, NOW - MINUTE, 600);
+    seedHistory(paths, NOW - 2 * HOUR, 100);
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    // 600 requests in the last five minutes is 120 a minute. The router's own list is capped
+    // at 200 entries and could never read past 40.0, so this number can only be the history's.
+    expect(answer.requests.perMinute).toBe(120);
+    // Since the router started an hour ago: the 600 of the last minute, not the 100 at 2 hours.
+    expect(answer.requests.sinceRouterStart).toBe(600);
+    // The router's own counter still travels, and counts more than the history does.
+    expect(answer.router.requests).toBe(1550);
+  });
+
+  test("no history file: the rate is unknown, never 0 as if nothing were being logged", async () => {
+    const { ctx } = world({}, answeringRouter(3600, 1550));
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    expect(answer.requests).toEqual({ perMinute: null, sinceRouterStart: null });
+  });
+
+  test("a history file that cannot be read: the numbers are unknown, and the page still answers", async () => {
+    const { ctx, paths } = world({}, answeringRouter(3600, 1550));
+    mkdirSync(dirname(paths.historyDbFile), { recursive: true });
+    writeFileSync(paths.historyDbFile, "this is not a database");
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    // The history's own routes answer a 500 for this file; the Overview is not lost over it,
+    // and its card says it has no number rather than a zero.
+    expect(answer.requests).toEqual({ perMinute: null, sinceRouterStart: null });
+    expect(answer.router.requests).toBe(1550);
+  });
+
+  test("a router that does not answer: the count since its start is unknown, the rate still reads", async () => {
+    const { ctx, paths } = world(
+      {},
+      {
+        probe: {
+          fetch: async () => {
+            throw Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" });
+          },
+          now: () => NOW,
+          sleep: async () => undefined,
+        },
+      },
+    );
+    seedHistory(paths, NOW - MINUTE, 60);
+    const answer = await overviewAnswer({ ...depsOf(ctx), found: { config } });
+    expect(answer.router.up).toBe(false);
+    expect(answer.requests).toEqual({ perMinute: 12, sinceRouterStart: null });
   });
 });
 
@@ -324,8 +501,10 @@ describe("a crew session on Work", () => {
 });
 
 describe("the crew caps on Settings", () => {
-  test("the four caps, in the crew card, with their values and where each came from", () => {
-    const rows = settingsAnswer(depsOf(world().ctx)).rows.filter((row) => row.card === "crew");
+  test("the four caps, in the crew card, with their values and where each came from", async () => {
+    const rows = (await settingsAnswer(depsOf(world().ctx))).rows.filter(
+      (row) => row.card === "crew",
+    );
     expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly, row.unit])).toEqual([
       ["crew.perLead", 4, "default", false, undefined],
       ["crew.perLeadOpus", 2, "default", false, undefined],

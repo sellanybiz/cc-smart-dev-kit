@@ -93,6 +93,21 @@ ${command(`${COMMAND} portal`, "Copy the portal command")}
 
 // ── Overview ────────────────────────────────────────────────────────────────────
 
+/**
+ * The request numbers the Overview shows, from the history database (F4, F5): **model**
+ * requests only, since the history holds no safety check and no Claude Code ping, and the
+ * router's own counter (in `RouterFacts.requests`) counts both.
+ */
+export interface OverviewRequests {
+  /**
+   * Model requests a minute over the last `OVERVIEW_RATE_WINDOW_MS`. Null when no request is
+   * logged at all (no history file): the page says so rather than showing a zero.
+   */
+  perMinute: null | number;
+  /** Model requests logged since the router started; null when it does not answer. */
+  sinceRouterStart: null | number;
+}
+
 export interface OverviewData {
   backends: BackendRow[];
   dashboardUrl: null | string;
@@ -100,6 +115,7 @@ export interface OverviewData {
   limits: LimitRow[];
   /** False when the state file is not there or not readable. */
   limitsRead: boolean;
+  requests: OverviewRequests;
   router: RouterFacts;
   slots: SlotRow[];
   switches: SwitchFacts;

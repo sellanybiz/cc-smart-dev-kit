@@ -6,6 +6,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { messageOf } from "../gateway/config";
 import { findUserInstall } from "../setup/installed-plugins";
 import { removeManagedFile } from "../setup/write";
+import type { CommandRunner } from "../update/apply";
 import { MARKETPLACE_SOURCES, marketplaceAdded, pluginEnabled } from "./companions";
 import type { Machine } from "./machine";
 
@@ -161,31 +162,60 @@ export interface WarpApp {
   viaBrew?: boolean;
 }
 
-/** Is the Warp app installed, and which version? Asked of the package manager. */
-export function detectWarpApp(machine: Machine, system: WarpSystem): WarpApp {
+/** What the package manager answered (`detectWarpApp`'s one command). */
+interface WarpAnswer {
+  exitCode: number;
+  output: string;
+}
+
+/**
+ * The one command `detectWarpApp` asks this system's package manager, or null when the app's
+ * state needs no command at all (`none`: a file or a program on PATH decides it).
+ */
+export function warpAppCommand(system: WarpSystem): null | string[] {
+  switch (system.kind) {
+    case "apt":
+      return ["dpkg-query", "--status", PACKAGE];
+    case "dnf":
+      return ["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE];
+    case "brew":
+      return ["brew", "list", "--cask", "--versions", "warp"];
+    case "none":
+      return null;
+  }
+}
+
+/**
+ * The app's state from `warpAppCommand`'s answer: split from the asking, so a caller off the
+ * server's event loop (the portal's Machine page) awaits its asynchronous runner and hands the
+ * answer here — the same words either way. `answer` is null for a system whose state needs no
+ * command (`none`); the package-manager branches always get one.
+ */
+export function warpAppFrom(
+  system: WarpSystem,
+  machine: Machine,
+  answer: null | WarpAnswer,
+): WarpApp {
+  const asked = answer ?? { exitCode: 1, output: "" };
   switch (system.kind) {
     case "apt": {
-      const result = machine.run(["dpkg-query", "--status", PACKAGE]);
       const field = (name: string) =>
-        new RegExp(`^${name}: (.*)$`, "m").exec(result.output)?.[1]?.trim() ?? null;
+        new RegExp(`^${name}: (.*)$`, "m").exec(asked.output)?.[1]?.trim() ?? null;
       // "installed", not only known to dpkg: a package removed without purge is still known
       // ("Status: deinstall ok config-files").
-      return result.exitCode === 0 && field("Status")?.endsWith(" installed") === true
+      return asked.exitCode === 0 && field("Status")?.endsWith(" installed") === true
         ? { installed: true, version: field("Version") }
         : { installed: false, version: null };
     }
-    case "dnf": {
-      const result = machine.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE]);
-      return result.exitCode === 0
-        ? { installed: true, version: result.output.trim() || null }
+    case "dnf":
+      return asked.exitCode === 0
+        ? { installed: true, version: asked.output.trim() || null }
         : { installed: false, version: null };
-    }
     case "brew": {
-      const result = machine.run(["brew", "list", "--cask", "--versions", "warp"]);
-      if (result.exitCode === 0 && result.output.trim() !== "") {
+      if (asked.exitCode === 0 && asked.output.trim() !== "") {
         return {
           installed: true,
-          version: result.output.trim().split(/\s+/)[1] ?? null,
+          version: asked.output.trim().split(/\s+/)[1] ?? null,
           viaBrew: true,
         };
       }
@@ -201,6 +231,12 @@ export function detectWarpApp(machine: Machine, system: WarpSystem): WarpApp {
         ? { installed: true, version: null }
         : { installed: false, version: null };
   }
+}
+
+/** Is the Warp app installed, and which version? Asked of the package manager. */
+export function detectWarpApp(machine: Machine, system: WarpSystem): WarpApp {
+  const command = warpAppCommand(system);
+  return warpAppFrom(system, machine, command === null ? null : machine.run(command));
 }
 
 /** Where `setup --warp` puts the files it hands to `sudo install`: cc-smart-dev-kit's own state folder. */
@@ -467,8 +503,28 @@ export function showCommand(argv: readonly string[]): string {
  * Warp is optional, and so is its plugin: the app without the plugin, or with the plugin
  * turned off, is information, never a failure.
  */
-export function warpCheck(machine: Machine, paths: CliPaths): Check {
-  const app = detectWarpApp(machine, detectSystem(machine));
+export async function warpCheck(
+  machine: Machine,
+  paths: CliPaths,
+  read?: CommandRunner,
+): Promise<Check> {
+  const system = detectSystem(machine);
+  const command = warpAppCommand(system);
+  // The app's read runs through the caller's own runner when it has one: the portal's page
+  // awaits `Bun.spawn` there, and its server never freezes on the package manager.
+  const app = warpAppFrom(
+    system,
+    machine,
+    command === null ? null : await (read ?? machine.run)(command),
+  );
+  return warpCheckFrom(app, paths);
+}
+
+/**
+ * Doctor's Warp line, from a state already read: what `warpCheck` prints, for a caller that
+ * asked the machine its own way (the portal awaits the answer off its loop).
+ */
+export function warpCheckFrom(app: WarpApp, paths: CliPaths): Check {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
   if (!app.installed && !plugin) {

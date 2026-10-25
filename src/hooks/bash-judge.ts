@@ -10,7 +10,7 @@
  * project's file says. A session must not be able to switch off the limits on its own launches
  * by editing a file it owns (the same reason `session-escape-guard` is always on).
  *
- * Four things a line does are judged, and nothing else:
+ * Six things a line does are judged, and nothing else:
  *   - **a raw background session** — `claude --bg` / `--background` — asks the person in an
  *     attended session, and is refused where nobody answers (`claude -p`). Both answers show
  *     the `crew start` line: that launch is recorded in the store, gets its own worktree and
@@ -29,6 +29,18 @@
  *     a crew session hands the need to its lead (D36, D45), in the launcher's own words
  *     (`CREW_NEVER_RUNS`). The hook's environment is the session's own, so a line that unsets
  *     the variable itself (`env -u CC_SMART_DEV_KIT_CREW …`) does not get past it.
+ *   - **a crew session running `workflow propose`** (the same variable) is denied (D24): the
+ *     command pushes a branch and opens a pull request in children no hook sees, so the guards
+ *     that deny the session's own `git push` and `gh pr create` never see them. The same
+ *     environment rule holds.
+ *   - **any other session running `workflow propose`** asks the person first (RF1-4) whenever
+ *     the gate those guards read (`resolveGate`: the default, the person's file, the project's
+ *     file as committed on `origin/<worktrees.base>`) has `autoPush` off or `openPr` short of
+ *     `ready` — the command pushes a branch and opens a pull request ready for review. The
+ *     question names the push, the pull request and the switch that says no; a gate or a project
+ *     it cannot read is a question with its reason; in `claude -p`, where nobody answers, it is
+ *     a denial. The portal's Workflow card asks on its page and runs the CLI in a child, which
+ *     no hook sees, so it passes as before.
  *   - **polling** — a `crew list` / `crew status` read or a `claude agents --json` read that
  *     repeats over time: inside a `while`/`until`/`do` loop (bash, its condition included) or a
  *     PowerShell `while`/`do`, or a `watch`, or next to a `sleep`/`Start-Sleep` — is denied: a
@@ -48,25 +60,43 @@
  * A word inside quotes, a here-doc or a comment is text, read through the one shell reader
  * (`src/shell/command.ts`), never a second lexer.
  */
+import { isAbsolute, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CREW_NEVER_RUNS, type CrewNeverRun, REPORT_COMMAND } from "../crew/brief";
-import { crewIdOf } from "../crew/session";
+import {
+  CREW_NEVER_PROPOSES,
+  CREW_NEVER_RUNS,
+  type CrewNeverRun,
+  REPORT_COMMAND,
+} from "../crew/brief";
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
+import {
+  checkoutFailure,
+  loadProjectConfig,
+  locateCheckout,
+  type TimeFor,
+} from "../project/resolve";
 import {
   CHANGE_DIR,
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isComputedWord,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
   shellSteps,
+  withoutRedirections,
   wordsOf,
 } from "../shell/command";
+import { resolveGate, sourceLabel } from "../workflow/resolve";
 import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
+import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
+import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
+import { kitArguments, namesKit } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -110,7 +140,18 @@ export interface BashReading {
   top: Step[];
   /** True for a loop keyword (`while`, `until`, `for`, `foreach`, `do`) or a `sleep`, anywhere in the line (the hook log). */
   waits: boolean;
+  /** The line runs `workflow propose`, which a crew session never runs (`isWorkflowPropose`). */
+  workflowPropose: boolean;
+  /** The project each `workflow propose` of the line proposes into (`proposalOf`), in order. */
+  proposals: Proposal[];
 }
+
+/**
+ * The project one `workflow propose` proposes into, as far as the line says: the folder its
+ * `--folder` names (null: the folder the line runs in), or `unread` when the judge cannot tell —
+ * a program, a subcommand or a folder the line works out when it runs, or a `cd` before it.
+ */
+export type Proposal = { folder: null | string } | { unread: string };
 
 /**
  * The options of `claude` whose value is the next word, so it is not read as the prompt
@@ -218,24 +259,124 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
 }
 
 /**
+ * The words that name what the kit's own command runs, or null when the step runs none of it.
+ *
+ * A named program is read by the argv the command itself gets: `kitArguments`
+ * (`./kit-invocation`, the one recogniser `session-escape-guard` uses too) knows the kit by its
+ * name, by a path to the launcher, and by its bundle behind another program — `bun
+ * …/dist/cli.js workflow …, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`
+ * — and never a program that only reads its arguments. Redirections are dropped: the command
+ * never sees them (`withoutRedirections`), so `cc-smart-dev-kit 2>/dev/null workflow propose` is
+ * read as the command it really runs, and a redirect target (`… > -h`) is not read as a flag.
+ *
+ * A program the line works out when it runs (`$BIN crew answer …`, `$(command -v …) crew …`)
+ * cannot be named, and the reader splits a substitution at its spaces, so nothing after it lines
+ * up: its own words are all the judge has (`computedInvocationRisk`'s rule, `after-merge.ts`).
+ */
+function kitWordsOf(step: Step): null | string[] {
+  if (!step.computed) return kitArguments(step.program, withoutRedirections(step.args));
+  return withoutRedirections(step.words);
+}
+
+/**
+ * Where the words the kit's command runs say `word`, or -1. A named program's argv is
+ * positional: its first word is the subcommand. A program the line works out when it runs hands
+ * the judge its own words, where the word may sit anywhere (`$(command -v cc-smart-dev-kit) crew
+ * answer …` reaches the judge as the words `$(command`, `-v`, `cc-smart-dev-kit)`, `crew`, …).
+ */
+function kitWordAt(words: readonly string[], step: Step, word: string): number {
+  if (words[0] === word) return 0;
+  return step.computed ? words.indexOf(word) : -1;
+}
+
+/**
+ * True when these words ask for help: `-h` or `--help` before a `--`, the rule the dispatcher
+ * reads them with (`asksForHelp`, `src/cli/help.ts`). The judge keeps its own four lines rather
+ * than import the CLI's help table, which drags every command into a hook bundle.
+ */
+function asksHelp(words: readonly string[]): boolean {
+  for (const word of words) {
+    if (word === "--") return false;
+    if (word === "-h" || word === "--help") return true;
+  }
+  return false;
+}
+
+/**
  * The `crew` subcommand a step runs that a crew session never runs (`CREW_NEVER_RUNS`), or
  * null: `cc-smart-dev-kit crew start|answer|stop|rm|resume|watch|lead|lead tell …`, whatever
- * path the launcher is named by. A crew session's own commands (`step`, `report`, `tell`,
- * `self-watch`, the board reads) are not in the map, so they pass.
- *
- * A program the line works out when it runs (`$BIN crew answer …`) is read from its own
- * words, as the launches are: a crew session's lead command is denied whatever runs it, and
- * a line that names one in a crew session is refused rather than let through.
+ * path the launcher is named by, and whichever program carries it. A crew session's own commands
+ * (`step`, `report`, `tell`, `self-watch`, the board reads) are not in the map, so they pass.
  */
 function crewNeverRunOf(step: Step): CrewNeverRun | null {
-  if (step.args[0] !== "crew") return null;
-  if (!step.computed && step.program !== COMMAND) return null;
+  const words = kitWordsOf(step);
+  if (words === null) return null;
+  const at = kitWordAt(words, step, "crew");
+  if (at === -1) return null;
   // `crew answer --help` only prints the help (`runCrew` reads the flag before the command):
   // reading a lead command's help is no act of leading, so a crew session may.
-  if (step.args.includes("--help") || step.args.includes("-h")) return null;
+  if (asksHelp(words.slice(at + 1))) return null;
   const sub =
-    step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : (step.args[1] ?? "");
+    words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : (words[at + 1] ?? "");
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;
+}
+
+/**
+ * True when a step runs the kit's `workflow propose`. A crew session never runs it (D24): the
+ * command pushes a branch and opens a pull request in children no hook sees, so the guards that
+ * deny the session's own `git push` and `gh pr create` never see them.
+ *
+ * `--help` prints the usage and proposes nothing (the dispatcher answers it before any command
+ * runs), so reading it is no act, as for a lead command's help. A subcommand the judge cannot
+ * read — a word the line works out when it runs (`workflow $SUB`), or none at all (`echo propose
+ * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
+ * than let through.
+ *
+ * **A computed program is the kit's only when the line names the kit** (`namesKit`, the test
+ * `session-escape-guard` makes too), unless the words say `workflow propose`. Its words are all
+ * the judge has, and `workflow` at their end, or followed by a word the line works out, is as
+ * likely a test filter or another program's subcommand and argument (`"$PY" -m pytest -k
+ * workflow $EXTRA`, `$(which gh) workflow $SUB`) as the kit's: a line that does not name the
+ * kit proposes nothing there. The words `workflow propose` are the kit's own domain words and
+ * keep their reading on any line.
+ */
+function isWorkflowPropose(step: Step, lineNamesKit: boolean): boolean {
+  const words = kitWordsOf(step);
+  if (words === null) return false;
+  const at = kitWordAt(words, step, "workflow");
+  if (at === -1 || asksHelp(words.slice(at + 1))) return false;
+  const sub = words[at + 1];
+  if (sub === "propose") return true;
+  // Not `propose`: a word the kit would read as another subcommand is no proposal, so only a
+  // missing or a computed one is open, and a computed program's open word is the kit's only
+  // when the line names the kit.
+  if (sub !== undefined && !isComputedWord(sub)) return false;
+  return !step.computed || lineNamesKit;
+}
+
+/**
+ * The project a `workflow propose` step proposes into (`Proposal`), for a step
+ * `isWorkflowPropose` already said yes to. `--folder` is read as the command reads it
+ * (`proposeArgs`, `src/workflow/commands.ts`): the word after it. `moved`: the line changes its
+ * folder somewhere (`cd`, `pushd`, `Set-Location`), so a folder it does not name absolutely is
+ * not the input's `cwd`.
+ */
+function proposalOf(step: Step, moved: boolean): Proposal {
+  if (step.computed) return { unread: "the program is worked out when the line runs" };
+  const words = kitWordsOf(step) ?? [];
+  const at = kitWordAt(words, step, "workflow");
+  const sub = words[at + 1];
+  if (sub === undefined) return { unread: "the line names no subcommand" };
+  if (sub !== "propose") return { unread: "the subcommand is worked out when the line runs" };
+  const flag = words.indexOf("--folder", at + 2);
+  const folder = flag === -1 ? null : (words[flag + 1] ?? "");
+  if (folder !== null && (folder === "" || isComputedWord(folder))) {
+    return { unread: "its --folder is worked out when the line runs" };
+  }
+  if (moved && (folder === null || !isAbsolute(folder))) {
+    return { unread: "the line changes its folder before it" };
+  }
+  return { folder };
 }
 
 /** True for a crew-status read: `crew list`, `crew status`, or `claude agents --json`. */
@@ -398,10 +539,18 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   let statusReads = 0;
   let statusReadsInLoop = 0;
   let waits = state.loops;
+  let workflowPropose = false;
+  const proposals: Proposal[] = [];
+  const moved = steps.some((step) => CHANGE_DIR.has(step.program));
+  const lineNamesKit = namesKit(command);
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     const never = crewNeverRunOf(step);
     if (never !== null) crewNeverRuns.push(never);
+    if (isWorkflowPropose(step, lineNamesKit)) {
+      workflowPropose = true;
+      proposals.push(proposalOf(step, moved));
+    }
     if (isStatusRead(step.program, step.args)) {
       statusReads++;
       if (step.inRepeat) statusReadsInLoop++;
@@ -423,7 +572,17 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   // A status read repeats over time, or sits next to a wait: a `for`/`foreach` over a fixed
   // list with no wait is neither, so a `for id in a b; do … status …; done` passes (F2a-6).
   const poll = statusReadsInLoop > 0 || (sleepsIn(steps) && statusReads > 0);
-  return { crewNeverRuns, launches, poll, statusReads, steps, top, waits };
+  return {
+    crewNeverRuns,
+    launches,
+    poll,
+    proposals,
+    statusReads,
+    steps,
+    top,
+    waits,
+    workflowPropose,
+  };
 }
 
 /** True when the line runs a program that waits (`sleep`, `Start-Sleep`). */
@@ -453,7 +612,7 @@ export function backgroundFor(top: readonly Step[]): Background | null {
 export interface BashVerdict {
   decision: "ask" | "deny";
   reason: string;
-  /** A short word for the hook log: `bg`, `print`, `crew-command`, `poll`. */
+  /** A short word for the hook log: `bg`, `print`, `crew-command`, `crew-propose`, `poll`. */
   why: string;
 }
 
@@ -462,6 +621,12 @@ export interface JudgeContext {
   env: Env;
   input: HookInput;
   paths: CliPaths;
+  /**
+   * When the hook started (ms since the epoch: the frame's `nowMs`). The time budget of the
+   * git calls a question makes counts from there, so the frame's own project lookup, which
+   * runs first, is already spent from it. Unset: from the judge's own start.
+   */
+  startedAtMs?: number;
 }
 
 /** The `crew start` line a raw background launch is told to use instead. */
@@ -481,6 +646,124 @@ function crewNeverRunsAnswer(crewId: string, command: CrewNeverRun): string {
     `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_RUNS[command]}.`,
     `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`,
   ].join("\n");
+}
+
+/**
+ * The words a crew session gets when it runs `workflow propose`: the command's own refusal
+ * (`src/workflow/propose.ts`) says the same, so the two belts read as one rule.
+ */
+function crewProposeAnswer(crewId: string): string {
+  return [
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_PROPOSES}: \`${COMMAND} workflow propose\` pushes a branch and opens a pull request in children no hook sees.`,
+    CREW_QUESTION_STEP,
+  ].join("\n");
+}
+
+/**
+ * What `workflow propose` does that the guards never see: `git push -u origin <branch>` and
+ * `gh pr create` without `--draft` (`src/workflow/propose.ts`, step 7), both in its children.
+ */
+function proposeActs(base: null | string): string {
+  const into = base === null ? "the project's integration base (worktrees.base)" : `\`${base}\``;
+  return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
+}
+
+/** Said after every question about a proposal: the person decides. */
+const APPROVE_IF_MEANT = "Approve it if you meant it.";
+
+/** The question when the judge cannot name the project a proposal goes into, with why. */
+function cannotTellProject(why: string): string {
+  return `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
+}
+
+/**
+ * Why a proposal into the project at `folder` is the person's to approve, or null when the gate
+ * the git and merge guards read allows both its push and its pull request: `autoPush` on and
+ * `openPr` at `ready` (a pull request that opens ready, `openPrRefusal`'s rule). The gate is read
+ * as those guards read it (`resolveGate`, `src/hooks/push-policy.ts`): the built-in default, the
+ * person's own file, and the project's file as committed on `origin/<worktrees.base>`, never a
+ * checkout's working copy. Anything it cannot read is a question with its reason, never a guess.
+ */
+function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor): string | null {
+  let checkout: ReturnType<typeof locateCheckout>;
+  let base: null | string;
+  try {
+    // `job-route` has 10 s in `hooks.json`, and Claude Code kills a hook that overruns: the git
+    // calls here share one budget (`budget.ts`). A call that timed out, or was not made for want of
+    // time, is an error saying git did not answer (`GIT_TIMED_OUT`), never "not in a git project".
+    checkout = locateCheckout(folder, { env: context.env, timeFor });
+    if (checkout === null) return cannotTellProject(`${folder} is not in a git project`);
+    base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
+  } catch (error) {
+    // The reason alone: the question names it in a sentence, and a timeout's own fix ("run this
+    // again") is for a command the person ran, not for a line they are asked to approve.
+    return cannotTellProject(checkoutFailure(error));
+  }
+  const acts = proposeActs(base);
+  try {
+    const read = resolveGate(context.paths, checkout, base, {
+      env: context.env,
+      timeFor,
+      timeoutMs: GUARD_GIT_TIMEOUT_MS,
+    });
+    if (!read.ok) {
+      return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
+    }
+    const { autoPush, openPr } = read.gate.resolved;
+    const off: string[] = [];
+    if (!autoPush.value) off.push(`autoPush is off (${sourceLabel(autoPush, base)})`);
+    if (openPr.value !== "ready") {
+      off.push(`openPr is ${openPr.value} (${sourceLabel(openPr, base)})`);
+    }
+    if (off.length === 0) return null;
+    return `${acts}\n${off.join(", and ")}, so the push and the pull request are yours to approve. ${APPROVE_IF_MEANT}`;
+  } catch (error) {
+    // The person's own workflow file is broken (`WorkflowConfigError`): the gate is unknown.
+    const why = error instanceof Error ? error.message : String(error);
+    return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow settings cannot be read (${why}). ${APPROVE_IF_MEANT}`;
+  }
+}
+
+/**
+ * The verdict on a line's proposals in a session that is not a crew session (RF1-4): an ask with
+ * the first question one of them raises, a denial where nobody answers (`claude -p`), or null
+ * when the gate allows every one. A crew session is denied before this (D24).
+ */
+function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): BashVerdict | null {
+  const cwd = stringField(context.input.cwd);
+  // One deadline for every git call the questions make, whatever the number of proposals,
+  // counted from the hook's start.
+  const { timeFor } = startBudget(
+    context.env,
+    Date.now,
+    SHORT_GUARD_BUDGET_MS,
+    context.startedAtMs,
+  );
+  let question: null | string = null;
+  for (const proposal of proposals) {
+    if ("unread" in proposal) {
+      question = cannotTellProject(proposal.unread);
+    } else if (cwd === null) {
+      question = cannotTellProject("the call names no folder");
+    } else {
+      // A relative `--folder` is relative to the folder the line runs in, as the command reads it.
+      question = proposeQuestion(
+        proposal.folder === null ? cwd : resolve(cwd, proposal.folder),
+        context,
+        timeFor,
+      );
+    }
+    if (question !== null) break;
+  }
+  if (question === null) return null;
+  if (!isAttended(context.env)) {
+    return {
+      decision: "deny",
+      reason: `${question}\nNobody answers a question in \`claude -p\`, so the proposal is refused.`,
+      why: "propose",
+    };
+  }
+  return { decision: "ask", reason: question, why: "propose" };
 }
 
 /** The denial of a polling line: the news arrives by itself, through the watch and the monitors. */
@@ -518,6 +801,7 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
     {
       effort: launch.effort,
       fork: false,
+      isolation: null,
       model: launch.model,
       prompt: launch.prompt,
       subagentType: "general-purpose",
@@ -543,7 +827,18 @@ export function judgeBash(reading: BashReading, context: JudgeContext): BashVerd
   if (crew !== null && never !== undefined) {
     return { decision: "deny", reason: crewNeverRunsAnswer(crew, never), why: "crew-command" };
   }
+  // `workflow propose` is no `crew` subcommand, but a crew session never runs it either (D24).
+  if (crew !== null && reading.workflowPropose) {
+    return { decision: "deny", reason: crewProposeAnswer(crew), why: "crew-propose" };
+  }
+  // Anyone else's proposal crosses the gate the git and merge guards read, in children they never
+  // see: the person approves it where that gate says the push or the pull request is theirs.
   let ask: BashVerdict | null = null;
+  if (reading.proposals.length > 0) {
+    const proposed = judgeProposals(reading.proposals, context);
+    if (proposed?.decision === "deny") return proposed;
+    ask = proposed;
+  }
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
     if (verdict === null) continue;
@@ -569,7 +864,15 @@ export function commandOf(input: HookInput): null | string {
   return stringField((fields as Record<string, unknown>).command);
 }
 
-/** True when the judge judges this line: a launch, a lead command or a poll — its crash domain. */
+/**
+ * True when the judge judges this line: a launch, a lead command, `workflow propose` or a poll —
+ * its crash domain.
+ */
 export function judgedDomain(reading: BashReading): boolean {
-  return reading.crewNeverRuns.length > 0 || reading.launches.length > 0 || reading.poll;
+  return (
+    reading.crewNeverRuns.length > 0 ||
+    reading.launches.length > 0 ||
+    reading.poll ||
+    reading.workflowPropose
+  );
 }

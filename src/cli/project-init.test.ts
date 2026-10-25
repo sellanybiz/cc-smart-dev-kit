@@ -97,8 +97,20 @@ function runner(
   };
 }
 
+/** The same answers, every one a promise: the portal's asynchronous runner. */
+function asyncRunner(
+  answers: Record<string, string>,
+  gh: ProjectInitRunner["gh"] = null,
+): ProjectInitRunner {
+  const sync = runner(answers, gh);
+  return {
+    git: async (cwd, args) => sync.git(cwd, args),
+    gh: gh === null ? null : async (args) => gh(args),
+  };
+}
+
 describe("the flags", () => {
-  test("every flag, and the value each takes", () => {
+  test("every flag, and the value each takes", async () => {
     const parsed = parseFlags([
       "--dry-run",
       "--yes",
@@ -132,7 +144,7 @@ describe("the flags", () => {
     });
   });
 
-  test("the fast check has both answers: a command, and --no-check (the last one wins)", () => {
+  test("the fast check has both answers: a command, and --no-check (the last one wins)", async () => {
     expect(parseFlags(["--no-check"])).toEqual({
       flags: { dryRun: false, yes: false, check: "" },
     });
@@ -151,7 +163,7 @@ describe("the flags", () => {
     },
   );
 
-  test("D20: every yes/no question has its --no- flag, and the last one given wins", () => {
+  test("D20: every yes/no question has its --no- flag, and the last one given wins", async () => {
     expect(parseFlags(["--no-guard-main-folder", "--no-session-names", "--no-job-route"])).toEqual({
       flags: {
         dryRun: false,
@@ -166,7 +178,7 @@ describe("the flags", () => {
     });
   });
 
-  test("a flag that needs a value, a bad value, and an unknown flag", () => {
+  test("a flag that needs a value, a bad value, and an unknown flag", async () => {
     expect(parseFlags(["--base"])).toEqual({ error: "--base needs a value" });
     expect(parseFlags(["--bases", "hotfix"])).toEqual({
       error: '--bases: "hotfix" is not prefix=base (the prefix ends with "/")',
@@ -174,7 +186,7 @@ describe("the flags", () => {
     expect(parseFlags(["--fast"])).toEqual({ error: "Unknown option: --fast" });
   });
 
-  test("the workflow words become the policy the schema holds", () => {
+  test("the workflow words become the policy the schema holds", async () => {
     expect(workflowFromFlags(["openPr=draft", "alerts.events=finished failed"])).toEqual({
       openPr: "draft",
       alerts: { events: ["finished", "failed"] },
@@ -185,7 +197,7 @@ describe("the flags", () => {
     );
   });
 
-  test("a policy is shown as one line, and read back", () => {
+  test("a policy is shown as one line, and read back", async () => {
     expect(shownWorkflow({ openPr: "draft", alerts: { sound: true } })).toBe(
       "openPr=draft,alerts.sound=true",
     );
@@ -194,11 +206,23 @@ describe("the flags", () => {
 });
 
 describe("the defaults from the repo", () => {
-  test("the default branch comes from origin/HEAD; a git that cannot answer leaves main", () => {
+  test("the default branch comes from origin/HEAD; a git that cannot answer leaves main", async () => {
     const root = tempDir("project-init");
     const known = runner({ "symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/dev" });
-    expect(detectFacts(known, root).defaultBranch).toBe("dev");
-    expect(detectFacts(runner({}), root).defaultBranch).toBe("main");
+    expect((await detectFacts(known, root)).defaultBranch).toBe("dev");
+    expect((await detectFacts(runner({}), root)).defaultBranch).toBe("main");
+  });
+
+  test("an awaited runner (the portal's) answers exactly what a synchronous one does", async () => {
+    // The portal's Project card hands the CLI's own detection an asynchronous runner
+    // (`realRunnerAsync`, `Bun.spawn`): `gh api` can take seconds, and a page load must never
+    // freeze on it. The reads are awaited the same way, and the facts are the same.
+    const root = tempDir("project-init-async");
+    const answers = { "symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/dev" };
+    const sync = await detectFacts(runner(answers), root);
+    const awaited = await detectFacts(asyncRunner(answers), root);
+    expect(awaited).toEqual(sync);
+    expect(awaited.defaultBranch).toBe("dev");
   });
 
   describe("the base branch is one the repo really has", () => {
@@ -218,35 +242,35 @@ describe("the defaults from the repo", () => {
       return repo;
     }
 
-    test("origin/HEAD wins; otherwise the branches the repo has", () => {
+    test("origin/HEAD wins; otherwise the branches the repo has", async () => {
       // The bug this was written for: a repo whose only branch is `dev` was offered `main`, a
       // branch that is not in it, and the form and the plan then named it. Real repos and real
       // git: the fake runner cannot answer a question about what a repo holds.
       const gitRunner = () => realRunner(cleanGitEnv());
-      expect(defaultBranchOf(gitRunner(), repoWith(["main", "dev"], "dev"))).toBe("dev");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["main", "dev"], "dev"))).toBe("dev");
 
       // One local branch: that one, whatever it is called.
-      expect(defaultBranchOf(gitRunner(), repoWith(["dev"]))).toBe("dev");
-      expect(defaultBranchOf(gitRunner(), repoWith(["trunk"]))).toBe("trunk");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["dev"]))).toBe("dev");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["trunk"]))).toBe("trunk");
 
       // Several, no origin/HEAD: `main`, then `master`, then the branch that is checked out.
-      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "main"]))).toBe("main");
-      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "master"]))).toBe("master");
-      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "work"]))).toBe("dev");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "main"]))).toBe("main");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "master"]))).toBe("master");
+      expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "work"]))).toBe("dev");
     });
 
-    test("a repo with one branch is set up around that branch", () => {
+    test("a repo with one branch is set up around that branch", async () => {
       // The other end of the same bug: `project init`'s own answers name the base and the
       // protected branches, so a wrong base put a branch that is not in the repo into both.
       const only = repoWith(["dev"]);
-      const facts = detectFacts(realRunner(cleanGitEnv()), only);
+      const facts = await detectFacts(realRunner(cleanGitEnv()), only);
       const answers = defaultAnswers(null, facts, { dryRun: false, yes: false });
       expect(answers.base).toBe("dev");
       expect(answers.protectedBranches).toEqual(["dev"]);
     });
   });
 
-  test("GitHub's protected branches are read with gh, and quietly skipped without it", () => {
+  test("GitHub's protected branches are read with gh, and quietly skipped without it", async () => {
     const origin = "git@github.com:example-org/my-app.git";
     const gh: ProjectInitRunner["gh"] = (args) => {
       expect(args).toEqual([
@@ -259,12 +283,14 @@ describe("the defaults from the repo", () => {
     };
     const root = tempDir("project-init");
     const withGh = runner({ "remote get-url origin": origin }, gh);
-    expect(protectedFromGithub(withGh, root)).toEqual(["main", "staging"]);
+    expect(await protectedFromGithub(withGh, root)).toEqual(["main", "staging"]);
     // No gh at all, no remote, and a gh that fails: no names, and no error.
-    expect(protectedFromGithub(runner({ "remote get-url origin": origin }), root)).toEqual([]);
-    expect(protectedFromGithub(runner({}, gh), root)).toEqual([]);
+    expect(await protectedFromGithub(runner({ "remote get-url origin": origin }), root)).toEqual(
+      [],
+    );
+    expect(await protectedFromGithub(runner({}, gh), root)).toEqual([]);
     expect(
-      protectedFromGithub(
+      await protectedFromGithub(
         runner({ "remote get-url origin": origin }, () => ({
           ok: false,
           out: "",
@@ -275,7 +301,7 @@ describe("the defaults from the repo", () => {
     ).toEqual([]);
   });
 
-  test("the fast check comes from package.json's scripts, with the lockfile's package manager", () => {
+  test("the fast check comes from package.json's scripts, with the lockfile's package manager", async () => {
     const root = tempDir("project-init");
     expect(defaultFastCheck(root)).toBe(null);
     writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: { build: "tsc" } })}\n`);
@@ -297,7 +323,7 @@ describe("the defaults from the repo", () => {
     expect(defaultFastCheck(root)).toBe("bun run check");
   });
 
-  test("a broken package.json, or a scripts list that is not one: no default", () => {
+  test("a broken package.json, or a scripts list that is not one: no default", async () => {
     const root = tempDir("project-init");
     writeFileSync(join(root, "package.json"), "{ not json");
     expect(defaultFastCheck(root)).toBe(null);
@@ -305,7 +331,7 @@ describe("the defaults from the repo", () => {
     expect(defaultFastCheck(root)).toBe(null);
   });
 
-  test("the fast check: the flag wins, then the project's file, then the repo", () => {
+  test("the fast check: the flag wins, then the project's file, then the repo", async () => {
     const facts = {
       defaultBranch: "main",
       protectedFromGithub: [],
@@ -329,7 +355,7 @@ describe("the defaults from the repo", () => {
     expect(defaultAnswers(null, { ...facts, fastCheck: null }, flags).checks).toBe(null);
   });
 
-  test("a flag wins, then the project's own file, then the repo", () => {
+  test("a flag wins, then the project's own file, then the repo", async () => {
     const facts = { defaultBranch: "main", protectedFromGithub: ["release"], fastCheck: null };
     const flags = { dryRun: false, yes: false };
     const fromRepo = defaultAnswers(null, facts, flags);
@@ -383,7 +409,7 @@ describe("the defaults from the repo", () => {
     expect(withFlags.workflow).toEqual({ autoCommit: true, openPr: "ready" });
   });
 
-  test("--workflow merges into the file's policy: a key changes only its own field (F5-3)", () => {
+  test("--workflow merges into the file's policy: a key changes only its own field (F5-3)", async () => {
     const facts = { defaultBranch: "main", protectedFromGithub: [], fastCheck: null };
     const existing = {
       worktrees: { base: "main" },
@@ -422,7 +448,7 @@ describe("the questions on a terminal", () => {
     { dryRun: false, yes: false },
   );
 
-  test("UX-12: Enter on every question keeps every default; each question is counted, with its default", () => {
+  test("UX-12: Enter on every question keeps every default; each question is counted, with its default", async () => {
     const { prompts, shown } = scripted([]);
     expect(askedAnswers(prompts, DEFAULTS)).toEqual(DEFAULTS);
     expect(shown).toEqual([
@@ -464,7 +490,7 @@ describe("the questions on a terminal", () => {
     );
   });
 
-  test("an answer that is not understood is asked again once, with the reason", () => {
+  test("an answer that is not understood is asked again once, with the reason", async () => {
     const { prompts, shown } = scripted([null, "release=dev", "release/=dev"]);
     expect(askedAnswers(prompts, DEFAULTS).bases).toEqual({ "release/": "dev" });
     expect(shown.slice(1, 4)).toEqual([
@@ -476,10 +502,10 @@ describe("the questions on a terminal", () => {
 });
 
 describe("the run", () => {
-  test("no terminal and no --yes: the plan, and nothing written, with the flag that answers", () => {
+  test("no terminal and no --yes: the plan, and nothing written, with the flag that answers", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(run.lines).toEqual([
       `cc-smart-dev-kit project init: ${repo}`,
       "",
@@ -498,11 +524,11 @@ describe("the run", () => {
     expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
 
-  test("--yes writes both files, and says to commit them", () => {
+  test("--yes writes both files, and says to commit them", async () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(
-      runProjectInit(
+      await runProjectInit(
         ["--yes", "--base", "dev", "--bases", "hotfix/=main"],
         run.context,
         runner({}, () => ({ ok: false, out: "", err: "" })),
@@ -550,11 +576,11 @@ describe("the run", () => {
     ]);
   });
 
-  test("the same run in rich mode: the same words, with colour on the marks and the verdict", () => {
+  test("the same run in rich mode: the same words, with colour on the marks and the verdict", async () => {
     const repo = makeRepo();
     const lines: string[] = [];
     const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(lines).toEqual([
       `\x1b[1mcc-smart-dev-kit project init: ${repo}\x1b[0m`,
       "",
@@ -580,11 +606,11 @@ describe("the run", () => {
     ]);
   });
 
-  test("D16: a policy whose settings cannot work together is named before anything is written", () => {
+  test("D16: a policy whose settings cannot work together is named before anything is written", async () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(
-      runProjectInit(
+      await runProjectInit(
         ["--dry-run", "--base", "dev", "--workflow", "openPr=draft,autoMerge=true"],
         run.context,
         runner({}),
@@ -600,7 +626,7 @@ describe("the run", () => {
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
-  test("D16: the person's own settings are part of the policy, so no clash is named wrongly", () => {
+  test("D16: the person's own settings are part of the policy, so no clash is named wrongly", async () => {
     const repo = makeRepo();
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
@@ -608,7 +634,7 @@ describe("the run", () => {
     writeFileSync(file, `${JSON.stringify({ autoPush: true }, null, 2)}\n`);
     const run = context(repo, { env });
     expect(
-      runProjectInit(
+      await runProjectInit(
         ["--dry-run", "--base", "dev", "--workflow", "openPr=draft"],
         run.context,
         runner({}),
@@ -618,7 +644,7 @@ describe("the run", () => {
     expect(run.lines.filter((line) => line.includes("but autoPush is off"))).toEqual([]);
   });
 
-  test("D16: a personal file that cannot be read does not stop the plan", () => {
+  test("D16: a personal file that cannot be read does not stop the plan", async () => {
     const repo = makeRepo();
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
@@ -626,7 +652,7 @@ describe("the run", () => {
     writeFileSync(file, "{ not json");
     const run = context(repo, { env });
     expect(
-      runProjectInit(
+      await runProjectInit(
         ["--dry-run", "--base", "dev", "--workflow", "openPr=draft"],
         run.context,
         runner({}),
@@ -637,11 +663,15 @@ describe("the run", () => {
     expect(run.lines.some((line) => line.includes("but autoPush is off"))).toBe(true);
   });
 
-  test("D20: a retired engine flag: exit 2, the reason and the usage, nothing written", () => {
+  test("D20: a retired engine flag: exit 2, the reason and the usage, nothing written", async () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(
-      runProjectInit(["--yes", "--prefix", "app-wt-", "--engine", "own"], run.context, runner({})),
+      await runProjectInit(
+        ["--yes", "--prefix", "app-wt-", "--engine", "own"],
+        run.context,
+        runner({}),
+      ),
     ).toBe(2);
     expect(run.errors[0]).toStartWith(
       "--prefix is gone: the plugin's worktree engine was retired in 1.0.0, and Claude Code's own worktrees need none of its settings\n\nUsage: cc-smart-dev-kit project init",
@@ -650,11 +680,11 @@ describe("the run", () => {
     expect(existsSync(join(repo, ".claude"))).toBe(false);
   });
 
-  test("D20: --yes with the --no- flags writes both answers as off", () => {
+  test("D20: --yes with the --no- flags writes both answers as off", async () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(
-      runProjectInit(
+      await runProjectInit(
         ["--yes", "--no-guard-main-folder", "--no-session-names"],
         run.context,
         runner({}),
@@ -667,18 +697,18 @@ describe("the run", () => {
     expect(written).not.toHaveProperty("sessionNames");
   });
 
-  test("--yes with the default branch as the base writes no settings file", () => {
+  test("--yes with the default branch as the base writes no settings file", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(true);
     expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
 
-  test("--dry-run prints the plan and writes nothing, also with --yes, and asks nothing on a terminal", () => {
+  test("--dry-run prints the plan and writes nothing, also with --yes, and asks nothing on a terminal", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
     expect(run.lines.slice(-3)).toEqual([
       "",
       "· A real run writes 1 file.",
@@ -687,14 +717,14 @@ describe("the run", () => {
     // UX-12: a terminal is not asked either; the plan is the flags' and the defaults'.
     const { prompts, shown } = scripted(["dev"]);
     const asked = context(repo, { prompts });
-    expect(runProjectInit(["--dry-run"], asked.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--dry-run"], asked.context, runner({}))).toBe(0);
     expect(shown).toEqual([]);
     expect(asked.lines[0]).toBe(`cc-smart-dev-kit project init: ${repo} (dry run)`);
     expect(asked.lines).toContain('  + worktrees.base: "main"');
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
-  test("a project file saved with a byte order mark is read, not refused (F5-2)", () => {
+  test("a project file saved with a byte order mark is read, not refused (F5-2)", async () => {
     const repo = makeRepo();
     const file = join(repo, ".claude", "cc-smart-dev-kit.json");
     mkdirSync(dirname(file), { recursive: true });
@@ -709,7 +739,7 @@ describe("the run", () => {
       )}\n`,
     );
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(run.errors).toEqual([]);
     // The file's own answers were read: its base stays (not the repo's default), and a field
     // the flags do not set stays too.
@@ -722,7 +752,7 @@ describe("the run", () => {
     expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
   });
 
-  test("--yes with --workflow keeps the file's other workflow settings (F5-3)", () => {
+  test("--yes with --workflow keeps the file's other workflow settings (F5-3)", async () => {
     const repo = makeRepo();
     const file = join(repo, ".claude", "cc-smart-dev-kit.json");
     mkdirSync(dirname(file), { recursive: true });
@@ -739,9 +769,9 @@ describe("the run", () => {
       )}\n`,
     );
     const run = context(repo);
-    expect(runProjectInit(["--yes", "--workflow", "autoPush=true"], run.context, runner({}))).toBe(
-      0,
-    );
+    expect(
+      await runProjectInit(["--yes", "--workflow", "autoPush=true"], run.context, runner({})),
+    ).toBe(0);
     const written = JSON.parse(readFileSync(file, "utf8")) as {
       workflow: Record<string, unknown>;
     };
@@ -754,24 +784,24 @@ describe("the run", () => {
     expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
   });
 
-  test("an existing file: --yes keeps every field the flags do not set", () => {
+  test("an existing file: --yes keeps every field the flags do not set", async () => {
     const repo = makeRepo();
     const file = join(repo, ".claude", "cc-smart-dev-kit.json");
     const run = context(repo);
-    runProjectInit(["--yes", "--base", "dev"], run.context, runner({}));
+    await runProjectInit(["--yes", "--base", "dev"], run.context, runner({}));
     const first = readFileSync(file, "utf8");
     const before = JSON.parse(first) as Record<string, unknown>;
     // A field a person added by hand stays, and the flags' answers do not touch it.
     writeFileSync(file, `${JSON.stringify({ ...before, autoMode: ["one rule"] }, null, 2)}\n`);
     const again = context(repo);
-    expect(runProjectInit(["--yes"], again.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], again.context, runner({}))).toBe(0);
     const after = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     expect(after.autoMode).toEqual(["one rule"]);
     expect((after.worktrees as { base: string }).base).toBe("dev");
     expect((after.protectedBranches as string[]).includes("dev")).toBe(true);
   });
 
-  test("the questions, answered on a terminal, are what gets written", () => {
+  test("the questions, answered on a terminal, are what gets written", async () => {
     const repo = makeRepo();
     // The base, Enter on the seven others, then a yes to the write.
     const { prompts, shown } = scripted([
@@ -786,7 +816,7 @@ describe("the run", () => {
       "y",
     ]);
     const run = context(repo, { prompts });
-    expect(runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(run.lines[2]).toBe("8 questions. Enter keeps the answer in [brackets].");
     expect(
       (
@@ -798,11 +828,11 @@ describe("the run", () => {
     expect(shown.at(-1)).toBe("Write these 2 files? [y/N] ");
   });
 
-  test("a no to the last question leaves both files alone; Enter is that no", () => {
+  test("a no to the last question leaves both files alone; Enter is that no", async () => {
     const repo = makeRepo();
     const { prompts, shown } = scripted([]);
     const run = context(repo, { prompts });
-    expect(runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(shown.at(-1)).toBe("Write this file? [y/N] ");
     expect(run.lines.at(-1)).toBe("· Left alone: nothing was written.");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
@@ -830,11 +860,11 @@ describe("the run", () => {
     return { repo, file, settings, local };
   }
 
-  test("D20: --dry-run shows every - line the retired engine left, and writes nothing", () => {
+  test("D20: --dry-run shows every - line the retired engine left, and writes nothing", async () => {
     const { repo, file, settings, local } = engineLeftovers();
     const before = [file, settings, local].map((one) => readFileSync(one, "utf8"));
     const run = context(repo);
-    expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
     expect(run.lines).toEqual([
       `cc-smart-dev-kit project init: ${repo} (dry run)`,
       "",
@@ -859,11 +889,11 @@ describe("the run", () => {
     expect([file, settings, local].map((one) => readFileSync(one, "utf8"))).toEqual(before);
   });
 
-  test("D20: the same dry run on a terminal: the marks coloured, the - lines red, the verdict dim", () => {
+  test("D20: the same dry run on a terminal: the marks coloured, the - lines red, the verdict dim", async () => {
     const { repo } = engineLeftovers();
     const lines: string[] = [];
     const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
-    expect(runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
     const add = (text: string) => `  \x1b[32m+\x1b[0m ${text}`;
     const cut = (text: string) => `  \x1b[31m-\x1b[0m ${text}`;
     expect(lines).toEqual([
@@ -890,10 +920,10 @@ describe("the run", () => {
     ]);
   });
 
-  test("D20: --yes on the retired engine's leftovers writes a file that loads, and clean settings", () => {
+  test("D20: --yes on the retired engine's leftovers writes a file that loads, and clean settings", async () => {
     const { repo, file, settings, local } = engineLeftovers();
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     // The file the hooks read loads again: the same parse every hook runs.
     expect(parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).toEqual({
       requires: ">=0.5.2",
@@ -925,25 +955,25 @@ describe("the run", () => {
     ]);
   });
 
-  test("a flag cc-smart-dev-kit does not know: exit 2, nothing written", () => {
+  test("a flag cc-smart-dev-kit does not know: exit 2, nothing written", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit(["--yes", "--fast"], run.context, runner({}))).toBe(2);
+    expect(await runProjectInit(["--yes", "--fast"], run.context, runner({}))).toBe(2);
     expect(run.errors[0]).toContain("Unknown option: --fast");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
-  test("--help prints the flags and writes nothing", () => {
+  test("--help prints the flags and writes nothing", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit(["--help"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--help"], run.context, runner({}))).toBe(0);
     expect(run.lines[0]).toStartWith("Usage: cc-smart-dev-kit project init");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 });
 
 describe("what the file asks for", () => {
-  test("running init again leaves a file that already asks for the floor alone", () => {
+  test("running init again leaves a file that already asks for the floor alone", async () => {
     // The floor is the plugin that made `worktrees.prefix` optional (0.5.2): a file without
     // that field is refused by every older plugin, so the file asks for 0.5.2 or newer.
     const repo = makeRepo();
@@ -954,7 +984,7 @@ describe("what the file asks for", () => {
       `${JSON.stringify({ requires: ">=0.5.2", worktrees: { base: "main" } }, null, 2)}\n`,
     );
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(
       ">=0.5.2",
     );
@@ -963,7 +993,7 @@ describe("what the file asks for", () => {
     );
   });
 
-  test("a file that asks for a newer plugin keeps its own range", () => {
+  test("a file that asks for a newer plugin keeps its own range", async () => {
     const repo = makeRepo();
     const file = join(repo, ".claude", "cc-smart-dev-kit.json");
     mkdirSync(join(repo, ".claude"), { recursive: true });
@@ -972,30 +1002,32 @@ describe("what the file asks for", () => {
       `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
     );
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(">=1.0");
   });
 });
 
 describe("the file this command writes is one the plugin accepts", () => {
-  test("CM-3: a --bases prefix without the trailing slash is refused, and nothing is written", () => {
+  test("CM-3: a --bases prefix without the trailing slash is refused, and nothing is written", async () => {
     // The schema refuses a prefix that does not end with "/" (it is a branch-name prefix), so
     // writing this one made every later reader — the hooks, doctor, the plugin itself — refuse
     // the project the person had just set up.
     const repo = makeRepo();
     const run = context(repo);
-    expect(runProjectInit(["--yes", "--bases", "release=dev"], run.context, runner({}))).toBe(2);
+    expect(await runProjectInit(["--yes", "--bases", "release=dev"], run.context, runner({}))).toBe(
+      2,
+    );
     expect(run.errors[0]).toContain('"release=dev" is not prefix=base');
     expect(run.errors[0]).toContain('ends with "/"');
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
-  test("CM-3: a blank answer to --base or --bases is a usage mistake", () => {
+  test("CM-3: a blank answer to --base or --bases is a usage mistake", async () => {
     expect(parseFlags(["--yes", "--base", ""])).toEqual({ error: "--base needs a value" });
     expect(parseFlags(["--yes", "--bases", ""])).toEqual({ error: "--bases needs a value" });
   });
 
-  test("CM-3: the plan is refused before the write when the plugin would refuse the file", () => {
+  test("CM-3: the plan is refused before the write when the plugin would refuse the file", async () => {
     // The project's own file holds a key no version of cc-smart-dev-kit knows: writing the
     // plan back would keep it, and every reader would refuse the project from then on.
     const repo = makeRepo();
@@ -1004,7 +1036,7 @@ describe("the file this command writes is one the plugin accepts", () => {
     const before = `{\n  "requires": ">=0.4",\n  "worktree": {\n    "base": "main"\n  }\n}\n`;
     writeFileSync(file, before);
     const run = context(repo);
-    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(1);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(1);
     expect(run.errors[0]).toContain(file);
     expect(run.errors[0]).toContain("worktree");
     expect(readFileSync(file, "utf8")).toBe(before);
@@ -1013,7 +1045,7 @@ describe("the file this command writes is one the plugin accepts", () => {
 });
 
 describe("the command itself, as Claude Code runs it", () => {
-  test("`--help` works outside a git project, and writes nothing", () => {
+  test("`--help` works outside a git project, and writes nothing", async () => {
     const home = tempDir("init-cli-home");
     const guard = subprocessGuard();
     const result = Bun.spawnSync(
@@ -1037,7 +1069,7 @@ describe("the command itself, as Claude Code runs it", () => {
     expect(result.stderr.toString()).toBe("");
   });
 
-  test("`--yes` in a real repo writes the project's file, in this HOME's state folder", () => {
+  test("`--yes` in a real repo writes the project's file, in this HOME's state folder", async () => {
     const home = tempDir("init-cli-home");
     const repo = makeRepo();
     const guard = subprocessGuard();

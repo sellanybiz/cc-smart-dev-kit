@@ -60,4 +60,4 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [claude-mem](design/claude-mem.md) | The two start blocks (off), claude-mem on the gateway's scout slot, and claude-mem from the portal. |
+| [claude-mem](design/claude-mem.md) | The two start blocks (off), claude-mem on the gateway's scout slot, the choices from the portal or the command, and the take-over of a value set by hand. |

@@ -34,7 +34,12 @@ import {
   withoutRetiredDefaultClaude,
   withPortalChains,
 } from "./commands";
-import { type GatewayConfig, loadConfigFile, saveConfig } from "./config";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  type GatewayConfig,
+  loadConfigFile,
+  saveConfig,
+} from "./config";
 import type { HealthProbe } from "./health";
 import { judgeTestRequest, judgeVerdict } from "./judge-test";
 import {
@@ -76,6 +81,36 @@ import {
   turnOn,
 } from "./settings";
 import { isAutoModeGuard } from "./targets";
+
+describe("D64: a chain carries its effort pins", () => {
+  it("Claude saves them, custom restores them, replacement prunes them and clear removes them", () => {
+    const key = "cc-smart-dev-kit-scout";
+    const cfg: GatewayConfig = {
+      ...config(),
+      effort: {
+        [key]: { "omniroute:glm-5.3-flash": "xhigh", "ollama:deepseek-v4.1-flash": "none" },
+      },
+    };
+    const take = (result: ReturnType<typeof planSlotChange>) => {
+      if ("error" in result) throw new Error(result.error);
+      return result.config;
+    };
+    const saved = take(planSlotChange(cfg, "scout", "claude", {}));
+    expect(saved.effort).toBeUndefined();
+    expect(saved.kept?.[key]?.effort).toEqual({
+      "omniroute:glm-5.3-flash": "xhigh",
+      "ollama:deepseek-v4.1-flash": "none",
+    });
+    const listed = { omniroute: ["glm-5.3-flash"], ollama: ["deepseek-v4.1-flash"] };
+    const back = take(planSlotChange(saved, "scout", "custom", listed));
+    expect(back.effort).toEqual(cfg.effort);
+    const changed = take(planSlotChange(back, "scout", "omniroute:glm-5.3-flash", listed));
+    expect(changed.effort).toEqual({ [key]: { "omniroute:glm-5.3-flash": "xhigh" } });
+    const cleared = take(planSlotChange(changed, "scout", "clear", {}));
+    expect(cleared.effort).toBeUndefined();
+    expect(take(planSlotChange(saved, "scout", "clear", {})).kept).toBeUndefined();
+  });
+});
 
 const NO_POSIX_MODES = process.platform === "win32";
 
@@ -280,22 +315,34 @@ describe("Claude Code settings: on / off", () => {
     ]);
   });
 
-  it("off: removes exactly our keys; everything else stays (CLAUDE_CODE_SUBAGENT_MODEL too)", () => {
+  it("off: writes Anthropic's own address, takes our other keys out; everything else stays", () => {
     const { file, stateDir } = seed();
     turnOn({ settingsFile: file, stateDir, port: 20100 });
-    const { result, foreign } = turnOff({ settingsFile: file, stateDir });
+    const { result, foreign, switched } = turnOff({ settingsFile: file, stateDir });
+    // Two changes: the address is set (GP5), the tool-search key is removed.
     expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
       "ENABLE_TOOL_SEARCH",
     ]);
+    expect(switched).toBe(true);
     expect(foreign).toEqual([]);
+    // The address key stays, holding Anthropic's own value: a running session follows a
+    // changed value within about a second, where a removed key reaches it only if another file sets the key.
     // Changed by the move: the old `off` also removed CLAUDE_CODE_SUBAGENT_MODEL. It is not
     // the gateway's key, so it stays.
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(original);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ...original.env, ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+      permissions: { allow: ["Bash(ls:*)"] },
+    });
+    // A second `off` has nothing to change, and says so.
+    const twice = turnOff({ settingsFile: file, stateDir });
+    expect(twice.result.changes).toEqual([]);
+    expect(twice.switched).toBe(false);
     expect([...GATEWAY_ENV_KEYS].sort()).toEqual(["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"]);
   });
 
-  it("off takes out the model keys an older version wrote too", () => {
+  it("off takes out the model keys an older version wrote too, and keeps the address key", () => {
     const { file, stateDir } = seed({ model: "opus" });
     applyManagedJson({
       file,
@@ -315,22 +362,33 @@ describe("Claude Code settings: on / off", () => {
       "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     ]);
     turnOff({ settingsFile: file, stateDir });
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ model: "opus" });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
   });
 
-  it("off: an env our setup created goes with its last key; one the person had stays", () => {
-    // No `env` of the person's: `gateway setup` made that object, so `off` takes it back out.
+  it("off leaves the env holding Anthropic's address, ours or the person's", () => {
+    // No `env` of the person's: `gateway setup` made that object. The address key stays in it
+    // (GP5), so the object does too — it is not ours to take while the key is in it.
     const bare = seed({ model: "opus" });
     turnOn({ settingsFile: bare.file, stateDir: bare.stateDir, port: 20100 });
     expect(JSON.parse(readFileSync(bare.file, "utf8")).env).toEqual(ON_ENV);
     turnOff({ settingsFile: bare.file, stateDir: bare.stateDir });
-    expect(JSON.parse(readFileSync(bare.file, "utf8"))).toEqual({ model: "opus" });
+    expect(JSON.parse(readFileSync(bare.file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
 
-    // An `env` that was there before us, even an empty one, is the person's and stays.
+    // An `env` that was there before us, even an empty one, is the person's: it stays, and the
+    // address goes into it like any other.
     const theirs = seed({ env: {}, model: "opus" });
     turnOn({ settingsFile: theirs.file, stateDir: theirs.stateDir, port: 20100 });
     turnOff({ settingsFile: theirs.file, stateDir: theirs.stateDir });
-    expect(JSON.parse(readFileSync(theirs.file, "utf8"))).toEqual({ env: {}, model: "opus" });
+    expect(JSON.parse(readFileSync(theirs.file, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+      model: "opus",
+    });
   });
 
   it("every write keeps its own backup; the first, with the earlier values, is never replaced", () => {
@@ -339,9 +397,11 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const afterOn = readFileSync(file, "utf8");
     turnOff({ settingsFile: file, stateDir });
+    const afterOff = readFileSync(file, "utf8");
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const backups = listBackups(stateDir, file).map((backup) => readFileSync(backup.path, "utf8"));
-    expect(backups).toEqual([first, afterOn, first]);
+    expect(backups).toEqual([first, afterOn, afterOff]);
+    expect(afterOff).toContain(`"ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"`);
   });
 
   it("off with nothing of ours: writes nothing, and names a gateway key someone else set", () => {
@@ -495,12 +555,39 @@ describe("setup, slot and models helpers", () => {
     ]);
   });
 
-  it("slot judge off is refused while an alias still points at the judge slot", () => {
-    const cfg = { ...config(), aliases: { "old-judge": "cc-smart-dev-kit-judge" } };
-    cfg.slots = { ...cfg.slots, "cc-smart-dev-kit-judge": ["omniroute:glm-5.3-flash"] };
-    const off = planSlotChange(cfg, "judge", "off", {});
-    expect("error" in off && off.error).toContain(
-      'alias "old-judge" points at slot "cc-smart-dev-kit-judge", which is not in slots',
+  it("an alias to a slot stays when the slot moves to Claude, and when it comes back to Custom", () => {
+    const aliases = {
+      "old-judge": "cc-smart-dev-kit-judge",
+      "old-scout": "cc-smart-dev-kit-scout",
+      "old-worker": "cc-smart-dev-kit-worker",
+    };
+    const cfg = { ...config(), aliases };
+    cfg.slots = { ...cfg.slots, "cc-smart-dev-kit-judge": ["claude-sonnet-5-5"] };
+    const plan = (from: GatewayConfig, slot: string, word: string): GatewayConfig => {
+      const result = planSlotChange(from, slot, word, {});
+      if ("error" in result) throw new Error(result.error);
+      return result.config;
+    };
+    const claude = plan(cfg, "worker", "claude");
+    expect(claude.slots["cc-smart-dev-kit-worker"]).toBeUndefined();
+    expect(claude.aliases).toEqual(aliases);
+    const back = plan(claude, "worker", "custom");
+    expect(back.slots["cc-smart-dev-kit-worker"]).toEqual(["claude-sonnet-5-5"]);
+    expect(back.aliases).toEqual(aliases);
+    expect(plan(cfg, "scout", "claude").aliases).toEqual(aliases);
+    expect(plan(cfg, "judge", "off").aliases).toEqual(aliases);
+    // Cleared, a slot of the five is still a slot: Claude, with no chain saved.
+    expect(plan(cfg, "worker", "clear").aliases).toEqual(aliases);
+  });
+
+  it("an alias to a machine's own slot stays while the slot is Claude with its chain saved, and blocks its clear", () => {
+    const cfg = { ...config(), aliases: { "old-cheap": "cc-smart-dev-kit-affordable" } };
+    const claude = planSlotChange(cfg, "affordable", "claude", {});
+    if ("error" in claude) throw new Error(claude.error);
+    expect(claude.config.aliases).toEqual({ "old-cheap": "cc-smart-dev-kit-affordable" });
+    const cleared = planSlotChange(claude.config, "affordable", "clear", {});
+    expect("error" in cleared && cleared.error).toContain(
+      'alias "old-cheap" points at slot "cc-smart-dev-kit-affordable", which is no slot: not in slots, not saved in kept, and none of the five',
     );
   });
 
@@ -1456,10 +1543,15 @@ describe("slot opus / fable, and the fallback switch", () => {
     const back = planFallbackChange(on.config, "opus", "off");
     if (!("config" in back)) throw new Error(back.error);
     expect(back.config).not.toHaveProperty("fallback");
+    // D66: off is the default for every slot, so it is `on` that is saved.
+    const workerOn = planFallbackChange(config(), "worker", "on");
+    if (!("config" in workerOn)) throw new Error(workerOn.error);
+    expect(workerOn).toMatchObject({ now: true, was: false });
+    expect(workerOn.config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
     const workerOff = planFallbackChange(config(), "worker", "off");
     if (!("config" in workerOff)) throw new Error(workerOff.error);
-    expect(workerOff).toMatchObject({ now: false, was: true });
-    expect(workerOff.config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+    expect(workerOff).toMatchObject({ now: false, was: false });
+    expect(workerOff.config).not.toHaveProperty("fallback");
   });
 
   it("fallback: refused for a slot with no chain, a wrong word, or a name that is no slot", () => {
@@ -1582,31 +1674,32 @@ describe("slot modes: one home for every chain (B0)", () => {
   it("a new chain replaces a saved one and keeps the switch saved with it", () => {
     const cfg: GatewayConfig = {
       ...config(),
-      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+      kept: { [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] } },
     };
     const set = planned(planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash", models));
     expect(set.config.slots[WORKER]).toEqual(["omniroute:glm-5.3-flash"]);
     expect(set.config).not.toHaveProperty("kept");
-    expect(set.config.fallback).toEqual({ [WORKER]: false });
+    expect(set.config.fallback).toEqual({ [WORKER]: true });
   });
 
   it("the fallback switch of a slot that answers as Claude waits in kept, and says so", () => {
     const { [WORKER]: _chain, ...slots } = config().slots;
     const cfg: GatewayConfig = {
       ...config(),
-      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+      kept: { [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] } },
       slots,
     };
-    const on = planFallbackChange(cfg, "worker", "on");
+    const off = planFallbackChange(cfg, "worker", "off");
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off).toMatchObject({ key: WORKER, now: false, was: true });
+    // Back to the default (off): no entry in kept.
+    expect(off.config.kept).toEqual({ [WORKER]: { targets: ["claude-sonnet-5-5"] } });
+    expect(off.config).not.toHaveProperty("fallback");
+    const on = planFallbackChange(off.config, WORKER, "on");
     if (!("config" in on)) throw new Error(on.error);
     expect(on).toMatchObject({ key: WORKER, now: true, was: false });
-    expect(on.config.kept).toEqual({ [WORKER]: { targets: ["claude-sonnet-5-5"] } });
-    expect(on.config).not.toHaveProperty("fallback");
-    // Back to the default: no entry in kept.
-    const off = planFallbackChange(on.config, WORKER, "off");
-    if (!("config" in off)) throw new Error(off.error);
-    expect(off.config.kept).toEqual({
-      [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] },
+    expect(on.config.kept).toEqual({
+      [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] },
     });
   });
 
@@ -1769,17 +1862,17 @@ describe("the breaker switch", () => {
     const before: GatewayConfig = {
       ...config(),
       breaker: { [WORKER]: false },
-      fallback: { [WORKER]: false },
+      fallback: { [WORKER]: true },
     };
-    // The worker's fallback back to its default (on): its entry goes, the breaker's stays.
-    const fallbackBack = planFallbackChange(before, "worker", "on");
+    // The worker's fallback back to its default (off): its entry goes, the breaker's stays.
+    const fallbackBack = planFallbackChange(before, "worker", "off");
     if (!("config" in fallbackBack)) throw new Error(fallbackBack.error);
     expect(fallbackBack.config).not.toHaveProperty("fallback");
     expect(fallbackBack.config.breaker).toEqual({ [WORKER]: false });
     // And the breaker back to its default: its entry goes, the fallback's stays.
     const breakerBack = planned(planBreakerChange(before, "worker", "on"));
     expect(breakerBack.config).not.toHaveProperty("breaker");
-    expect(breakerBack.config.fallback).toEqual({ [WORKER]: false });
+    expect(breakerBack.config.fallback).toEqual({ [WORKER]: true });
   });
 
   it("refuses the judge, with a chain or without, and says why", () => {

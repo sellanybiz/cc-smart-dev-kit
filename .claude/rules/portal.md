@@ -140,7 +140,8 @@ in this turn.
   while the portal has no sign-in.
 - **Never a number the machine cannot give.** Claude Code's usage percentages are not written
   down anywhere and OmniRoute's prices are in its own catalog: a page says so and shows what it
-  does know. Never invent one to match a mockup.
+  does know. Never invent one to match a mockup. A sum that holds requests the history could
+  not price says how many in words, and one made only of them shows "no price", never "$0".
 
 ## It is a bundle of its own, and it runs from a copy
 

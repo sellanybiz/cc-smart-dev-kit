@@ -8,7 +8,11 @@
  */
 
 import { messageOf } from "./config";
-import { HEALTH_PATH } from "./router";
+import { directIfLoopback } from "./hosts";
+import { HEALTH_PATH, type ROUTER_FEATURES } from "./router";
+
+/** A feature a reader may rely on from a running router (`ROUTER_FEATURES`). */
+export type RouterFeature = (typeof ROUTER_FEATURES)[number];
 
 /**
  * The part of `fetch` every injectable check takes — the health page, a backend's model list,
@@ -25,10 +29,19 @@ export interface HealthProbe {
   sleep: (ms: number) => Promise<void>;
 }
 
+/**
+ * The real `fetch` for a request to this machine's own router: straight, never through a proxy
+ * from the environment (`directIfLoopback`). Bun sends a loopback request to `HTTP_PROXY` unless
+ * `NO_PROXY` names the host, and a router that runs would then look silent to `launch`, `setup`
+ * and `doctor`.
+ */
+export const routerFetch: HealthFetch = (url, init) =>
+  fetch(url, { ...init, ...directIfLoopback(url) });
+
 /** The real network and clock. */
 export function realProbe(): HealthProbe {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms),
   };
@@ -45,7 +58,7 @@ function healthUrl(port: number, path: string = HEALTH_PATH): string {
 /** The router's own health answer, with a short timeout; the reason in words when there is none. */
 export async function routerHealth(
   port: number,
-  fetchImpl: HealthFetch = (url, init) => fetch(url, init),
+  fetchImpl: HealthFetch = routerFetch,
 ): Promise<{ body: unknown } | { error: string }> {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3_000) });
@@ -57,6 +70,55 @@ export async function routerHealth(
   } catch (error) {
     return { error: messageOf(error) };
   }
+}
+
+/**
+ * Whether a health answer lists `feature` in its `features`. A router from before the list
+ * (1.1.x) answers with no `features`, so it has none of them; an answer of another shape lists
+ * nothing either.
+ */
+export function healthHasFeature(body: unknown, feature: RouterFeature): boolean {
+  return isJsonObject(body) && Array.isArray(body.features) && body.features.includes(feature);
+}
+
+/**
+ * Does the router running on `port` have `feature`? The one reader every command asks before it
+ * writes or starts something that needs one (a profile's `…/p/<name>` URL: `gateway project on
+ * --profile`, the portal's Gateway card through it, `launch --profile`, `doctor`). The router
+ * carries no version, so its health answer's `features` is the only way to tell: after the
+ * background self-update the CLI is new while the router that runs stays the old copy until
+ * `gateway setup` puts the new one in place. No answer is said in words, never guessed.
+ */
+export async function routerFeature(
+  port: number,
+  feature: RouterFeature,
+  fetchImpl: HealthFetch,
+): Promise<{ has: boolean } | { error: string }> {
+  const health = await routerHealth(port, fetchImpl);
+  return "error" in health ? health : { has: healthHasFeature(health.body, feature) };
+}
+
+/**
+ * Why a profile's URL would fail on the router running on `port`: it answers, but from before
+ * profiles. A 1.1.x router sends every path but `/v1/messages` to Anthropic unchanged, so each
+ * request to `…/p/<name>/v1/messages` fails. One text for every command that refuses it; each
+ * adds `gateway setup` as its fix, in its own form.
+ */
+export function routerLacksProfiles(port: number): string {
+  return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
+
+/**
+ * Why a config with an alias at a slot in Claude mode would be ignored by the router running
+ * on `port`: it answers, but from before `claude-slot-aliases`. A 1.1.x router refuses the
+ * whole file for such an alias, keeps its last good config, and ignores every later change.
+ * `alias` is the first one `aliasesAtClaudeSlots` found.
+ */
+export function routerLacksClaudeSlotAliases(
+  port: number,
+  alias: readonly [string, string],
+): string {
+  return `the router running on 127.0.0.1:${port} is an older copy that refuses an alias to a slot that is Claude (alias "${alias[0]}" → ${alias[1]}), so it would keep its old config and ignore this change`;
 }
 
 /**

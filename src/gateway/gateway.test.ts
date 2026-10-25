@@ -90,6 +90,20 @@ const NO_POSIX_MODES = process.platform === "win32";
 const TOKEN = "sk-ant-oat01-TESTTOKEN";
 const CONFIG_PATH = "/home/someone/.config/cc-smart-dev-kit/gateway.json";
 
+/**
+ * The slots of `config()`, and the judge. The fallback switch is OFF by default for every slot
+ * (D66), and most of this file tests a chain that moves on to its next target, so its config
+ * switches each one on, the judge's too (its worker stand-ins). A test of the default builds
+ * its own config without this record.
+ */
+const FALLBACK_ON_SLOTS = [
+  "cc-smart-dev-kit-affordable",
+  "cc-smart-dev-kit-mixed",
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker",
+  "cc-smart-dev-kit-judge",
+];
+
 function config(firstByteMs = 1000): GatewayConfig {
   return {
     aliases: {},
@@ -98,6 +112,7 @@ function config(firstByteMs = 1000): GatewayConfig {
       ollama: { apiKey: "ollama-key-abcdef", baseUrl: "https://ollama.test" },
       omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" },
     },
+    fallback: Object.fromEntries(FALLBACK_ON_SLOTS.map((slot) => [slot, true])),
     port: PORT,
     slots: {
       "cc-smart-dev-kit-affordable": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
@@ -592,6 +607,142 @@ describe("affordable backends never see the Claude login", () => {
 
 // ─── Fallback ───────────────────────────────────────────────────────────────────
 
+describe("D64: backend effort pins", () => {
+  for (const input of ["max", "low", undefined, "off"] as const) {
+    it(`the pin wins over ${input ?? "no effort"}, including thinking off`, async () => {
+      const cfg = config();
+      cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+      const r = router([() => Response.json({ content: [] })], { config: cfg });
+      const body = {
+        ...message("cc-smart-dev-kit-scout"),
+        output_config: {
+          format: { type: "json_schema" },
+          ...(input === undefined || input === "off" ? {} : { effort: input }),
+        },
+        ...(input === "off" ? { thinking: { type: "disabled" } } : {}),
+      };
+      await r.handle(clientRequest({ body: JSON.stringify(body) }));
+      expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({
+        effort: "xhigh",
+        format: { type: "json_schema" },
+      });
+      const publicBody: Record<string, unknown> = { ...body };
+      delete publicBody.metadata;
+      expect(JSON.parse(r.calls[0]?.body ?? "{}")).toEqual({
+        ...publicBody,
+        model: "glm-5.3-flash",
+        output_config: { ...body.output_config, effort: "xhigh" },
+      });
+      expect(r.logs.at(-1)).toContain("effort=xhigh pinned");
+      const health = await r.handle(
+        clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }),
+      );
+      expect(await health.json()).toMatchObject({
+        recent: [{ effort: "xhigh", effortPinned: true }],
+      });
+    });
+  }
+
+  it("the judge's backend pin wins over the safety check's implicit none", async () => {
+    const cfg = config();
+    cfg.slots["cc-smart-dev-kit-judge"] = ["omniroute:glm-5.3-flash"];
+    cfg.judgeTested = JUDGE_PROOFS;
+    cfg.effort = { "cc-smart-dev-kit-judge": { "omniroute:glm-5.3-flash": "high" } };
+    const r = router([() => Response.json({})], { config: cfg });
+    await r.handle(
+      clientRequest({
+        body: JSON.stringify({
+          ...message("claude-sonnet-5-5"),
+          system: "You are a security monitor for autonomous AI coding agents.",
+        }),
+      }),
+    );
+    expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+  });
+
+  it("a profile uses the machine pin only while that slot and target remain in its chain", async () => {
+    const cfg = config();
+    cfg.profiles = {
+      same: {},
+      other: { slots: { "cc-smart-dev-kit-scout": ["ollama:deepseek-v4.1-flash"] } },
+    };
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "high" } };
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    for (const profile of ["same", "other"])
+      await r.handle(
+        clientRequest({
+          path: `/p/${profile}/v1/messages`,
+          body: JSON.stringify({
+            ...message("cc-smart-dev-kit-scout"),
+            output_config: { effort: "low" },
+          }),
+        }),
+      );
+    expect(JSON.parse(r.calls[0]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+    expect(JSON.parse(r.calls[1]?.body ?? "{}").output_config).toEqual({ effort: "low" });
+  });
+
+  it("a Claude target and the safety check's Claude route never get the backend pin", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+    cfg.slots["cc-smart-dev-kit-scout"] = ["claude-haiku-5-5", "omniroute:glm-5.3-flash"];
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    const body = { ...message("claude-haiku-5-5"), output_config: { effort: "low" } };
+    const sent = JSON.stringify(body);
+    await r.handle(clientRequest({ body: sent }));
+    expect(r.calls[0]?.body).toBe(sent);
+    const guard = {
+      ...body,
+      system: "You are a security monitor for autonomous AI coding agents.",
+      stop_sequences: ["</block>"],
+    };
+    await r.handle(clientRequest({ body: JSON.stringify(guard) }));
+    expect(r.calls[1]?.body).toBe(JSON.stringify(guard));
+    expect(r.logs.some((line) => line.includes(" pinned"))).toBe(false);
+  });
+
+  it("a later backend uses its own pin after fallback; live changes apply on the next request", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "ollama:deepseek-v4.1-flash": "none" } };
+    const r = router(
+      [
+        () => new Response("busy", { status: 503 }),
+        () => Response.json({}),
+        () => Response.json({}),
+      ],
+      { config: cfg },
+    );
+    await r.handle(
+      clientRequest({
+        body: JSON.stringify({
+          ...message("cc-smart-dev-kit-scout"),
+          output_config: { effort: "max" },
+        }),
+      }),
+    );
+    expect(JSON.parse(r.calls[1]?.body ?? "{}").output_config).toEqual({ effort: "none" });
+    cfg.effort["cc-smart-dev-kit-scout"] = { "ollama:deepseek-v4.1-flash": "high" };
+    await r.handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }));
+    expect(JSON.parse(r.calls[2]?.body ?? "{}").output_config).toEqual({ effort: "high" });
+  });
+
+  it("no pin changes nothing; another slot's pin and an explicit target do not apply", async () => {
+    const cfg = config();
+    cfg.effort = { "cc-smart-dev-kit-scout": { "omniroute:glm-5.3-flash": "xhigh" } };
+    const r = router([() => Response.json({}), () => Response.json({})], { config: cfg });
+    for (const model of ["cc-smart-dev-kit-affordable", "omniroute:glm-5.3-flash"]) {
+      await r.handle(
+        clientRequest({
+          body: JSON.stringify({ ...message(model), output_config: { effort: "low" } }),
+        }),
+      );
+    }
+    for (const call of r.calls)
+      expect(JSON.parse(call.body ?? "{}").output_config).toEqual({ effort: "low" });
+    expect(r.logs.some((line) => line.includes(" pinned"))).toBe(false);
+  });
+});
+
 describe("fallback", () => {
   const scout = () => clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) });
   const mixed = () => clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-mixed")) });
@@ -629,6 +780,18 @@ describe("fallback", () => {
     ]);
     expect(await (await handle(scout())).text()).toBe("ok");
     expect(calls).toHaveLength(2);
+  });
+
+  it("D66: with no fallback setting a chain's first target alone is asked; its failure is the answer", async () => {
+    const { fallback: _on, ...noSwitch } = config();
+    const { calls, handle } = router(
+      [() => new Response("busy", { status: 429 }), () => new Response("never asked")],
+      { config: noSwitch },
+    );
+    const res = await handle(scout());
+    expect(res.status).toBe(429);
+    expect(await res.text()).toBe("busy");
+    expect(calls.map((c) => c.url)).toEqual(["http://omni.test/v1/messages"]);
   });
 
   it("an affordable backend that is not last: 400 and 401 move on, with a warning", async () => {
@@ -2824,8 +2987,11 @@ describe("local-only guard", () => {
       breakers: {},
       cooling: {},
       fallbacks: 0,
+      // This router knows profiles (D29) and an alias at a slot in Claude mode; this config sets none.
+      features: ["profiles", "claude-slot-aliases"],
       ok: true,
       port: 20100,
+      profiles: [],
       recent: [
         {
           at: Date.UTC(2026, 9, 15, 10, 0, 0),
@@ -3355,8 +3521,8 @@ describe("aliases", () => {
       const parsed = parseConfig({ ...base, aliases });
       return "error" in parsed ? parsed.error : "no error";
     };
-    expect(error({ old: "cc-smart-dev-kit-worker" })).toContain(
-      'alias "old" points at slot "cc-smart-dev-kit-worker", which is not in slots',
+    expect(error({ old: "cc-smart-dev-kit-nowhere" })).toContain(
+      'alias "old" points at slot "cc-smart-dev-kit-nowhere", which is no slot: not in slots, not saved in kept, and none of the five',
     );
     expect(error({ old: "ollama:glm-5.3-flash" })).toContain(
       'alias "old" names backend "ollama", which is not in backends',
@@ -3374,6 +3540,36 @@ describe("aliases", () => {
       'alias "old[1m]": write it without [1m]; the router looks names up without it',
     );
     expect(error({ old: "omniroute:glm-5.3-flash", older: "claude-haiku-5-5" })).toBe("no error");
+  });
+
+  it("an alias to a slot in Claude mode loads: one of the five with no chain, or a machine's own slot whose chain is saved", () => {
+    const parsed = parseConfig({
+      aliases: {
+        "old-cheap": "cc-smart-dev-kit-cheap",
+        "old-judge": "cc-smart-dev-kit-judge",
+        "old-opus": "cc-smart-dev-kit-opus",
+        "old-worker": "cc-smart-dev-kit-worker",
+      },
+      backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://127.0.0.1:20128" } },
+      kept: { "cc-smart-dev-kit-cheap": { targets: ["omniroute:glm-5.3-flash"] } },
+      slots: {},
+      version: 1,
+    });
+    expect("error" in parsed ? parsed.error : "loaded").toBe("loaded");
+  });
+
+  it("a request under an alias to a slot in Claude mode gets the 400 a slot-named one gets; nothing is asked", async () => {
+    const cfg = aliased({ "old-worker": "cc-smart-dev-kit-worker" });
+    const { "cc-smart-dev-kit-worker": _claude, ...withoutWorker } = cfg.slots;
+    const { calls, handle } = router([], { config: { ...cfg, slots: withoutWorker } });
+    const res = await handle(clientRequest({ body: JSON.stringify(message("old-worker")) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string; type: string } };
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.message).toBe(
+      `cc-smart-dev-kit-router: cc-smart-dev-kit-worker is off (no chain in ${CONFIG_PATH}), and this request names the slot, not a Claude model: Claude Code's settings still send sonnet work to it. Run: cc-smart-dev-kit gateway on (it stops that), or give the slot a chain: cc-smart-dev-kit gateway slot worker <targets>`,
+    );
+    expect(calls).toEqual([]);
   });
 
   it("the plugin ships no aliases: a config without the field has none", () => {
@@ -4148,7 +4344,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     );
   });
 
-  it("each slot's fallback switch: its own setting, else on for scout, worker and judge, off for opus and fable", () => {
+  it("each slot's fallback switch (D66): its own setting, else off for every slot, the judge's too", () => {
     const slots = {
       "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
@@ -4160,21 +4356,21 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
     expect(states({})).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", true],
+      ["cc-smart-dev-kit-judge", false],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", true],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", false],
     ]);
     expect(
       states({
-        fallback: { "cc-smart-dev-kit-judge": false, "cc-smart-dev-kit-worker": false },
+        fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": true },
       }),
     ).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", false],
+      ["cc-smart-dev-kit-judge", true],
       ["cc-smart-dev-kit-opus", false],
-      ["cc-smart-dev-kit-scout", true],
-      ["cc-smart-dev-kit-worker", false],
+      ["cc-smart-dev-kit-scout", false],
+      ["cc-smart-dev-kit-worker", true],
     ]);
   });
 
@@ -6064,6 +6260,290 @@ describe("the breaker", () => {
     expect(b.status).toBe(400);
     expect(await b.text()).toBe('{"error":"bad check"}');
   });
+
+  describe("D65: a Claude fallback at its known plan limit is skipped, the last one too", () => {
+    const SONNET = "claude-sonnet-5-5";
+    /** Unix seconds: the weekly limit's reset, four days after START (2026-10-19 10:00 UTC). */
+    const RESET = START / 1000 + 4 * 86_400;
+
+    /** The worker chain of the incident: a backend first, Sonnet itself behind it. */
+    function chainConfig(holdMs?: number): GatewayConfig {
+      const base = breakerConfig(holdMs);
+      return { ...base, slots: { ...base.slots, [WORKER]: ["omniroute:glm-5.3-flash", SONNET] } };
+    }
+
+    /** The backend's hiccup of the incident: one empty answer. */
+    const empty = () =>
+      new Response('{"error":{"message":"upstream_empty_response"}}', { status: 502 });
+    /**
+     * Sonnet at its weekly plan limit, as Anthropic answers it. Its `retry-after` is far above
+     * `COOLDOWN_MAX_SEC`, so Sonnet rests 600 s after it.
+     */
+    const weekly =
+      (reset: null | number, retryAfter = "345600") =>
+      () =>
+        new Response(
+          '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
+          {
+            headers: {
+              "anthropic-ratelimit-unified-representative-claim": "seven_day",
+              ...(reset === null ? {} : { "anthropic-ratelimit-unified-reset": String(reset) }),
+              "anthropic-ratelimit-unified-status": "rejected",
+              "retry-after": retryAfter,
+            },
+            status: 429,
+          },
+        );
+    const claudeAnswers = () => new Response('{"type":"message"}');
+
+    it("breaker off: the backend's own answer goes back; Claude is not asked; one line says why", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router([empty, weekly(RESET), empty], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      // The first request finds the limit: Claude is asked, and its 429 passes unchanged.
+      const found = await handle(sonnet());
+      expect(found.status).toBe(429);
+      expect(found.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      // The backend's own rest (30 s) is over, Sonnet's (600 s) is not.
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(502);
+      expect(await res.text()).toBe('{"error":{"message":"upstream_empty_response"}}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      expect(logs).toContain(
+        "WARN cc-smart-dev-kit-worker: claude-sonnet-5-5 skipped: at its plan usage limit (seven_day, resets 2026-10-19T10:00:00.000Z); asked again from 2026-10-15T10:10:00.000Z",
+      );
+      expect(logs.at(-1)).toBe(
+        "2026-10-15T10:01:00.000Z POST /v1/messages claude-sonnet-5-5 → omniroute:glm-5.3-flash 502 0ms fallbacks=0 skipped=1",
+      );
+    });
+
+    it("breaker on: the request is held, then gets the breaker's 429; Claude is not asked", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router(
+        byTarget({ [OMNI]: empty, [ANTHROPIC]: weekly(RESET) }),
+        { breaker: true, config: chainConfig(10_000), now: clock.now, sleep: clock.sleep },
+      );
+      const found = await drive(clock, handle(sonnet()));
+      expect(found.status).toBe(429);
+      expect(found.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      clock.advance(60_000 - (clock.now() - START));
+      const res = await drive(clock, handle(sonnet()));
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-should-retry")).toBe("true");
+      // The backend's rest ends 30 s after its 502, 10 s of hold ago: 20 s.
+      expect(res.headers.get("retry-after")).toBe("20");
+      expect([...res.headers.keys()].filter((name) => name.startsWith("anthropic-"))).toEqual([]);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toMatch(
+        /^cc-smart-dev-kit-router: every target of cc-smart-dev-kit-worker is limited or down since \d\d:\d\d \(omniroute:glm-5\.3-flash: HTTP 502, until \d\d:\d\d; claude-sonnet-5-5: at its plan usage limit \(seven_day\), until \d\d:\d\d\); change it: cc-smart-dev-kit gateway slot worker <targets>$/,
+      );
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      // One line for the pass that opened the breaker; the hold's passes say it in its lines.
+      expect(logs.filter((line) => line.includes(`${SONNET} skipped:`))).toHaveLength(1);
+    });
+
+    it("a limit whose reset has passed is not skipped: Claude is asked, as the last target is", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router([empty, weekly(START / 1000 + 120), empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      // 3 minutes on: the reset (2 minutes) has passed; Sonnet still rests (10 minutes).
+      clock.advance(180_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('{"type":"message"}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
+
+    it("a limit with no reset time is not skipped: Claude is asked, and its 429 passes", async () => {
+      const clock = manualClock();
+      const { calls, handle, logs } = router([empty, weekly(null), empty, weekly(null)], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+      expect(logs.filter((line) => line.includes("skipped:"))).toEqual([]);
+    });
+
+    it("Claude first in the chain is asked, at its limit too, and its 429 passes unchanged, never held", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(10_000);
+      const { calls, handle } = router([weekly(RESET), weekly(RESET)], {
+        breaker: true,
+        config: { ...cfg, slots: { ...cfg.slots, [WORKER]: [SONNET] } },
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(res.headers.get("anthropic-ratelimit-unified-reset")).toBe(String(RESET));
+      expect(res.headers.get("x-should-retry")).toBeNull();
+      expect(calls.map((call) => call.url)).toEqual([ANTHROPIC, ANTHROPIC]);
+    });
+
+    it("an early reset is seen: once its rest (COOLDOWN_MAX_SEC) is over, Claude is asked again, and a 200 ends the limit", async () => {
+      const clock = manualClock();
+      const states: string[] = [];
+      const { calls, handle, logs } = router([empty, weekly(RESET), empty, empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+        states,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      await handle(sonnet());
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI]);
+      // 10:10:01: Sonnet's rest (600 s from 10:00) is over, so it is asked again.
+      clock.advance(541_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('{"type":"message"}');
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, OMNI, ANTHROPIC]);
+      expect(JSON.parse(states.at(-1) ?? "").limits).toEqual({});
+      expect(logs.filter((line) => line.includes(`${SONNET} skipped:`))).toHaveLength(1);
+    });
+
+    it("asked again and still at its limit: breaker on, the request is held, and Claude rests again; breaker off, its 429 passes", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router(byTarget({ [OMNI]: empty, [ANTHROPIC]: weekly(RESET) }), {
+        breaker: true,
+        config: chainConfig(10_000),
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+      await drive(clock, handle(sonnet()));
+      // 10:10:01: Sonnet's rest is over.
+      clock.advance(601_000 - (clock.now() - START));
+      const res = await drive(clock, handle(sonnet()));
+      expect(res.status).toBe(429);
+      expect(res.headers.get("x-should-retry")).toBe("true");
+      expect([...res.headers.keys()].filter((name) => name.startsWith("anthropic-"))).toEqual([]);
+      // Asked once in the first pass; the hold's passes skip it (it rests again) and the backend.
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+
+      const offClock = manualClock();
+      const off = router([empty, weekly(RESET), empty, weekly(RESET)], {
+        config: chainConfig(),
+        now: offClock.now,
+      });
+      await off.handle(sonnet());
+      offClock.advance(601_000);
+      const relayed = await off.handle(sonnet());
+      expect(relayed.status).toBe(429);
+      expect(relayed.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(off.calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
+
+    it("every Claude target at the chain's end is skipped: a backend that gave no answer gets the router's 502 naming each", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig();
+      const refused = () => {
+        throw new Error("connection refused");
+      };
+      const { calls, handle, logs } = router([empty, weekly(RESET), weekly(RESET), refused], {
+        config: {
+          ...cfg,
+          slots: {
+            ...cfg.slots,
+            [WORKER]: ["omniroute:glm-5.3-flash", "claude-opus-5-5", SONNET],
+          },
+        },
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toStartWith(
+        "cc-smart-dev-kit-router: no target for cc-smart-dev-kit-worker answered (omniroute:glm-5.3-flash: ",
+      );
+      expect(body.error.message).toEndWith(
+        "; claude-opus-5-5: at its plan usage limit; claude-sonnet-5-5: at its plan usage limit)",
+      );
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, ANTHROPIC, OMNI]);
+      expect(logs.at(-1)).toBe(
+        "2026-10-15T10:01:00.000Z POST /v1/messages claude-sonnet-5-5 → omniroute:glm-5.3-flash 502 0ms fallbacks=0 skipped=2",
+      );
+    });
+
+    it("a chain of Claude targets alone is never held: asked again at its limit, the last one's 429 passes", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(10_000);
+      const { calls, handle } = router([weekly(RESET), weekly(RESET, "60"), weekly(RESET, "60")], {
+        breaker: true,
+        config: { ...cfg, slots: { ...cfg.slots, [WORKER]: [SONNET, "claude-haiku-5-5"] } },
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      await handle(sonnet());
+      // Sonnet still rests (600 s); Haiku's rest (60 s) is over, so it is asked again.
+      clock.advance(120_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(429);
+      expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+      expect(res.headers.get("x-should-retry")).toBeNull();
+      expect(calls.map((call) => call.url)).toEqual([ANTHROPIC, ANTHROPIC, ANTHROPIC]);
+    });
+
+    it("a judge chain skips it too, and never holds: the backend's own answer judges", async () => {
+      const clock = manualClock();
+      const cfg = chainConfig(60_000);
+      const judged: GatewayConfig = {
+        ...cfg,
+        judgeTested: JUDGE_PROOFS,
+        slots: { ...cfg.slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash", SONNET] },
+      };
+      const check = () =>
+        clientRequest({
+          body: JSON.stringify({
+            max_tokens: 64,
+            messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
+            model: "claude-sonnet-5",
+            system: "You are a security monitor for autonomous AI coding agents.",
+          }),
+        });
+      const { calls, handle } = router([down, weekly(RESET), down], {
+        breaker: true,
+        config: judged,
+        now: clock.now,
+        sleep: mustNotHold,
+      });
+      const found = await handle(check());
+      expect(found.status).toBe(429);
+      clock.advance(60_000);
+      const res = await handle(check());
+      expect(res.status).toBe(503);
+      expect(await res.text()).toBe("down");
+      expect(calls.map((call) => call.url)).toEqual([OLLAMA, ANTHROPIC, OLLAMA]);
+    });
+
+    it("a reset no date can hold is not a known limit: Claude is asked, and nothing breaks", async () => {
+      const clock = manualClock();
+      const { calls, handle } = router([empty, weekly(1e300), empty, claudeAnswers], {
+        config: chainConfig(),
+        now: clock.now,
+      });
+      await handle(sonnet());
+      clock.advance(60_000);
+      const res = await handle(sonnet());
+      expect(res.status).toBe(200);
+      expect(calls.map((call) => call.url)).toEqual([OMNI, ANTHROPIC, OMNI, ANTHROPIC]);
+    });
+  });
 });
 
 describe("slot modes, seenClaude and recent (B0, B6b)", () => {
@@ -6220,5 +6700,407 @@ describe("slot modes, seenClaude and recent (B0, B6b)", () => {
       "status",
       "target",
     ]);
+  });
+});
+
+// ─── Profiles: the /p/<profile> path (owner D29) ──────────────────────────────────────
+
+/**
+ * A project's base URL may carry a profile's name, `…/p/<profile>` (owner D29): the router
+ * strips the prefix once, before every branch, and answers with that profile's chains and
+ * switches. A name no profile holds answers as plain Claude, never an error a session cannot
+ * read. The pure parts (the pattern, `profileView`, the state key) are in `profiles.test.ts`.
+ */
+describe("profiles: the /p/<profile> path (D29)", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const SCOUT = "cc-smart-dev-kit-scout";
+  const OPUS = "cc-smart-dev-kit-opus";
+  const JUDGE = "cc-smart-dev-kit-judge";
+  const MESSAGES = "https://anthropic.test/v1/messages?beta=true";
+  const OMNI = "http://omni.test/v1/messages";
+  const OLLAMA = "https://ollama.test/v1/messages";
+  const T0 = Date.UTC(2026, 9, 15, 10, 0, 0);
+  const RESET = Date.UTC(2026, 9, 15, 13, 0, 0) / 1000;
+
+  const down = () => new Response("down", { status: 503 });
+  const ok = () => new Response("ok", { status: 200 });
+  const atLimit = () =>
+    Response.json(
+      { error: { message: "Rate limit exceeded", type: "rate_limit_error" }, type: "error" },
+      {
+        headers: {
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-reset": String(RESET),
+          "anthropic-ratelimit-unified-status": "rejected",
+        },
+        status: 429,
+      },
+    );
+
+  /**
+   * The machine's config with three profiles: `proj` gives the worker a backend and turns the
+   * scout off; `two` chains the worker with its fallback on; `held` chains it with the
+   * fallback off.
+   */
+  function profiled(): GatewayConfig {
+    return {
+      ...config(),
+      profiles: {
+        held: {
+          fallback: { [WORKER]: false },
+          slots: { [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"] },
+        },
+        proj: {
+          slots: { [SCOUT]: "claude", [WORKER]: ["omniroute:glm-5.3-flash"] },
+        },
+        two: {
+          slots: { [WORKER]: ["ollama:deepseek-v4.1-flash", "omniroute:glm-5.3-flash"] },
+        },
+      },
+    };
+  }
+
+  it("a streamed model call takes the profile's chain; the upstream path has no prefix", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = message("claude-sonnet-5-5");
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(sent) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.method, call.url])).toEqual([["POST", OMNI]]);
+    const body = JSON.parse(nth(calls, 0).body ?? "") as Record<string, unknown>;
+    expect(body.model).toBe("glm-5.3-flash");
+    expect(body.stream).toBe(true);
+    // The prompt is Claude Code's own: the same messages it sent.
+    expect(body.messages).toEqual(sent.messages);
+  });
+
+  it("a model call that does not stream takes it too", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = { ...message("claude-sonnet-5-5"), stream: false };
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(sent) }),
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(nth(calls, 0).body ?? "").stream).toBe(false);
+  });
+
+  it("count_tokens follows the profile's first target: a backend there is a 404, no upstream call", async () => {
+    const { calls, handle } = router([], { config: profiled() });
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/proj/v1/messages/count_tokens?beta=true",
+      }),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        message: `count_tokens is not available for ${WORKER}; Claude Code estimates instead`,
+        type: "not_found_error",
+      },
+      type: "error",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("HEAD /api/hello reaches Anthropic without the prefix", async () => {
+    const { calls, handle } = router([() => new Response(null, { status: 204 })], {
+      config: profiled(),
+    });
+    const res = await handle(clientRequest({ method: "HEAD", path: "/p/proj/api/hello" }));
+    expect(res.status).toBe(204);
+    expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+      ["HEAD", "https://anthropic.test/api/hello", null],
+    ]);
+  });
+
+  it("the health page under a prefix answers health, naming what this router knows", async () => {
+    const { handle } = router([], { config: profiled() });
+    const res = await handle(
+      clientRequest({ method: "GET", path: "/p/proj/__cc-smart-dev-kit/health" }),
+    );
+    const body = (await res.json()) as {
+      features: string[];
+      ok: boolean;
+      profiles: string[];
+      slots: Record<string, string[]>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.features).toEqual(["profiles", "claude-slot-aliases"]);
+    expect(body.profiles).toEqual(["held", "proj", "two"]);
+    // The slots are the machine's: the profile changes what its own requests see.
+    expect(body.slots[WORKER]).toEqual(["claude-sonnet-5-5"]);
+  });
+
+  it("a server-tool request under a prefix goes to Anthropic as sent", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = JSON.stringify({
+      ...message("claude-sonnet-5-5"),
+      tools: [{ name: "web_search", type: "web_search_20250305" }],
+    });
+    const res = await handle(clientRequest({ path: "/p/proj/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a safety check under a prefix reaches the profile's judge chain", async () => {
+    const judged: GatewayConfig = {
+      ...profiled(),
+      judgeTested: JUDGE_PROOFS,
+      profiles: { proj: { slots: { [JUDGE]: ["omniroute:glm-5.3-flash"] } } },
+    };
+    const check = {
+      max_tokens: 64,
+      messages: [{ content: "git push --force", role: "user" }],
+      model: "claude-sonnet-5",
+      system: "You are a security monitor for autonomous AI coding agents.\n\n## Context",
+    };
+    const { calls, handle } = router([ok], { config: judged });
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(check) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([OMNI]);
+    // The prompt is the check Claude Code shipped; only its route changed.
+    const body = JSON.parse(nth(calls, 0).body ?? "") as Record<string, unknown>;
+    expect(body.system).toEqual(check.system);
+    expect(body.messages).toEqual(check.messages);
+  });
+
+  it("a check under a prefix reaches the profile's worker stand-in while Claude cannot", async () => {
+    // No judge chain: Claude judges first (D44), and while Claude is at its limit the
+    // worker chain's tested target judges in its place. That chain is the profile's.
+    const judged: GatewayConfig = {
+      ...profiled(),
+      judgeTested: JUDGE_PROOFS,
+      profiles: { proj: { slots: { [WORKER]: ["omniroute:glm-5.3-flash"] } } },
+    };
+    const check = {
+      max_tokens: 64,
+      messages: [{ content: "git push --force", role: "user" }],
+      model: "claude-sonnet-5",
+      system: "You are a security monitor for autonomous AI coding agents.\n\n## Context",
+    };
+    const { calls, handle } = router([atLimit, ok], { config: judged });
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(check) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([MESSAGES, OMNI]);
+  });
+
+  it("an unknown profile answers as plain Claude, with one WARN naming it", async () => {
+    const { calls, handle, logs } = router([ok], { config: profiled() });
+    // A Haiku request would take the machine's scout chain (its first target is a backend);
+    // a plain-Claude answer goes to Anthropic with the bytes as Claude Code sent them.
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    const res = await handle(clientRequest({ path: "/p/typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+    // A slot-named request: every slot is off there, and the 400 says so (a name Claude Code
+    // reads, never a guess at a model).
+    const named = await handle(
+      clientRequest({
+        body: JSON.stringify(message(SCOUT)),
+        path: "/p/typo/v1/messages?beta=true",
+      }),
+    );
+    expect(named.status).toBe(400);
+    expect(((await named.json()) as { error: { message: string } }).error.message).toContain(
+      `${SCOUT} is off`,
+    );
+    expect(calls).toHaveLength(1);
+    expect(logs.filter((line) => line.startsWith("WARN profile"))).toEqual([
+      `WARN profile "typo" is not in ${CONFIG_PATH} (profiles: held, proj, two); its requests answer as plain Claude`,
+    ]);
+  });
+
+  it("an unknown profile reaches no chain through an alias either", async () => {
+    const aliased: GatewayConfig = {
+      ...config(),
+      aliases: { "old-worker": "omniroute:glm-5.3-flash" },
+      profiles: { proj: {} },
+    };
+    const { calls, handle } = router([ok], { config: aliased });
+    const sent = JSON.stringify(message("old-worker"));
+    const res = await handle(clientRequest({ path: "/p/typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a name the pattern refuses answers as plain Claude too, its path still stripped", async () => {
+    const { calls, handle, logs } = router([ok], { config: profiled() });
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    const res = await handle(clientRequest({ path: "/p/Typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+    expect(logs.some((line) => line.startsWith('WARN profile "Typo"'))).toBe(true);
+  });
+
+  it("without a prefix the machine's config answers, profiles set or not", async () => {
+    // The machine's scout chain starts with a backend: no prefix, no profile, that target.
+    const { calls, handle } = router([ok], { config: profiled() });
+    await handle(clientRequest({ body: JSON.stringify(message("claude-haiku-4-5")) }));
+    expect(calls.map((call) => call.url)).toEqual([OMNI]);
+  });
+
+  it("the prompt's bytes are Claude Code's own under a prefix", async () => {
+    // A profile that names no slot keeps the machine's worker chain: a Claude model there.
+    const same: GatewayConfig = { ...config(), profiles: { same: {} } };
+    const { calls, handle } = router([ok], { config: same });
+    const sent = JSON.stringify(message("claude-sonnet-5-5"));
+    await handle(clientRequest({ path: "/p/same/v1/messages?beta=true", body: sent }));
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a profile's fallback switch: off, its first target alone answers; on, the next one does", async () => {
+    const off = router([down], { config: profiled() });
+    const refused = await off.handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/held/v1/messages?beta=true",
+      }),
+    );
+    expect(refused.status).toBe(503);
+    expect(off.calls.map((call) => call.url)).toEqual([OMNI]);
+
+    const on = router([down, ok], { config: profiled() });
+    const answered = await on.handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/two/v1/messages?beta=true",
+      }),
+    );
+    expect(answered.status).toBe(200);
+    expect(on.calls.map((call) => call.url)).toEqual([OLLAMA, OMNI]);
+  });
+
+  it("a profile turns a slot to plain Claude while the machine's chain stays", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    await handle(clientRequest({ path: "/p/proj/v1/messages?beta=true", body: sent }));
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a profile's fallback record is its own key in the limit state", async () => {
+    const states: string[] = [];
+    const { handle } = router([atLimit, ok], {
+      config: {
+        ...config(),
+        profiles: {
+          proj: {
+            fallback: { [OPUS]: true },
+            slots: { [OPUS]: ["claude-opus-5-5", "omniroute:glm-5.3-flash"] },
+          },
+        },
+      },
+      states,
+    });
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-opus-5-5")),
+        path: "/p/proj/v1/messages?beta=true",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
+      fallbacks: {
+        [`proj/${OPUS}`]: {
+          lastAt: T0,
+          model: "claude-opus-5-5",
+          resetsAt: RESET,
+          since: T0,
+          target: "omniroute:glm-5.3-flash",
+        },
+      },
+      limits: { "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 } },
+      seenClaude: { "claude-opus-5-5": T0 },
+      version: 1,
+    });
+  });
+
+  it("a profile's breaker is its own: one profile held, another answered, records apart", async () => {
+    const twoProfiles: GatewayConfig = {
+      ...config(),
+      profiles: {
+        down: {
+          slots: { [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"] },
+        },
+        up: { slots: { [WORKER]: ["claude-sonnet-5-5"] } },
+      },
+      timeouts: { breakerHoldMs: 0, firstByteMs: 1000 },
+    };
+    const states: string[] = [];
+    const { calls, handle, logs } = router([down, down, ok], {
+      breaker: true,
+      config: twoProfiles,
+      states,
+    });
+    const held = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/down/v1/messages?beta=true",
+      }),
+    );
+    expect(held.status).toBe(429);
+    expect(held.headers.get("retry-after")).toBe("30");
+    expect(held.headers.get("x-should-retry")).toBe("true");
+    expect(((await held.json()) as { error: { message: string } }).error.message).toBe(
+      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: cc-smart-dev-kit gateway profile down slot worker <targets>`,
+    );
+    expect(
+      logs.some((line) => line.startsWith(`WARN down/${WORKER}: every target limited or down`)),
+    ).toBe(true);
+    const state = JSON.parse(states.at(-1) ?? "") as {
+      breakers?: Record<string, { held: number; targets: { status: number; target: string }[] }>;
+    };
+    const record = state.breakers?.[`down/${WORKER}`];
+    // The hold is 0 ms here, so the answer came at once and no request waited in it; the
+    // record is still the profile's own, with its own chain's failures.
+    expect(record?.held).toBe(0);
+    expect(record?.targets.map((target) => [target.target, target.status])).toEqual([
+      ["omniroute:glm-5.3-flash", 503],
+      ["ollama:deepseek-v4.1-flash", 503],
+    ]);
+    // Another profile's request is not held: its own chain answers at once.
+    const other = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/up/v1/messages?beta=true",
+      }),
+    );
+    expect(other.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([OMNI, OLLAMA, MESSAGES]);
+    // And the record under the profile's key is still the only breaker.
+    const after = JSON.parse(states.at(-1) ?? "") as { breakers?: Record<string, unknown> };
+    expect(Object.keys(after.breakers ?? {})).toEqual([`down/${WORKER}`]);
+  });
+
+  it("a profile that names no chain for the slot is told both commands: the machine's chain is the one failing (RV3)", async () => {
+    const inheriting: GatewayConfig = {
+      ...config(),
+      profiles: { shared: { slots: { "cc-smart-dev-kit-scout": ["claude-haiku-5-5"] } } },
+      slots: {
+        ...config().slots,
+        [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      },
+      timeouts: { breakerHoldMs: 0, firstByteMs: 1000 },
+    };
+    const { handle } = router([down, down], { breaker: true, config: inheriting });
+    const held = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/shared/v1/messages?beta=true",
+      }),
+    );
+    expect(held.status).toBe(429);
+    const text = ((await held.json()) as { error: { message: string } }).error.message;
+    expect(text).toContain(`every target of ${WORKER} in profile shared is limited or down`);
+    expect(
+      text.endsWith(
+        "change it: cc-smart-dev-kit gateway profile shared slot worker <targets> (a chain of its own for this profile), or cc-smart-dev-kit gateway slot worker <targets> (the machine's chain, which this profile uses)",
+      ),
+    ).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 /**
  * The lead's notes hook (`lead-notes.ts`): one line about what changed among the lead's crew
- * sessions since its last turn, said once.
+ * sessions since its last turn, said once, and the one-line crew rule at a session start (D61).
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -29,6 +29,9 @@ import { leadNotesHook } from "./specs";
 const CREW_ID = "W2-x-1a2b3c";
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
+/** The D61 start note, written out: the lead skill's "Your crew builds" in one line. */
+const START_NOTE =
+  "You lead: your crew sessions build the work — your context is re-read every turn, so every file you read or write costs on every later turn.";
 
 /** A crew record as `crew start` writes one, in `repo`. */
 function newCrew(repo: string): NewCrew {
@@ -68,9 +71,14 @@ function newCrew(repo: string): NewCrew {
  * lead's first turn seeds the cursor itself. `named` (the default) says the lead already took its
  * name at an earlier prompt: the record `session-name.ts` keeps is written by hand, so a test about
  * the news does not read the name too. Without it the next prompt is the lead's first since
- * `crew lead`, and the LD1 tests watch it name the session.
+ * `crew lead`, and the LD1 tests watch it name the session. `list` (the default) says the lead
+ * already has a task list: one task file in Claude Code's own folder for its session
+ * (`docs/claude-code-contract.md` § The to-do list), so a test about the news is not also about
+ * the D23 reminder. Without it the lead has no list, and a prompt gets the reminder.
  */
-async function leadWorld(options: { cursor?: boolean; named?: boolean } = {}): Promise<{
+async function leadWorld(
+  options: { cursor?: boolean; list?: boolean; named?: boolean } = {},
+): Promise<{
   env: Record<string, string>;
   repo: string;
   stateDir: string;
@@ -96,7 +104,21 @@ async function leadWorld(options: { cursor?: boolean; named?: boolean } = {}): P
     mkdirSync(namesDir(env), { recursive: true });
     writeFileSync(join(namesDir(env), LEAD_SESSION), "LEAD app plan");
   }
+  if (options.list ?? true) taskFile(env, LEAD_SESSION, 1);
   return { env, repo, stateDir };
+}
+
+/**
+ * One task file in `list`'s folder, as Claude Code writes it: the lead's own list, or the one
+ * `CLAUDE_CODE_TASK_LIST_ID` names.
+ */
+function taskFile(env: Record<string, string>, list: string, n: number): void {
+  const folder = join(cliPaths(env).claudeConfigDir, "tasks", list);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, `${String(n)}.json`),
+    `${JSON.stringify({ id: String(n), subject: `Part ${String(n)}`, description: "x", status: "pending", blocks: [], blockedBy: [] }, null, 2)}\n`,
+  );
 }
 
 /** One step of the crew session, as `crew step` appends it. */
@@ -261,6 +283,28 @@ describe("the lead's name (LD1)", () => {
     );
   });
 
+  test("the name's record cannot be written (TMPDIR is a file): the news still reaches the lead, once, and one line says why", async () => {
+    // `titleToSet` writes the name it sets into `<TMPDIR>/cc-smart-dev-kit-session-names`. The
+    // cursor had already moved past the news when that write threw, so the throw lost the news
+    // for good: the next turn heard nothing of it.
+    const world = await leadWorld({ named: false });
+    await step(world.stateDir, world.repo, "tests-green");
+    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
+    writeFileSync(notAFolder, "");
+    const result = await runHook(leadNotesHook, leadInput(world.repo), {
+      ...world.env,
+      TMPDIR: notAFolder,
+    });
+    expect(result.stdout).toBe(addContext("UserPromptSubmit", stepLine("tests-green")).stdout);
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit lead-notes: the session name could not be recorded (",
+    );
+    // The news is said once, and the name is set on the first turn that can record it.
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      named(null, NAME),
+    );
+  });
+
   test("a second prompt with the same title sets nothing", async () => {
     const world = await leadWorld({ named: false });
     expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
@@ -355,7 +399,202 @@ describe("the lead's name (LD1)", () => {
         },
         world.env,
       ),
+      // The start note, and no `sessionTitle` beside it: `addContext` is the exact answer.
+    ).toEqual(addContext("SessionStart", START_NOTE));
+  });
+});
+
+describe("D61: a lead's start note, and never a prompt", () => {
+  /** A session start, as Claude Code gives it. */
+  function start(repo: string, source: string) {
+    return { hook_event_name: "SessionStart", session_id: LEAD_SESSION, cwd: repo, source };
+  }
+
+  test("a start, a resume and a compaction each carry it (the wiring's three sources, `entries.test.ts`)", async () => {
+    const world = await leadWorld();
+    for (const source of ["startup", "resume", "compact"]) {
+      expect(await runHook(leadNotesHook, start(world.repo, source), world.env)).toEqual(
+        addContext("SessionStart", START_NOTE),
+      );
+    }
+  });
+
+  test("a prompt never carries it: words at a start only", async () => {
+    const world = await leadWorld();
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a start's news comes after it, in one answer", async () => {
+    const world = await leadWorld();
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(await runHook(leadNotesHook, start(world.repo, "resume"), world.env)).toEqual(
+      addContext("SessionStart", `${START_NOTE}\n${stepLine("tests-green")}`),
+    );
+  });
+
+  test("the first turn in a lead, which seeds the cursor, still carries it", async () => {
+    const world = await leadWorld({ cursor: false });
+    expect(await runHook(leadNotesHook, start(world.repo, "startup"), world.env)).toEqual(
+      addContext("SessionStart", START_NOTE),
+    );
+    expect(readNotesState(world.stateDir, world.repo, LEAD_SESSION)).toEqual({
+      offset: statSync(crewEventsFile(world.stateDir, world.repo)).size,
+    });
+  });
+
+  test("an ordinary session hears nothing", async () => {
+    const { repo } = makeClone();
+    const env = hookEnv();
+    expect(await runHook(leadNotesHook, start(repo, "startup"), env)).toEqual({});
+  });
+
+  test("a crew session hears nothing: it is not the lead", async () => {
+    const world = await leadWorld();
+    // The store really holds a crew session for that id (`sessionId` is null on the world's own
+    // record): a crew session is a crew record, never a lead one, so the note is not for it.
+    const crewSession = "0a1b2c3d-0000-4000-8000-000000000000";
+    await createCrew(
+      world.stateDir,
+      { ...newCrew(world.repo), id: "W3-x-9f8e7d", sessionId: crewSession },
+      T0,
+    );
+    expect(
+      await runHook(
+        leadNotesHook,
+        { ...start(world.repo, "startup"), session_id: crewSession },
+        world.env,
+      ),
     ).toEqual({});
+  });
+});
+
+describe("D23: a lead with no to-do list is reminded, never blocked", () => {
+  /** The reminder, written out. */
+  const REMINDER =
+    "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+  const NAME = "LEAD app plan";
+
+  test("a prompt while the lead has no list: the reminder, as the one line of context", async () => {
+    const world = await leadWorld({ list: false });
+    const result = await runHook(leadNotesHook, leadInput(world.repo), world.env);
+    expect(result).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: REMINDER },
+      }),
+    });
+    // Never a block, never a question: the answer carries context and nothing else.
+    expect(result.exitCode ?? 0).toBe(0);
+  });
+
+  test("every prompt says it while the list is missing, and none once a task exists", async () => {
+    const world = await leadWorld({ list: false });
+    const reminder = addContext("UserPromptSubmit", REMINDER);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(reminder);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(reminder);
+    taskFile(world.env, LEAD_SESSION, 1);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a task in any status is a list: a finished list is not a missing one", async () => {
+    const world = await leadWorld({ list: false });
+    const folder = join(cliPaths(world.env).claudeConfigDir, "tasks", LEAD_SESSION);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, "1.json"),
+      JSON.stringify({ id: "1", subject: "done", description: "x", status: "completed" }),
+    );
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a list whose every task was removed is no list: the lock and the high-water mark are not tasks", async () => {
+    const world = await leadWorld({ list: false });
+    const folder = join(cliPaths(world.env).claudeConfigDir, "tasks", LEAD_SESSION);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, ".lock"), "");
+    writeFileSync(join(folder, ".highwatermark"), "3");
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", REMINDER),
+    );
+  });
+
+  test("another session's list is not the lead's", async () => {
+    const world = await leadWorld({ list: false });
+    taskFile(world.env, "0a1b2c3d-0000-4000-8000-000000000000", 1);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", REMINDER),
+    );
+  });
+
+  test("CLAUDE_CODE_TASK_LIST_ID names the lead's list too", async () => {
+    const world = await leadWorld({ list: false });
+    const env = { ...world.env, CLAUDE_CODE_TASK_LIST_ID: "shared-list" };
+    // A list in the session's own folder is not the one the environment names.
+    taskFile(env, LEAD_SESSION, 1);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), env)).toEqual(
+      addContext("UserPromptSubmit", REMINDER),
+    );
+    taskFile(env, "shared-list", 1);
+    expect(await runHook(leadNotesHook, leadInput(world.repo), env)).toEqual({});
+  });
+
+  test("the reminder comes first and the news after it, in one answer", async () => {
+    const world = await leadWorld({ list: false });
+    await step(world.stateDir, world.repo, "tests-green");
+    await step(world.stateDir, world.repo, "committed");
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", `${REMINDER}\n${stepLine("committed")} (and 1 more…)`),
+    );
+    // The news is said once; the reminder is said again.
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", REMINDER),
+    );
+  });
+
+  test("the first prompt, which seeds the cursor, carries it too, beside the lead's name", async () => {
+    const world = await leadWorld({ cursor: false, list: false, named: false });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: REMINDER,
+          sessionTitle: NAME,
+        },
+      }),
+    });
+  });
+
+  test("a start is not a prompt: SessionStart never carries the reminder", async () => {
+    const world = await leadWorld({ list: false });
+    const start = {
+      hook_event_name: "SessionStart",
+      session_id: LEAD_SESSION,
+      cwd: world.repo,
+      source: "resume",
+    };
+    // The D61 start note, and never the reminder: `addContext` is the exact answer.
+    expect(await runHook(leadNotesHook, start, world.env)).toEqual(
+      addContext("SessionStart", START_NOTE),
+    );
+    // News at a start is still said, without it.
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(await runHook(leadNotesHook, start, world.env)).toEqual(
+      addContext("SessionStart", `${START_NOTE}\n${stepLine("tests-green")}`),
+    );
+  });
+
+  test("a session that is not a recorded lead hears nothing of it", async () => {
+    const { repo } = makeClone();
+    const env = hookEnv();
+    expect(await runHook(leadNotesHook, leadInput(repo), env)).toEqual({});
+  });
+
+  test("a folder it cannot read says nothing: no reminder on a guess", async () => {
+    const world = await leadWorld({ list: false });
+    // A file where the lead's task folder belongs.
+    mkdirSync(join(cliPaths(world.env).claudeConfigDir, "tasks"), { recursive: true });
+    writeFileSync(join(cliPaths(world.env).claudeConfigDir, "tasks", LEAD_SESSION), "{}");
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
   });
 });
 

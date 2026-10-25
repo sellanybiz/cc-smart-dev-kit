@@ -21,6 +21,7 @@ import {
   planWindow,
   portHolder,
   type RouterFacts,
+  routerFacts,
   type SwitchFacts,
   switchFacts,
 } from "../facts";
@@ -28,11 +29,13 @@ import {
   healthData,
   machineData,
   overviewData,
+  overviewRequests,
   type PageDataDeps,
   settingsPageData,
   slotsData,
   updateFacts,
 } from "../page-data";
+import type { OverviewRequests } from "../views";
 import { projectsAnswerFor } from "./projects";
 import type {
   ApiError,
@@ -114,6 +117,9 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
+      // The page that would show these says the gateway is not set up, so no number is read:
+      // counting the history to fill a field nobody draws would be work for nothing.
+      requests: { perMinute: null, sinceRouterStart: null },
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,
@@ -127,6 +133,20 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
     fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps),
   };
+}
+
+/**
+ * `/api/history/rate`: the Overview's two request numbers, on their own, so that card can read
+ * again with each routed request. The whole Overview answer cannot: it asks every backend for
+ * its model list, and a `recent` event fires for every ping Claude Code sends as well
+ * (`portal/src/api/refresh.ts`).
+ */
+export async function rateAnswer(deps: PageDataDeps): Promise<OverviewRequests> {
+  const router =
+    "config" in deps.found
+      ? await routerFacts(deps.action.portal, deps.found.config.port)
+      : NO_ROUTER;
+  return overviewRequests(deps, router, deps.action.portal.now());
 }
 
 /** `/api/slots`: the Slots page, and each slot's switch. */
@@ -169,7 +189,7 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
     ...(await healthData(deps, deps.found.config)),
     configured: true,
     error: null,
-    portHolder: portHolder(deps.action.portal, deps.found.config.port),
+    portHolder: await portHolder(deps.action.portal, deps.found.config.port),
   };
 }
 
@@ -206,9 +226,12 @@ export async function machineAnswer(deps: PageDataDeps): Promise<MachineAnswer> 
   return answer;
 }
 
-/** `/api/settings`: the Settings page. Needs no gateway config. */
-export function settingsAnswer(deps: PageDataDeps): SettingsAnswer {
-  return settingsPageData(deps);
+/**
+ * `/api/settings`: the Settings page. Needs no gateway config. Awaited: the page reads the
+ * project's own file through the portal's async readers (`resolveProjectAsync`), off the loop.
+ */
+export async function settingsAnswer(deps: PageDataDeps): Promise<SettingsAnswer> {
+  return await settingsPageData(deps);
 }
 
 /** `/api/projects`: every project the person works in, newest use first (B8, `projects.ts`). */

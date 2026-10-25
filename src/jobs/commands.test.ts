@@ -404,6 +404,12 @@ describe("job run --exclusive", () => {
     expect(await first.exited).toBe(143);
     expect(await second.exited).toBe(0);
     expect(await new Response(second.stdout).text()).toBe("second\n");
+    // It waited, so it says when it started and how it ended: the lines a pipe hides. The
+    // hint came with the first waiting line, once, and never again.
+    const all = err + (await readUntil(second.stderr, "Heavy job ended: "));
+    expect(all).toMatch(/Heavy job starts after .+: echo second\n/);
+    expect(all).toMatch(/Heavy job ended: echo second, exit 0 after .+\n/);
+    expect(all.match(/A pipe \(\| tail\) hides this job's exit status/g)).toHaveLength(1);
     expect(jsonFiles(m.leases)).toEqual([]);
   });
 

@@ -9,6 +9,7 @@ import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
+import { runClaudeMem } from "../cli/claude-mem";
 import { DOCTOR_FLAGS, runDoctor } from "../cli/doctor";
 import {
   asksForHelp,
@@ -20,6 +21,7 @@ import {
   unknownCommand,
   usageError,
 } from "../cli/help";
+import { realRunSession, runLaunch } from "../cli/launch";
 import type { LiveRunner } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
@@ -39,7 +41,7 @@ import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
-import { realProbe } from "../gateway/health";
+import { realProbe, routerFetch } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
 import {
@@ -50,7 +52,7 @@ import {
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
-import { recordSessionName } from "../hooks/session-name";
+import { recordSessionName, SessionNameRefused } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
@@ -59,6 +61,7 @@ import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
+import { projectsList } from "../portal/api/projects";
 import { runPortal } from "../portal/command";
 import { probePortal, realPortalProbe, testPortalState } from "../portal/health";
 import { DEFAULT_PORTAL_PORT } from "../ports";
@@ -67,7 +70,6 @@ import { locateCheckout } from "../project/resolve";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
-import { LAUNCHER_NAME } from "../setup/launcher";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { alertsAt } from "../workflow/alerts";
@@ -151,21 +153,66 @@ const prompts = terminalPrompts(currentTerminal(process.env));
 const ask = prompts === null ? null : (question: string) => prompts.confirm(question, false);
 
 /**
+ * The projects list the kit shows, in one place: `gateway projects`, `gateway off`'s
+ * "still on" lines and `doctor`'s per-project lines all read the portal's own `projectsList`,
+ * so the command, the doctor and the Projects page can never disagree about which projects
+ * exist.
+ */
+function projectsReader(paths: ReturnType<typeof cliPaths>) {
+  return async (folder: string) => {
+    const list = await projectsList({
+      cwd: folder,
+      env: process.env,
+      now: () => Date.now(),
+      paths,
+    });
+    return { note: list.note, projects: list.projects };
+  };
+}
+
+/**
  * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
  * `--omniroute-password` needs (`readSecret` on a terminal whose echo can be switched off, and
  * nothing on a pipe), which this entry used to leave out.
  */
 function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
-  return buildGatewayContext({
-    account,
-    bundle: routerBundle(),
-    confirm: ask,
-    paths,
+  return {
+    ...buildGatewayContext({
+      account,
+      bundle: routerBundle(),
+      confirm: ask,
+      paths,
+      platform: process.platform,
+      runner,
+      service,
+      terminal: process.stdin,
+    }),
+    // `gateway projects` lists the portal's own projects (`projectsList`): one reader for the
+    // page and the command, so the two can never disagree about which projects exist.
+    projects: projectsReader(paths),
+  };
+}
+
+/**
+ * What `launch` needs: the gateway's config (a port, a profile), the state folder for its
+ * settings file, and this machine's `claude`. The session runs attached to this terminal,
+ * so its stdin, stdout and stderr are this process's own (`realRunSession`).
+ */
+function launchContext(paths: ReturnType<typeof cliPaths>) {
+  return {
+    configPath: paths.gatewayConfigFile,
+    cwd: process.cwd(),
+    env: process.env,
+    error: (line: string) => console.error(line),
+    fetch: routerFetch,
+    home: paths.home,
     platform: process.platform,
-    runner,
-    service,
-    terminal: process.stdin,
-  });
+    print: (line: string) => console.log(line),
+    runSession: realRunSession,
+    settingsFile: paths.settingsFile,
+    stateDir: paths.stateDir,
+    which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
+  };
 }
 
 /** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */
@@ -327,6 +374,7 @@ async function main(argv: string[]): Promise<number> {
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
         alertsAt(paths, process.cwd(), process.env),
+        process.env,
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
@@ -338,10 +386,10 @@ async function main(argv: string[]): Promise<number> {
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
-      // Not in --help: the two alert hooks start it, detached, through the launcher, so the
-      // wait for a click — a minute on screen, half an hour for the usage-limit alert —
-      // runs from the installed version, not the hook's version folder
-      // (src/entries/stop-failure.ts, src/entries/notify.ts).
+      // Not in --help: the notifier starts it, detached, through the launcher, so the wait for a
+      // click — a minute on screen — runs from the installed version, not the hook's version
+      // folder (src/entries/notify.ts). The usage-limit hook shows its plain alert itself; the
+      // worker still reads that hook's own format, for an older hook in a running session.
       const argument = rest.length === 1 ? (rest[0] ?? "") : null;
       const notifyAlert = argument === null ? null : parseNotifyWorkerAlert(argument);
       if (notifyAlert !== null) {
@@ -366,8 +414,7 @@ async function main(argv: string[]): Promise<number> {
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join(paths.binDir, LAUNCHER_NAME);
-      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+      if (runAlert(alert, process.platform, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;
@@ -391,6 +438,7 @@ async function main(argv: string[]): Promise<number> {
             runner,
             service,
             machine: realMachine(process.env, null),
+            projects: projectsReader(paths),
           },
           local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
           mcp: realMcpDoctorDeps(),
@@ -507,6 +555,13 @@ async function main(argv: string[]): Promise<number> {
       try {
         name = recordSessionName(sessionId, words.join(" "), process.env);
       } catch (error) {
+        // A crew session keeps the name its lead gave it: the arguments are well formed and the
+        // state refuses them, so this is a failed command — exit 1 and one line, never the
+        // usage exit 2 and its help pointer.
+        if (error instanceof SessionNameRefused) {
+          console.error(error.message);
+          return 1;
+        }
         // A wrong argument (a name that is not a session id, a name that is empty) is a
         // usage mistake, not a failed command: exit 2, and say what is wrong.
         console.error(
@@ -704,6 +759,10 @@ async function main(argv: string[]): Promise<number> {
       );
       return 2;
     }
+    case "launch":
+      // One session on a model path of its own, attached to this terminal (`src/cli/launch.ts`).
+      // Everything after `--` is Claude Code's: the command reads its own options and no more.
+      return await runLaunch(rest, launchContext(paths));
     case "sessions": {
       const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
       if (unknown.length > 0) {
@@ -777,6 +836,26 @@ async function main(argv: string[]): Promise<number> {
         },
         process.env,
       );
+    }
+    case "claude-mem": {
+      // The key comes on stdin, never as an argument (the card's own rule). On a terminal it is
+      // read with no echo — the prompts' one secret read — and from a pipe or a file as it is.
+      // A terminal that cannot hide what is typed throws instead: the key would be shown on screen.
+      const secret = prompts?.secret ?? null;
+      return await runClaudeMem(rest, {
+        confirm: ask,
+        out: createOut(currentTerminal(process.env)),
+        paths,
+        read: async () => {
+          if (process.stdin.isTTY !== true) return await Bun.stdin.text();
+          if (secret === null) {
+            throw new Error(
+              "this terminal cannot hide what you type, so the key would be shown on screen",
+            );
+          }
+          return await secret("Paste the key for claude-mem's backend, then press Enter");
+        },
+      });
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));

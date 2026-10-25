@@ -266,6 +266,41 @@ describe("F2a-1: the kit command behind a computed program: asked", () => {
   test("a computed program that names no kit command passes", async () => {
     expect(await run(shellInput("$(which git) status", repo))).toBeNull();
   });
+
+  test("FU2: a path that only holds the kit's name is not a computed kit command", async () => {
+    // A crew session works in this repository, and a worktree path holds its name. The
+    // program is computed, but no word of the line is the kit command: the name sits inside
+    // a path argument, which cannot be what the program resolves to (the 1.1.0 false alarm).
+    for (const command of [
+      `$(which bun) test /work/${KIT}/src/x.test.ts`,
+      `$(which bun) test /work/${KIT}/.claude/worktrees/w/src/x.test.ts`,
+      `$EDITOR /work/${KIT}/README.md`,
+      `cd /work/${KIT}/.claude/worktrees/w && $(which git) status`,
+    ]) {
+      expect(await run(shellInput(command, repo))).toBeNull();
+    }
+  });
+
+  test("FU2: a computed program in a line that can reach the launcher still asks", async () => {
+    // A variable the line binds to the launcher can be the program, a launcher named by its
+    // path names it too (a path separator may stand before it), a `bash -c` around one hides
+    // it one level down, a substitution around the launcher's own path runs it, and a bundle
+    // among the program's words is the kit's CLI: each still asks.
+    for (const command of [
+      `KIT=${KIT}; $KIT crew report --status done`,
+      `KIT=/home/user/.local/bin/${KIT}; $KIT workflow review-done`,
+      `\${KIT:-/home/user/.local/bin/${KIT}} workflow review-done`,
+      `$(echo /home/user/.local/bin/${KIT}) workflow review-done`,
+      `K=/home/user/.local/bin/${KIT}.cmd && "$K" crew report --status done`,
+      `bash -c "$(which ${KIT}) crew report --status done"`,
+      `$(/home/user/.local/bin/${KIT}) crew report --status done`,
+      `$(which bun) /plugin/dist/cli.js portal --no-open`,
+    ]) {
+      const answer = await run(shellInput(command, repo));
+      expect(answer?.decision).toBe("ask");
+      expect(answer?.reason).toContain("cannot tell whether it runs it");
+    }
+  });
 });
 
 describe("F2a-3: PowerShell Start-Process", () => {
@@ -1453,6 +1488,57 @@ describe("CC8: a crew session is never asked", () => {
     expect(refused?.reason).not.toContain("never changes the kit's own limits");
     expect(asked?.decision).toBe("ask");
     expect(asked?.reason).toContain("cannot tell whether it runs it");
+  });
+
+  test("FU2: a path that only holds the kit's name is no computed kit command in a crew session", async () => {
+    // The false alarm of 1.1.0 was a crew denial: a crew session works in this repository,
+    // whose name every absolute path holds, and a computed program beside such a path was
+    // refused as "a computed kit command" although it runs none.
+    const [refused, asked] = await both(
+      shellInput(`$(which bun) test /work/${KIT}/src/x.test.ts`, repo),
+    );
+    expect(refused).toBeNull();
+    expect(asked).toBeNull();
+  });
+
+  test("FU2: a launcher the line names by its path is still refused in a crew session", async () => {
+    // The narrowing keeps a path that only passes through the name quiet; a launcher that
+    // ends the path can be the computed program, so the crew answer stays a denial.
+    const [refused, asked] = await both(
+      shellInput(`K=/home/user/.local/bin/${KIT}; $K crew report --status done`, repo),
+    );
+    expect(refused?.decision).toBe("deny");
+    expect(refused?.reason).toContain("cannot tell whether it runs it");
+    expect(refused?.reason).toContain(CREW_QUESTION_STEP);
+    expect(asked?.decision).toBe("ask");
+  });
+
+  test("RV4: the kit's bundle bound to a variable in the line, run by a computed program: still refused", async () => {
+    // Before the narrowing of `namesKit` this line asked, because the plugin folder in the
+    // path held the kit's name; the narrowing (rightly) ignores a folder, and the bundle word
+    // `$C` is no kit word, so nothing asked. The path is written in the line: the guard reads it.
+    const bundle = `$HOME/.claude/plugins/cache/${KIT}/${KIT}/1.2.0/dist/cli.js`;
+    for (const command of [
+      `C=${bundle}; $(which bun) $C workflow review-done`,
+      `C="${bundle}"; "$BUN" "$C" workflow review-done`,
+      `export C=${bundle} && $(command -v bun) $C workflow review-done`,
+    ]) {
+      const [refused, asked] = await both(shellInput(command, repo));
+      expect({ command, decision: refused?.decision }).toEqual({ command, decision: "deny" });
+      expect(refused?.reason).toContain("cannot tell whether it runs it");
+      expect({ command, decision: asked?.decision }).toEqual({ command, decision: "ask" });
+    }
+  });
+
+  test("RV4: a computed program beside a bundle that is another project's stays quiet", async () => {
+    // `dist/server.js` and a folder that merely holds the kit's name are no kit's bundle.
+    for (const command of [
+      "S=$HOME/app/dist/server.js; $(which node) $S",
+      `S=/work/${KIT}/dist/server.js; $(which node) $S --check`,
+    ]) {
+      const [refused, asked] = await both(shellInput(command, repo));
+      expect({ command, refused, asked }).toEqual({ command, refused: null, asked: null });
+    }
   });
 
   test("a computed `crew report`: refused with the fix it can take, not the limits refusal", async () => {

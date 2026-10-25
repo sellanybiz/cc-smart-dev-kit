@@ -38,6 +38,8 @@ export function testPortalContext(
     paths,
     pluginFolder: () => ({ error: "no plugin folder in this test" }),
     probe: { fetch: async () => new Response("{}"), now, sleep: async () => undefined },
+    // A page's reads: the same fake `systemctl`/`journalctl` the actions' runner gives, awaited.
+    runRead: async () => ({ exitCode: 0, output: "" }),
     runner: () => ({ exitCode: 0, output: "" }),
     systemFolders: [],
     systemd: false,

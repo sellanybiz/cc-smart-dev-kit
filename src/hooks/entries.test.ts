@@ -19,7 +19,8 @@ import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
-import { CREW_ASK_TOOLS } from "./crew-role";
+import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
+import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
@@ -102,9 +103,13 @@ describe("hooks.json", () => {
       const guard = event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler));
       expect(handler.onFailure).toBe(guard ? "block" : undefined);
     }
-    // And the list is not empty: the guards are wired.
+    // And the list is not empty: every guard's PreToolUse entry blocks, and one guard may have
+    // more than one (crew-role judges the two tools that ask the person, and the three edits
+    // that wait for its task list).
     expect(wired.filter(({ handler }) => handler.onFailure === "block").length).toBe(
-      GUARD_BUNDLES.size,
+      wired.filter(
+        ({ event, handler }) => event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler)),
+      ).length,
     );
   });
 
@@ -239,13 +244,13 @@ esac
     expect(matcher).toBe("Bash|PowerShell");
   });
 
-  test("the crew-role matcher is exactly the tools a crew session never calls", () => {
-    const matcher = wired.find(
-      ({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role",
-    )?.matcher;
-    expect(matcher).toBe(CREW_ASK_TOOLS.join("|"));
+  test("the crew-role matchers are exactly the tools it judges: the two that ask, and the three edits", () => {
+    const matchers = wired
+      .filter(({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role")
+      .map(({ matcher }) => matcher);
+    expect(matchers).toEqual([CREW_ASK_TOOLS.join("|"), CREW_EDIT_TOOLS.join("|")]);
     // Written by hand too, so a changed list is seen here and not only in the constant.
-    expect(matcher).toBe("AskUserQuestion|ExitPlanMode");
+    expect(matchers).toEqual(["AskUserQuestion|ExitPlanMode", "Edit|Write|NotebookEdit"]);
   });
 
   test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
@@ -262,6 +267,16 @@ esac
     ).toHaveLength(1);
   });
 
+  test("the lead's start note comes at a start, a resume and a compaction — never a clear (D61)", () => {
+    // `lead-notes` and the texts that describe it (its header, `specs.ts`, `docs/design/hooks.md`,
+    // `docs/design/crew.md`) say these three sources and no other: a `clear` starts a new
+    // conversation, and `crew-role` reads it that way. The wiring is the one place that decides.
+    const matcher = wired.find(
+      ({ event, handler }) => event === "SessionStart" && bundleOf(handler) === "lead-notes",
+    )?.matcher;
+    expect(matcher).toBe("startup|resume|compact");
+  });
+
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
@@ -272,6 +287,17 @@ esac
     expect(timeout("session-escape-guard")).toBe(10);
     // The crew session's ask is denied by a guard too, on the two tools that ask the person.
     expect(timeout("crew-role")).toBe(10);
+    expect(timeout("job-route")).toBe(10);
+  });
+
+  test("a hook's budget is shorter than the hook's own timeout, the room to answer in between", () => {
+    const timeoutMs = (bundle: string) =>
+      (wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout ?? 0) * 1000;
+    // The merge guard and `after-merge` share `GUARD_BUDGET_MS`; `job-route`'s question about
+    // `workflow propose` shares the short one (`budget.ts`).
+    expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("merge-guard"));
+    expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("after-merge"));
+    expect(SHORT_GUARD_BUDGET_MS).toBeLessThan(timeoutMs("job-route"));
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {

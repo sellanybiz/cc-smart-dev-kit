@@ -24,6 +24,7 @@ import {
 import {
   ensurePortal,
   noteHeldPortOnce,
+  portalLog,
   portalOutdated,
   portalServerArgv,
   portalStarterArgv,
@@ -338,6 +339,44 @@ describe("the start decision", () => {
     const third = deps({ life: life({ kind: "free" }, {}), paths, pluginFolder });
     await third.run();
     expect(noteHeldPortOnce(paths, 20150, Date.now())).toBe(true);
+  });
+
+  test("the state folder follows CLAUDE_CONFIG_DIR, never a second folder under HOME", async () => {
+    // A session may carry its own config folder. The portal started from it writes its log, its
+    // held-port marker and the record of the copy it refreshed (under the lock, which lives
+    // there too) in that folder's state (`cliPaths().stateDir`), and never computes a second
+    // one from HOME.
+    const home = tempDir("portal-home");
+    const config = tempDir("portal-config");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: config, HOME: home });
+    const pluginFolder = join(home, "plugin");
+    mkdirSync(join(pluginFolder, "dist"), { recursive: true });
+    writeFileSync(join(pluginFolder, "dist", "portal.js"), "// the portal bundle\n");
+
+    const outcome = await ensurePortal({
+      bunPath: "/opt/bun/bin/bun",
+      kill: () => undefined,
+      // The portal's own log, as the entry gives it: the file in the state folder.
+      log: (line) => portalLog(paths, line),
+      paths,
+      pluginFolder,
+      port: 20150,
+      probe: fakeProbe(life({ kind: "other" }, {})),
+      spawn: () => undefined,
+      version: INSTALLED,
+    });
+    expect(outcome).toEqual({ kind: "other" });
+
+    const stateFolder = join(config, "cc-smart-dev-kit");
+    expect(readFileSync(join(stateFolder, "portal.log"), "utf8")).toContain(
+      "port 20150 is held by another program",
+    );
+    expect(existsSync(join(stateFolder, "portal-held.json"))).toBe(true);
+    // The copy was refreshed under the state lock before the probe, and its record is there too.
+    expect(Object.keys(readChanged(stateFolder))).toEqual([paths.portalCopy]);
+    expect(existsSync(join(stateFolder, "changed.json"))).toBe(true);
+    // Not under HOME: the config folder is this session's, and the portal follows it.
+    expect(existsSync(join(home, ".claude"))).toBe(false);
   });
 
   test("a portal that does not answer after the start is a failure, with the reason", async () => {

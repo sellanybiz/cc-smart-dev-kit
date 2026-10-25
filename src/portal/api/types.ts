@@ -38,6 +38,7 @@ import type {
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
 import type { MergeDetail } from "../../workflow/merge-check";
+import type { WorkflowSource } from "../../workflow/resolve";
 import type { ActionName, ActionResult } from "../actions";
 import type {
   BackendRow,
@@ -124,7 +125,7 @@ export interface OverviewAnswer extends NotSetUp, OverviewData {
   jobs: { budgetGb: number; heldGb: number; waiting: number };
 }
 
-/** `GET /api/slots`: the Slots page, with the switches the page draws. */
+/** `GET /api/slots`: the Slots page, its switches and each backend target's optional effort pin. */
 export interface SlotsAnswer extends NotSetUp, SlotsData {
   switches: SwitchFacts;
 }
@@ -239,6 +240,160 @@ export interface ProjectAnswer {
   /** When the verdicts were read (ISO); they are kept for about a minute. */
   checkedAt: string;
   project: ProjectSummary;
+}
+
+/** One workflow setting of a project: its value now, and where that value comes from. */
+export interface ProjectWorkflowSetting {
+  /**
+   * One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): every setting `workflow set --project`
+   * takes, the four switches included. A page labels it; the server never sends its words.
+   */
+  key: string;
+  source: WorkflowSource;
+  /**
+   * Only for a null `crew.tag` or `crew.maxOpus`: what `workflow show` prints in place of the
+   * unset value (`showValue`), so the card and the command word it the same way.
+   */
+  unsetWords?: string;
+  /** What the resolver holds for it: a boolean, a number, a string, a list, or null. */
+  value: unknown;
+}
+
+/** What a `gh` on this machine can do now (`ghLoginState` in `src/workflow/propose.ts`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/**
+ * `GET /api/projects/<id>/workflow` (D57): every workflow setting of this project, its value
+ * and where it came from — from `resolveWorkflow`/`resolvedValueOf`, the same resolver
+ * `workflow show` prints from — plus the base a change's pull request would go into and
+ * whether a pull request can be opened right now. A change is `project.workflow.propose`.
+ */
+export interface ProjectWorkflowAnswer {
+  /** The branch a change's pull request goes into (`worktrees.base`); null when it names none. */
+  base: null | string;
+  /** Whether `gh` can open the pull request: installed and logged in, or why not. */
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. Never a made-up value. */
+  note: null | string;
+  /**
+   * Every setting the project's file can hold (`isProjectKey`), in the schema's order, with the
+   * values of the file committed on the base. Empty when `note` says why.
+   */
+  settings: ProjectWorkflowSetting[];
+}
+
+/** What a project's gateway address means (`GatewayStateName`, `src/gateway/project-state.ts`). */
+export type ProjectGatewayStateName = "default" | "off" | "on" | "other" | "unknown";
+
+/** Which settings file a project's gateway state comes from; `none` when no file sets it. */
+export type ProjectGatewaySource = "machine" | "none" | "personal" | "team";
+
+/**
+ * One stretch of a project's settings chain, decided (`GatewayDecision`), in the command line's
+ * own words: `gateway project status` prints the same two lines. No raw address: one that is
+ * neither Anthropic's nor the router's is masked in `words` (`shownValue`), as the command
+ * prints it.
+ */
+export interface ProjectGatewayDecision {
+  /** The file that decides, in words (`projectSourceWords`): "nothing in this project" for none. */
+  from: string;
+  /** The profile a router address names; null when it names none. */
+  profile: null | string;
+  source: ProjectGatewaySource;
+  state: ProjectGatewayStateName;
+  /** The decision in words (`decisionWords`). */
+  words: string;
+}
+
+/** One settings file the reader looked at, in the order Claude Code applies them. */
+export interface ProjectGatewayFile {
+  /** What it holds, in words: "sets nothing", the decision it makes, or why it cannot be read. */
+  holds: string;
+  kind: "machine" | "personal" | "team";
+  /** Its path, with the home folder as `~`. */
+  path: string;
+  /** True when it cannot be read: the chain stops there as `unknown`. */
+  problem: boolean;
+}
+
+/** One slot of a project's profile, over the machine's chain (`profileSlotChain`). */
+export interface ProjectProfileSlot {
+  /** The slot's fallback switch in this profile (`fallbackOn` of the profile's view). */
+  fallback: boolean;
+  key: string;
+  /** The machine's chain in use for the slot; null while Claude answers it on the machine. */
+  machine: null | string[];
+  /** The slot's short name (`scout`), as the Slots page names it. */
+  name: string;
+  /**
+   * The profile's own entry: its chain, `"claude"` (plain Claude in this profile whatever the
+   * machine has), or null when it names none (the machine's chain applies).
+   */
+  own: "claude" | null | string[];
+}
+
+/** The profile a project's address names, with its chains slot by slot over the machine's. */
+export interface ProjectProfile {
+  /** False when the config holds no such profile: the router answers its requests as plain Claude. */
+  exists: boolean;
+  name: string;
+  /** Every slot the Slots page lists, in its order, then any other slot the profile names. */
+  slots: ProjectProfileSlot[];
+}
+
+/** One file's three states: null where the command would write, else its refusal in its words. */
+export interface ProjectGatewayWrites {
+  default: null | string;
+  off: null | string;
+  on: null | string;
+}
+
+/**
+ * What `gateway project <state> [--team]` would refuse before it writes, from its own planner
+ * (`planProjectChange`) over the same state: the card offers only what the command takes. A
+ * router that does not answer, and a profile, are checked when it runs.
+ */
+export interface ProjectGatewayRefusals {
+  personal: ProjectGatewayWrites;
+  team: ProjectGatewayWrites;
+}
+
+/** A line the Gateway card shows beside the state: a fact, a warning, or a fault. */
+export interface ProjectGatewayNote {
+  text: string;
+  tone: "bad" | "info" | "warn";
+}
+
+/**
+ * `GET /api/projects/<id>/gateway` (GP4b): the project's own gateway state and what a session
+ * started in its folder effectively gets, from the one reader (`projectGatewayStateAsync`), with
+ * the profile the address names and its chains over the machine's. A change is
+ * `project.gateway.set` or `project.gateway.profile`, each the CLI's own command in a child.
+ */
+export interface ProjectGatewayAnswer {
+  /** What the project's own files choose: its personal file, then its team file. */
+  choice: ProjectGatewayDecision;
+  /** True when this machine's gateway config is there and readable: `on` needs it. */
+  configured: boolean;
+  /** What a session started in the project's folder gets, the machine's settings counted. */
+  effective: ProjectGatewayDecision;
+  /** Every settings file read, in the chain's order. */
+  files: ProjectGatewayFile[];
+  /** The facts and the faults, in words. */
+  notes: ProjectGatewayNote[];
+  /**
+   * True when git tracks the personal file, so what is written there is committed with the
+   * project; null when git could not tell (or there is no checkout).
+   */
+  personalTracked: boolean | null;
+  /** What the command would refuse, per file and state, before it writes anything. */
+  refusals: ProjectGatewayRefusals;
+  /** The profile the effective address names; null when it names none. */
+  profile: null | ProjectProfile;
+  /** The profiles the config holds, sorted. */
+  profiles: string[];
+  /** Whether the project is in a git checkout: without one there is no personal file to write. */
+  writable: boolean;
 }
 
 /** A crew session, as the Work view and a crew page show it. */
@@ -578,8 +733,26 @@ export interface HistoryRequest {
 }
 
 /**
+ * Auto mode's safety checks, which the request history leaves out on purpose (`docs/gateway.md`
+ * § The safety-check counts). The router counts them by local day in `safety-checks.json`, read
+ * through the same reader the CLI's `usage` prints (`safety-checks-read.ts`, F6).
+ */
+export interface SafetyChecks {
+  /** Every check of the local days the range covers. Null when the file is not there. */
+  checks: null | number;
+  /**
+   * Those days: how many the window covers that the file still holds (it keeps
+   * `SAFETY_CHECK_DAYS`), so a longer range says how far back the count reaches.
+   */
+  days: number;
+}
+
+/**
  * `GET /api/history?range=…&by=…&…`: requests over time, one series per key (D51, phase H1).
  * A bucket is `HistoryPoint` from the reader, and every bucket of the window is there.
+ *
+ * `safetyChecks` travels here because this is the one answer that already knows the range the
+ * Usage page asks with, and the checks are counted by local day over exactly that window (F6).
  */
 export interface HistoryAnswer {
   /** True: the request reader answered (H1); every answer the route serves sets it. */
@@ -592,6 +765,7 @@ export interface HistoryAnswer {
   /** A line about an empty answer (no request logged yet), or null. */
   note: null | string;
   range: HistoryRange;
+  safetyChecks: SafetyChecks;
   series: HistorySeries[];
   to: number;
 }

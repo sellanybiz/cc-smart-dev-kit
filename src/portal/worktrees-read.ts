@@ -6,18 +6,18 @@
  * Docker containers — which is hundreds of milliseconds on a warm machine and more on a big
  * repository with a cold cache. Run in the server, it froze every page, every action and the
  * live stream for that long. So the portal never calls it: it runs the CLI's own
- * `worktrees --json` in a child (`Bun.spawn`, never `spawnSync`) and reads its answer — the
- * same builder the command prints, so the page and the command can never disagree.
+ * `worktrees --json` in a child (`runCliChildText`, the portal's one spawn in `cli-child.ts`,
+ * never `spawnSync`) and reads its answer — the same builder the command prints, so the page
+ * and the command can never disagree.
  *
  * Requests that ask the same folder at once share one child, and an answer stays good for
- * `WORKTREES_FRESH_MS`: the sidebar and the Work page both ask within a moment of each other.
- * A failure is not kept, so the next request tries again.
+ * `WORKTREES_FRESH_MS` from its arrival (`shortCache`, `cli-child.ts`, the one home for the
+ * rule): the sidebar and the Work page both ask within a moment of each other. A failure is
+ * not kept, so the next request tries again.
  */
 
-import { join } from "node:path";
-import { bunConfigArg } from "../setup/bun-config";
-import { commandContext } from "../update/apply";
 import type { WorktreeItem, WorktreesAnswer } from "../worktrees/command";
+import { runCliChildText, shortCache } from "./cli-child";
 import type { PortalContext } from "./context";
 
 /** How long the child may take: the scan fetches nothing, but a cold cache on a big repo is slow. */
@@ -29,99 +29,35 @@ export const WORKTREES_FRESH_MS = 5_000;
 /** The answer, or why it could not be read, in words a page can show. */
 export type WorktreesRead = { answer: WorktreesAnswer } | { error: string };
 
+/** One answer per folder, kept for `WORKTREES_FRESH_MS` (`shortCache`'s rules). */
+const scans = shortCache<string, WorktreesRead>(WORKTREES_FRESH_MS);
+
 /**
  * Drops this portal's kept answers: an action that adds or removes a worktree (`crew rm`,
  * `worktrees.clean`) makes them stale, and the page's next read must scan again instead of
  * showing the list from before the action for up to `WORKTREES_FRESH_MS`.
  */
 export function forgetWorktrees(ctx: PortalContext): void {
-  kept.delete(ctx);
+  scans.forget(ctx);
 }
-
-interface Kept {
-  /** When the answer arrived; a child still running has none. */
-  at: null | number;
-  read: Promise<WorktreesRead>;
-}
-
-/** One entry per portal context and folder: what is running, or what answered last. */
-const kept = new WeakMap<PortalContext, Map<string, Kept>>();
 
 /** The worktrees of the folder `cwd`, from the CLI's own `worktrees --json` in a child. */
 export function readWorktreesOffLoop(ctx: PortalContext, cwd: string): Promise<WorktreesRead> {
-  let byFolder = kept.get(ctx);
-  if (byFolder === undefined) {
-    byFolder = new Map();
-    kept.set(ctx, byFolder);
-  }
-  const last = byFolder.get(cwd);
-  if (last !== undefined) {
-    // A child still on its way is shared whatever its age: a scan may take up to
-    // `WORKTREES_CHILD_TIMEOUT_MS`, and a second full scan beside it helps nobody.
-    if (last.at === null || ctx.now() - last.at < WORKTREES_FRESH_MS) return last.read;
-  }
-  const read = runWorktrees(ctx, cwd);
-  const entry: Kept = { at: null, read };
-  byFolder.set(cwd, entry);
-  void read.then((answer) => {
-    // A failure is not kept: the next request tries again. A kept answer's clock starts when
-    // it arrives, not when the child started.
-    if ("error" in answer) {
-      if (byFolder.get(cwd) === entry) byFolder.delete(cwd);
-      return;
-    }
-    entry.at = ctx.now();
-  });
-  return read;
+  return scans.read(ctx, cwd, () => runWorktrees(ctx, cwd));
 }
 
 async function runWorktrees(ctx: PortalContext, cwd: string): Promise<WorktreesRead> {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder) return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        "--no-env-file",
-        bunConfigArg(folder.folder),
-        join(folder.folder, "dist", "cli.js"),
-        "worktrees",
-        "--json",
-      ],
-      {
-        // The folder the page asks about: the repository the answer is about.
-        cwd,
-        // The portal's own paths, whatever its environment says: the child reads the same
-        // folders the server does.
-        env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-        stderr: "pipe",
-        stdin: "ignore",
-        stdout: "pipe",
-        timeout: WORKTREES_CHILD_TIMEOUT_MS,
-        windowsHide: true,
-      },
-    );
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split("\n").at(-1)?.trim() ?? "";
-      return {
-        error: `the worktrees scan did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`,
-      };
-    }
-    const answer = worktreesOf(output);
-    return answer === null
-      ? { error: "the worktrees scan's answer was not one this portal reads" }
-      : { answer };
-  } catch (error) {
-    return {
-      error: `the worktrees scan did not run: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
+  // The folder the page asks about is the child's own: the repository the answer is about.
+  const run = await runCliChildText(ctx, ["worktrees", "--json"], {
+    cwd,
+    subject: "the worktrees scan",
+    timeoutMs: WORKTREES_CHILD_TIMEOUT_MS,
+  });
+  if ("error" in run) return run;
+  const answer = worktreesOf(run.output);
+  return answer === null
+    ? { error: "the worktrees scan's answer was not one this portal reads" }
+    : { answer };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

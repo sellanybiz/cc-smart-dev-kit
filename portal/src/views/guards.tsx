@@ -78,6 +78,8 @@ function asHistory(page: GuardAsksPage, range: HistoryRange): ChartHistory {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         costUsd: 0,
+        // An ask is not a request and holds no price: only the count is ever read off this.
+        unpriced: 0,
       })),
     })),
   };

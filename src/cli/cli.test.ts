@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
@@ -1064,11 +1065,14 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(verbose).not.toContain("--verbose");
     expect(verbose).toEndWith("\n✓ Everything works: 22 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
-    // Then which project the folder is in (this fake git says: none).
+    // Then which project the folder is in (this fake git says: none) — once for the project
+    // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor
+    // asks it about every known project, and that reader finds the folder's checkout too).
     expect(doctorGitCalls).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
         "ls-remote git@github.com:example-org/cc-smart-dev-kit.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "",
       ].join("\n"),
@@ -2281,6 +2285,8 @@ const CHAT_CHECK = `POST /v1/chat/completions Bearer ${PLANTED_KEY} ${JSON.strin
 /**
  * gateway.json with the omniroute backend at `url`, and the chains a person gave the slots
  * (by default the scout's and the worker's, each starting with the affordable model).
+ * The machine is one that already made the one-time move to Claude (D66): the chains are the
+ * person's own, set after it, so setup keeps them.
  */
 function writeGatewayConfig(
   home: string,
@@ -2301,6 +2307,9 @@ function writeGatewayConfig(
     }),
     { mode: 0o600 },
   );
+  const marker = claudeDefaultsMarkerFile(join(home, ".claude", "cc-smart-dev-kit"));
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${VERSION}\n`);
 }
 
 /** claude-mem's settings.json as claude-mem seeds it on its first run (the keys that matter). */
@@ -2646,7 +2655,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
         SETUP_HEADING,
         [
           "! Companion plugins     1 warning",
-          "  ! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the scout slot starts with an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
+          "  ! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. To send its summaries to Claude again: cc-smart-dev-kit claude-mem route claude",
           ...MCP_TAVILY_ONLY,
         ],
         ["! Nothing to change. Setup is up to date, with 2 warnings to read above."],

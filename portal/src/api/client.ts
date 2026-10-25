@@ -30,9 +30,12 @@ import type {
   MachineData,
   NeedsData,
   OverviewData,
+  OverviewRequests,
   PortalFacts,
   ProjectData,
+  ProjectGatewayData,
   ProjectList,
+  ProjectWorkflowData,
   RequestPage,
   RequestQuery,
   SettingsData,
@@ -54,6 +57,8 @@ export interface PortalClient {
   overview(): Promise<OverviewData>;
   history(query: HistoryQuery): Promise<History>;
   historyKeys(): Promise<HistoryKeys>;
+  /** The Overview's request numbers, read again with each routed request. */
+  historyRate(): Promise<OverviewRequests>;
   requests(query: RequestQuery): Promise<RequestPage>;
   work(): Promise<WorkData>;
   flow(window: FlowWindow): Promise<FlowReport>;
@@ -63,6 +68,10 @@ export interface PortalClient {
   settings(): Promise<SettingsData>;
   projects(): Promise<ProjectList>;
   project(id: string): Promise<ProjectData>;
+  /** A project's Gateway card (GP4b): its own state, what its sessions get, its profile. */
+  projectGateway(id: string): Promise<ProjectGatewayData>;
+  /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
+  projectWorkflow(id: string): Promise<ProjectWorkflowData>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
@@ -136,6 +145,7 @@ export function mockClient(scenario: MockScenario): PortalClient {
     overview: () => answer(() => data.overview, true),
     history: (query) => answer(() => data.history(query), true),
     historyKeys: () => answer(() => data.keys, true),
+    historyRate: () => answer(() => data.historyRate, true),
     requests: (query) => answer(() => data.requests(query), true),
     work: () => answer(() => data.work),
     flow: (window) => answer(() => data.flow[window]),
@@ -149,6 +159,40 @@ export function mockClient(scenario: MockScenario): PortalClient {
         const found = data.projectPages[id];
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         return found;
+      }),
+    projectGateway: (id) =>
+      answer(() => {
+        const found = data.gatewayPages[id];
+        if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
+        // A machine with no gateway: the card shows what a project can still be, off or default.
+        return scenario === "no-gateway"
+          ? {
+              ...found,
+              configured: false,
+              notes: [
+                ...found.notes,
+                {
+                  text: "This machine's gateway is not set up (~/.config/cc-smart-dev-kit/gateway.json does not exist), so a project can be off or default here, never on.",
+                  tone: "info" as const,
+                },
+              ],
+              refusals: {
+                ...found.refusals,
+                personal: {
+                  ...found.refusals.personal,
+                  on: "On needs this machine's gateway, and it is not set up: set it up on Machine first.",
+                },
+              },
+              profile: null,
+              profiles: [],
+            }
+          : found;
+      }),
+    projectWorkflow: (id) =>
+      answer(() => {
+        const found = data.workflowPages[id];
+        if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
+        return adapt.projectWorkflowOf(found, data.settings.rows);
       }),
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
@@ -227,6 +271,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     history: (query) => get<Wire.HistoryAnswer>(`/api/history?${historyQuery(query)}`),
     historyKeys: async () =>
       adapt.historyKeysOf(await get<Wire.HistoryKeysAnswer>("/api/history/keys?range=90d")),
+    // The shape is the server's own (`src/portal/views.ts` › `OverviewRequests`): no adapting.
+    historyRate: () => get<Wire.OverviewRequests>("/api/history/rate"),
     requests: (query) => get<Wire.RequestsAnswer>(`/api/requests?${historyQuery(query)}`),
     work: async () => adapt.workOf(await get<Wire.WorkAnswer>("/api/work")),
     flow: async (window) =>
@@ -251,10 +297,18 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     },
     settings: async () => adapt.settingsOf(await settings()),
     projects: async () => adapt.projectsOf(await get<Wire.ProjectsAnswer>("/api/projects")),
-    project: async (id) => {
-      const answer = await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`);
-      // `/api/settings` reads the portal's own folder: only that project's page shows it.
-      return adapt.projectOf(answer, answer.project.current ? await settings() : null);
+    project: async (id) =>
+      adapt.projectOf(await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`)),
+    projectGateway: (id) =>
+      get<Wire.ProjectGatewayAnswer>(`/api/projects/${encodeURIComponent(id)}/gateway`),
+    projectWorkflow: async (id) => {
+      // The rows' words and controls are the Settings table's (`/api/settings`), the values the
+      // project's own answer. Both or neither: a card without its controls would not say why.
+      const [answer, specs] = await Promise.all([
+        get<Wire.ProjectWorkflowAnswer>(`/api/projects/${encodeURIComponent(id)}/workflow`),
+        settings(),
+      ]);
+      return adapt.projectWorkflowOf(answer, specs.rows);
     },
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");

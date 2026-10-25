@@ -3,6 +3,363 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.2.0
+
+Claude by default (every slot on Claude, every fallback off, the gateway off), the gateway per
+project and per session, a project's workflow from the portal, claude-mem from the kit, and the
+effort pin. It also carries everything 1.1.3 was to ship (below), which never went out on its own.
+The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
+
+- **Claude by default** (the owner's decision, D66). A new machine has every slot on Claude —
+  scout, worker, opus, fable and the judge — every fallback off, the judge's too, and the gateway
+  off. `gateway setup` asks only for OmniRoute's address and key, leaves every slot on Claude, and
+  never turns the gateway on; the installer's gateway question and last line say the same.
+  OmniRoute and the router are set up exactly as before. The kit suggests no model: a slot gets a
+  chain with `gateway slot`, a fallback is turned on with `gateway fallback`. The judge is Claude
+  alone until `gateway fallback judge on` lets the worker's tested targets stand in for it.
+- **A machine set up before this moves once, at its next `cc-smart-dev-kit setup`** (the installer
+  runs it). Every slot's chain, the machine's and each profile's, goes back to Claude (a machine
+  chain waits in the config, and `gateway slot <slot> custom` brings it back), every fallback
+  switch goes off, and the gateway turns off through the same code as `gateway off`. `gateway.json`
+  is backed up first, setup prints one line per change (`worker: omniroute:x,omniroute:y →
+  Claude`) and where the backup is, and `--dry-run` shows the lines and changes nothing. It runs
+  once per machine: a marker in the kit's state folder says so, so a chain or a switch you set
+  afterwards is never touched by a later setup. A session start or the background update never runs
+  it, and a project's own `gateway project on` is left as it is. A running session on the router
+  goes to Claude at once, and the gateway-off address (Anthropic's own, changed in place) reaches
+  it within about a second. Run `cc-smart-dev-kit doctor` to see whether your `gateway.json` still
+  waits for the move.
+- **claude-mem goes back to Claude Haiku** on your own login with that move: the scout is on Claude
+  again, so setup takes out the five provider keys it set for claude-mem. A route you chose with
+  `claude-mem route` or in the portal stays. The note about a backend claude-mem still uses now
+  names `claude-mem route claude`, and an address in a "left alone" note never shows credentials.
+- **`gateway on` says Remote Control is off while the gateway is on.** Claude Code allows Remote
+  Control only when its address is unset or `api.anthropic.com`; `gateway off` writes that
+  address, so it comes back. The kit never writes `remoteControlAtStartup`.
+- **`gateway status` calls a router that Claude Code does not use "off"**, and names `gateway on`
+  in its words, with no next step: that is the default state now.
+
+- **The portal's sidebar items have room between them.** A hovered item, the active item and the
+  keyboard focus ring no longer run into the item next to them. In the folded sidebar, the last
+  item of each group now takes the hover over its whole height.
+- **The portal's project cards are quieter and truer.** A proposal from the Workflow card is
+  refused when it names no project, instead of running in the portal's own folder. The Workflow
+  and Gateway cards no longer read again at every crew event. An unset crew tag or opus count
+  reads as `workflow show` words it. Two controls running one action no longer show each other's
+  progress line, and the Gateway form keeps the state you applied until the page's new answer
+  arrives.
+- **The gateway per project.** `gateway project on|off|default [--team] [--profile <name>]` turns
+  the gateway on or off for one project only. The kit writes it to that project's own settings, so
+  every session there follows it: a personal file by default, or the team file with `--team`.
+  `gateway project status` says what a project uses and which file says so, and `gateway projects`
+  lists them all. A **profile** is a set of chains a project can use instead of the machine's
+  (`gateway profile <name> slot …`; its switches are `gateway profile <name> fallback <slot>
+  on|off` and `gateway profile <name> breaker <slot> on|off`). Projects you never set keep the
+  machine's gateway. A profile needs this version's router: until `gateway setup` puts it in
+  place, `--profile` (here and in `launch`) is refused and `doctor` fails a project whose address
+  names one. When every target of a profile's slot is limited, the router's message and its
+  reminder name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
+  `gateway slot …` too when the profile uses the machine's chain), and the alert and the status
+  line name the profile's command, not a hand edit of `gateway.json`. `gateway profile <name> slot
+  judge off` says who judges there: Claude alone, or, once the judge's fallback is on (off by
+  default), the profile's tested worker targets while Claude cannot.
+  The profile commands also say the trade-off of a judge other than Claude, and `gateway profile
+  <name> fallback judge on|off` says who judges instead of a "next target".
+  A crew session in a profile project now waits on its profile's breaker, not the machine's, also
+  after a failure the router did not explain.
+  The status line shows a fallback or breaker only in a session on that chain: a profile's
+  record no longer appears in every session on the machine, and a session off the gateway (an
+  empty address too) shows none. `crew start` and the opus usage guard read a project's own
+  gateway (its settings, and its profile's chains), not the user's file alone: a project turned on
+  or off with `gateway project` now decides which effort a crew session gets and whether the usage
+  guard holds. `crew start`, the Agent guard's queue check and `crew list` read it at the same
+  folder, the repository's main checkout.
+- **`cc-smart-dev-kit launch`** starts one Claude Code session with the gateway or without it
+  (`--gateway`, `--no-gateway`, `--profile <name>`), whatever the machine or the project says,
+  and changes nothing on disk. `--gateway` and `--profile` first ask the router's health page and
+  stop with `gateway setup` as the fix when it does not answer (after a full `restore`, which
+  keeps `gateway.json`, the config is there but the router is not), instead of starting a session
+  whose every request fails. A signal sent to the `launch` command alone (`kill <pid>`) now reaches
+  the session it runs, so it no longer leaves a session running behind a finished command. It
+  also says, on stderr and still starting, what its settings file leaves in place: one line per
+  login key or helper in your settings (the session bills through it, not through your plan's
+  login), and in `--no-gateway` per retired model key that names a slot (Anthropic has no such
+  model), each with its file and the fix; a model key is named only where its file decides it,
+  and a file whose address alone is malformed is still read for its other keys. The router
+  question goes straight to `127.0.0.1`, so a proxy in your environment no longer makes a running
+  router look silent (`setup` and `doctor` ask it the same way). On Windows, where a Ctrl+C or a
+  closed console already reaches the session, `launch` hands on no signal but waits for the
+  session and returns its exit code; a kill there ends the command alone.
+- **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
+  address in place of the gateway's, and a running session picks that up within about a second,
+  so no session needs a restart. A second `restore` takes the key out. One exception: on a
+  machine that still has 0.4.3's retired model keys (`ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` and their names), the first `restore` removes them, and a
+  removal reaches a session only at its next start. Until you restart it, such a session sends a
+  slot name to Anthropic and fails; `restore` says so when it removes them.
+- **The gateway's project state follows what Claude Code really reads.** Claude Code also reads
+  the folder a session starts in for its own `.claude/settings.local.json` (a subfolder, a
+  worktree), after the project root's, so `gateway project status` and the login-key refusal now
+  see it. A removed key no longer means "restart": a running session follows it to the next file
+  that sets the key. `gateway project default`, `status`, `restore` and `doctor` name a worktree's
+  copy of the personal file that still holds the router's address, and leave it alone.
+- **`doctor` shows each project's gateway state and its source,** and warns about a project file
+  that names a slot or a backend model as Claude Code's model. `restore` also covers the keys the
+  kit wrote into project files. `gateway off` lists the projects still switched on.
+- **The portal's Project page** has two new cards:
+  - **Gateway** shows that project's state, where it comes from, and the switch;
+  - **Workflow** shows each workflow setting, its value and source. A change you make there
+    becomes a pull request into the project's base branch (`workflow propose`), and its link
+    shows in place. A crew session cannot propose one, and any other Claude Code session that
+    runs `workflow propose` asks you first while `autoPush` is off or `openPr` is short of
+    `ready`: it pushes and opens a pull request where the git and merge guards cannot see.
+- **The portal's OmniRoute update and rollback buttons work.** They ran the command in the portal's
+  own process, whose environment holds `CLAUDECODE` when a session started it, so the command
+  refused the person's own click as "inside a Claude Code session".
+- **The portal never waits on a slow command.** Its doctor pass and its project reads run off the
+  server's loop, one CLI child serves every action, and its state folder follows
+  `CLAUDE_CONFIG_DIR`.
+- **Two guard fixes:** a crew session's text that starts with `-` is passed safely, and the
+  escape guard no longer flags a computed command because its path holds the kit's name.
+- **The Agent guard judges your session's own gateway** — the address the session really runs
+  with, so a project turned off or on, a profile and `launch` each count — never the machine's
+  settings file alone.
+- **The usage-limit and gateway-slot alerts say what happened and offer nothing.** The usage-limit
+  alert names the limit that was hit and when it resets; the gateway-slot alert names the slot,
+  since when it is limited, and why each target rests. Neither offers a model, a chain, a fallback
+  switch or `gateway on`, and neither has a button, whatever the session runs on: the hook shows
+  the plain notification itself and starts no background worker. Only when a stop should not have
+  happened (the slot starts with a backend, or its fallback is on) does the usage-limit alert add
+  that one fact and point at `gateway status`.
+- **The Fable-session line names what answers this session.** In a session whose project is
+  turned off, or that runs on a profile, it used the machine's settings; it now reads the
+  session's own gateway, as the Agent guard does.
+- **A test run, or another program's `workflow` word, is no longer taken for `workflow
+  propose`.** A program a line works out when it runs (`$RUNNER … workflow`) was read as the
+  kit's `workflow propose` whenever its last word was `workflow`, so a crew session was denied
+  commands such as a test run of a `workflow` folder. The line now has to name the kit: by its
+  name, a path to its launcher, or its bundle behind another program. The same holds when the
+  word after `workflow` is also worked out at run time (`$RUNNER … workflow $ARG`); the words
+  `workflow propose` are still refused on any line.
+- **The escape guard still asks when the kit's bundle path is bound in a variable** and run by a
+  computed program (`C=…/dist/cli.js; $(which bun) $C …`), though it no longer asks for a path
+  that only passes through a folder named like the kit.
+- **The `workflow propose` question answers in time.** It finds the project and reads its
+  committed policy inside one budget of 8 of its hook's 10 seconds. On a git that hangs or is
+  slow it asks and says that git did not answer in time, where the hook was cut off before.
+- **A command run where git does not answer says what to do.** `project init`, `workflow`,
+  `worktrees` and `crew` print one plain line, "git did not answer in time: run `git status` in
+  this folder; …", where they printed the bare reason; `doctor` prints the same fix on its own
+  line.
+- **A session name that cannot be recorded no longer loses a message.** When the temp folder is
+  not usable, the person's own prompt typed into a crew session (and the lead's line about it)
+  and a lead's news about its crew sessions were lost with the name. They now go through, the
+  hook says why on stderr, and the name is set on a later turn.
+
+- **Pin a backend target's reasoning effort.** `gateway effort <slot> <target> <level>|off`
+  tests the level before saving it. A pin wins over the effort Claude Code sends, even when
+  thinking is off; `off` follows Claude Code again. Pins travel with saved chains, disappear
+  when their target leaves, and show in `gateway status`, Slots data, the log and health's
+  recent requests. Claude targets are never pinned. No router restart is needed.
+- **With the breaker on, a backend's hiccup no longer ends a session on Claude's plan limit.**
+  In a chain like `<backend> → claude-sonnet-…`, while Sonnet is at a plan limit the router
+  already knows, one failed answer from the backend became Sonnet's limit, and Claude Code
+  stopped for days. Now the router skips that Claude target while it rests, the last one too:
+  the breaker holds the request and Claude Code retries. It asks Claude again every 10 minutes
+  at most, so an early reset is still seen. With the breaker off, the backend's own answer goes
+  back while Claude rests, and Claude's 429 when it is asked again. A chain that starts with
+  Claude is unchanged.
+- **`gateway slot <slot> claude` works on a machine with old slot names.** An alias that
+  pointed at a slot (`migrate` writes them) made the move fail and write nothing, because a
+  slot in Claude mode is not in `slots`. An alias to a slot now stays valid in both modes; a
+  request under it while the slot is Claude gets the 400 that says what to do. Until
+  `gateway setup` has replaced a 1.1.x router that still runs, the command refuses that move
+  before it writes anything (the old router would refuse the file, keep its last config and
+  ignore every later change), and names `gateway setup`; the router's health page now lists
+  `claude-slot-aliases` so the command can tell. This is a change to `router.js`, which
+  1.2.0's `gateway setup` installs anyway. If the router does not answer, the change is saved
+  with a warning.
+
+- **claude-mem's route, key and fallback are yours to change — from the portal or your own
+  terminal.** On a machine whose claude-mem values were set by hand (outside the kit), every
+  change was refused, because the kit never overwrites a value it did not write. The
+  **take-over** records those values as cc-smart-dev-kit's own, after asking and naming them:
+  nothing in claude-mem's settings file changes, each value stays exactly as it is until you pick
+  another, and `restore` puts them back — a key's value is never written down, so `restore`
+  leaves a taken-over key as you set it, and once the kit replaced it, keeps the kit's key only
+  with the address it was written for (see the `restore` bullet below). On the Machine page's
+  claude-mem card it is **Let the kit manage
+  these**: the card names each value set by hand and marks the choices it refuses, and after the
+  take-over the route, the key and the fallback change in place. From your terminal it is
+  `cc-smart-dev-kit claude-mem take-over`. A new **`cc-smart-dev-kit claude-mem`** command makes
+  the card's choices from your own terminal — `status`, `route`, `key` (on stdin, never an
+  argument, never printed), `fallback` and `take-over` — through the same functions and the same
+  checks, so the page and the command can never disagree about a machine. And a **backend
+  fallback now works on every route**: claude-mem ignores a fallback whose provider is the
+  route's own, so where the route is already a backend model the fallback goes through
+  claude-mem's OpenRouter provider, pointed at the backend of the model you pick (the card lists
+  backend models for the fallback on every route); an empty fallback provider is
+  now shown as Claude with the model it really runs on.
+- **`restore` words a taken-over value coming back as what it is.** When a value a take-over
+  recorded goes back to what you had, the line says `put back <key> (yours again)` — it no longer
+  says `set <key> to …`, and the file no longer stays on the list for the second `restore`. A
+  value the file already holds is left alone: no backup, no write.
+- **`restore` never leaves a claude-mem key next to an address it was not made for.** After a
+  take-over, a route change to a gateway backend writes that backend's address and key. Before,
+  `restore` put your own address back and left the backend's key beside it, so that key would go
+  to your host. Now your own key comes back with your address, read from the kit's backup of your
+  file; with no backup that holds it, the kit's key is removed and the line says so. A key you
+  typed in the portal for another address goes the same way, and so does the kit's key beside an
+  address you set back by hand; a key written for the address that stays is kept, as before. If
+  putting a take-over back fails, `restore` leaves claude-mem's file alone, exits 1 and says to
+  run it again, instead of half-restoring it.
+- **`restore`'s first run tells the truth when it could not switch an address.** When no
+  settings file has an address of the kit's to switch — you set, changed or removed it — the line
+  says so, and names what to do before the second run (restart the sessions, and change any
+  address of yours that still names the router), where it used to say the address was "yours"
+  even for one that was not in the file at all.
+
+- **A crew session hands off at 400k tokens or 70 % of its window, whichever comes first, and
+  before Claude Code would auto-compact it.** The hand-off used to be a share of the model's
+  full window only, so a 1M window handed off at 700k, and a person's auto-compact setting was
+  never looked at. The new setting `crew.handoffTokens` (default `400000`) caps it: a 1M model
+  hands off at 400k, a 200k model at 140k, and a model whose window the kit cannot know still
+  hands off at the cap. Crew sessions start with `--autocompact auto`, which Claude Code reads as
+  "skip the `autoCompactWindow` settings", so your own setting does not move a crew session's
+  compaction; the variables `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+  still do, and the hand-off now stays 13 000 tokens below the point they set (the point is the
+  window less 33 000). Your own `crew.handoffPercent` stays in force beside the cap (at 40 on a 1M window it is the same 400k).
+
+### Also in 1.2.0: what 1.1.3 was to ship
+
+**Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
+this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
+Claude Code leaves the task tools out until a session looks them up and the crew skill only
+asked. The list is what a crew session resumes from after a compaction, and what you read when
+you open it.
+
+- **A crew session's first edit waits for its list.** Until the session's task folder holds one
+  task, the `crew-role` hook refuses its `Edit`, `Write` and `NotebookEdit` with the step: look
+  the task tools up, then one `TaskCreate` per part of the brief, each with its done-check. The
+  role card names the same first step. Once a task exists the hook answers from its own cache
+  and reads nothing more, so an edit costs one small file.
+- **A `done` report waits for the list to be finished.** `crew report --status done` refuses
+  while any task is still open, and names each one: finish it, or delete it and say why in the
+  report. A `handoff`, `blocked` or `failed` report is never held, and a session with no list at
+  all reports with one `note:` line saying nothing was checked.
+- **A lead is reminded, never blocked.** While your session has no to-do list, each prompt
+  carries one line: put the person's asks and your open work on it. It goes silent the moment a
+  task exists.
+- **The kit's builder and rules-maintainer agents get the task tools**, and one line each to
+  keep a list for a multi-step brief. The read-only reviewer, auditor and ui-verifier stay as
+  they are.
+- **A lead sends the building to its crew.** The lead skill gains "Your crew builds": the code,
+  the tests, research across many files and long debugging go to a crew session, and the lead
+  keeps the plan, the briefs, the starts, the questions, the merges, the plan file and the
+  person. The `lead-notes` hook adds the same rule in one line when a lead's context is built
+  again — a start, a resume, a compaction — and never at a prompt or on an edit. Words
+  only (D61): the lead's context is re-read on the premium model every turn, so every file it
+  reads or writes costs on every later turn.
+- **A lead never routes a phase around the crew queue.** The queue exists for the machine and for
+  each lead's share of it, and a builder subagent runs outside every one of those counts — with
+  none of a crew phase's worktree, review, report gate or to-do list. So in a session registered
+  as a lead, the agent guard refuses a launch that can change files while a `crew start` from it
+  would queue right now, and names the cap that holds and the `crew start` step. Read-only work
+  is never held: the kit's own reviewer, auditor and ui-verifier, the built-in Explore, Plan and
+  claude-code-guide, the kit's read-only Workflows, and statusline-setup (which edits only the
+  status line setting) — a project's own read-only agent is exempt only when its
+  `cc-smart-dev-kit.json` lists it. An ordinary session
+  or a crew session is judged exactly as before.
+- **A heavy job that waited says when it started and how it ended.** A job whose output went
+  down a pipe (`bun run tsc --noEmit | tail -20`) reported the pipe's own status, so a session
+  that queued one saw the waiting lines, then nothing: a passing type check prints nothing of
+  its own, and a failed test run read as exit 0. A job that waited now says `Heavy job starts
+  after 18 min: tsgo --noEmit (8 GB)` as it starts, and `Heavy job ended: tsgo --noEmit, exit 0
+  after 3 min` when it ends — with the signal that stopped it, `(sent on by job run)` when
+  `job run` sent that one on, and its leftover processes when they had to be stopped. The first
+  waiting line carries one hint about the pipe, once per job. A job that never waited prints
+  neither line: no noise on a free machine.
+
+**Three more fixes, found by 1.1.2's own review.**
+
+- **Two crew sessions can no longer take one name.** A long tag, plan and phase leave only
+  17–19 characters of the slug, so two slugs of one phase that share a longer prefix made the
+  **same** name on two different branches — and the name is how `crew answer`, `crew tell` and
+  the message guard reach a session. `crew start` now refuses the second one and says to pick a
+  shorter `--slug`.
+- **A crew session renamed in 1.1.1 gets its name back.** 1.1.2 stopped new renames but nothing
+  set the title back, so such a session kept a task name while its lead, `crew answer` and the
+  message guard went on addressing it by its record's name. Its next turn puts the record's name
+  back — on the lead's turns too, not only the person's.
+- **A cap you change now reaches a running lead's watch.** `crew watch` read the workflow once
+  and kept that value for its whole run: `crew.max 16` set while it ran never reached it, and a
+  lead's watch went on starting queued phases up to the old 24 (seen live on 2026-10-23, with
+  the machine five times overloaded). Each pass reads the workflow again, and a pass that cannot
+  read it — a broken file, or crew sessions turned off — starts nothing and says so once.
+
+**What to run:** nothing. The hooks come with the plugin update. A session that is already
+running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads
+started after the update are held to the list or reminded.
+
+**The portal's usage and cost numbers now say the truth.** You reported that the portal does
+not report usage and cost correctly. Every number was then measured against the router's
+history database, its log and its state files on a live machine, and each finding was fixed at
+its cause. Where a number cannot be given, the page now says so instead of showing a number
+that is not one.
+
+- **A request with no price is counted, never added as $0.** In one measured day 62 % of the
+  rows — every affordable-backend request: 17,373 of them, with real tokens and no cost — were
+  added as $0, so the Usage page's cost card, "Where the cost goes" and "Top sessions by cost",
+  and the Overview's cost chart and its "$X in the last day" line, all read low and said
+  nothing. A sum now says what it leaves out — "$12.40 + 1,234 requests with no price" — and a
+  sum made only of unpriced requests reads "no price", never "$0", the words
+  `cc-smart-dev-kit usage` already used. A chart whose rows exist but carry no price says that,
+  never "nothing matches".
+- **A backend's price list in OmniRoute's shape was read 1,000,000× too high.** OmniRoute's
+  `/v1/models` gives `pricing` in **dollars per million tokens**, as numbers
+  (`{"input":5,"cached":0.5,"output":25}` for a $5 / $25 model); the reader took those for
+  per-token prices and multiplied by a million, and never read `cached`, the cache-read price.
+  Both real shapes are now read, each in its own unit: OpenRouter's per-token `prompt`,
+  `completion`, `input_cache_read` and `input_cache_write`, and OmniRoute's per-million
+  `input`, `output`, `cached` and `cache_creation`. **A row already logged keeps the cost it
+  was written with**, so an affordable-backend row written before this fix stays at the price
+  that was wrong at the time — `cc-smart-dev-kit gateway history` shows those totals until the
+  retention drops them (90 days by default).
+- **Claude Sonnet 5.5's cache read was half its list price.** The table held $0.10 a million
+  where Anthropic charges $0.20 — a tenth of its $2 input rate, as Sonnet 5's own row has. A
+  test now holds every row's cache read to its family's published share (Opus 5.5's a
+  twentieth, Fable 5.1's a fortieth, the rest a tenth). **A row already in the history keeps
+  the estimate it was written with**; only new rows use the corrected price.
+- **About a nine-hundredth of a translated stream's input tokens were recorded.** A backend
+  that translates an OpenAI stream (OmniRoute) knows the prompt's usage only at the end: it
+  sends zeros in `message_start` and the real counts in the last `message_delta`. The reader
+  took input and cache from `message_start` alone, so 1,040 calls that had spent 242M input and
+  235M cache-read tokens were logged as about 270K. Each usage field is now taken from the last
+  event that reports it, and the two are never added together. Anthropic's own streams keep
+  their counts, except where its `message_delta` carries the cumulative input count its docs
+  describe. **A row already logged keeps the count it was written with.**
+- **The Overview's "Requests a minute" could never pass 40.0**, because it was read off the
+  router's capped list of the last 200 routed requests — 85 of them, in one measured hour,
+  Claude Code's own health pings. It is now the history's **model** requests over the last five
+  minutes, one query against the database. The router's own counter is still shown, labelled
+  for what it holds, and the Health page's "N requests since start" gets the same label.
+- **The Usage page left out auto mode's safety checks without saying so.** They are kept out of
+  the history on purpose, so they were in none of its numbers and nothing said so. The page now
+  says they are counted apart, and shows the file's own count for the local days the range
+  covers — read through the reader `cc-smart-dev-kit usage` prints, so the two can never
+  disagree.
+- **Two smaller wrong claims.** The "Cache share" card said a cache read costs a tenth of a new
+  token, which is wrong for Opus 5.5 (a twentieth) and Fable 5.1 (a fortieth), and it no longer
+  names a number. And the Requests table ignored the range switch: it showed rows from outside
+  the window the charts drew, and its rows are now bounded by the range, as the dev mock
+  already was.
+
+**What to run:** `cc-smart-dev-kit gateway setup`. The reader and the price table live in the
+router bundle, so a machine updates the copy it runs; setup says what the restart costs and
+asks first.
+
+**What to run for 1.2.0:** `cc-smart-dev-kit gateway setup` once — the router changed (the effort pin, the token and price fixes, the fallback default) and setup asks before it restarts it. Then `cc-smart-dev-kit setup` once: it moves your slots, fallbacks and gateway switch back to Claude and off, with a backup (`--dry-run` first shows what it would do). Then restart your sessions, so each runs the new version.
+
 ## 1.1.2
 
 - **A crew session's name says whose it is.** With several leads in one project, every crew

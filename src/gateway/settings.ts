@@ -1,7 +1,15 @@
 /**
  * The gateway's part of Claude Code's `settings.json`: the env keys `gateway on` sets and
- * `gateway off` removes. They go through `applyManagedJson` as owned keys, so `restore`
+ * `gateway off` takes back. They go through `applyManagedJson` as owned keys, so `restore`
  * undoes them too, and a key someone else set is never overwritten.
+ *
+ * **`off` sets the address, it does not remove the key** (GP5): a changed value reaches a
+ * running Claude session within about a second, whatever the files below it hold. A removed key
+ * reaches it only when another settings file still sets the key (it falls to that file's
+ * value); when none does, the session keeps the address it last had (P7, re-proved on 2.1.310,
+ * `.claude/research/2026-10-25-r6-recheck.md`). The write is right in every case. So the owned `env.ANTHROPIC_BASE_URL` is left holding Anthropic's own address, the
+ * one value that means plain Claude on the person's own login (P1, the same value
+ * `gateway project off` writes), and `restore` takes the key back later.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -18,7 +26,10 @@ import {
   ownedRecords,
   ownership,
 } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
+import { DEFAULT_ANTHROPIC_BASE_URL } from "./config";
+import { CLAUDE_FAMILIES, familyEnv } from "./targets";
 
 /**
  * The env keys `gateway on` writes. No model is pinned: Claude Code sends each Claude
@@ -37,8 +48,86 @@ import { realTarget } from "../setup/write";
 export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_BASE_URL: routerBaseUrl(port),
   };
+}
+
+/**
+ * The router's root URL on `port`: what `gateway on` writes and what a project's state names
+ * (`project-state.ts`). One home, so the two can never disagree about the address.
+ */
+export function routerBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * The only host Claude Code allows Remote Control with, when `ANTHROPIC_BASE_URL` is set
+ * (`docs/claude-code-contract.md` § The gateway). Read from Anthropic's own address, never typed.
+ */
+export const REMOTE_CONTROL_HOST: string = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
+
+/** A base URL as it is compared: a trailing slash is the same address (`…/`). */
+export function normalizedBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+/**
+ * Whether a settings file's own `ANTHROPIC_BASE_URL` sends Claude Code to the router rather
+ * than to Anthropic: the key is set and holds something other than Anthropic's own address.
+ * Null — no key at all — is off, and so is Anthropic's address, the value `gateway off` and
+ * `gateway project off` write (GP5, P1): "the key is set" no longer answers this question.
+ * One home: the two hooks that decide whether the gateway is on
+ * (`agent-guard.ts`, `stop-failure.ts`), the portal's facts and `restore`'s stage 1 all ask it.
+ */
+export function baseUrlPointsAtGateway(url: null | string): boolean {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
+
+/**
+ * What a settings file's `env.ANTHROPIC_BASE_URL` needs for the gateway to be off, and whose
+ * key it is (GP5):
+ * - `write`: the key is cc-smart-dev-kit's and holds another address — set it to Anthropic's own,
+ *   which a running session follows within about a second, whatever a removed key would fall to.
+ * - `same`: nothing to do — no key at all, or one that already holds Anthropic's own address.
+ * - `theirs`: a key the person set, changed or removed since: never written, never removed.
+ *   `present` says whether it is still in the file, so a command can name it.
+ *
+ * A **changed** value reaches a running Claude session within about a second; a **removed** key
+ * reaches it only when another settings file still sets the key (P7, re-proved on 2.1.310,
+ * `.claude/research/2026-10-25-r6-recheck.md`), so this is what switches running sessions at
+ * once, whatever the files below hold, and keeps the key owned for `restore` to take back.
+ */
+export type OffAddress =
+  | { kind: "write"; value: string }
+  | { kind: "same" }
+  | { kind: "theirs"; present: boolean };
+
+/**
+ * Reads one settings file and answers `OffAddress` for it. A file that cannot be read answers
+ * `same`: the managed write that follows reports the file's own error in its own words
+ * (`applyManagedJson`), which a restore knows how to say.
+ */
+export function offAddressOf(file: string, stateDir: string): OffAddress {
+  let settings: Record<string, unknown>;
+  try {
+    settings = readSettings(file);
+  } catch {
+    return { kind: "same" };
+  }
+  const records = ownedRecords(stateDir, realTarget(file));
+  const current = getKey(settings, BASE_URL_PATH);
+  const ours = ownership(records, BASE_URL_PATH, current) === "ours";
+  if (!current.found) {
+    // A key that is not in the file any more is the person's: never put back. `ownership`
+    // answers "changed" for a missing key whatever the record says, so this is always theirs.
+    return { kind: "theirs", present: false };
+  }
+  if (normalizedBaseUrl(String(current.value)) === DEFAULT_ANTHROPIC_BASE_URL) {
+    return ours ? { kind: "same" } : { kind: "theirs", present: true };
+  }
+  return ours
+    ? { kind: "write", value: DEFAULT_ANTHROPIC_BASE_URL }
+    : { kind: "theirs", present: true };
 }
 
 /**
@@ -75,8 +164,11 @@ export const FORBIDDEN_ENV_KEYS = [
 /** Every env key `gateway on` sets. */
 export const GATEWAY_ENV_KEYS: readonly string[] = Object.keys(gatewayEnv(20100));
 
-/** Every env key `gateway off` removes: the ones `on` sets, and the ones it once set. */
-const REMOVED_ON_OFF: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+/**
+ * Every env key the gateway writes: the ones `on` sets, and the ones it once set. `turnOff`
+ * removes all of them but the address, which it sets to Anthropic's own instead (GP5).
+ */
+const GATEWAY_ENV_KEYS_ALL: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 
 /** Settings that move every agent launched without `model` onto one model. `status` warns. */
 const SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
@@ -90,12 +182,18 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The settings file as an object; `{}` when there is none. Throws on a file that is not one. */
+/**
+ * The settings file as an object; `{}` when there is none. Throws on a file that is not one.
+ * Read as `applyManagedJson` reads one: an empty file is `{}`, and a byte order mark an editor
+ * put first is skipped — so the reader and the writer agree about the same file.
+ */
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  const text = readFileSync(path, "utf8");
+  if (text.trim() === "") return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = parseUserJson(text);
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -153,8 +251,8 @@ export function shownValue(value: unknown): string {
  * wrote: a key the person changed or removed since is theirs (the record holds a value, and
  * the file holds another one, or no key at all), and `restore` leaves it. A record with no
  * value (an `owned.json` from before values were kept, or the claim written just before a
- * write) counts as ours, whatever the key holds. While there is one, running Claude sessions
- * may still send every request to the router.
+ * write) counts as ours, whatever the key holds. While one of them points at the router
+ * (`baseUrlPointsAtGateway`), running Claude sessions may still send every request to it.
  */
 export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
   const settings = currentSettings(settingsFile);
@@ -164,12 +262,12 @@ export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): str
     // caller: it decides whether a running router may be stopped at once, and a key that is
     // there but cannot be read must keep every session working.
     const owned = ownedKeys(stateDir, realTarget(settingsFile));
-    return REMOVED_ON_OFF.filter((key) =>
+    return GATEWAY_ENV_KEYS_ALL.filter((key) =>
       owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
     );
   }
   const records = ownedRecords(stateDir, realTarget(settingsFile));
-  return REMOVED_ON_OFF.filter(
+  return GATEWAY_ENV_KEYS_ALL.filter(
     (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
 }
@@ -188,7 +286,7 @@ function currentSettings(settingsFile: string): null | Record<string, unknown> {
 
 /**
  * Throws ForeignKeyError when a gateway key is in the settings and cc-smart-dev-kit does not own
- * it, also when it already has the wanted value: then `gateway off` could not remove it,
+ * it, also when it already has the wanted value: then `gateway off` could not take it back,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
  * it (a project's migration does it for its machines). The value is masked.
  *
@@ -267,43 +365,187 @@ export function retireOldModelKeys(options: {
 }
 
 /**
- * Removes the gateway env keys cc-smart-dev-kit owns. A gateway key someone else set stays, and
- * is returned in `foreign`, so the output can name it.
+ * Turns the gateway off: removes the keys cc-smart-dev-kit owns, and **writes Anthropic's own
+ * address into `env.ANTHROPIC_BASE_URL` instead of removing it** (`offAddressOf`, GP5), so
+ * every running session switches to Anthropic within about a second — a removed key would move
+ * a session only to the next file that sets it, and with none would leave it on the router
+ * until it restarts. `switched` says whether that write happened in this call. A
+ * gateway key someone else set stays, and is returned in `foreign`, so the output can name it.
  */
 export function turnOff(options: { settingsFile: string; stateDir: string; dryRun?: boolean }): {
   result: ManagedJsonResult;
   foreign: string[];
+  switched: boolean;
 } {
   const env = readSettings(options.settingsFile).env;
+  const address = offAddressOf(options.settingsFile, options.stateDir);
   const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: REMOVED_ON_OFF.map(envPath),
+    ...(address.kind === "write" ? { set: [[BASE_URL_PATH, address.value] as const] } : {}),
+    // The address key is **written, never removed** (GP5): its value is the switch, so a file
+    // that already holds Anthropic's own address is left exactly as it is, and a key the person
+    // set, changed or removed is theirs and stays theirs (`applyManagedJson` skips it).
+    remove: GATEWAY_ENV_KEYS_ALL.filter((key) => key !== BASE_URL_KEY).map(envPath),
     // Gateway setup created the `env` these keys live in, when the settings had none: an
     // `env` this removal empties goes with them. One the person had stays.
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
-  const foreign = result.skipped
-    .map((skip) => skip.path[1])
-    .filter(
-      (key): key is string => key !== undefined && isJsonObject(env) && Object.hasOwn(env, key),
-    );
-  return { result, foreign };
+  const foreign = [
+    ...result.skipped
+      .map((skip) => skip.path[1])
+      .filter(
+        (key): key is string => key !== undefined && isJsonObject(env) && Object.hasOwn(env, key),
+      ),
+    ...(address.kind === "theirs" && address.present ? [BASE_URL_KEY] : []),
+  ];
+  return {
+    foreign,
+    result,
+    // The only `set` this call makes is the address: a change with a value after it is that write.
+    switched:
+      address.kind === "write" && result.changes.some((change) => change.after !== undefined),
+  };
 }
 
-/** What Claude Code's settings say about the gateway: names only, never a value. */
+/**
+ * Which of the `foreign` keys `turnOff` returned still send a session away from Anthropic. A key
+ * of the person's own that already holds Anthropic's address sends every session exactly where
+ * `off` would: it routes nothing, and "the gateway is not all off" would be untrue
+ * (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
+ * `ENABLE_TOOL_SEARCH` routes nothing either, and many people set it themselves. One home:
+ * `gateway off` and the setup step that turns the gateway off both ask it.
+ */
+export function foreignRouting(
+  foreign: readonly string[],
+  settingsFile: string,
+): { routing: string[]; ownAddressRoutes: boolean } {
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter(
+    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+  );
+  return { routing, ownAddressRoutes };
+}
+
+/**
+ * One of Claude Code's own model keys, and the value it holds. The kit never writes these keys
+ * (`FORBIDDEN_ENV_KEYS` covers the subagent ones); it reads them only to warn: a project file
+ * that names a slot or a backend target there sends that name past the gateway's slots
+ * (`doctor`, GP4a). A value is a model name, never a secret.
+ */
+export interface ModelKeyFact {
+  /** The key as a person reads it: `model`, `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`. */
+  key: string;
+  value: string;
+}
+
+/**
+ * A settings file's gateway facts as they are written, for a reader that must compare the URL
+ * itself — the project's effective-state reader (`project-state.ts`), which tells this
+ * machine's router from another gateway's address. Never for output: `settingsReport` masks.
+ * Throws when the file cannot be read (the caller reports it; the readers here never do).
+ * `baseUrlProblem`: the key is there and is not a text with something in it, so no URL can be
+ * read from it — `settingsReport` still says "none", as before; the project reader reports it.
+ */
+export function readGatewaySettings(settingsPath: string): {
+  baseUrl: null | string;
+  baseUrlProblem: null | string;
+  loginOverrides: string[];
+  /** Claude Code's own model keys the file sets, in one fixed order: `model` first, then each
+   * family's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`. */
+  modelKeys: ModelKeyFact[];
+  subagentOverrides: string[];
+} {
+  const settings = readSettings(settingsPath);
+  const env = isJsonObject(settings.env) ? settings.env : {};
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem =
+    Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable
+      ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it`
+      : null;
+  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  if (Object.hasOwn(settings, "apiKeyHelper")) loginOverrides.push("apiKeyHelper");
+  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  // Claude Code's own model keys, read for the doctor's warning: a slot key or a backend target
+  // here reaches past the gateway's slots. Read as they are written; a value that is not a text
+  // names no model.
+  const modelKeys: ModelKeyFact[] = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides,
+  };
+}
+
+/** What Claude Code's settings say about the gateway, as output may show them: names only, never a value. */
 export function settingsReport(settingsPath: string): {
   baseUrl: null | string;
   loginOverrides: string[];
   subagentOverrides: string[];
 } {
-  const settings = readSettings(settingsPath);
-  const env = isJsonObject(settings.env) ? settings.env : {};
-  const baseUrl =
-    typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
-  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  if (Object.hasOwn(settings, "apiKeyHelper")) loginOverrides.push("apiKeyHelper");
-  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl, loginOverrides, subagentOverrides };
+  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
+  return {
+    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
+    loginOverrides,
+    subagentOverrides,
+  };
+}
+
+/** The one key a project's state is: `env.ANTHROPIC_BASE_URL` of one of its settings files. */
+export const BASE_URL_KEY = "ANTHROPIC_BASE_URL";
+
+/** The key path the gateway's address lives at, in Claude Code's own settings: `env.…`. */
+export const BASE_URL_PATH: KeyPath = ["env", BASE_URL_KEY];
+
+/**
+ * Sets `env.ANTHROPIC_BASE_URL` in a project's settings file, as an owned key (D29, GP2):
+ * `applyManagedJson` backs the file up, records the key in `owned.json` so `restore` takes it
+ * back, and refuses a key someone else set. The caller checks the chain's login overrides and
+ * a foreign URL first (`planProjectChange`), so a refusal here names only the managed rule.
+ */
+export function setGatewayBaseUrl(options: {
+  file: string;
+  stateDir: string;
+  value: string;
+}): ManagedJsonResult {
+  return applyManagedJson({
+    file: options.file,
+    stateDir: options.stateDir,
+    set: [[BASE_URL_PATH, options.value]],
+  });
+}
+
+/**
+ * Removes `env.ANTHROPIC_BASE_URL` from a project's settings file, only while cc-smart-dev-kit
+ * owns it and it still holds the value it wrote: a value the person set or changed stays. An
+ * `env` cc-smart-dev-kit created goes with its last key; one the person had stays.
+ */
+export function clearGatewayBaseUrl(options: {
+  file: string;
+  stateDir: string;
+}): ManagedJsonResult {
+  return applyManagedJson({
+    file: options.file,
+    stateDir: options.stateDir,
+    remove: [BASE_URL_PATH],
+    createdObject: createdObjects(options.stateDir, options.file),
+  });
 }

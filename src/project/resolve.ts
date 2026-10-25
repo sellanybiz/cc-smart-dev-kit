@@ -23,17 +23,40 @@ export interface Project {
   configFile: string | null;
 }
 
+/**
+ * What a shared budget gives one call (`Budget.timeFor`, `src/hooks/budget.ts`): the call's own
+ * limit, or the time that is left if that is less. Zero or less: no time is left.
+ */
+export type TimeFor = (limitMs: number) => number;
+
 export interface ResolveOptions {
   /** The plugin version to check `requires` against. Default: this build's version. */
   pluginVersion?: string;
   /** The environment git runs with (PATH finds git). Default: process.env. */
   env?: Record<string, string | undefined>;
+  /**
+   * A hook's shared budget: each git call takes `timeFor(RESOLVE_GIT_TIMEOUT_MS)`, and a call
+   * with no time left is not made (it answers as a failed one). Default: no shared budget.
+   */
+  timeFor?: TimeFor;
 }
 
 /** `rev-parse --path-format` came in git 2.31. */
 export const MIN_GIT_VERSION = "2.31.0";
 
-type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
+/**
+ * What one git call answered. `timedOut`: the call was stopped at its time limit, or never made
+ * because its shared budget had none left — git did not answer, which is no answer about the
+ * repository (a ref that is not there, a folder that is not in git).
+ */
+interface GitResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}
+
+type Git = (args: string[]) => GitResult;
 
 /**
  * Each git call here may take this long. A hook resolves its project first, and a guard's
@@ -46,7 +69,7 @@ export const GIT_NOT_FOUND =
   "git was not found, so this project's own values cannot be read. Install git, then try again.";
 
 /** A git runner that does not block the caller: `gitInAsync`. */
-type GitAsync = (args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+type GitAsync = (args: string[]) => Promise<GitResult>;
 
 /** What a failed spawn says when there is no git at all, in words a page can act on. */
 function gitNotFound(error: unknown): unknown {
@@ -58,12 +81,61 @@ function gitNotFound(error: unknown): unknown {
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 
+/** What a caller is told when git did not answer: the reason of a question, never a guess. */
+export const GIT_TIMED_OUT = "git did not answer in time";
+
+/** What a person does about it: the one fix every command that prints the error carries. */
+export const GIT_TIMED_OUT_FIX =
+  "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+/**
+ * What a checkout lookup throws when git did not answer. A hung git is an error, never "outside
+ * git" (RV4-2). The message is one plain line, the reason and its fix, so a command that prints
+ * `error.message` (most do, and the CLI's last catch) tells the person what to do; a check that
+ * prints its fix on a line of its own (`doctor`) says `GIT_TIMED_OUT` alone.
+ */
+export class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+
+/**
+ * What went wrong in a checkout lookup, without the fix a timeout's message carries: for a caller
+ * that puts the reason inside a sentence or beside a fix of its own (`doctor`'s check, a guard's
+ * question), where "run this again" would read wrongly.
+ */
+export function checkoutFailure(error: unknown): string {
+  if (error instanceof GitTimedOutError) return GIT_TIMED_OUT;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** What a call answers when its shared budget has no time left: it was never made. */
+const NO_TIME_LEFT: GitResult = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true,
+};
+
+/**
+ * How long one call may take: `timeoutMs`, or what the shared budget leaves if that is less;
+ * zero or less means the call is not made (`Bun.spawn` reads a timeout of 0 as no limit at all).
+ */
+function callLimit(timeoutMs: number, timeFor: TimeFor | undefined): number {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+
 function gitIn(
   cwd: string,
   env: Record<string, string>,
   timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+  timeFor?: TimeFor,
 ): Git {
   return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0) return NO_TIME_LEFT;
     try {
       const result = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -71,7 +143,7 @@ function gitIn(
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         // A hook or a crew command may run with no console of its own on Windows.
         windowsHide: true,
       });
@@ -79,6 +151,7 @@ function gitIn(
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
         stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true,
       };
     } catch (error) {
       throw gitNotFound(error);
@@ -95,8 +168,11 @@ function gitInAsync(
   cwd: string,
   env: Record<string, string>,
   timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+  timeFor?: TimeFor,
 ): GitAsync {
   return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0) return NO_TIME_LEFT;
     try {
       const child = Bun.spawn(["git", ...args], {
         cwd,
@@ -104,7 +180,7 @@ function gitInAsync(
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs,
+        timeout: limit,
         windowsHide: true,
       });
       const [stdout, stderr, code] = await Promise.all([
@@ -112,7 +188,8 @@ function gitInAsync(
         new Response(child.stderr).text(),
         child.exited,
       ]);
-      return { ok: code === 0, stdout, stderr };
+      // Bun stops a call at its time limit with SIGTERM, and a git that ends otherwise has none.
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
     } catch (error) {
       throw gitNotFound(error);
     }
@@ -142,10 +219,8 @@ async function requireGitVersionAsync(git: GitAsync): Promise<void> {
  * The first `worktree` entry of `git worktree list --porcelain` is the main checkout: the
  * one parse both readers of the list use.
  */
-function mainCheckoutFrom(
-  list: { ok: boolean; stdout: string; stderr: string },
-  cwd: string,
-): string | null {
+function mainCheckoutFrom(list: GitResult, cwd: string): string | null {
+  if (list.timedOut === true) throw new GitTimedOutError();
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split("\n\n");
   const lines = firstEntry.split("\n");
@@ -205,7 +280,8 @@ export type Checkout = Omit<Project, "config" | "configFile">;
 
 /**
  * Finds the git checkout `cwd` is in, reading no cc-smart-dev-kit.json. Returns null outside git or
- * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
+ * in a bare repo. Throws when git is older than 2.31, the main checkout is missing, or git did
+ * not answer in time (`GitTimedOutError`: a hung git says nothing about the folder).
  * A hook calls it first, then `ownHooksOf`, so a hook the project runs as its own copy stays
  * silent even when the cc-smart-dev-kit.json is broken.
  */
@@ -213,7 +289,7 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = git([
     "rev-parse",
     "--path-format=absolute",
@@ -221,6 +297,8 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
+  // A git that did not answer says nothing about the folder: not "outside git".
+  if (revParse.timedOut === true) throw new GitTimedOutError();
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -252,7 +330,7 @@ export async function locateCheckoutAsync(
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
-  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
   const revParse = await git([
     "rev-parse",
     "--path-format=absolute",
@@ -260,6 +338,7 @@ export async function locateCheckoutAsync(
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
+  if (revParse.timedOut === true) throw new GitTimedOutError();
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     await requireGitVersionAsync(git);
@@ -323,12 +402,23 @@ export interface CommittedOptions {
   env?: Record<string, string | undefined>;
   /** How long each git call may take. Default: `RESOLVE_GIT_TIMEOUT_MS`. */
   timeoutMs?: number;
+  /**
+   * A hook's shared budget: each git call takes `timeFor(timeoutMs)`, and a call with no time
+   * left is not made (it answers as a failed one). Default: no shared budget.
+   */
+  timeFor?: TimeFor;
   /** The plugin version to check `requires` against. Default: this build's version. */
   pluginVersion?: string;
 }
 
+/** The answer when git was stopped, or never run, before it said what the ref holds. */
+function gitTimedOut(where: string): CommittedConfig {
+  return { found: false, where, why: GIT_TIMED_OUT };
+}
+
 /** The answer when `origin/<branch>` is not in this repository. */
-function refNotKnown(where: string, ref: string): CommittedConfig {
+function refNotKnown(where: string, ref: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return {
     found: false,
     where,
@@ -337,12 +427,14 @@ function refNotKnown(where: string, ref: string): CommittedConfig {
 }
 
 /** The answer when the ref's commit has no project file. */
-function noCommittedFile(where: string, ref: string): CommittedConfig {
+function noCommittedFile(where: string, ref: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
 
 /** The answer when git could not read the file it found. */
-function unreadableCommitted(where: string): CommittedConfig {
+function unreadableCommitted(where: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
 
@@ -377,13 +469,18 @@ export function readCommittedConfig(
 ): CommittedConfig {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitIn(
+    checkout.root,
+    gitEnv(options.env ?? process.env),
+    options.timeoutMs,
+    options.timeFor,
+  );
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) return refNotKnown(where, ref);
+  if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok) return noCommittedFile(where, ref);
+  if (!blob.ok) return noCommittedFile(where, ref, blob);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok) return unreadableCommitted(where);
+  if (!text.ok) return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
@@ -399,18 +496,23 @@ export async function readCommittedConfigAsync(
 ): Promise<CommittedConfig> {
   const ref = `origin/${branch}`;
   const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const git = gitInAsync(
+    checkout.root,
+    gitEnv(options.env ?? process.env),
+    options.timeoutMs,
+    options.timeFor,
+  );
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) return refNotKnown(where, ref);
+  if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
     "--verify",
     "--quiet",
     `${commit.stdout.trim()}:${CONFIG_PATH}`,
   ]);
-  if (!blob.ok) return noCommittedFile(where, ref);
+  if (!blob.ok) return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok) return unreadableCommitted(where);
+  if (!text.ok) return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
@@ -422,5 +524,19 @@ export async function readCommittedConfigAsync(
  */
 export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
   const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}
+
+/**
+ * `resolveProject`, without blocking the caller: the same checkout and the same file, found with
+ * `Bun.spawn` (`locateCheckoutAsync`). The portal's pages read this inside the server's own
+ * process, where a blocking spawn freezes every page and the live stream
+ * (`.claude/rules/portal.md`).
+ */
+export async function resolveProjectAsync(
+  cwd: string,
+  options: ResolveOptions = {},
+): Promise<Project | null> {
+  const checkout = await locateCheckoutAsync(cwd, options);
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }

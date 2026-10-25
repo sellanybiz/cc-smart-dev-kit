@@ -113,10 +113,12 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       {
         isNested: () => Promise.resolve(false),
         ancestorHoldsName: () => Promise.resolve(false),
-        acquire: (job) => Promise.resolve({ gb: job.gb, release: () => undefined }),
+        acquire: (job) =>
+          Promise.resolve({ gb: job.gb, release: () => undefined, waitedSince: null }),
         workersFor: () => 1,
         memoryMaxFor: () => "128M",
         launchFacts: () => realLaunchFacts(SLICE),
+        now: Date.now,
         slice: realSliceControl(realReadText),
         run: (argv, scopeUnit) =>
           spawnAndWait(argv, new EventEmitter(), (line) => said.push(line), {

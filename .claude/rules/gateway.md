@@ -36,11 +36,13 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
   reaches it with only `model` changed, and only D6's marked blocks gone (the router skips
   the translation when `guard` is set). On the opt-in judge route to an affordable backend, the check gets that backend's named
-  translations (`reasoningOffForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
+  translations (`reasoningOffForBackend`, `effortPinForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
   any request there.
 - An affordable backend gets only the **named format translations**: `toolSearchForBackend`
   (tool search made plain), `reasoningOffForBackend` ("no reasoning" in a form the backend
-  reads) and `thinkingForBackend` (each router-marked thinking block gets back the signature
+  reads), `effortPinForBackend` (a slot/backend pin, after the thinking-off translation; it wins
+  even over `none`, never on a Claude route; `gateway.test.ts` › "D64: backend effort pins")
+  and `thinkingForBackend` (each router-marked thinking block gets back the signature
   its backend wrote; § Answers another target gives for a Claude model). **A new translation, or a new row in a translation's table, needs its
   own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
@@ -68,6 +70,33 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
+## The path is stripped once, before every branch (owner D29)
+
+- **A project points at a profile through its URL: `…/p/<profile>`.** The router strips
+  `/p/<name>` once, in `handle`, before every branch a request can take — `POST /v1/messages`
+  streamed or not, `count_tokens`, `HEAD /api/hello`, the health page, a server-tool request,
+  the judge — and everything after that reads the path Claude Code itself would have sent.
+  That path, not the prefixed one, is also what Anthropic gets. **Never strip anywhere else**:
+  a second strip, or one inside a branch, would send Anthropic a path it does not serve. The
+  proof that Claude Code keeps the prefix on every request is in `docs/claude-code-contract.md`.
+- **A name is checked against a strict pattern before any lookup** (`isProfileName`:
+  lower-case letters, digits and `-`, at most 64; `profileFromPath` only splits). A name that
+  is no profile — malformed, or not in the config's `profiles` — answers as plain Claude
+  (`plainClaudeView`): every slot off, no alias applied, the request to Anthropic as Claude
+  Code sent it, one WARN per name. Never an error a session cannot read, never another
+  profile's chains.
+- **A profile is a view over the machine's config, never a second config**: `profileView`
+  returns the machine's config with the profile's chains (`"claude"` turns a slot off there; a
+  slot it does not name keeps the machine's chain) and its fallback and breaker switches over
+  the machine's, and every reader the router already has works on it unchanged. `backends`,
+  `port`, `timeouts`, `aliases`, `judgeTested` and `history` stay machine-wide. A view is
+  never saved.
+- **A profile's chain is its own state**: a `fallbacks` or `breakers` record goes under
+  `<profile>/<slot>` (`stateKeyFor`), and the breaker's hold and answer are the profile's.
+  A target's rest, and the one request at a time that probes it, stay per target: a target
+  that is down is down for every profile. `limits` stays per Claude model too: the login, and
+  so its plan limits, is one for every profile.
+
 ## Every slot the same way; no model chosen for anyone (owner)
 
 Five slots — scout (Haiku's), worker (Sonnet's), opus, fable, and judge (auto mode's
@@ -82,7 +111,9 @@ safety checks), their ids in § Names. One rule set for all of them:
   cannot). A chain a slot is not using lives in `kept[key]` — saved, never used — and the top
   level stays a loose object, so a 0.5.x router or CLI reads a new config right and writes
   `kept` back untouched. `slot <slot> claude` (or the old `off`) moves the chain and its
-  fallback switch to `kept`; `custom` moves both back; `clear` deletes them. A rollback can
+  fallback switch and backend effort pins to `kept`; `custom` moves them back; `clear` deletes them.
+  A target that leaves a chain loses its pin. `gateway effort` tests a backend's level before
+  saving it, through the judge test's shared sender; a refusal saves nothing. A rollback can
   never turn a switched-off model back on.
 - **No chain = Claude = plain Claude**: the request goes to Anthropic byte for byte, the id it
   carried included. A slot-named request for a Claude slot gets a 400 that says what to do;
@@ -94,12 +125,26 @@ safety checks), their ids in § Names. One rule set for all of them:
   one is a backend, the request is held and then answered with the breaker's 429
   (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged**, its quota
   429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
-  real headers. A last target that is Anthropic is never held.
+  real headers. A last target that is Anthropic is never held. **The one exception (the
+  owner's D65):** a Claude target behind the first, at a plan limit the router already knows
+  (`knownLimit`: in `limits`, its reset still ahead) is skipped while it rests, the last one
+  included, so the target before it is the last asked, by its own rules; after its rest
+  (the same cooldown, `COOLDOWN_MAX_SEC`, never a second timer) it is asked again, and with a
+  backend before it a capacity failure of that ask counts for the breaker (a chain of Claude
+  targets alone never holds). A judge chain skips the same way and still never holds. A
+  chain that starts with that model, a limit with no reset and server tools are untouched.
+  Its tests: `gateway.test.ts` › "the breaker" › "D65: …".
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
-  Default on for scout, worker, the judge and a machine's own slots; off for opus and fable
-  (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x opus or fable chain gets that default, off: "on" moves
-  on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
+  **Off by default for every slot, the judge's included (owner D66)**: `fallbackOn` returns the
+  person's own setting, else false — one home, no per-slot list. A 0.4.x opus or fable chain
+  stays off: "on" moves on at far more than the plan limit it was set up for. **Every slot is
+  Claude by default and the gateway is off** (D66): a new config keeps no chain, and `gateway
+  setup` asks no slot and never turns the gateway on. A machine set up before it moves once, in
+  `cc-smart-dev-kit setup` only (`src/gateway/claude-defaults.ts`; a backup first, one line per
+  change, a state-folder marker, never a session start or the background update). The kit
+  suggests no model anywhere unasked; help that says *how* to set a chain or a fallback stays.
+  `gateway setup` drops 0.4.x's hidden
   `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
   exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
 - **The breaker switch** (`breaker` in the config, `breakerOn`, `gateway breaker <slot> on|off`)
@@ -136,8 +181,8 @@ safety checks), their ids in § Names. One rule set for all of them:
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
-  no chain the person did not pick; the person picks from the live list (setup's questions,
-  `gateway models`, the portal). A rule that
+  no chain the person did not pick; the person picks from the live list (`gateway models`, the
+  portal's Slots page). A rule that
   must name a model is keyed by family and the first version it holds for
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id
@@ -161,8 +206,9 @@ Claude judges auto mode's safety checks first.
 - **No judge chain (the default):** Claude judges. While Claude is limited or down (the
   statuses a chain moves on for), the worker chain's backend targets that passed the judge test
   judge in its place, in that chain's order (`claudeFirstJudge`, `workerJudgeTargets`). The
-  judge's fallback switch is on by default and needs no judge chain: `gateway fallback judge
-  off` keeps Claude alone. `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
+  judge's fallback switch is off by default (D66) and needs no judge chain: the stand-in is the
+  person's opt-in (`gateway fallback judge on`), and off keeps Claude alone.
+  `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
   Claude's answer, never a reason to use a stand-in. An untested worker target, and a
   `claude-…` target in the worker chain, never judge.
 - **A chain the person sets wins:** its first usable target judges (the next only with the
@@ -173,8 +219,9 @@ Claude judges auto mode's safety checks first.
   Claude step after it: the chain's failure is the answer.
 - **Never used untested:** `gateway slot judge`, `gateway slot worker …` and `gateway setup` run
   the judge test (`judge-test.ts`) on each backend target; `slot judge` refuses one that does
-  not block it, `slot worker` and `setup` set the worker either way and name each target that
-  passed and each that failed. No skip flag, ever. A target that passed gets its proof in the
+  not block it, `slot worker` sets the worker either way and names each target that passed and
+  each that failed, and `setup` (which sets no chain) tests the worker's existing targets and
+  names them the same way. No skip flag, ever. A target that passed gets its proof in the
   config's `judgeTested` (`judgeTestProof`: the test version, the target, its backend's URL);
   **the router uses only a target with a matching proof**, ignores any other with one WARN
   (Claude then judges), and doctor fails on a judge chain's. An untested worker target is no
@@ -247,10 +294,15 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 ## Settings and secrets
 
-- `gateway on` / `off`, and `gateway setup`'s removal of 0.4.3's retired model keys
-  (`retireOldModelKeys`), change Claude Code's settings only through `src/setup/`
-  (`applyManagedJson`, owned keys, only a key that still holds the value cc-smart-dev-kit wrote). A gateway key someone else set stops `on` with
-  ForeignKeyError, its value masked; it is never overwritten.
+- `gateway on` / `off`, `gateway project …` (a project's own `ANTHROPIC_BASE_URL`, in its
+  `settings.local.json` or its team `.claude/settings.json`), and `gateway setup`'s removal of
+  0.4.3's retired model keys (`retireOldModelKeys`), change Claude Code's settings only through
+  `src/setup/` (`applyManagedJson`, owned keys, only a key that still holds the value
+  cc-smart-dev-kit wrote; the personal file's `.git/info/exclude` line through
+  `applyManagedLine`). A gateway key someone else set stops `on` with ForeignKeyError, its value
+  masked; it is never overwritten. A project's state has one reader, `projectGatewayState`
+  (`src/gateway/project-state.ts`), and its awaited twin `projectGatewayStateAsync` for the
+  portal's path, which shares every step but the git reads; never a second copy.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
   (`FORBIDDEN_ENV_KEYS`, and its test).
@@ -326,8 +378,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   refuses requests for one drain, and the warning names the real cause (`restartWarning`:
   the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
-  So `restore` stops it only once no gateway env key that still holds cc-smart-dev-kit's value is
-  left (its stage 2; a key the person changed since is theirs, and does not hold it back),
+  So `restore` stops it only once no key of ours points at the router (`baseUrlPointsAtGateway`;
+  its stage 2; a key the person changed since is theirs, and does not hold it back),
   and asks first; `--now` does it at once, after saying every session fails until it
   restarts. `restore`'s own two stages are `setup-and-managed-files.md` § `--dry-run` and
   `restore`; `stopRouter` below is the one stop.

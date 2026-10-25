@@ -24,7 +24,7 @@
  * `<backend>:<model>` works as a model name too, for a one-off try):
  *   - `claude-sonnet-5-5`  → Anthropic, the body's model set to that id;
  *   - `<backend>:<model>`  → that backend (its own API key), e.g.
- *                            `omniroute:glm-5.3-flash`. The model part may hold `:` or
+ *                            `omniroute:<model>`. The model part may hold `:` or
  *                            `/` itself: only the first `:` splits.
  *
  * The functions here are pure, so they can be tested. The router is `router.ts`; the
@@ -45,6 +45,10 @@ export interface BackendTarget {
 }
 
 export type Target = AnthropicTarget | BackendTarget;
+
+/** Claude Code's effort words, plus the backend-only value that turns reasoning off. */
+export const BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+export type BackendEffort = (typeof BACKEND_EFFORT_LEVELS)[number];
 
 /** A backend name: lower-case letters, digits, `-` and `_`. */
 const BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -83,6 +87,52 @@ export function isClaudeModelId(name: string): boolean {
 /** A model name without the `[1m]` context suffix. */
 export function withoutContextSuffix(name: string): string {
   return name.replace(CONTEXT_SUFFIX, "");
+}
+
+/**
+ * The path a project's `ANTHROPIC_BASE_URL` carries to reach a profile: `…/p/<profile>`
+ * (owner D29, `docs/gateway.md` § Profiles). One home: the router strips it, and the
+ * commands that write a project's URL build it from this.
+ */
+export const PROFILE_PATH_PREFIX = "/p/";
+
+/**
+ * A profile name, as a URL segment and as a key in `gateway.json`'s `profiles`: lower-case
+ * letters, digits and `-`, at most 64. A name the pattern refuses is never a profile and is
+ * never looked up, so a hand-written config key such as `__proto__` cannot be reached from a
+ * path, and a typo answers as plain Claude instead of an error.
+ */
+const PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function isProfileName(name: string): boolean {
+  return PROFILE_NAME.test(name);
+}
+
+/** What a request path says about a profile: the name it carries, and the path under it. */
+export interface ProfilePath {
+  /** The segment after `/p/`, exactly as the path carried it (check `isProfileName`); null: no prefix. */
+  name: null | string;
+  /** The path without the `/p/<name>` prefix: what the route branches read and Anthropic gets. */
+  path: string;
+}
+
+/**
+ * Split a request path (its query is not part of a path) into the profile it names and the
+ * path under it (owner D29):
+ *   - `/p/<name>/v1/messages` → name `<name>`, path `/v1/messages`;
+ *   - `/p/<name>` and `/p/<name>/` → name `<name>`, path `/`;
+ *   - no `/p/` prefix, or none with a name after it (`/p/`, `/p//…`) → no name, path as it came.
+ * The rest of the path is kept exactly as it came, so the bytes Anthropic gets are the bytes
+ * Claude Code sent minus the prefix. Pure: the caller decides what an unknown name means
+ * (plain Claude, never an error a session cannot read).
+ */
+export function profileFromPath(pathname: string): ProfilePath {
+  if (!pathname.startsWith(PROFILE_PATH_PREFIX)) return { name: null, path: pathname };
+  const rest = pathname.slice(PROFILE_PATH_PREFIX.length);
+  const slash = rest.indexOf("/");
+  const name = slash === -1 ? rest : rest.slice(0, slash);
+  if (name === "") return { name: null, path: pathname };
+  return { name, path: slash === -1 ? "/" : rest.slice(slash) };
 }
 
 /** The text of a target, the way the config and `gateway slot` spell it. */
@@ -295,6 +345,15 @@ export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
 export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
 
 /**
+ * Claude Code's own override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … (all four exist
+ * in Claude Code 2.1.301). One home, here beside the families: the launch policy resolves a
+ * model through it, and the gateway's settings reader reports a project file that sets one.
+ */
+export function familyEnv(family: ClaudeFamily): string {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
+
+/**
  * The slot that answers for Sonnet: the worker. Its tested targets also judge auto mode's
  * checks while Claude cannot (owner D44, `workerJudgeTargets` in `config.ts`).
  */
@@ -390,15 +449,6 @@ export function familySlotFor(model: unknown): null | { model: string; slot: str
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-
-/**
- * The slots whose fallback switch is off until the person turns it on: the model slots,
- * whose next targets stand in for a premium model. Every other slot (scout, worker, the
- * judge, a machine's own) starts with it on. The judge is on so that, with no judge chain of
- * the person's own, the worker's tested targets answer while Claude cannot (D44); `gateway
- * fallback judge off` keeps Claude alone.
- */
-export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS)];
 
 /**
  * The targets a slot's request may use: the whole chain while its fallback switch is on, its

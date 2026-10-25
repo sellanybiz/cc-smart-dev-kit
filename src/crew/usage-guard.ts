@@ -13,8 +13,10 @@ import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { readUsageWindow } from "../cli/usage-window";
 import { fallbackOn, type GatewayConfig, slotMode } from "../gateway/config";
+import { projectGatewayState } from "../gateway/project-state";
 import { familySlotKey } from "../gateway/targets";
-import { gatewayFactsOf } from "../hooks/agent-guard";
+import { sessionGatewayOf } from "../hooks/agent-guard";
+import type { GatewayFacts } from "../models/launch-policy";
 
 /** What the guard reads: the window now, and whether the opus slot's chain answers past it. */
 export interface UsageFacts {
@@ -39,10 +41,31 @@ export function opusFallbackOf(facts: {
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
 
-/** The facts `crew start` and `crew list` read, at one moment. */
-export function usageFacts(paths: CliPaths, nowMs: number): UsageFacts {
+/**
+ * The gateway a crew session started in `folder` runs on (RV3): the address its project's own
+ * settings choose over the machine's — the personal file, then the team file, then the user's
+ * (`projectGatewayState`) — read as a session's own address is (`sessionGatewayOf`): off for
+ * Anthropic's address or none, the profile's chains for `…/p/<name>`, else the machine's.
+ * `crew start` runs outside any session of that project, so its own environment says nothing
+ * about it; the user's file alone would miss a project turned on or off (`gateway project`).
+ * A settings file that cannot be read stops the chain (`unknown`), which counts as off, as an
+ * unreadable user file always did.
+ */
+export function crewGatewayOf(paths: CliPaths, folder: string): GatewayFacts {
+  const { effective } = projectGatewayState(folder, {
+    configPath: paths.gatewayConfigFile,
+    settingsFile: paths.settingsFile,
+  });
+  const { config, gatewayOn } = sessionGatewayOf(paths, {
+    ANTHROPIC_BASE_URL: effective.url ?? undefined,
+  });
+  return { config, gatewayOn };
+}
+
+/** The facts `crew start` and `crew list` read for the project in `folder`, at one moment. */
+export function usageFacts(paths: CliPaths, nowMs: number, folder: string): UsageFacts {
   return {
-    opusFallback: opusFallbackOf(gatewayFactsOf(paths)),
+    opusFallback: opusFallbackOf(crewGatewayOf(paths, folder)),
     percent: readUsageWindow(paths, nowMs)?.percent ?? null,
   };
 }

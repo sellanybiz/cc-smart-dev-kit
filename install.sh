@@ -76,7 +76,7 @@ MIN_BUN="1.4.3"
 # (step 5): a CLI older than this script would refuse the options this script passes it, and
 # that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
 # it had no `--tavily-key-stdin`, and the run died at the Tavily step).
-INSTALLER_VERSION="1.1.2"
+INSTALLER_VERSION="1.2.0"
 
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
@@ -820,16 +820,18 @@ main() {
       LEFT+=("the browser: $(plugin_command browser setup), then $(plugin_command browser token)")
     fi
 
-    # The gateway (optional): its router answers the affordable model slots, under systemd
-    # on Linux. Where that cannot run, the question is skipped with the reason.
+    # The gateway (optional): the local router and OmniRoute's key, under systemd on Linux.
+    # Every slot stays Claude and the gateway stays off until the person says otherwise (D66):
+    # no word here suggests a model or a switch. Where it cannot run, the question is skipped
+    # with the reason.
     if ! gateway_service_possible; then
       skip "7/8 the gateway was skipped: its router runs under systemd on Linux, and this machine has no systemd"
       LEFT+=("the gateway: README § The AI gateway (its router needs systemd on Linux)")
     else
-      ask_yes "7/8 Set up the AI gateway now (affordable models for the haiku and sonnet subagents)?"
+      ask_yes "7/8 Set up the AI gateway now (the local router and OmniRoute's key)?"
       if [ "$answer" != "yes" ]; then
         skip "7/8 the gateway was skipped: README § The AI gateway has its steps"
-        LEFT+=("the gateway: $(plugin_command gateway setup --backend-key-stdin omniroute), then $(plugin_command gateway on)")
+        LEFT+=("the gateway: $(plugin_command gateway setup --backend-key-stdin omniroute)")
       else
         # A router already installed here may be running: `gateway setup` restarts it, and
         # a restart cuts every answer in flight. The command asks that question itself only
@@ -914,13 +916,13 @@ main() {
           # The router's copy and its service are refreshed whenever no key was saved: a
           # machine that has a key keeps it (`--no-backend-key` changes no key).
           if [ "$gateway_saved" = "yes" ]; then
-            step "7/8 the gateway is set up: turn it on with \`$(plugin_command gateway on)\` when you want it"
+            step "7/8 the gateway is set up: the router and OmniRoute's key are ready"
           else
             if ! run_cli_quiet gateway setup --no-backend-key $restart_flag; then
               failed "gateway setup failed" "$(plugin_command gateway setup --no-backend-key)"
             fi
             if [ "$gateway_check_code" = "0" ]; then
-              step "7/8 the gateway is up to date: turn it on with \`$(plugin_command gateway on)\` when you want it"
+              step "7/8 the gateway is up to date: the router and OmniRoute's key are ready"
             else
               skip "7/8 the router's copy and service are refreshed, and the gateway's key is untouched"
             fi

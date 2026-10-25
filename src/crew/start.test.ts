@@ -215,6 +215,7 @@ describe("D25: crew start returns at once", () => {
         mcpFile,
         "--settings",
         settingsFile,
+        "--",
         `You are the crew session C my-app master-plan B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
       ],
       ["agents", "--json", "--all"],
@@ -401,7 +402,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     );
     const launched = world.claudeCalls()[1] ?? [];
     expect(launched.slice(0, 2)).toEqual(["--bg", "-w"]);
-    expect(launched.slice(-5, -1)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
+    expect(launched.slice(-6, -2)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
     expect(launched).toContain("--strict-mcp-config");
   });
 
@@ -784,6 +785,60 @@ describe("the refusals before anything is recorded", () => {
   });
 });
 
+describe("RV3: a crew session runs on the PROJECT's gateway, not the user's file alone", () => {
+  const ROUTER = "http://127.0.0.1:20199";
+  const CHAINS = {
+    backends: { omniroute: { apiKey: "test-key", baseUrl: ROUTER } },
+    port: 20199,
+    slots: {
+      "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
+    },
+    version: 1,
+  };
+
+  /** A led world whose gateway config has affordable chains; `machine`/`project` are the addresses. */
+  async function gatewayWorld(machine: null | string, project: null | string) {
+    const world = await ledWorld();
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(CHAINS)}\n`, { mode: 0o600 });
+    const write = (file: string, url: string) => {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_BASE_URL: url } }));
+    };
+    if (machine !== null) write(world.paths.settingsFile, machine);
+    // The project's personal file, at the main checkout's root (P6).
+    if (project !== null) write(join(world.repo, ".claude", "settings.local.json"), project);
+    return world;
+  }
+
+  test("the machine is off and the project is on: the project's chain answers, at the affordable effort", async () => {
+    const world = await gatewayWorld(null, ROUTER);
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+  });
+
+  test("D50: a ui session under the project's gateway stays on the opus tier at high: the name is the tier, whatever answers it", async () => {
+    const world = await gatewayWorld(null, ROUTER);
+    const argv = startArgs(world.brief);
+    argv[argv.indexOf("build")] = "ui";
+    expect(await runCrew(argv, world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· opus → omniroute:glm-5.3-flash high ·");
+  });
+
+  test("the machine is on and the project is off: Claude answers, so no affordable effort is chosen", async () => {
+    const world = await gatewayWorld(ROUTER, "https://api.anthropic.com");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet high ·");
+  });
+
+  test("the machine is on and the project says nothing: the machine's gateway answers, at the affordable effort", async () => {
+    const world = await gatewayWorld(ROUTER, null);
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+  });
+});
+
 describe("D25: the queue — still one line, at once", () => {
   test("D54: the machine's ceiling reached across repositories: queued, no worktree, no session", async () => {
     const world = await ledWorld();
@@ -1096,6 +1151,47 @@ describe("a name already in use", () => {
     expect(world.err).toEqual([
       "crew start: C my-app master-plan B6b portal-live is recorded already, starting, on crew/B6b-portal-live",
       'Fix: remove it first (cc-smart-dev-kit crew rm "C my-app master-plan B6b portal-live"), or pick another --slug',
+    ]);
+    expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
+  });
+
+  test("the same name, from two slugs a long name cuts to the same words", async () => {
+    // The longest tag (12), plan (16) and phase (8) leave only 17-19 characters of the slug, so
+    // two slugs that share a longer prefix make the SAME name. The branches differ — the branch
+    // check passes — and the name does not, so the message guard's own lookup takes whichever
+    // record it finds first. The name is an address: it may not be shared.
+    const world = await ledWorld();
+    world.writeConfig({ tag: "my-app-tools" });
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app-tools release-2026-q4",
+        plan: "release-2026-q4-big",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app-tools",
+      },
+      T0,
+    );
+    const args = (slug: string) => [
+      "start",
+      "E1a-E1b",
+      "--slug",
+      slug,
+      "--kind",
+      "build",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(args("review-fixes-for-the-guard"), world.ctx())).toBe(0);
+    const held = "C my-app-tools release-2026-q4 E1a-E1b review-fixes-for-the";
+    expect(onlyCrew(world.paths.stateDir, world.repo).name).toBe(held);
+    world.err.length = 0;
+    expect(await runCrew(args("review-fixes-for-the-merge"), world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew start: ${held} is recorded already, starting, on crew/E1a-E1b-review-fixes-for-the-guard`,
+      `Fix: pick a shorter --slug, another plan or another tag, so this name is not cut to the same words, or remove it first (${COMMAND} crew rm "${held}")`,
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
   });

@@ -398,8 +398,8 @@ describe("setup --remove-warp", () => {
 });
 
 describe("doctor's Warp line", () => {
-  test("not installed, or the app without its plugin (missing or off): information; with its plugin: ✓; the plugin without the app: ✗", () => {
-    expect(warpCheck(world().machine, world().paths)).toEqual({
+  test("not installed, or the app without its plugin (missing or off): information; with its plugin: ✓; the plugin without the app: ✗", async () => {
+    expect(await warpCheck(world().machine, world().paths)).toEqual({
       ok: true,
       info: true,
       text: "Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
@@ -409,13 +409,13 @@ describe("doctor's Warp line", () => {
       bins: { "dpkg-query": `printf '${INSTALLED}'` },
       plugins: ["warp@claude-code-warp"],
     });
-    expect(warpCheck(both.machine, both.paths)).toEqual({
+    expect(await warpCheck(both.machine, both.paths)).toEqual({
       ok: true,
       text: "Warp 0.2026.10.01 is installed, with its Claude plugin",
     });
 
     const appOnly = world({ bins: { "dpkg-query": `printf '${INSTALLED}'` } });
-    expect(warpCheck(appOnly.machine, appOnly.paths)).toEqual({
+    expect(await warpCheck(appOnly.machine, appOnly.paths)).toEqual({
       ok: true,
       info: true,
       text: "Warp 0.2026.10.01 is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)",
@@ -428,14 +428,14 @@ describe("doctor's Warp line", () => {
     const settings = JSON.parse(readFileSync(off.paths.settingsFile, "utf8"));
     settings.enabledPlugins["warp@claude-code-warp"] = false;
     writeFileSync(off.paths.settingsFile, JSON.stringify(settings));
-    expect(warpCheck(off.machine, off.paths)).toEqual({
+    expect(await warpCheck(off.machine, off.paths)).toEqual({
       ok: true,
       info: true,
       text: "Warp 0.2026.10.01 is installed, with its Claude plugin turned off (optional: claude plugin enable warp@claude-code-warp)",
     });
 
     const pluginOnly = world({ plugins: ["warp@claude-code-warp"] });
-    expect(warpCheck(pluginOnly.machine, pluginOnly.paths)).toEqual({
+    expect(await warpCheck(pluginOnly.machine, pluginOnly.paths)).toEqual({
       ok: false,
       text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not",
       fix: "cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp to install the app)",

@@ -3,7 +3,8 @@
  * state file. Every expected line is written by hand; times are shown in UTC.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { claudeWindowSaid } from "../crew/context-window";
 import type { LimitState } from "../gateway/limit-state";
 import { tempDir } from "../testing/temp";
@@ -119,6 +120,21 @@ describe("statusline", () => {
     expect(statuslineText(input(null, null), state, NOW, "UTC")).toBe(
       "Opus 5.5 · worker slot: every target limited since 09:55 → gateway slot worker <targets>",
     );
+    // A profile's breaker (owner D29): its chain lives in the config, not at `gateway slot`.
+    const profile: LimitState = {
+      ...state,
+      breakers: {
+        "my-project/cc-smart-dev-kit-worker": state.breakers?.["cc-smart-dev-kit-worker"] ?? {
+          held: 0,
+          lastAt: 0,
+          since: 0,
+          targets: [],
+        },
+      },
+    };
+    expect(statuslineText(input(null, null), profile, NOW, "UTC")).toBe(
+      "Opus 5.5 · worker slot in profile my-project: every target limited since 09:55 → gateway profile my-project slot worker <targets>",
+    );
     // A record the router stopped touching 15 minutes ago is stale: it goes with the breaker.
     const stale: LimitState = {
       ...state,
@@ -191,5 +207,137 @@ describe("statusline", () => {
       "Opus 5.5 · ⚠ 5h 87% (resets 13:00) · 7d 41%",
       "Opus 5.5 · ⚠ 5h 88% (resets 13:00) · 7d 41%",
     ]);
+  });
+});
+
+describe("RV3: a record shows in the session it is about", () => {
+  const record = (model: string, target: string) => ({
+    lastAt: NOW - 60_000,
+    model,
+    resetsAt: AT_13,
+    since: NOW - 600_000,
+    target,
+  });
+  const breaker = {
+    held: 1,
+    lastAt: NOW - 60_000,
+    since: NOW - 5 * 60_000,
+    targets: [{ status: 429, target: "omniroute:glm", until: NOW + 60_000 }],
+  };
+  /** The machine's records, a profile's `team/…` records, and a profile's judge record. */
+  const state: LimitState = {
+    breakers: {
+      "cc-smart-dev-kit-worker": breaker,
+      "team/cc-smart-dev-kit-scout": breaker,
+    },
+    fallbacks: {
+      "cc-smart-dev-kit-opus": record("claude-opus-5-5", "omniroute:machine-opus"),
+      "team/cc-smart-dev-kit-fable": record("claude-fable-5-1", "omniroute:team-fable"),
+      "team/cc-smart-dev-kit-judge": record("claude-sonnet-5", "omniroute:team-judge"),
+    },
+    limits: {
+      "claude-fable-5-1": { claim: "five_hour", resetsAt: AT_13, seenAt: NOW - 1000 },
+      "claude-opus-5-5": { claim: "five_hour", resetsAt: AT_13, seenAt: NOW - 1000 },
+    },
+    version: 1,
+  };
+
+  it("a profile's judge record is not shown either (the key is `<profile>/<slot>`)", () => {
+    const text = statuslineText(input(null, null), state, NOW, "UTC", undefined, {
+      gatewayOn: true,
+      profile: "team",
+    });
+    expect(text).not.toContain("team-judge");
+  });
+
+  it("a session on the machine's URL shows the machine's records, not a profile's", () => {
+    expect(
+      statuslineText(input(null, null), state, NOW, "UTC", undefined, {
+        gatewayOn: true,
+        profile: null,
+      }),
+    ).toBe(
+      "Opus 5.5 · ⚠ claude-opus-5-5 at its limit → omniroute:machine-opus until 13:00 · ⛔ claude-fable-5-1 at its plan limit until 13:00 · worker slot: every target limited since 09:55 → gateway slot worker <targets>",
+    );
+  });
+
+  it("a session on a profile's URL shows that profile's records, not the machine's", () => {
+    expect(
+      statuslineText(input(null, null), state, NOW, "UTC", undefined, {
+        gatewayOn: true,
+        profile: "team",
+      }),
+    ).toBe(
+      "Opus 5.5 · ⚠ claude-fable-5-1 at its limit → omniroute:team-fable until 13:00 · ⛔ claude-opus-5-5 at its plan limit until 13:00 · scout slot in profile team: every target limited since 09:55 → gateway profile team slot scout <targets>",
+    );
+  });
+
+  it("a session off the gateway shows no fallback or breaker, only the plan limits it hits", () => {
+    expect(
+      statuslineText(input(null, null), state, NOW, "UTC", undefined, {
+        gatewayOn: false,
+        profile: null,
+      }),
+    ).toBe(
+      "Opus 5.5 · ⛔ claude-fable-5-1 at its plan limit until 13:00 · ⛔ claude-opus-5-5 at its plan limit until 13:00",
+    );
+  });
+
+  it("with no session to judge by (run by hand), every record the state file holds shows", () => {
+    const text = statuslineText(input(null, null), state, NOW, "UTC");
+    expect(text).toContain("omniroute:team-fable");
+    expect(text).toContain("omniroute:machine-opus");
+    expect(text).not.toContain("team-judge");
+  });
+
+  it("runStatusline reads the session's URL from the environment it is given", async () => {
+    const home = tempDir("home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(paths.stateDir, { recursive: true });
+    mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
+    mkdirSync(dirname(paths.gatewayStateFile), { recursive: true });
+    writeFileSync(
+      paths.gatewayConfigFile,
+      JSON.stringify({
+        aliases: {},
+        anthropicBaseUrl: "https://api.anthropic.com",
+        backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
+        port: 20199,
+        profiles: { team: { slots: { "cc-smart-dev-kit-fable": ["omniroute:team-fable"] } } },
+        slots: { "cc-smart-dev-kit-opus": ["omniroute:machine-opus"] },
+        timeouts: { firstByteMs: 60_000 },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(paths.gatewayStateFile, JSON.stringify(state));
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => {
+      lines.push(parts.map(String).join(" "));
+    };
+    try {
+      const run = (url: string) =>
+        runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, undefined, {
+          ANTHROPIC_BASE_URL: url,
+        });
+      await run("http://127.0.0.1:20199/p/team");
+      await run("http://127.0.0.1:20199");
+      await run("https://api.anthropic.com");
+      // No address in the environment says nothing about the gateway: the machine's records.
+      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, undefined, {});
+      // An empty address is Anthropic's own (what `sessionGatewayOf` and Claude Code read): off.
+      await run("");
+    } finally {
+      console.log = original;
+    }
+    expect(lines[0]).toContain("omniroute:team-fable");
+    expect(lines[0]).not.toContain("machine-opus");
+    expect(lines[1]).toContain("omniroute:machine-opus");
+    expect(lines[1]).not.toContain("team-fable");
+    expect(lines[2]).not.toContain("omniroute:");
+    expect(lines[3]).toContain("omniroute:machine-opus");
+    expect(lines[3]).not.toContain("team-fable");
+    expect(lines[4]).not.toContain("omniroute:");
   });
 });

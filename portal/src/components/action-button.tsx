@@ -4,6 +4,7 @@ import { LoaderCircleIcon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { type ActionName, type ActionResult, portalClient } from "@/api/client";
 import { useLiveEvent } from "@/api/hooks";
+import { beginRun, ownsProgress } from "@/components/action-runs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -39,7 +40,8 @@ export function useAction(action: ActionName, onDone?: (result: ActionResult) =>
   useLiveEvent((message) => {
     if (message.name !== "action" || message.data.action !== action) return;
     const data = message.data;
-    if ("line" in data) {
+    // The stream names the action, not the control: with two runs of it going, whose line is it?
+    if ("line" in data && ownsProgress(action)) {
       setState((before) =>
         before.phase === "sending" ? { line: data.line, phase: "sending" } : before,
       );
@@ -51,24 +53,42 @@ export function useAction(action: ActionName, onDone?: (result: ActionResult) =>
     const timer = window.setTimeout(() => setState({ phase: "idle" }), DONE_SHOWN_MS);
     return () => window.clearTimeout(timer);
   }, [state]);
+  // The runs this control has going, so the action's progress lines can tell whose they are.
+  // Each run ends its own token; an unmount ends whatever is left.
+  const ends = useRef(new Set<() => void>());
+  useEffect(() => {
+    const held = ends.current;
+    return () => {
+      for (const end of held) end();
+    };
+  }, []);
   const run = useCallback(
     (body: Record<string, unknown>) => {
       setState({ line: null, phase: "sending" });
+      const end = beginRun(action);
+      ends.current.add(end);
+      const finish = () => {
+        end();
+        ends.current.delete(end);
+      };
       portalClient()
         .act(action, body)
         .then(
           (result) => {
+            finish();
             setState({ phase: "done", result });
             doneRef.current?.(result);
           },
-          (error: unknown) =>
+          (error: unknown) => {
+            finish();
             setState({
               phase: "done",
               result: {
                 lines: [error instanceof Error ? error.message : String(error)],
                 ok: false,
               },
-            }),
+            });
+          },
         );
     },
     [action],

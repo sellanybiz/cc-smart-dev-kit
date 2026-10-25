@@ -8,6 +8,11 @@
  *   Anthropic documents for gateways. That login must only ever reach Anthropic.
  *
  * WHAT IT DOES, PER REQUEST
+ *   - A path under `/p/<profile>` is split off first (`profileFromPath`), before every
+ *     branch below, and the request answers with that profile's chains and switches
+ *     (`profileView`); a name no profile holds answers as plain Claude, never an error
+ *     (owner D29; § Profiles in docs/gateway.md). Claude Code keeps the whole path on
+ *     every request, so this is the one place the prefix is known.
  *   - An old model name in the config's `aliases` is replaced by its slot or target
  *     first (`resolveAlias`), logged once per name.
  *   - `POST /v1/messages` (and `/count_tokens`) with a `claude-…` model whose family's slot
@@ -33,7 +38,9 @@
  *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
  *     exception: when every target failed for want of capacity and the last one is a
  *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
- *     429 that Claude Code retries by itself; Anthropic's own answers always pass.
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass. A Claude
+ *     target behind the first, resting at a plan limit the router knows, is not tried as the
+ *     last target (the owner's D65, `chain`).
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → the `cc-smart-dev-kit-judge` slot's tested targets when
@@ -106,23 +113,28 @@ import {
   BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
   type BreakerFailure,
   breakerAnswer,
+  breakerChangeHint,
   capRetryAfter,
   clientRetryAfter,
   describeFailures,
   earliestRestSeconds,
   formatDuration,
   isCapacityFailure,
-  slotShortName,
 } from "./breaker";
 import {
   BREAKER_HOLD_NON_STREAMING_MS,
   breakerHoldMs,
   breakerOn,
+  effortPin,
   fallbackOn,
   type GatewayConfig,
   historyRetentionDays,
   judgeTargetUsable,
   messageOf,
+  plainClaudeView,
+  profileNames,
+  profileNamesSlot,
+  profileView,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -143,6 +155,8 @@ import {
   type LimitState,
   mergeSeenClaude,
   parseLimitState,
+  scopeOfStateKey,
+  stateKeyFor,
 } from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
@@ -185,6 +199,7 @@ import {
   type PlanLimit,
   parseTarget,
   planUsageLimit,
+  profileFromPath,
   resolveAlias,
   resolveRequestRoute,
   resolveRoute,
@@ -310,6 +325,17 @@ const NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
 
+/**
+ * What this router answers that a reader may rely on, as the health page's `features`. The
+ * router carries no version, so a command or the portal tells a running router that knows a
+ * feature from one that does not by this list, never by guessing. `profiles`: a project's
+ * `…/p/<profile>` path names its own chains (owner D29, `docs/gateway.md` § Profiles).
+ * `claude-slot-aliases`: the config may hold an alias that points at a slot in Claude mode (a
+ * slot not in `slots`); a 1.1.x router refuses such a file, keeps its last good config and
+ * ignores every later change (`aliasesAtClaudeSlots`, `gateway slot`).
+ */
+export const ROUTER_FEATURES = ["profiles", "claude-slot-aliases"] as const;
+
 /** How many routed requests the health answer lists (`recent`), the last ones first in. */
 export const RECENT_MAX = 200;
 
@@ -334,6 +360,9 @@ export function sessionIdOf(headers: Headers): null | string {
  * Metadata only: never a prompt, an answer, a key or a header.
  */
 export interface RecentRequest {
+  /** The effort actually sent when a pin applied; absent on an unpinned request. */
+  effort?: string;
+  effortPinned?: true;
   /** When it came in: milliseconds since the epoch. */
   at: number;
   /** How long until its answer started: milliseconds. */
@@ -695,6 +724,16 @@ export function reasoningOffForBackend(
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 
+/** Apply the slot's backend-specific effort pin after the thinking-off translation. */
+export function effortPinForBackend(
+  body: Record<string, unknown>,
+  pin: undefined | string,
+): Record<string, unknown> {
+  if (pin === undefined) return body;
+  const outputConfig = isJsonObject(body.output_config) ? body.output_config : {};
+  return { ...body, output_config: { ...outputConfig, effort: pin } };
+}
+
 /** What a Claude target refuses with a 400, from one version of its family on. */
 interface ClaudeTargetRules {
   /** `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`. */
@@ -988,6 +1027,8 @@ function sameModel(a: string, b: string): boolean {
 
 /** How one request ended — the log line and the response. */
 interface Outcome {
+  effort?: string;
+  effortPinned?: true;
   /**
    * The breaker's own answer (`breaker(<slot>)` is the target): whether the request waited
    * in the hold, and how many upstream calls it made as a probe while the breaker was open.
@@ -1155,6 +1196,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const fellBack = new Set<string>();
   /** Judge targets already named in a WARN as untested: once each. */
   const untestedLogged = new Set<string>();
+  /** Profile names the config does not hold, already named in a WARN: once each. */
+  const unknownProfiles = new Set<string>();
   /** What `cleanAnswer` changed, per slot and target: logged once each. */
   const cleanedLogged = new Set<string>();
   /** Claude models whose request lost the router's marked thinking blocks (`forClaude`): once each. */
@@ -1285,13 +1328,32 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (response.status >= 400 || !Object.hasOwn(limitState.limits, id)) return null;
     delete limitState.limits[id];
-    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+    for (const [key, record] of Object.entries(limitState.fallbacks)) {
       if (record.model !== id) continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: ${id} answers again; its fallback is over`);
     }
     persist();
     return null;
+  }
+
+  /**
+   * The plan limit a chain's Claude target is known to be at now (D65): `limits` holds it,
+   * with its reset still ahead. A limit with no reset time is not one, nor one whose reset no
+   * date can hold (a header or a hand edit could say so): only the cooldown rules apply to it.
+   * Null for a backend, and for a model with no such limit.
+   */
+  function knownLimit(
+    target: Target,
+    nowMs: number,
+  ): null | { claim: null | string; resetsAt: number } {
+    if (target.kind !== "anthropic") return null;
+    const id = withoutContextSuffix(target.model);
+    const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
+    if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
+      return null;
+    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime())) return null;
+    return { claim: limit.claim, resetsAt: limit.resetsAt };
   }
 
   /**
@@ -1305,9 +1367,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     model: string,
     limit: PlanLimit | null,
     outcome: Outcome,
+    profile: null | string,
   ): void {
     const now = deps.now();
-    const before = limitState.fallbacks[slot];
+    // A profile's chain is its own, so its fallback record is its own record (`stateKeyFor`).
+    const key = stateKeyFor(slot, profile);
+    const before = limitState.fallbacks[key];
     const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
     const reset =
       resetsAt === null
@@ -1317,7 +1382,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (!outcome.response.ok) {
       if (before === undefined) {
         deps.log(
-          `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`,
+          `WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`,
         );
       }
       return;
@@ -1325,10 +1390,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     fellBack.add(model);
     if (before === undefined) {
       deps.log(
-        `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`,
+        `WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`,
       );
     }
-    limitState.fallbacks[slot] = {
+    limitState.fallbacks[key] = {
       lastAt: now,
       model,
       resetsAt,
@@ -1346,28 +1411,60 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * A slot taken out of the config (`gateway slot opus off`, a hand edit), or whose fallback
-   * switch went off, loses its fallback record, so the status line stops showing it.
-   * Checked once per config the router loads, before its first request.
+   * The config a request sees: the machine's when its path names no profile, and a profile's
+   * view of it (`profileView`) when it does (`…/p/<profile>`, owner D29). A name that is no
+   * profile — one the pattern refuses, or one the config does not hold — answers as plain
+   * Claude (D29): every slot off, one WARN per name. Never an error a session cannot read.
+   */
+  function configFor(profile: null | string): GatewayConfig {
+    const machine = deps.getConfig();
+    if (profile === null) return machine;
+    const view = profileView(machine, profile);
+    if (view !== null) return view;
+    if (!unknownProfiles.has(profile)) {
+      unknownProfiles.add(profile);
+      const names = profileNames(machine);
+      deps.log(
+        `WARN profile "${printable(profile, 64)}" is not in ${deps.configPath} (profiles: ${names.length > 0 ? names.join(", ") : "none"}); its requests answer as plain Claude`,
+      );
+    }
+    return plainClaudeView(machine);
+  }
+
+  /**
+   * A record for a slot a config no longer holds is dropped: `gateway slot opus off`, a hand
+   * edit, a fallback switch turned off, or a profile removed from the file. Every scope is
+   * checked against its own view — a profile's chain is not the machine's, so one can keep a
+   * slot the other turned off. Checked once per config the router loads, before its first
+   * request.
    */
   function dropRemovedFallbacks(config: GatewayConfig): void {
     if (config === checkedConfig) return;
     checkedConfig = config;
+    const scopes = new Map<null | string, GatewayConfig>([[null, config]]);
+    for (const name of profileNames(config)) {
+      const view = profileView(config, name);
+      if (view !== null) scopes.set(name, view);
+    }
     let changed = false;
-    for (const slot of Object.keys(limitState.fallbacks)) {
-      if (Object.hasOwn(config.slots, slot) && fallbackOn(config, slot)) continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+    for (const key of Object.keys(limitState.fallbacks)) {
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && fallbackOn(view, slot)) continue;
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: removed from the config; its fallback record is dropped`);
       changed = true;
     }
     if (changed) persist();
     // A breaker for a slot taken out of the config, or switched off, is over.
-    for (const slot of new Set([
+    for (const key of new Set([
       ...openBreakers.keys(),
       ...Object.keys(limitState.breakers ?? {}),
     ])) {
-      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot)) continue;
-      closeBreaker(slot, "removed from the config or switched off");
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && breakerOn(view, slot)) continue;
+      closeBreaker(slot, profile, "removed from the config or switched off");
     }
   }
 
@@ -1790,6 +1887,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     target: Target,
     guard: boolean,
     asked: Asked | null,
+    pin: undefined | string,
   ): { error: string } | { upstream: Upstream } {
     if (target.kind === "anthropic" && asked !== null && sameModel(target.model, asked.model)) {
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
@@ -1811,9 +1909,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
     // `metadata` carries the Claude account id; an affordable backend never sees it.
     const affordableBody: Record<string, unknown> = {
-      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
-        absentIsOff: guard,
-      }),
+      ...effortPinForBackend(
+        reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+          absentIsOff: guard,
+        }),
+        pin,
+      ),
       model: target.model,
     };
     delete affordableBody.metadata;
@@ -1886,6 +1987,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * a breaker is open (`hold.holding`), a resting backend is not asked even as the last
    * target, and one request at a time asks each target. Anthropic's answer is always the
    * answer, however it failed, so the last target being Anthropic never sets `capacity`.
+   *
+   * The one exception (the owner's D65): a Claude target behind the first that is at its
+   * known plan limit (`knownLimit`) is not the chain's last word. While it rests it is
+   * skipped, the last one included, so the target before it is the last one asked, by that
+   * target's rules (the breaker's hold, or its own answer). Once its rest is over it is asked
+   * again, like any resting target (an early reset ends the limit); with a backend before it,
+   * a capacity failure then counts for the breaker like a backend's.
    */
   async function chain(
     req: Request,
@@ -1898,6 +2006,35 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     /** The Claude model the request named, and its bytes (`targetUpstream`); a size WARN names it. */
     asked: Asked | null = null,
     hold: HoldMode | null = null,
+  ): Promise<Outcome> {
+    const sentPins = new Map<string, string>();
+    const outcome = await chainAttempt(
+      req,
+      url,
+      config,
+      body,
+      targets,
+      name,
+      guard,
+      asked,
+      hold,
+      sentPins,
+    );
+    const pin = sentPins.get(outcome.target);
+    return pin === undefined ? outcome : { ...outcome, effort: pin, effortPinned: true };
+  }
+
+  async function chainAttempt(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    targets: Target[],
+    name: string,
+    guard: boolean,
+    asked: Asked | null,
+    hold: HoldMode | null,
+    sentPins: Map<string, string>,
   ): Promise<Outcome> {
     // A safety check is no conversation: the hint below ("/compact it …") would mislead.
     const standsInFor = guard ? null : (asked?.model ?? null);
@@ -1913,23 +2050,71 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ): void => {
       records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
     };
+    /** The Claude targets skipped at their plan limit after the last one asked (D65). */
+    const tail: AttemptRecord[] = [];
     /** Every target failed for want of capacity: each one's failure; undefined otherwise. */
-    const capacityOf = (): BreakerFailure[] | undefined =>
-      hold !== null && records.length > 0 && records.every((record) => record.capacity)
-        ? records.map((record) => ({
+    const capacityOf = (): BreakerFailure[] | undefined => {
+      const all = [...records, ...tail];
+      return hold !== null && all.length > 0 && all.every((record) => record.capacity)
+        ? all.map((record) => ({
             reason: record.reason,
             status: record.status,
             target: record.target,
             until: record.until,
           }))
         : undefined;
+    };
     let fallbacks = 0;
     let skipped = 0;
     /** The last target gave no headers by its deadline (only a safety check's judge has one). */
     let lastTimedOut = false;
-    for (const [index, target] of targets.entries()) {
-      const last = index === targets.length - 1;
+    // D65: the Claude targets at the chain's end that are at their known plan limit and rest
+    // are not asked, the last one included: the target before them is the last one asked.
+    // The first target never is one, so a chain that starts with Claude asks it.
+    const passMs = deps.now();
+    const atLimit = targets.map((target, index) => {
+      const limit = index === 0 ? null : knownLimit(target, passMs);
+      const until = cooling.get(formatTarget(target));
+      return limit === null || until === undefined || until <= passMs ? null : { limit, until };
+    });
+    let lastIndex = targets.length - 1;
+    while (lastIndex > 0 && atLimit[lastIndex] !== null) lastIndex -= 1;
+    /** Skip the target at `index`, after the last one asked: one line says why (D65). */
+    const skipAtLimit = (index: number): void => {
+      const target = targets[index];
+      const skip = atLimit[index];
+      if (target === undefined || skip === null || skip === undefined) return;
       const label = formatTarget(target);
+      const claim = printable(skip.limit.claim ?? "plan limit", 40);
+      failures.push(`${label}: at its plan usage limit`);
+      tail.push({
+        capacity: true,
+        reason: `at its plan usage limit (${claim})`,
+        status: 429,
+        target: label,
+        until: skip.until,
+      });
+      skipped += 1;
+      // While the breaker holds, its own lines name the target, once and not once a pass.
+      if (hold?.holding === true) return;
+      deps.log(
+        `WARN ${name}: ${label} skipped: at its plan usage limit (${claim}, resets ${new Date(skip.limit.resetsAt * 1000).toISOString()}); asked again from ${new Date(skip.until).toISOString()}`,
+      );
+    };
+    for (const [index, target] of targets.entries()) {
+      if (index > lastIndex) {
+        skipAtLimit(index);
+        continue;
+      }
+      const last = index === lastIndex;
+      const label = formatTarget(target);
+      /**
+       * A Claude target at its known plan limit, asked again, with a backend before it (D65):
+       * the breaker holds that backend's hiccup. A chain of Claude targets alone never holds.
+       */
+      const askedAtLimit =
+        targets.slice(0, index).some((before) => before.kind === "backend") &&
+        knownLimit(target, deps.now()) !== null;
       const restsUntil = cooling.get(label);
       const resting = restsUntil !== undefined && restsUntil > deps.now();
       // While a breaker is open, a resting backend is not asked even as the last target: the
@@ -1993,7 +2178,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       /** The hold's end, not the target, set this wait: a timeout then says nothing of it. */
       const holdCutShort =
         hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
-      const built = targetUpstream(req, url, config, body, target, guard, asked);
+      const pin = effortPin(config, name, label);
+      const built = targetUpstream(req, url, config, body, target, guard, asked, pin);
+      if (!("error" in built) && target.kind === "backend" && pin !== undefined)
+        sentPins.set(label, pin);
       // A call made while a breaker is open is a probe: it is the only one for this target.
       const probe = hold?.holding === true && !("error" in built);
       if (probe) {
@@ -2069,6 +2257,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const status = result.response.status;
       const decision = fallbackKind(status, target);
       if (decision === "stay" || last) {
+        // The chain would have moved on: the Claude targets after this one are skipped (D65).
+        if (decision !== "stay") {
+          for (let next = index + 1; next < targets.length; next += 1) skipAtLimit(next);
+        }
         if (target.kind === "backend" && status >= 300 && status <= 399) {
           // Claude Code could follow the `Location` with the person's own login.
           logErrorAnswer(
@@ -2158,8 +2350,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           target: label,
         };
         // The last backend failed for want of capacity: when every other target did too, the
-        // breaker decides what the request gets (Anthropic's answer is never held).
-        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+        // breaker decides what the request gets. Anthropic's answer is never held, but for a
+        // Claude target asked again at its known plan limit (D65).
+        if (
+          last &&
+          hold !== null &&
+          (target.kind === "backend" || askedAtLimit) &&
+          isCapacityFailure(status)
+        ) {
           note(label, status, `HTTP ${status}`, true);
           const capacity = capacityOf();
           if (capacity !== undefined) answer.capacity = capacity;
@@ -2177,7 +2375,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
-    const lastTarget = targets.at(-1);
+    // The last target that could be asked: a Claude target skipped after it answered nothing.
+    const lastTarget = targets[lastIndex];
     const answered = failures.join("; ") || "no targets";
     const capacity = capacityOf();
     return {
@@ -2263,15 +2462,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * requests keep coming, so a router that stopped leaves a record that goes stale
    * (`currentBreakers`).
    */
-  function breakerFor(slot: string, failures: BreakerFailure[], holdMs: number): OpenBreaker {
+  function breakerFor(
+    slot: string,
+    profile: null | string,
+    failures: BreakerFailure[],
+    holdMs: number,
+  ): OpenBreaker {
     const now = deps.now();
-    const existing = openBreakers.get(slot);
+    // A profile's chain is its own, so its breaker and its record are its own (`stateKeyFor`).
+    const key = stateKeyFor(slot, profile);
+    const existing = openBreakers.get(key);
     if (existing !== undefined) {
       existing.failures = failures;
-      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(slot, existing);
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(key, existing);
       return existing;
     }
-    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const before = currentBreakers(limitState, now).find(([stored]) => stored === key)?.[1];
     const open: OpenBreaker = {
       failures,
       held: before?.held ?? 0,
@@ -2280,11 +2486,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       savedAt: now,
       since: before?.since ?? now,
     };
-    openBreakers.set(slot, open);
-    recordBreaker(slot, open);
+    openBreakers.set(key, open);
+    recordBreaker(key, open);
     const wait = clientRetryAfter(earliestRestSeconds(failures, now));
     deps.log(
-      `WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
+      `WARN ${key}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
     );
     return open;
   }
@@ -2294,20 +2500,21 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * the slot left the config. Its record leaves the state, with one line. A record a restart
    * kept, for a breaker this router never opened, goes the same way.
    */
-  function closeBreaker(slot: string, why: string): void {
-    const open = openBreakers.get(slot);
+  function closeBreaker(slot: string, profile: null | string, why: string): void {
+    const key = stateKeyFor(slot, profile);
+    const open = openBreakers.get(key);
     const stored =
-      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot)
-        ? limitState.breakers[slot]
+      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, key)
+        ? limitState.breakers[key]
         : undefined;
     if (open === undefined && stored === undefined) return;
     const since = open?.since ?? stored?.since ?? deps.now();
     const held = open?.held ?? stored?.held ?? 0;
-    openBreakers.delete(slot);
-    delete limitState.breakers?.[slot];
+    openBreakers.delete(key);
+    delete limitState.breakers?.[key];
     withoutEmptyBreakers(limitState);
     persist();
-    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+    deps.log(`${key}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
   }
 
   /** The breakers open now, for the health page. */
@@ -2363,6 +2570,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ctx: {
       asked: Asked | null;
       body: Record<string, unknown>;
+      profile: null | string;
       probes: { count: number };
       req: Request;
       slot: string;
@@ -2373,11 +2581,19 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     targets0: Target[],
     first: Outcome,
   ): Promise<{ outcome: Outcome; targets: Target[] }> {
-    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    const { asked, body, profile, probes, req, slot, startMs, url } = ctx;
+    const key = stateKeyFor(slot, profile);
     let config = config0;
     let targets = targets0;
     let outcome = first;
-    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
+    /**
+     * A profile that names no chain for this slot uses the machine's: the hint then names both
+     * commands (`breakerChangeHint`). Read from the machine's config at each use, like the rest
+     * of the hold, so a chain added meanwhile is named at once.
+     */
+    const inherited = (): boolean =>
+      profile !== null && !profileNamesSlot(deps.getConfig(), profile, slot);
     let counted: OpenBreaker | null = null;
     /** The router was told to stop (SIGTERM). */
     const stopping = (): boolean => deps.shutdown?.aborted === true;
@@ -2387,7 +2603,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         fallbacks: 0,
         response,
         skipped: 0,
-        target: `breaker(${slot})`,
+        target: `breaker(${key})`,
       },
       targets,
     });
@@ -2396,7 +2612,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS) return;
       open.reminderAt = nowMs;
       deps.log(
-        `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
+        `WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile, inherited())}`,
       );
     };
     try {
@@ -2409,7 +2625,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         const reply = (nowMs: number, retryAfterSec?: number, message?: string): Response =>
           breakerAnswer({
             failures,
+            inherited: inherited(),
             nowMs,
+            profile,
             sinceMs: open.since,
             slot,
             ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
@@ -2440,7 +2658,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           return answer(anthropicError(499, "api_error", "client closed the request"));
         }
         if (stopping()) continue;
-        const next = deps.getConfig();
+        // The profile's view of the config, read again: a changed chain is served at once,
+        // and a profile removed or turned off releases the request the same way.
+        const next = configFor(profile);
         const route = resolveRoute(slot, next);
         if (route.kind !== "slot" || route.targets.length === 0) {
           return answer(
@@ -2472,12 +2692,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           slot,
           false,
           asked,
-          holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+          holds ? holdMode(config, body, startMs, openBreakers.has(key), probes) : null,
         );
         if (req.signal.aborted) return { outcome, targets };
         // A target answered (or the switch went off): the request goes on the normal way.
         if (outcome.capacity === undefined) return { outcome, targets };
-        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+        open = breakerFor(slot, profile, outcome.capacity, holdLimitMs(config, body));
       }
     } finally {
       if (counted !== null) counted.heldNow -= 1;
@@ -2505,6 +2725,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     chained: Target[],
     guard: boolean,
     asked: Asked | null,
+    /** The profile the path named; its chain, its rests and its records are its own. */
+    profile: null | string,
   ): Promise<Outcome> {
     const startMs = deps.now();
     let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
@@ -2539,11 +2761,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       slot,
       guard,
       asked,
-      breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+      breaks
+        ? holdMode(config, body, startMs, openBreakers.has(stateKeyFor(slot, profile)), probes)
+        : null,
     );
     if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
       const held = await holdRequest(
-        { asked, body, probes, req, slot, startMs, url },
+        { asked, body, probes, profile, req, slot, startMs, url },
         config,
         targets,
         outcome,
@@ -2553,13 +2777,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     const first = targets[0];
     if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
-      closeBreaker(slot, "answers again");
+      closeBreaker(slot, profile, "answers again");
     }
     if (req.signal.aborted || first === undefined || outcome.breaker !== undefined) return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
       const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
-      if (limit !== undefined) noteFallback(slot, limited, limit[1], outcome);
+      if (limit !== undefined) noteFallback(slot, limited, limit[1], outcome, profile);
     }
     if (asked === null || sameModel(outcome.target, asked.model)) return outcome;
     if (outcome.response.ok) fellBack.add(asked.model);
@@ -2736,9 +2960,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     req: Request,
     url: URL,
     model: { guard: boolean; name: string; slot: null | string },
+    /** The profile the path named (`…/p/<profile>`), or null for the machine's default. */
+    profile: null | string,
   ): Promise<Outcome> {
-    const config = deps.getConfig();
-    dropRemovedFallbacks(config);
+    const config = configFor(profile);
+    dropRemovedFallbacks(deps.getConfig());
     const isMessages =
       req.method === "POST" &&
       (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
@@ -2851,7 +3077,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (judgeTargets.length > 0) model.slot = JUDGE_SLOT;
     const answered =
       judgeTargets.length > 0
-        ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null)
+        ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile)
         : ((guard ? claudeFirstJudge() : null) ?? claudeRoute());
     // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
     // request: a `count_tokens` for one counts tokens, it judges nothing.
@@ -2975,10 +3201,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
         model.slot = found.slot;
-        return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
-          model: found.model,
-          sent,
-        });
+        return slotRequest(
+          req,
+          url,
+          config,
+          body,
+          found.slot,
+          familyRoute.targets,
+          false,
+          { model: found.model, sent },
+          profile,
+        );
       }
       const decided = resolveRequestRoute(body, config, guard);
       if (decided.kind === "anthropic") {
@@ -3008,7 +3241,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       if (decided.kind === "slot") {
         model.slot = decided.slot;
-        return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
+        return slotRequest(
+          req,
+          url,
+          config,
+          body,
+          decided.slot,
+          decided.targets,
+          guard,
+          null,
+          profile,
+        );
       }
       // An explicit `<backend>:<model>`: that backend alone.
       const target = decided.target;
@@ -3089,18 +3332,30 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   return async function handle(req: Request): Promise<Response> {
     const startMs = deps.now();
+    // The strip happens once, here, before every branch (messages, `count_tokens`,
+    // `HEAD /api/hello`, the health page, server tools, the judge): a project's base URL is
+    // `…/p/<profile>`, and Claude Code keeps the whole path on every request (owner D29;
+    // docs/claude-code-contract.md). Claude Code's own path is what the branches read and
+    // what Anthropic gets; the log keeps the path as it came, so the profile shows there.
     const url = new URL(req.url);
+    const profilePath = profileFromPath(url.pathname);
+    const profile = profilePath.name;
+    /** The path as it came, for the log: the request itself keeps the stripped one. */
+    const requestedPath = url.pathname;
+    // The path property, not a URL rebuilt from a string: a path that begins `//` stays a
+    // path (never a host), and the search is the one that came.
+    if (profile !== null) url.pathname = profilePath.path;
     const model: { guard: boolean; name: string; slot: null | string } = {
       guard: false,
       name: "-",
       slot: null,
     };
     const line = (outcome: Outcome) =>
-      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
+      `${new Date(startMs).toISOString()} ${req.method} ${printable(requestedPath)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
         outcome.breaker === undefined
           ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`
           : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`
-      }`;
+      }${outcome.effortPinned === true ? ` effort=${outcome.effort} pinned` : ""}`;
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -3110,16 +3365,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
 
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
+      const machine = deps.getConfig();
       return Response.json({
         breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        // What a reader can rely on (`ROUTER_FEATURES`), so an older running router is told
+        // apart from this one without guessing from a version it does not carry.
+        features: ROUTER_FEATURES,
         ok: true,
         port: deps.port,
+        // The profile names a project's URL may carry (`…/p/<name>`); empty: none set.
+        profiles: profileNames(machine),
         recent,
         requests: stats.requests,
         seenClaude: limitState.seenClaude ?? {},
-        slots: deps.getConfig().slots,
+        slots: machine.slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000),
       });
     }
@@ -3127,9 +3388,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     stats.requests += 1;
     let outcome: Outcome;
     try {
-      outcome = await route(req, url, model);
+      outcome = await route(req, url, model, profile);
     } catch (error) {
-      deps.log(`ERROR ${req.method} ${printable(url.pathname)}: ${messageOf(error)}`);
+      deps.log(`ERROR ${req.method} ${printable(requestedPath)}: ${messageOf(error)}`);
       outcome = {
         fallbacks: 0,
         response: anthropicError(
@@ -3144,6 +3405,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     stats.fallbacks += outcome.fallbacks;
     deps.log(line(outcome));
     recent.push({
+      ...(outcome.effortPinned === true
+        ? { effort: outcome.effort, effortPinned: true as const }
+        : {}),
       at: startMs,
       ms: deps.now() - startMs,
       nextTarget: outcome.fallbacks > 0,
@@ -3171,6 +3435,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         model: model.name,
         ms: deps.now() - startMs,
         nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        // The name the path carried, as it spelled it (an unknown one too): the row says
+        // where the request came from, and its target says what answered.
+        profile: profile === null ? null : printable(profile, 64),
         session: sessionIdOf(req.headers),
         slot: model.slot,
         status: answered.response.status,

@@ -43,15 +43,24 @@ import {
   runGateway,
   setOmnirouteKey,
 } from "../gateway/commands";
+import { notSlotName } from "../gateway/commands-chains";
 import {
+  effortPin,
   type GatewayConfig,
   keptChain,
   loadConfigFile,
   messageOf,
+  PROFILE_NAME_RULE,
   slotMode,
 } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
-import { JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import {
+  isProfileName,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  slotKeyFromArg,
+} from "../gateway/targets";
 import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
@@ -63,6 +72,7 @@ import {
   type FallbackChoice,
   followSetup,
   type KeyChoice,
+  takeOver,
 } from "../machine/claude-mem-choices";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
@@ -81,6 +91,8 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
+import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
+import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -110,9 +122,14 @@ import { forgetWorktrees } from "./worktrees-read";
  * clock. One home, so a test can build the same context the server builds.
  */
 export function portalOmnirouteContext(ctx: PortalContext): OmnirouteContext {
+  // The portal usually starts from a SessionStart hook, so its environment holds `CLAUDECODE=1`;
+  // an OmniRoute update refuses inside a Claude Code session, and a click is the person's, not
+  // a session's. The CLI children drop it the same way (`cliChildEnv`).
+  const env = { ...ctx.env };
+  delete env.CLAUDECODE;
   return {
     confirm: null,
-    env: ctx.env,
+    env,
     health: (url, init) => ctx.fetch(url, init),
     now: ctx.now,
     paths: ctx.paths,
@@ -150,6 +167,11 @@ export interface ActionResult {
   filesHash?: string;
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
+  /**
+   * `project.workflow.propose` only: the pull request it opened, for the card's own link. Read
+   * from the command's `--json` line, and only from a run that exited 0.
+   */
+  url?: string;
 }
 
 /** Everything an action is given: the portal's own context, the CLI's two, and the workflow. */
@@ -318,7 +340,13 @@ async function testTargets(
       continue;
     }
     if (judge) {
-      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      const result = await testJudgeTarget(
+        backend.baseUrl,
+        backend.apiKey,
+        parsed.target.model,
+        undefined,
+        effortPin(config, slot, text),
+      );
       const detail = shownDetail(result.detail, keys);
       results.push({
         detail,
@@ -670,14 +698,16 @@ async function updateInstall(action: ActionContext): Promise<ActionResult> {
  * is the point: the portal runs from a copy, and a path made at startup points at the version
  * folder the update deleted.
  */
-export type DoctorSource = () => DoctorOptions | { error: string };
+export type DoctorSource =
+  | (() => DoctorOptions | { error: string })
+  | (() => Promise<DoctorOptions | { error: string }>);
 
 /** Runs the doctor pass, and hands the checks back so the page can store and show them. */
 export async function runDoctorPass(
   action: ActionContext,
   source: DoctorSource,
 ): Promise<{ checks: Check[]; lines: string[]; ok: boolean }> {
-  const options = source();
+  const options = await source();
   if ("error" in options) {
     // One failed check, in the page's own shape: what happened, and what to do about it.
     const failed: Check = {
@@ -856,7 +886,7 @@ async function setWorkflowSetting(
     }
     // The row is read-only without a project file, because there is nothing to write it into;
     // a hand-made POST gets the same answer, not another file's.
-    if (readProject(action.portal, action.cwd).configFile === null) {
+    if ((await readProject(action.portal, action.cwd)).configFile === null) {
       return {
         lines: [
           `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`,
@@ -876,6 +906,262 @@ async function setWorkflowSetting(
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
+}
+
+/**
+ * `project.workflow.propose` (D57): one of the project's workflow settings, changed through a
+ * pull request. The page asks first (`confirm`), and the CLI's own `workflow propose` runs in a
+ * child (`runCliChild`) in the project's folder: the command makes a branch, a worktree, a
+ * commit and a push, and those must never run inside the server's process
+ * (`.claude/rules/portal.md`). The child is the same command the terminal runs, with the same
+ * checks and words; the answer carries the pull request's URL for the card's own link.
+ *
+ * A crew session cannot reach this: the session-escape guard denies a crew session's call into
+ * the portal's port (D36), and the child of a click is the person's — `runCliChild` drops
+ * `CC_SMART_DEV_KIT_CREW` whatever the portal's own environment says (D52).
+ */
+async function projectWorkflowPropose(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("proposed");
+  const unnamed = projectNotNamed(body, "a proposal never runs in the portal's own folder");
+  if (unnamed !== null) return unnamed;
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const setting = typeof body.setting === "string" ? body.setting.trim() : "";
+  if (!WORKFLOW_KEYS.includes(setting as WorkflowKey)) {
+    return {
+      lines: [`"${setting}" is not a setting: the settings are ${WORKFLOW_KEYS.join(", ")}.`],
+      ok: false,
+    };
+  }
+  const unset = body.unset === true;
+  const value = typeof body.value === "string" ? body.value.trim() : "";
+  if (!unset && value === "") {
+    return { lines: ["Type the setting's value, or remove it from the project."], ok: false };
+  }
+  // A value never starts with "-"; letting one through would read as the command's own option.
+  if (!unset && value.startsWith("-")) {
+    return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
+  }
+  // `--json`: on success the command prints one line `{ url, branch, worktree, … }` — a contract
+  // that does not move with its human words — and on any refusal it prints none, so a URL can
+  // never come out of a failure. The child gets the command's own worst case and more
+  // (`PROPOSE_WORST_CASE_MS`): its limits fire, and its take-back runs, before it is ended.
+  const run = await runCliChild(
+    action.portal,
+    ["workflow", "propose", setting, ...(unset ? ["--unset"] : [value]), "--json"],
+    {
+      cwd: target.cwd,
+      onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line }),
+      timeoutMs: PROPOSE_WORST_CASE_MS,
+    },
+  );
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push(proposeTimeoutLine(setting));
+  const ok = run.error === null && !run.timedOut && run.exitCode === 0;
+  const opened = ok ? proposedLine(run.lines) : null;
+  if (opened === null) return { lines, ok };
+  return {
+    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}, in ${opened.worktree}.`],
+    ok,
+    url: opened.url,
+  };
+}
+
+// ── A project's gateway (GP4b) ─────────────────────────────────────────────────
+
+/** The three states `gateway project` writes. */
+const PROJECT_GATEWAY_STATES = ["on", "off", "default"] as const;
+
+/**
+ * The CLI's own `gateway …` command for one click of the Gateway card, in a child: the
+ * command's checks, its lock, its words and its refusals, never a copy of them. `cwd` is the
+ * project's own folder (a state) or the portal's (a profile: it is the machine's config).
+ */
+async function gatewayCliAction(
+  action: ActionContext,
+  name: string,
+  args: string[],
+  cwd: null | string,
+): Promise<ActionResult> {
+  const run = await runCliChild(action.portal, ["gateway", ...args], {
+    cwd,
+    onLine: (line) => action.publish?.("action", { action: name, line }),
+  });
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut)
+    lines.push(`gateway ${args[0] ?? ""} did not answer in time: nothing more is known.`);
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * `project.gateway.set` (GP4b): a project's own gateway state — on (this machine's router, or a
+ * profile's `…/p/<name>`), off (Anthropic's own address: the person's own login) or default (no
+ * key: the machine decides) — in its personal file, or with `team` its team file (off and
+ * default only: a team file never points teammates at one person's router). The page asks
+ * first (`confirm`); the CLI's own `gateway project <state> --folder <root>` runs in a child in
+ * the project's folder (it runs git, and `on` asks the router first), so its refusals — a file
+ * git tracks, a login key, another gateway's address — are the command's own, in place.
+ *
+ * The project is named by its id and looked up in the server's own list: never a path from the
+ * request, and never the portal's own folder by accident.
+ */
+async function projectGatewaySet(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  const unnamed = projectNotNamed(
+    body,
+    "a gateway state is never written to the portal's own folder",
+  );
+  if (unnamed !== null) return unnamed;
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const state = PROJECT_GATEWAY_STATES.find((one) => one === body.state);
+  if (state === undefined) {
+    return {
+      lines: [`"${String(body.state)}" is not a state: say on, off or default.`],
+      ok: false,
+    };
+  }
+  if (typeof body.team !== "boolean") return { lines: ["team is true or false."], ok: false };
+  if (state === "on" && body.team) {
+    return {
+      lines: [
+        "The team file takes off or default only: it never points teammates at your own router.",
+      ],
+      ok: false,
+    };
+  }
+  const profile = body.profile ?? null;
+  if (profile !== null) {
+    if (typeof profile !== "string" || !isProfileName(profile)) {
+      return { lines: [`"${String(profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+    }
+    if (state !== "on") return { lines: ["A profile goes with on only."], ok: false };
+  }
+  return gatewayCliAction(
+    action,
+    "project.gateway.set",
+    [
+      "project",
+      state,
+      ...(body.team ? ["--team"] : []),
+      ...(profile === null ? [] : ["--profile", profile]),
+      "--folder",
+      target.cwd,
+    ],
+    target.cwd,
+  );
+}
+
+/**
+ * `project.gateway.profile` (GP4b): one change to a profile the Gateway card shows — a slot's own
+ * chain (`targets`), plain Claude there (`value: "claude"`), the machine's chain again
+ * (`value: "machine"`), or the slot's fallback switch (`kind: "fallback"`). A profile is the
+ * machine's (`gateway.json`): every project whose address names it gets the change, and the
+ * page's question says so. The CLI's own `gateway profile <name> slot|fallback …` runs in a
+ * child: it checks each target against its backend's live model list, and the whole config,
+ * under its lock.
+ */
+async function projectGatewayProfile(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  const profile = typeof body.profile === "string" ? body.profile : "";
+  if (!isProfileName(profile)) {
+    return { lines: [`"${String(body.profile)}": ${PROFILE_NAME_RULE}.`], ok: false };
+  }
+  // The command's own slot rule: the five, and a machine's own `cc-smart-dev-kit-<name>`. A
+  // name that passes it is a key's own characters, never an option.
+  const slot = typeof body.slot === "string" ? body.slot : "";
+  if (slotKeyFromArg(slot) === null) {
+    return { lines: [`${notSlotName(String(body.slot))}.`], ok: false };
+  }
+  if (body.kind === "fallback") {
+    if (typeof body.on !== "boolean") return { lines: ["on is true or false."], ok: false };
+    return gatewayCliAction(
+      action,
+      "project.gateway.profile",
+      ["profile", profile, "fallback", slot, body.on ? "on" : "off"],
+      null,
+    );
+  }
+  if (body.kind !== "slot") {
+    return {
+      lines: [`"${String(body.kind)}" is not a change the card makes: slot or fallback.`],
+      ok: false,
+    };
+  }
+  let chain: string;
+  if (body.value === "claude") chain = "off";
+  else if (body.value === "machine") chain = "clear";
+  else {
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (targets.length === 0) {
+      return {
+        lines: ["Give the chain at least one target, or choose Claude or the machine's chain."],
+        ok: false,
+      };
+    }
+    for (const one of targets) {
+      // Each one a target by the command's own parser (`parseTarget`: never a word such as
+      // `off` or `clear`, which the command would read as a change of its own), with no comma —
+      // the comma joins the chain — and no leading "-", which would read as an option. The
+      // command checks the rest against the live model list.
+      if (
+        typeof one !== "string" ||
+        one.includes(",") ||
+        one.trim().startsWith("-") ||
+        "error" in parseTarget(one)
+      ) {
+        return {
+          lines: [
+            `"${String(one)}" is not a target: a target is <backend>:<model>, from the model list.`,
+          ],
+          ok: false,
+        };
+      }
+    }
+    chain = targets.join(",");
+  }
+  return gatewayCliAction(
+    action,
+    "project.gateway.profile",
+    ["profile", profile, "slot", slot, chain],
+    null,
+  );
+}
+
+/**
+ * The pull request a successful `workflow propose --json` printed: its one JSON line, read as
+ * the command's contract (`url`, `branch`, `worktree`). Null for any other output — "already
+ * set" and "was not set" are plain lines, and a refusal prints no JSON.
+ */
+function proposedLine(lines: string[]): { branch: string; url: string; worktree: string } | null {
+  for (const line of [...lines].reverse()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      isObject(parsed) &&
+      typeof parsed.url === "string" &&
+      typeof parsed.branch === "string" &&
+      typeof parsed.worktree === "string"
+    ) {
+      return { branch: parsed.branch, url: parsed.url, worktree: parsed.worktree };
+    }
+  }
+  return null;
 }
 
 // ── The project's two files ─────────────────────────────────────────────────────
@@ -948,6 +1234,16 @@ function projectsWorld(action: ActionContext): ProjectsWorld {
 }
 
 /**
+ * The refusal for an action that writes or pushes: it must name its project by id, because
+ * `projectTarget` answers the portal's own folder (the home folder) for a body with none.
+ * Null when the body names one.
+ */
+function projectNotNamed(body: Record<string, unknown>, why: string): ActionResult | null {
+  if (typeof body.project === "string" && body.project.trim() !== "") return null;
+  return { lines: [`Name the project by its id: ${why}.`], ok: false };
+}
+
+/**
  * The folder a `project.*` action works in. The page may name a project by its id — the one
  * `/api/projects` listed — and the server looks that id up in its own list: a path from a
  * request is never used. No id: the folder the portal runs in, as before.
@@ -977,11 +1273,11 @@ async function projectTarget(
  * (`projectInitDefaults`), so the fields the form does not show — the workflow policy, and
  * anything the command line detects — come from the machine, never from a browser.
  */
-function projectAnswers(
+async function projectAnswers(
   action: ActionContext,
   body: Record<string, unknown>,
   cwd: string,
-):
+): Promise<
   | {
       ok: true;
       answers: ProjectInitAnswers;
@@ -992,8 +1288,9 @@ function projectAnswers(
       existingSettings: null | string;
       root: string;
     }
-  | { ok: false; why: string } {
-  const project = readProject(action.portal, cwd);
+  | { ok: false; why: string }
+> {
+  const project = await readProject(action.portal, cwd);
   if (project.root === null) {
     return { ok: false, why: project.why ?? "there is no project folder here" };
   }
@@ -1001,7 +1298,7 @@ function projectAnswers(
   if (!form.ok) return form;
   const texts = projectFileTexts(project.root);
   try {
-    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
+    const defaults = await action.projectDefaults({ env: action.portal.env, root: project.root });
     return {
       ok: true,
       answers: { ...defaults.answers, ...form.value },
@@ -1021,7 +1318,7 @@ async function projectPreview(
 ): Promise<ActionResult> {
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   try {
     const plan = action.workflow.planProjectInit({
@@ -1066,7 +1363,7 @@ async function projectWrite(
   }
   const target = await projectTarget(action, body);
   if ("why" in target) return { lines: [target.why], ok: false };
-  const built = projectAnswers(action, body, target.cwd);
+  const built = await projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   if (body.previewHash !== projectFilesHash(built)) {
     return {
@@ -1336,6 +1633,29 @@ async function claudeMemFallback(
 }
 
 /**
+ * `claudemem.takeover` (MS1, D63): records the values the person set by hand in claude-mem's file
+ * as cc-smart-dev-kit's, so the route, the key and the fallback may change. `readClaudeMemFacts`
+ * says per choice whether one of them refuses it now (`refusedByHand`, `handKeys`), and the page
+ * asks first, in the card's own words.
+ *
+ * Nothing in claude-mem's file changes: each value stays exactly as it is until the person picks
+ * another, and `restore` puts it back (a key is never written down, so restore leaves it as it
+ * is and drops only the claim: `TAKEN_SECRET_LEFT`).
+ */
+async function claudeMemTakeOver(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("taken over");
+  const result = await claudeMemWrite(() => takeOver(action.portal.paths));
+  // Done, but a value moved while it ran and was left (its `!` line): the page keeps the words
+  // until they are read, as it does for a failure.
+  return result.ok && result.lines.some((line) => line.startsWith("! "))
+    ? { ...result, tone: "warn" }
+    : result;
+}
+
+/**
  * `claudemem.follow`: hands claude-mem back to setup (`followSetup`): the person's choices are
  * forgotten, and setup's own claude-mem step runs, so it follows the scout slot again.
  */
@@ -1530,6 +1850,7 @@ export const ACTION_NAMES = [
   "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
+  "claudemem.takeover",
   "companion.enable",
   "crew.answer",
   "crew.resume",
@@ -1541,7 +1862,10 @@ export const ACTION_NAMES = [
   "omniroute.rollback",
   "omniroute.update",
   "project.add",
+  "project.gateway.profile",
+  "project.gateway.set",
   "project.preview",
+  "project.workflow.propose",
   "project.write",
   "router.restart",
   "slot.breaker",
@@ -1613,6 +1937,8 @@ export async function runAction(
       return claudeMemFollow(action, body);
     case "claudemem.fallback":
       return claudeMemFallback(action, body);
+    case "claudemem.takeover":
+      return claudeMemTakeOver(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":
@@ -1639,6 +1965,12 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.gateway.set":
+      return projectGatewaySet(action, body);
+    case "project.gateway.profile":
+      return projectGatewayProfile(action, body);
+    case "project.workflow.propose":
+      return projectWorkflowPropose(action, body);
     case "project.add":
       return projectAdd(action, body);
     case "crew.answer": {

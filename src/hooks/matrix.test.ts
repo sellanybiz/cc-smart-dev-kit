@@ -75,11 +75,13 @@ const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const AT = "2026-10-21T10:00:00.000Z";
 
 /**
- * A lead record, a crew step event, and a notes cursor before it: the three files that make
- * `lead-notes` speak. Written by hand, so the note's expected line is not computed by the code
- * under test.
+ * A lead record, a crew step event, a notes cursor before it, and one task in the lead's own
+ * list: the files that make `lead-notes` speak its news. Written by hand, so the note's
+ * expected line is not computed by the code under test. The task file is what keeps this row
+ * about the news: a lead with no list also gets the D23 reminder at each prompt
+ * (`src/hooks/lead-notes.test.ts`).
  */
-function seedLeadNotes(stateDir: string, repo: string): void {
+function seedLeadNotes(stateDir: string, repo: string, claudeConfigDir: string): void {
   writeStoreFile(
     leadFile(stateDir, repo, SESSION),
     `${JSON.stringify({
@@ -95,6 +97,11 @@ function seedLeadNotes(stateDir: string, repo: string): void {
     })}\n`,
   );
   writeStoreFile(notesStateFile(stateDir, repo, SESSION), `${JSON.stringify({ offset: 0 })}\n`);
+  mkdirSync(join(claudeConfigDir, "tasks", SESSION), { recursive: true });
+  writeFileSync(
+    join(claudeConfigDir, "tasks", SESSION, "1.json"),
+    `${JSON.stringify({ id: "1", subject: "the plan", description: "x", status: "pending", blocks: [], blockedBy: [] })}\n`,
+  );
   writeStoreFile(
     crewEventsFile(stateDir, repo),
     `${JSON.stringify({
@@ -600,7 +607,8 @@ const CASES: Case[] = [
     setup: (config) => {
       const repo = project(config);
       const env = hookEnv();
-      seedLeadNotes(cliPaths(env).stateDir, repo);
+      const paths = cliPaths(env);
+      seedLeadNotes(paths.stateDir, repo, paths.claudeConfigDir);
       return {
         input: {
           hook_event_name: "UserPromptSubmit",
@@ -788,6 +796,42 @@ describe("no cc-smart-dev-kit.json", () => {
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
       "The person wrote to you directly:",
     );
+  });
+});
+
+/**
+ * D23, through the frame: `crew-role` answers a crew session's first edit with the task-list
+ * step on the same terms as its other answers — machine-wide, so no file, a broken one and a
+ * newer one change nothing (`crew-role.test.ts`); and a project that runs its own copy lists the
+ * name in `ownHooks`, which silences it like every plugin hook.
+ */
+describe("the crew-role edit gate, through the frame", () => {
+  const edit = (repo: string): Record<string, unknown> => ({
+    hook_event_name: "PreToolUse",
+    session_id: SESSION,
+    cwd: repo,
+    tool_name: "Write",
+    tool_input: { file_path: join(repo, "a.ts"), content: "x\n" },
+  });
+
+  test("a crew session's first edit is denied with the step; listed in ownHooks, the plugin's copy is silent", async () => {
+    const env = { ...hookEnv(), [CREW_ENV]: CREW_ID };
+    const denied = await runHook(crewRoleHook, edit(project(FULL_CONFIG)), env);
+    const output = JSON.parse(denied.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toContain(
+      "Write your task list first: look up the task tools",
+    );
+    const listed = await runHook(
+      crewRoleHook,
+      edit(project({ ...FULL_CONFIG, ownHooks: ["crew-role"] })),
+      env,
+    );
+    expect(listed).toEqual({});
+  });
+
+  test("a plain session is never denied, with the same project file", async () => {
+    expect(await runHook(crewRoleHook, edit(project(FULL_CONFIG)), hookEnv())).toEqual({});
   });
 });
 

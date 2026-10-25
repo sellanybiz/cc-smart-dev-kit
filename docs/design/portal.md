@@ -8,10 +8,11 @@ each one follows them.
 
 **Settings and the Project card.** `/settings` shows every workflow setting — the flow after
 a finished step, the alerts, the switches, the crew caps — one row each, with the value now and where it
-came from (`yours`, `this project`, `default`). A change is one POST that runs the module's
+came from (`Your default`, `This project`, `Built-in default`). A change is one POST that runs the module's
 own `writePersonalSetting` (the two project switches go to `writeProjectSetting`), so the
 page and `cc-smart-dev-kit workflow show` can never disagree; a row the project sets is
-read-only here and links to the Project card, and a value outside its row's own set is
+read-only here, the page's first line says a project's own value wins and is changed on the
+project's page (its Workflow card, below), and a value outside its row's own set is
 refused in words. The Project card on Machine is about the repo the portal was started in:
 state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
 line's own detection (`detectFacts` + `defaultAnswers` — the default branch, GitHub's
@@ -105,6 +106,10 @@ not a network read.
 - **Never in `claude -p`** (`CLAUDE_CODE_SESSION_ATTENDED=0`), and never on a `clear` or a
   `compact` of a session that is already going: only `startup`, `resume` and an input that
   does not say.
+- **Its state is `<stateDir>`** (`cliPaths().stateDir`: `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`,
+  or `~/.claude/cc-smart-dev-kit` without that variable): the log, the held-port marker and the
+  lock. The portal never computes a second folder from `HOME`; the copy and the export, which
+  outlive a version, are the one thing under `~/.local/share/`.
 - **The decisions, by the health answer on the one fixed port** (`GET /healthz`: the
   portal's name, pid and version):
   - nothing answers → the copy is refreshed from the installed version through
@@ -183,7 +188,19 @@ session can write, and a rule added after the page was drawn would otherwise be 
 **The claude-mem card (PM1)** sets claude-mem's route and model, its key and its fallback, each
 asked first in the page's own dialog and refused by the server without `confirm: true`. The
 writers are the person's own, owned and recorded as theirs, so setup leaves them and `restore`
-takes them out: § claude-mem from the portal.
+takes them out: § claude-mem from the portal. The answer also carries, per choice, whether a value
+set by hand refuses it, and the keys that do (`refusedByHand`, `handKeys`), so the card can say
+why a change is refused; **`claudemem.takeover` (MS1)** is the action beside it that records those
+values as cc-smart-dev-kit's own, after the page's own confirmation, and changes nothing in
+claude-mem's file until the person picks another. **The card (MS2)** names `handKeys` once, in a
+note at its top with **Let the kit manage these** and its `ConfirmDialog` (the keys, that nothing
+changes now, what `restore` brings back), and marks each part whose `refusedByHand` is true. The
+parts' buttons stay on: which keys a choice writes depends on the choice (a fallback `off`
+writes one key), so the server's own refusal names the key that stops it. The take-over's
+`useAction` lives in the card, not the note, so its result stays in place once the note goes;
+a take-over that left a value that moved meanwhile answers with the warning tone, so its words
+stay until read. The fallback offers backend models on every route, and an empty fallback reads
+as Claude with the model it really runs on (`claudeModel`), never a guessed one.
 
 **The gateway's key (PK1).** The owner asked to set the gateway's own OmniRoute key
 from the portal, and to make one from OmniRoute's dashboard password, as `gateway setup` does.
@@ -210,7 +227,11 @@ secret then stays in this process's memory, and never reaches an argument list, 
 environment, a pipe or a child's log; the function is the CLI's own, so nothing is copied. A
 key saved without OmniRoute accepting it answers `tone: "warn"` with setup's warning words
 first, and the page draws it in the warning colour and keeps it until the next try (as a
-failure stays), so it cannot be missed. The planted-secret test (`server.test.ts`
+failure stays), so it cannot be missed. A no-answer from OmniRoute — the keyless probe, the
+login, the key's creation or its removal — is one line in the sentence that shows it
+(`reasonOf`, `src/gateway/omniroute-key.ts`: masked, at most 300 characters, every line break a
+space), never several lines of a fetch error inside `gateway setup`'s or the card's sentence.
+The planted-secret test (`server.test.ts`
 › "PK1: …") runs both actions with a planted key and password and finds neither in an answer,
 the live stream, a console line, a page or a file under the home.
 
@@ -267,7 +288,8 @@ covers the store as the portal found it. The doctor pass and an action's lines a
 the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
+`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`, `work`,
+`crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
@@ -290,6 +312,66 @@ memory over time, the merge verdict's review, its limits and what the review sti
 every open breaker with the router's live count of what waits, each doctor failure with its
 fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
 yet. Nothing carries a key or a prompt.
+
+**A project's gateway, and the two actions that change it** (GP4b, D29):
+`projects/<id>/gateway` (`src/portal/api/project-gateway.ts`) answers the project's own choice
+and what a session started in its folder effectively gets, each in `gateway project status`'
+own words (`decisionWords`, `projectSourceWords`) — except another gateway's address, which a
+page gets as `backendAddress` gives one (no user name, password, query or fragment) through
+`shownValue` — every settings file read with what it holds, whether git tracks the personal
+file (then what is written there is committed), and the notes: no checkout, a file that cannot
+be read (`unknown`), no gateway config, a personal file git tracks, a key or `apiKeyHelper` that
+replaces the login, a profile the router does not have (its requests answer as plain Claude),
+another gateway's address. **What the card may offer is the command's own answer:** `refusals`
+holds, per file (personal, team) and state (on, off, default), the refusal of
+`planProjectChange` — the planner `gateway project` runs before it writes, pure over the state
+just read — with its addresses stripped the same way, or null where it would write; on also
+needs this machine's gateway. The command plans again under its lock when it runs, so this is
+what the card offers, never what it trusts. It reads the state with
+`projectGatewayStateAsync`, **the awaited twin of the one reader** (`src/gateway/project-state.ts`:
+`locateCheckoutAsync` and an `ls-files` through `Bun.spawn`; every other step is the same code),
+so the read never blocks the server. When the effective address names a profile, the answer
+carries it slot by slot — the Slots page's slots in its order — with the machine's chain in use,
+the profile's own entry (a chain, `claude`, or none) and the fallback switch its view gives
+(`profileView`, `fallbackOn`), from the portal's one config read. A change is
+`project.gateway.set` (on, off or default; `team` for the team file, off and default only; a
+profile with on) or `project.gateway.profile` (a slot's own chain, plain Claude there, the
+machine's chain again, or its fallback switch). Each needs the page's yes (`confirm`) and runs
+the CLI's own `gateway project <state> --folder <root>` or `gateway profile <name> slot|fallback
+…` in a child (`runCliChild`): the project's root is the server's own list's, never a path from
+the request, and a state is never written to the portal's own folder by accident (the project's
+id is required). The command's refusals — a file git tracks, a login key, another gateway's
+address, a router that does not answer, a target its backend does not list — are its own, made
+again under its lock, and the card shows them in place.
+
+**A project's workflow settings, and the one action that changes them** (D57):
+`projects/<id>/workflow` answers every key the project's file can hold (`isProjectKey`: the
+policy settings and the project's two switches), each with its value and where that value came
+from, the base a change would go into (`worktrees.base`) and whether `gh` can open a pull
+request now (`ghLoginState`, one cached answer a minute, as the branch verdicts are).
+**The values are the base's**, read with `resolveGateAsync` over the file committed on
+`origin/<base>` — the same read the merge guard judges with, and the one `workflow propose`
+compares against — then through `resolvedValueOf`, the map `workflow show` prints from. An
+uncommitted edit in the person's checkout, or another branch's file, is never shown as the
+project's policy; the ref is as fresh as the last fetch, so after a merge on GitHub the card
+shows the old value until the checkout fetches, exactly as the gate does. A project with no
+file, no base, or no committed file, or a file (or a personal `workflow.json`) that cannot be
+read, is a `note` and no settings — never a `default` for a value the project really sets. The change itself is `project.workflow.propose`:
+the page asks first (`confirm`), the request must name its project by id (a body with none is
+refused in words, because the command pushes a branch and opens a pull request, and "no project"
+must never mean the portal's own folder — `project.gateway.set` has the same rule), then `runCliChild` runs the CLI's own `workflow propose` in a
+child in the project's folder — a branch, a worktree, a commit and a push never run in the
+server's process. The child gets at least the command's own worst case (`PROPOSE_WORST_CASE_MS`,
+the sum of its step limits): its limits fire, and the take-back after a failed step runs, before
+the child is ended from outside. It runs with `--json`, and the answer carries the pull request's
+URL for the card's link only when the run exited 0 — a refusal's output never becomes a link. A crew
+session cannot reach it: the session-escape guard denies a crew session's call into the
+portal's port, and the child of a click is the person's, not the crew session whose start
+began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52). It drops `CLAUDECODE` too:
+the portal inherits it from the session start that launched it, and a command that refuses
+inside a session — a review-gate setting, above all — must not refuse the person's own click.
+A review-gate change counts once the pull request is merged, so the click opens the gate's own
+review rather than skipping it.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
@@ -377,13 +459,20 @@ child.** `crew stop`, `crew resume` and `crew rm` reach `git` and `claude` throu
 spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm`
 makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
 server, one click froze every page, every other action and the stream for that long. So those
-four actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
-stop|resume|rm <id>`, each **in the record's own repository**, or `dist/cli.js worktrees
---clean`, which has no crew record and runs **in the portal's own folder** — the folder the
-portal was started in. Each child gets the plugin's two bun flags, the portal's own `HOME` and
-`CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52)
-and a 3-minute timeout; one cut at that timeout says so and points at `crew status` and at
-running it again, because a `crew rm` may have done part of its work.
+actions — and `project.workflow.propose` (D57), which makes a worktree, a commit and a push, and
+the Gateway card's two (GP4b), whose commands run git and ask the router — run the CLI's own
+command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew stop|resume|rm <id>`, each
+**in the record's own repository**, `dist/cli.js workflow propose` and `dist/cli.js gateway
+project <state> --folder <root>` **in the project's own folder**, or `dist/cli.js worktrees
+--clean` and `dist/cli.js gateway profile …` (a profile is the machine's config), which have no
+crew record or project and run **in the portal's own folder** — the folder the portal was
+started in. Each child gets the
+plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no
+`CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52), no `CLAUDECODE` (nor a
+Claude Code session: the portal inherits it from the session start that launched it, D9), and a
+3-minute timeout — a propose gets its command's own worst case instead. One cut at that timeout
+says so and points at `crew status` and at running it again, because a `crew rm` may have done
+part of its work.
 Every line goes out on the stream as it is printed. The record is found on **the machine**
 (`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
 own folder's store would find nothing. `crew.answer` runs in a child too
@@ -395,30 +484,67 @@ with one line — the portal's child has none, because the portal starts detache
 (`src/hooks/detached.ts`) and is reparented away from the session that started it. **No
 synchronous spawn is reachable from these five actions**, and no action ever forces anything.
 Two others are still owed a child, named here so the rule is never read as already true
-everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synchronously,
-`src/cli/doctor.ts`) and `companion.enable` (its `claude plugin enable` through `Machine.run`)
-— and so is the lock's `ps` on every action that writes. `crew.stop`, `crew.rm` and
+everywhere: `companion.enable` (its `claude plugin enable` through `Machine.run`), and the
+lock's own `ps` on every action that writes. `crew.stop`, `crew.rm` and
 `worktrees.clean` refuse a POST without the page's confirmation (`confirm: true`).
 
 **A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
 reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on
 a cold one, measured on a machine with gigabytes of transcripts. Work and Needs ask it for the
 open permission prompts, and Flow for its window, so the portal never calls it in the server: it
-runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts`,
-`Bun.spawn`, the plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a
-2-minute timeout). Requests for the same window at once share one child, and an answer is
-reused for 5 s; a failure is not kept. When the child fails, Flow answers 500 with its reason,
-Needs says the permission prompts could not be read (`permissionsError`), and Work says no
-session can show a wait (`waitsError`) — never an empty list that looks like "nothing waits".
-**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`): the scan behind
-`/api/worktrees` reads every worktree's git status, the running sessions, the programs and the
-Docker containers synchronously, so the portal runs the CLI's own `worktrees --json` in a child
-— the one builder (`worktreesAnswerOf`, `src/worktrees/command.ts`) whose answer the page shows
-— shared by requests at once and reused for 5 s; a failure is not kept, and the page shows the
-child's reason in its `note`.
-Still on the loop, and owed to a later phase: the Health page's `systemctl --user is-active`
-(about 6 ms) and the Health and Overview `journalctl -n 200` (20–65 ms), through the doctor
-check's synchronous `Runner`.
+runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts` through
+`runCliChildText`, the portal's one spawn in `src/portal/cli-child.ts`: the plugin's two bun
+flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a 2-minute timeout). Requests for the
+same window at once share one child, and an answer is reused for 5 s; a failure is not kept. When
+the child fails, Flow answers 500 with its reason, Needs says the permission prompts could not be
+read (`permissionsError`), and Work says no session can show a wait (`waitsError`) — never an
+empty list that looks like "nothing waits".
+**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`, through the same
+`runCliChildText`): the scan behind `/api/worktrees` reads every worktree's git status, the
+running sessions, the programs and the Docker containers synchronously, so the portal runs the
+CLI's own `worktrees --json` in a child — the one builder (`worktreesAnswerOf`,
+`src/worktrees/command.ts`) whose answer the page shows — shared by requests at once and reused
+for 5 s; a failure is not kept, and the page shows the child's reason in its `note`. The argv,
+the environment, the spawn, the failure's words and the timeout verdict live once, in
+`cli-child.ts`, and so does the short cache both readers keep (`shortCache`): a child still on its
+way is shared whatever its age, an answer is fresh for 5 s **from its arrival** (a cold read that
+took longer than that would otherwise be stale as it landed, and every poll would start another
+child), a failure is not kept, and `worktrees.clean` and the crew actions drop the worktrees
+answers. Two trade-offs of those rules: a child that hangs is shared until its timeout (the
+alternative — a second full read of every transcript — costs more than the wait), and the flow
+reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
+the next request too.
+**The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
+(20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
+manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
+awaited through `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never
+`Bun.spawnSync`, in the portal process (`src/entries/portal.ts`) with the actions' runner's 300 s
+timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await it;
+`portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
+`warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
+doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
+same words.
+**The doctor pass and the project read are reads too, and every command they ask runs off the
+loop.** The Machine page runs the doctor's own pass (`doctor.run` is that same pass), and the
+pass's own reads go through `DoctorOptions.read` — the portal's `ReadRunner`: the launcher's own
+`version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher, Warp's package
+manager, the live record's `claude --version`, the marketplace's own source (`canReadGitRemoteAsync`: `git ls-remote`, up
+to 10 s a check) and tmux's `show-options`, and the gateway's checks, `RouterService.stateAsync`
+(does it run, and its state, in one awaited ask with the same words the synchronous pair gives)
+and `portHolderCheck`. `claude mcp get` runs through the mcp deps' own runner
+(`realMcpDoctorDeps(runRead)`), which is also how its child gets `MCP_TIMEOUT`; the 0.3.0
+leftovers' `ps` (macOS) or PowerShell listing (Windows) is read once per pass, only when 0.3.0
+left something (`legacyBrowserLeftovers`, `processCommandLinesAsync`), and handed to the check —
+the Browser card reads it the same way. The project read is awaited too:
+`resolveProjectAsync` (`locateCheckoutAsync`, `Bun.spawn`) for the Settings page and the Project
+card, `realRunnerAsync` (`runGitAsync`, and `gh api` spawned the same way) for the form's
+defaults, and `projectChecks`' own git reads (the checkout, `check-ignore`, the default branch,
+`git --version`), and the gateway's per-project lines (GP4a), which read each project with
+`projectGatewayStateAsync`, the one reader's awaited twin (GP4b). **Still on the loop**, named so
+the rule is never read as already true everywhere: the actions' changing commands (`ctx.runner`)
+and the lock's `ps` on every action that writes — the actions paragraph above has both — and the
+Browser card's Windows-only registry read (`reg query` through `realBrowserSetupDeps`' own `run`,
+tens of ms, no other platform).
 
 ### The pages' facts and actions (B6d)
 
@@ -437,7 +563,20 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   (`src/cli/usage-window.ts`, null for a window that is over). The 7-day windows are written
   nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
-  read must never block the server.
+  read must never block the server. **The request rate comes from the history database**, not
+  the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
+  Code's health pings, so a rate read off it could never pass 40.0 a minute and is not a
+  model-call rate at all. Its own read refreshes with each routed request (`/api/history/rate`,
+  `HISTORY_REFRESH`), which the whole Overview answer cannot: that one asks every backend for
+  its model list. The router's own counter is still shown, labelled for what it holds (pings
+  included).
+- **Usage and the cost**: the charts and the tables read `historySeries` and
+  `recentRequests`, and a bucket's `unpriced` count is what lets a page say a sum is short:
+  **a cost that holds rows with no price says so**, and one made only of such rows reads "no
+  price", never "$0" (`costWords`, `portal/src/lib/format.ts`; `.claude/rules/portal.md`).
+  Auto mode's safety checks are counted apart from the history, by local day:
+  the page reads them through the CLI's own reader (`safety-checks-read.ts`, so `usage` and
+  the page can never disagree) and says so, because the cost above leaves them out.
 - **Work**: **the crew sessions and leads are the machine's** (`listAllCrew`, `listAllLeads`),
   grouped by repository and lead, because the portal usually runs from the home folder, which is
   no git project; every summary and lead carries its own `repo`, and a crew page is read from
@@ -456,6 +595,58 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 - **Settings**: the crew caps (`crew.perLead`, `crew.perLeadOpus`, `crew.max`,
   `crew.usagePercent`) are rows of the one table (`src/portal/settings.ts`), written by
   `writePersonalSetting` like every row; a number row names its unit there.
+- **Project, the Workflow card** (D57, `portal/src/components/workflow-card.tsx`): a set-up
+  project's page shows every setting of `projects/<id>/workflow` with the value its base
+  commits and a badge for where it comes from, grouped as This machine groups them. The rows'
+  words and controls are the Settings table's, read from `/api/settings` and merged by
+  `projectWorkflowOf` (`portal/src/api/adapt.ts`) — both answers or neither, so a card is never
+  shown without its controls and no reason; the row and its control are
+  `settings-rows.tsx`'s own `SettingLine`, so the two pages never draw a setting two ways. A
+  key with no row in that table is listed under "Other settings" with its value and the
+  command that changes it. A change asks first — it opens a pull request into the base that
+  changes one line of the project's file, and counts once merged — then runs
+  `project.workflow.propose`; the row goes back to the base's value, and the pull request's
+  link (or the refusal, in the command's words) stays under it. One proposal runs at a time
+  across the card, because an action's progress lines name only the action (a control that
+  shares its action with another running control in the same tab, such as two slots of a
+  profile saved at once, shows "Working…" and no line, since the line could be either's; two
+  tabs are not told apart). An unset `crew.tag` or
+  `crew.maxOpus` carries `unsetWords`, what `workflow show` prints in its place, so the card and
+  the command word it alike. The Workflow card reads again for a `workflow.*` or
+  `project.*` result (the Gateway card also for a `slot.*` or `switch` result), never for a
+  crew event (a project's branch verdicts do depend on one, so the project's page keeps that):
+  each read costs the server a few git children. A value the project
+  sets can also be taken out (`--unset`), and the alert events keep at least one chosen (the
+  parser's own rule). Without a `gh` that can open a pull request (`missing` or
+  `out`) the values show, the controls are off, and one line names the command to run; the
+  server asks `gh` again at most once a minute, and the card reads it again on a reload. A crew
+  session never reaches the card: the session-escape guard denies its call into the portal.
+  The current project's page no longer shows the portal folder's own settings rows: the
+  person's defaults are Settings → This machine's.
+- **Project, the Gateway card** (GP4b, `portal/src/components/gateway-card.tsx`, its rules in
+  `portal/src/lib/gateway.ts`): every project's page, set up or not, shows what its sessions
+  get and which file decides it (the files read, in Claude Code's order, on demand), the
+  answer's notes, and the project's own state to change: On, Off or Default, written to the
+  personal file ("Only me", never committed) or the team file ("The team", off and default
+  only), with a profile when On. Each choice is a `ChoiceSwitch` (`choice-switch.tsx`, the one
+  segmented radio group; the Slots page's Claude/Custom `ModeSwitch` is one of its uses): every
+  state named, the arrow keys move, an option that cannot be chosen stays focusable and says
+  why — the command's own refusal for that file (`refusals`). The form starts from the project's
+  own choice and offers nothing until a change is chosen (so another gateway's address, or a
+  file that cannot be read, is never "fixed" by an Apply nobody asked for). The personal file's
+  words say it is committed when git tracks it. Apply asks first and says what reaches a running
+  session (P7, re-proved on 2.1.310 for a file that existed at the session's start: a changed
+  address within about a second — restart a session that started before the file existed — and
+  a removed one, Default, follows by itself to the next settings file that sets it, and keeps
+  its address until a restart only when no file does). After a successful Apply the form keeps the
+  state just applied, Apply and Discard off, until the card's answer is read again (the success
+  asks for that read itself, not through the stream); it never snaps back to the old answer. When
+  the address names a profile, its slots are listed with what
+  answers each (its own chain, Claude in the profile, or this machine's chain) and the fallback
+  switch; a slot's Change opens the Slots page's own `ChainEditor` (the model list is
+  `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
+  reaches every project whose address names that profile. A project that is no git project
+  shows its state and no form.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the

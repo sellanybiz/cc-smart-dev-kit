@@ -7,11 +7,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
+import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
-import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
+import { claudeDefaultsMarkerFile } from "./claude-defaults";
+import {
+  chainWithEffort,
+  JUDGE_WARNING,
+  judgeDefaultWords,
+  NEEDS_SYSTEMD,
+  routerService,
+} from "./commands";
+import { type KnownProjects, projectSourceWords, projectStateOfAsync } from "./commands-project";
 import {
   emptyConfig,
   fallbackOn,
+  type GatewayConfig,
   historyRetentionDays,
   judgeTargetUsable,
   keptChain,
@@ -19,9 +29,15 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
-import { type HealthFetch, routerHealth } from "./health";
+import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
+import {
+  decisionWords,
+  gatewayCopiesAmong,
+  readGatewayConfig,
+  type SettingsFileState,
+} from "./project-state";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -30,9 +46,16 @@ import {
   restartPendingFile,
   SOCKET_NAME,
 } from "./service";
-import { TASK_LABEL, taskFacts, taskRunsCopy } from "./service-windows";
+import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
-import { FAMILY_SLOTS, isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
+import {
+  FAMILY_SLOTS,
+  isModelSlot,
+  isSlotKey,
+  JUDGE_SLOT,
+  parseTarget,
+  withoutContextSuffix,
+} from "./targets";
 
 /** One gateway line of doctor's report: a check like any other (`check.ts`). */
 export type DoctorCheck = Check;
@@ -52,12 +75,27 @@ export async function gatewayChecks(options: {
   /** The plugin's own `dist/router.js`: the copy must match it. */
   bundle: string;
   runner: Runner;
+  /**
+   * How this pass's own **reads** run: the router's service state and what holds its port.
+   * Default: `runner`. The portal passes its asynchronous runner (`ReadRunner`, `Bun.spawn`),
+   * because a page load must never freeze on `systemctl` (`.claude/rules/portal.md`); the
+   * command line leaves it out and answers where it stands.
+   */
+  read?: CommandRunner;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
   /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
   fetch?: HealthFetch;
+  /** The folder `doctor` runs in: the project its per-project lines mark `(here)`. */
+  folder?: string;
+  /**
+   * The projects `gateway projects` lists — the portal's own `projectsList`, wired by the
+   * caller. Left out, no per-project lines are printed (a test, or a caller with no list).
+   */
+  projects?: (folder: string) => Promise<KnownProjects>;
 }): Promise<DoctorCheck[]> {
   const { paths } = options;
+  const read = options.read ?? options.runner;
   const short = (path: string) => tildify(path, paths.home);
   const checks: DoctorCheck[] = [];
   const service = routerService({
@@ -76,6 +114,20 @@ export async function gatewayChecks(options: {
       ok: false,
       text: "a gateway setup did not finish",
       fix: SETUP,
+    });
+  }
+
+  // A config made before the Claude defaults (D66) that `setup` has not moved yet: information,
+  // never a failure. The background update never runs setup, so this is where a person who
+  // updated reads that the next `setup` moves the slots, the fallbacks and the gateway switch.
+  if (
+    existsSync(paths.gatewayConfigFile) &&
+    !existsSync(claudeDefaultsMarkerFile(paths.stateDir))
+  ) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `gateway.json was made before the Claude defaults (D66): ${COMMAND} setup moves, once, every slot to Claude, every fallback to off and the gateway to off, with a backup of the config first (setup --dry-run shows it)`,
     });
   }
 
@@ -100,6 +152,12 @@ export async function gatewayChecks(options: {
             text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`,
           },
     );
+    // A project's own state is still there, and still decides for its sessions once the
+    // gateway runs: name it whether or not the machine's gateway is installed (GP4a). A
+    // `gateway.json` that is kept is read for the backend names its warning needs.
+    checks.push(
+      ...(await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config)),
+    );
     return checks;
   }
 
@@ -110,11 +168,11 @@ export async function gatewayChecks(options: {
       fix: `run the router in a terminal of its own (${COMMAND} gateway serve), or turn the gateway off: ${COMMAND} gateway off`,
     });
   } else {
-    const state = service.state(options.runner);
+    const state = await service.stateAsync(read);
     checks.push(
-      service.running(options.runner)
+      state.running
         ? { ok: true, text: `the router service (${service.name}) is active` }
-        : { ok: false, text: `the router service (${service.name}) is ${state}`, fix: SETUP },
+        : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP },
     );
   }
 
@@ -152,11 +210,19 @@ export async function gatewayChecks(options: {
         text: `gateway config: ${messageOf(error)}`,
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`,
       });
+      // The projects are still read: their own state does not need the config (only the
+      // router's port does, so a project on this machine's router reads as another address
+      // until the config is fixed; a `<backend>:<model>` warning needs the config's backends,
+      // and none is known while it cannot be read).
+      checks.push(...(await projectChecks(options, null)));
       return checks;
     }
   }
 
-  const holder = portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(
+    { paths: options.paths, runner: read, service: options.service },
+    config.port,
+  );
   checks.push(holder.check);
 
   const health = await routerHealth(config.port, options.fetch);
@@ -208,13 +274,15 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: Custom, first target ${first} (${fallback})`,
+      text: `slot ${slot}: Custom, first target ${chainWithEffort([first], config.effort?.[slot])} (${fallback})`,
     });
   }
   /** A chain saved for a slot that answers as Claude, in words; empty when there is none. */
   const saved = (slot: string): string => {
     const kept = keptChain(config, slot);
-    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" → ")}`;
+    return kept === null
+      ? ""
+      : `; saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}`;
   };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot)) continue;
@@ -274,6 +342,175 @@ export async function gatewayChecks(options: {
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
     });
   }
+  // The projects, last: each one's own state (the same reader `gateway project status` uses),
+  // and a warning for a Claude Code model key that would bypass the slots (GP4a). A router that
+  // answered says whether it knows profiles; one that did not is its own ✗ above, so nothing is
+  // guessed about it here.
+  const router =
+    "error" in health
+      ? null
+      : { port: config.port, profiles: healthHasFeature(health.body, "profiles") };
+  checks.push(...(await projectChecks(options, config, router)));
+  return checks;
+}
+
+/**
+ * Claude Code's own model keys in a project's files that reach past the gateway's slots: one
+ * `!` line each. A slot key here makes Claude Code send that name instead of a Claude model
+ * (a slot with no chain answers it with an error instead of plain Claude); a
+ * `<backend>:<model>` the config knows goes to that backend alone, with no fallback.
+ * `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` moves an agent launched without a `model` off Claude
+ * (the gateway's own "never" list). The kit never writes any of these keys, so the fix is the
+ * person's hand. `backends`: the config's own backend names — a name the config does not have
+ * is no target (the router sends it to Anthropic as Claude Code sent it), so it is not warned
+ * about.
+ */
+function modelKeyWarnings(
+  file: SettingsFileState,
+  home: string,
+  backends: ReadonlySet<string>,
+): DoctorCheck[] {
+  if (file.problem !== null) return [];
+  const checks: DoctorCheck[] = [];
+  const where = tildify(file.path, home);
+  for (const fact of file.modelKeys) {
+    const name = withoutContextSuffix(fact.value.trim());
+    const parsed = parseTarget(name);
+    const slot = isSlotKey(name);
+    const target = "target" in parsed ? parsed.target : null;
+    const backend = target !== null && target.kind === "backend" && backends.has(target.backend);
+    if (!slot && !backend) continue;
+    const shown = shownValue(fact.value);
+    const quoted = shown === fact.value ? JSON.stringify(shown) : shown;
+    const why = slot
+      ? "Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude"
+      : "the request goes to that backend alone, with no fallback";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+    });
+  }
+  for (const key of file.subagentOverrides) {
+    const why =
+      key === "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"
+        ? "It overrides the model of every Agent call, so a review cannot stay on Claude."
+        : "An agent launched without a model runs on whatever it names, so a review could leave Claude.";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+    });
+  }
+  return checks;
+}
+
+/**
+ * A settings file the reader could not use, in words: its path as a person reads it, then its
+ * own error. The error often starts with the path itself (`readSettings` builds it that way):
+ * that copy goes, so the file is named once.
+ */
+function fileProblemWords(file: SettingsFileState, home: string): string {
+  const problem = file.problem ?? "";
+  const rest = problem.startsWith(file.path) ? problem.slice(file.path.length) : problem;
+  const reason = rest.replace(/^\s*:?\s*/, "");
+  const where = tildify(file.path, home);
+  return reason === "" ? where : `${where}: ${reason}`;
+}
+
+/**
+ * One line per known project, from the portal's own list: its state and the file that decides
+ * it, in `gateway projects`' words. A project whose file cannot be read is a ✗ (Claude Code's
+ * own answer past it is not known), with the file and its error named; another gateway's
+ * address is a `!`. A caller with no project list prints nothing. `config`: this machine's
+ * gateway config — only its backend names are read, for `modelKeyWarnings`. `router`: what the
+ * running router's health answer said (null: no answer, or not asked) — a project whose address
+ * names a profile fails every request while that router does not know profiles, a ✗.
+ */
+async function projectChecks(
+  options: {
+    paths: CliPaths;
+    folder?: string;
+    projects?: (folder: string) => Promise<KnownProjects>;
+  },
+  config: GatewayConfig | null,
+  router: { port: number; profiles: boolean } | null = null,
+): Promise<DoctorCheck[]> {
+  if (options.projects === undefined) return [];
+  const { paths } = options;
+  const backends = new Set(Object.keys(config?.backends ?? {}));
+  let list: KnownProjects;
+  try {
+    list = await options.projects(options.folder ?? process.cwd());
+  } catch (error) {
+    return [
+      {
+        ok: true,
+        info: true,
+        text: `the project list could not be read (${messageOf(error)}), so the gateway's per-project lines are missing`,
+      },
+    ];
+  }
+  const checks: DoctorCheck[] = [];
+  for (const project of list.projects) {
+    const view = await projectStateOfAsync({ paths }, project.root);
+    const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
+    // The file that decides is named — except for `unknown`, whose own words name no file:
+    // the parenthetical below carries it, with the reader's error.
+    const state =
+      view.choice.source === "none" || view.choice.state === "unknown"
+        ? decisionWords(view.choice)
+        : `${decisionWords(view.choice)}  · from ${projectSourceWords(view.choice, paths.home, view)}`;
+    // A file in the way is named with its own error: `decisionWords` alone would not say which.
+    const broken = view.files.find((one) => one.problem !== null);
+    const text = `${where}: ${state}${
+      broken === undefined ? "" : ` (${fileProblemWords(broken, paths.home)})`
+    }`;
+    if (view.choice.state === "unknown") {
+      checks.push({
+        ok: false,
+        text,
+        fix: "fix that settings file by hand, or move it aside; nothing in this project is guessed past it",
+      });
+    } else if (view.choice.state === "other") {
+      checks.push({ ok: true, warn: true, text });
+    } else {
+      checks.push({ ok: true, info: true, text });
+    }
+    // A profile's address on an older router copy (the CLI updated itself, `gateway setup` has
+    // not run): that router sends `…/p/<name>/v1/messages` to Anthropic as it is.
+    if (
+      view.choice.state === "on" &&
+      view.choice.profile !== null &&
+      router !== null &&
+      !router.profiles
+    ) {
+      checks.push({
+        ok: false,
+        text: `${where}: its address names the profile "${view.choice.profile}", and ${routerLacksProfiles(router.port)}`,
+        fix: SETUP,
+      });
+    }
+    // Only the project's own files: the machine's settings are `gateway status`' business.
+    for (const file of view.files) {
+      if (file.kind === "machine") continue;
+      checks.push(...modelKeyWarnings(file, paths.home, backends));
+    }
+    // A linked worktree's own local file that holds a gateway address (a `.worktreeinclude`
+    // copy of the personal file): the root's key wins while it is there, but a session in that
+    // worktree reads the copy once the key is removed (P6, 2.1.310). The kit did not write it.
+    for (const copy of gatewayCopiesAmong(view.worktreeFiles)) {
+      const where = tildify(copy.path, paths.home);
+      checks.push({
+        ok: true,
+        warn: true,
+        text: `${where} holds ${shownValue(copy.url ?? "")}: a session started in that worktree reads it once the root's key is gone (${COMMAND} never writes or removes this copy)`,
+        fix: `remove env.ANTHROPIC_BASE_URL from ${where} by hand`,
+      });
+    }
+  }
   return checks;
 }
 
@@ -324,14 +561,18 @@ function notAnswering(
  * The definition that keeps the router running: systemd's socket unit (which holds the
  * port across restarts), or the Windows task (which holds the port itself while its
  * router runs).
+ *
+ * **It awaits `runner`**, so a caller off the server's event loop (the portal's pages) passes
+ * its asynchronous runner and never freezes a page on `systemctl`; the command line's own
+ * synchronous runner answers at once, and `await` takes a value as it is.
  */
-export function portHolderCheck(
-  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
+export async function portHolderCheck(
+  options: { paths: CliPaths; runner: CommandRunner; service: RouterServiceKind },
   port: number,
-): { check: DoctorCheck; state: SocketState } {
+): Promise<{ check: DoctorCheck; state: SocketState }> {
   return options.service === "scheduled-task"
-    ? taskDefinitionCheck(options)
-    : socketCheck(options, port);
+    ? await taskDefinitionCheck(options)
+    : await socketCheck(options, port);
 }
 
 /**
@@ -339,10 +580,10 @@ export function portHolderCheck(
  * router's copy: a task someone re-pointed by hand is the one failure the file alone
  * cannot show.
  */
-function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
+async function taskDefinitionCheck(options: { paths: CliPaths; runner: CommandRunner }): Promise<{
   check: DoctorCheck;
   state: SocketState;
-} {
+}> {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync(paths.routerTaskFile)) {
@@ -351,7 +592,7 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
       state: "other",
     };
   }
-  const facts = taskFacts(options.runner);
+  const facts = taskFactsFrom(await options.runner(taskQueryCommand()));
   if (!facts.registered) {
     return {
       check: {
@@ -383,10 +624,10 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
  * an older plugin version), or on another port than the config's, a restart refuses new requests
  * while the old router drains.
  */
-function socketCheck(
-  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
+async function socketCheck(
+  options: { paths: CliPaths; runner: CommandRunner; service: RouterServiceKind },
   port: number,
-): { check: DoctorCheck; state: SocketState } {
+): Promise<{ check: DoctorCheck; state: SocketState }> {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync(paths.routerSocketFile)) {
@@ -412,7 +653,8 @@ function socketCheck(
   if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
-  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  // The second question is asked only when the first says the socket is not active.
+  const active = await options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
   const word = active.output.trim().split("\n")[0] || "unknown";
   if (active.exitCode === 0) {
     return {
@@ -420,7 +662,7 @@ function socketCheck(
       state: "open",
     };
   }
-  const result = options.runner([
+  const result = await options.runner([
     "systemctl",
     "--user",
     "show",

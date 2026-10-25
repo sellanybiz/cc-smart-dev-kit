@@ -221,14 +221,21 @@ export async function startPortal(
    * is on PATH, GitHub itself (`detectFacts`), so the answers for one file's text are computed
    * once and kept until that file changes: a form change on the Project card is a plan, not a
    * network read. The key is the file's text — the moment it changes, the next reader is fresh.
+   *
+   * **The read itself is remembered, not its answer**: two reads at once (a page and an action)
+   * run the detection once, and a failed read is not kept, so the next one tries again.
    */
-  let remembered: { defaults: ProjectInitDefaults; key: string } | null = null;
-  function projectDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
+  let remembered: { key: string; promise: Promise<ProjectInitDefaults> } | null = null;
+  async function projectDefaults(input: { env: Env; root: string }): Promise<ProjectInitDefaults> {
     const key = `${input.root}\u0000${projectFileTexts(input.root).existing ?? ""}`;
     if (remembered === null || remembered.key !== key) {
-      remembered = { defaults: workflow.projectInitDefaults(input), key };
+      const promise = Promise.resolve(workflow.projectInitDefaults(input)).catch((error) => {
+        if (remembered !== null && remembered.promise === promise) remembered = null;
+        throw error;
+      });
+      remembered = { key, promise };
     }
-    return remembered.defaults;
+    return await remembered.promise;
   }
 
   function actionContext(): ActionContext {
@@ -323,7 +330,7 @@ export async function startPortal(
       // The Settings page needs no gateway either: the workflow is a file of the person's
       // own and the project's, so it draws with the header's "Gateway not set up" line.
       if (path === "/settings") {
-        return html(settingsPage(shell, settingsPageData(deps)), extra);
+        return html(settingsPage(shell, await settingsPageData(deps)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
@@ -331,7 +338,7 @@ export async function startPortal(
     if (path === "/slots") return html(slotsPage(shell, await slotsData(deps, config)), extra);
     if (path === "/health") return html(healthPage(shell, await healthData(deps, config)), extra);
     if (path === "/machine") return html(machinePage(shell, await machineData(deps)), extra);
-    if (path === "/settings") return html(settingsPage(shell, settingsPageData(deps)), extra);
+    if (path === "/settings") return html(settingsPage(shell, await settingsPageData(deps)), extra);
     return html(overviewPage(shell, await overviewData(deps, config)), extra);
   }
 

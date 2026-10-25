@@ -28,6 +28,13 @@ import type { CrewContext } from "./context";
 import { DiffError, type DiffFacts, diffAgainstBase, outsideBrief } from "./diff";
 import { headSha } from "./step";
 import { addCrewQuestion, type CrewRecord, type HandBackReport, recordCrewReport } from "./store";
+import {
+  openTasks,
+  readSessionTasks,
+  type SessionTask,
+  sessionTasksDir,
+  taskListId,
+} from "./tasks";
 
 /** The statuses a report can end a phase with (`REPORT_STATUSES`). */
 export const REPORT_STATUS_NAMES = ["done", "blocked", "failed", "handoff"] as const;
@@ -204,6 +211,57 @@ export function reportFacts(
   };
 }
 
+/**
+ * The note a `done` report leaves when there is no task list to check: a session that could not
+ * have one (no session id recorded, or no folder ever made), and one whose folder cannot be
+ * read. The report goes through either way — the gate never invents a list.
+ */
+function noTaskListLine(why: string): string {
+  return `note: ${why}; nothing was checked before the report`;
+}
+
+/**
+ * `--status done` waits until the crew session's task list is finished (D23). The list is the
+ * session's own (`taskListId`: `CLAUDE_CODE_TASK_LIST_ID`, else its session id), and a task
+ * still `pending` or `in_progress` refuses the report **with the tasks named**, so the crew
+ * session finishes each one, or deletes it and says why in its report (a deleted task's file is
+ * gone, so a reason written in the task would vanish with it). Every other
+ * status is never held: a `handoff`, `blocked` or `failed` report exists precisely because the
+ * phase could not be finished.
+ */
+function doneReportGate(
+  record: CrewRecord,
+  ctx: CrewContext,
+): { line: string | null } | { refused: ReportRefusal } {
+  const listId = taskListId(ctx.env, record.sessionId);
+  const read = readSessionTasks(ctx.paths.claudeConfigDir, listId);
+  if (read.state === "none") {
+    return { line: noTaskListLine("no task list was found for this session") };
+  }
+  if (read.state === "unreadable") {
+    return {
+      line: noTaskListLine(
+        `the task list in ${sessionTasksDir(ctx.paths.claudeConfigDir, listId)} cannot be read`,
+      ),
+    };
+  }
+  const open = openTasks(read.tasks);
+  if (open.length === 0) return { line: null };
+  return {
+    refused: refusal(
+      `the task list still has ${open.length} open ${open.length === 1 ? "task" : "tasks"}: ${open.map(taskLine).join(", ")}`,
+      "Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+    ),
+  };
+}
+
+/** One open task as the refusal names it: its number, its subject, and where it stands. */
+function taskLine(task: SessionTask): string {
+  return task.subject === ""
+    ? `#${task.id} (${task.status})`
+    : `#${task.id} "${task.subject}" (${task.status})`;
+}
+
 /** The crew session's own question it has not been answered yet, the newest first. */
 function openQuestion(record: CrewRecord): null | string {
   for (let index = record.questions.length - 1; index >= 0; index -= 1) {
@@ -340,6 +398,12 @@ export async function runCrewReport(args: ReportArgs, ctx: CrewContext): Promise
       ctx,
       refusal("this crew session never started, so it has no base to report against"),
     );
+  }
+  // A done report waits for the list (D23); every other status is never held.
+  if (args.status === "done") {
+    const gate = doneReportGate(record, ctx);
+    if ("refused" in gate) return say(ctx, gate.refused);
+    if (gate.line !== null) ctx.print(gate.line);
   }
   const read = await readPart(args, ctx);
   if ("refused" in read) return say(ctx, read.refused);
