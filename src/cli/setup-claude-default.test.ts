@@ -14,8 +14,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { turnOn } from "../gateway/settings";
-import { chooseRoute, readClaudeMemFacts } from "../machine/claude-mem-choices";
 import { applyClaudeMem, claudeMemPlan } from "../machine/claude-mem";
+import { chooseRoute, readClaudeMemFacts } from "../machine/claude-mem-choices";
 import { BACKUPS_DIR, listBackups } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
 
@@ -358,7 +358,7 @@ describe("D66: setup is the only caller", () => {
         if (!path.startsWith(".")) continue;
         const base = join(dirname(file), path);
         const found = [base, `${base}.ts`, join(base, "index.ts")].find((one) => existsSync(one));
-        if (found !== undefined && found.endsWith(".ts")) queue.push(found);
+        if (found?.endsWith(".ts")) queue.push(found);
       }
     }
     return seen;

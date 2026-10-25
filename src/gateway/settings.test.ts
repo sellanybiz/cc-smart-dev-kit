@@ -2,12 +2,19 @@
  * The address of a backend as output may show it, or a page may link to it: never a credential.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { realTarget } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "./config";
-import { BASE_URL_PATH, backendAddress, offAddressOf, shownBackendUrl } from "./settings";
+import {
+  BASE_URL_PATH,
+  backendAddress,
+  offAddressOf,
+  shownBackendUrl,
+  turnOff,
+  turnOn,
+} from "./settings";
 
 describe("a backend's address, shown", () => {
   test("PB-7: no user name, no password, no key in the query, no fragment", () => {
@@ -125,5 +132,68 @@ describe("the address `gateway off` leaves in one settings file", () => {
       kind: "write",
       value: DEFAULT_ANTHROPIC_BASE_URL,
     });
+  });
+});
+
+/**
+ * Remote Control (`docs/claude-code-contract.md` § The gateway): Claude Code allows it only when
+ * `ANTHROPIC_BASE_URL` is unset or its host is exactly `api.anthropic.com`. `gateway on` writes
+ * the router's address, so it is off while the gateway is on; what `gateway off` leaves must
+ * bring it back, and nothing the kit writes may turn it off by another way.
+ */
+describe("Remote Control", () => {
+  /** The keys Claude Code also turns Remote Control off for (contract row): the kit writes none. */
+  const OTHER_SWITCHES = [
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "DISABLE_GROWTHBOOK",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_UNIX_SOCKET",
+  ];
+
+  function machine(settings: Record<string, unknown>) {
+    const dir = tempDir("remote-control");
+    const file = join(dir, "settings.json");
+    const stateDir = join(dir, "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+    const read = (): Record<string, unknown> => JSON.parse(readFileSync(file, "utf8"));
+    return { file, stateDir, read };
+  }
+
+  const envOf = (settings: Record<string, unknown>): Record<string, string> =>
+    (settings.env ?? {}) as Record<string, string>;
+
+  test("on points Claude Code at the router, a host that is not api.anthropic.com", () => {
+    const { file, stateDir, read } = machine({});
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    expect(new URL(envOf(read()).ANTHROPIC_BASE_URL as string).host).toBe("127.0.0.1:20123");
+  });
+
+  test("off leaves api.anthropic.com as the address, and sets no other switch", () => {
+    const { file, stateDir, read } = machine({});
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    turnOff({ settingsFile: file, stateDir });
+    const env = envOf(read());
+    expect(new URL(env.ANTHROPIC_BASE_URL as string).host).toBe("api.anthropic.com");
+    for (const key of OTHER_SWITCHES) expect(Object.keys(env)).not.toContain(key);
+    expect(read()).not.toHaveProperty("remoteControlAtStartup");
+    expect(read()).not.toHaveProperty("disableRemoteControl");
+  });
+
+  test("on writes none of the other switches either", () => {
+    const { file, stateDir, read } = machine({});
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    for (const key of OTHER_SWITCHES) expect(Object.keys(envOf(read()))).not.toContain(key);
+    expect(read()).not.toHaveProperty("remoteControlAtStartup");
+  });
+
+  test("a remoteControlAtStartup the person set stays through on and off", () => {
+    const { file, stateDir, read } = machine({ remoteControlAtStartup: true, model: "opus" });
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    expect(read().remoteControlAtStartup).toBe(true);
+    turnOff({ settingsFile: file, stateDir });
+    expect(read().remoteControlAtStartup).toBe(true);
+    expect(read().model).toBe("opus");
   });
 });

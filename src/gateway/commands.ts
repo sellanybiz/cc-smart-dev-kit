@@ -106,6 +106,7 @@ import {
   foreignRouting,
   gatewayEnv,
   maskKey,
+  REMOTE_CONTROL_HOST,
   RETIRED_GATEWAY_ENV_KEYS,
   retireOldModelKeys,
   settingsReport,
@@ -2567,6 +2568,10 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
     );
     out.say(
       "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
+    );
+    // A fact about Claude Code, not a suggestion (`docs/claude-code-contract.md` § The gateway).
+    out.say(
+      `Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`,
     );
   }
   printOverrides(settingsReport(paths.settingsFile), out);

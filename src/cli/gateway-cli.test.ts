@@ -1758,6 +1758,10 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   });
 });
 
+/** A fact, no suggestion: Claude Code allows Remote Control only with Anthropic's own host. */
+const REMOTE_CONTROL_LINE =
+  "Remote Control is off while the gateway is on: Claude Code allows it only with api.anthropic.com as the address.";
+
 describe("cc-smart-dev-kit gateway on / off", () => {
   test("on sets the env keys as owned keys; off writes Anthropic's own address instead of removing it (GP5)", async () => {
     const m = machine();
@@ -1772,6 +1776,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
+        REMOTE_CONTROL_LINE,
         "",
       ].join("\n"),
     );
@@ -1809,6 +1814,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "${DEFAULT_ANTHROPIC_BASE_URL}" -> "http://127.0.0.1:${server.port}"`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
+        REMOTE_CONTROL_LINE,
         "",
       ].join("\n"),
     );

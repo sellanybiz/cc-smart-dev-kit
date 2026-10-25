@@ -59,6 +59,12 @@ export function routerBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * The only host Claude Code allows Remote Control with, when `ANTHROPIC_BASE_URL` is set
+ * (`docs/claude-code-contract.md` § The gateway). Read from Anthropic's own address, never typed.
+ */
+export const REMOTE_CONTROL_HOST: string = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
+
 /** A base URL as it is compared: a trailing slash is the same address (`…/`). */
 export function normalizedBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
