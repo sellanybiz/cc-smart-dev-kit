@@ -22,6 +22,7 @@
 4. RV6 and UI1 were started by hand: the installed watch never marked GF1's or RV5's merge (noted for 1.2.1).
 5. UA1 (`user-unavailable` / `user-available`) is briefed for 1.2.1 by your ask.
 6. Remote Control (DF1's proof): Claude Code turns it off only while `ANTHROPIC_BASE_URL` is not Anthropic's, and `gateway off` writes Anthropic's address, so it comes back by itself; the kit never touched it. Auto-connect at start is your own `remoteControlAtStartup` (true on your machine). The lead chose not to have setup write it for every machine (remote access is each person's choice). Say "write it" and a small follow-up makes it a managed key that `restore` removes.
+7. Your `crew.handoffPercent` 40 (your own workflow file; the lead did not touch it). HO1 (merged into 1.2.0) hands off at 400k tokens or 70 % of the window, whichever comes first, and your 40 % still applies on top: on a 1M window it is 400k, the same as the cap, so nothing changes; on a 200k window a crew session hands off at 80k instead of 140k. Keep it or drop it: `cc-smart-dev-kit workflow set crew.handoffPercent …` in your file, or remove the key.
 
 ## Decisions
 
@@ -434,7 +435,7 @@ Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
 both validates, `check:portal`, the release skill, the owner's yes. After the merge: WF1's live
 copy-resume case (its contract row says it is owed). Not briefed (notes only): the poll guard
-blocks a command that has both `sleep` and `claude agents`; **the installed 1.1.2 watch never marked GF1 merged** (2026-10-25: `git merge --no-ff` in the lead's worktree at 04:36, GF1's head on that HEAD, its record `stopped` with its base set, the lead record's `cwd` that worktree; nothing after 4 minutes of 20 s polls), so RV6's wait never released and the lead removed and restarted RV6 by hand: find why once WF1's watch is merged (WN1 or a new phase). (The split review workflow's budget
+blocks a command that has both `sleep` and `claude agents`; **a crew name two records share** (RV6's removed queued record and its running one) makes `crew start --continue "<name>"` take the removed one and refuse (2026-10-25; the crew id worked); **the installed 1.1.2 watch never marked GF1 merged** (2026-10-25: `git merge --no-ff` in the lead's worktree at 04:36, GF1's head on that HEAD, its record `stopped` with its base set, the lead record's `cwd` that worktree; nothing after 4 minutes of 20 s polls), so RV6's wait never released and the lead removed and restarted RV6 by hand: find why once WF1's watch is merged (WN1 or a new phase). (The split review workflow's budget
 cut and argument shape, seen 2026-10-25, are RS1.)
 
 ## Release 1.3.0 — GitHub Issues (D67)
