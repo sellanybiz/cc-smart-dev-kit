@@ -79,18 +79,33 @@ word and the number. The code is `src/issues/`
    `turnOn` (`src/workflow/pr-switches.ts`, the same words the git and merge guards use).
 3. **The repository.** Owner and name from `git remote get-url origin`, on github.com, passed to
    `gh` as `--repo github.com/<owner>/<name>` on **every** call — never the folder's guess, never
-   `GH_REPO`, never a fork's upstream. No `origin`, or one that is not github.com (a GitHub
-   Enterprise host cannot be told from another git host by its URL): refused.
-4. **The screen** (`screenText`). A home path (the real `$HOME`; a `~` path is fine), a key or
-   token shape (`sk-`, `ghp_`, `github_pat_`, `AKIA…`, `xox…`, `AIza…`, a JWT, a private key
-   block, `Bearer …`, and `key|token|secret|password` followed by `:` or `=` and a value) and a
-   URL with credentials (`https://user:pass@…`, `https://token@…`) are refused **with the line
-   and column, never the value**. The title is screened as well as the body. The text is never
+   `GH_REPO`, never a fork's upstream. User info before the host (`https://user@github.com/…`,
+   `https://x-access-token:<token>@github.com/…`) is skipped and never printed. No `origin`, or one
+   that is not github.com (a GitHub Enterprise host cannot be told from another git host by its
+   URL): refused.
+4. **The screen** (`screenText`). Three kinds of hit are refused **with the line and column,
+   never the value**:
+   - **A home path:** the real `$HOME`, in each spelling a session writes it. For a drive-letter
+     home that is `C:\Users\x`, `C:/Users/x`, Git Bash's `/c/Users/x` and WSL's `/mnt/c/Users/x`,
+     any case of the drive letter; a home given in Git Bash or WSL form also matches the others.
+     A `~` path is fine. One helper lists the spellings (`homePatterns`), used by `screenText` and
+     `redactText` alike.
+   - **A key or token:** the shapes `sk-`, `sk_live_`, `rk_live_`, `ghp_`, `github_pat_`, `glpat-`,
+     `npm_`, `hf_`, `AKIA…`, `xox…`, `AIza…`, Groq `gsk_`, Tavily `tvly-`, a JWT, a private key
+     block, `Bearer …` and `Basic …`, a Slack or Discord webhook URL, and a value of 8 or more
+     characters after `key`, `token`, `secret`, `password` or `authorization` and a `:` or `=`.
+     Letters may come before that word, in any case (`APIKEY=`, `PGPASSWORD=`, `accessToken:`);
+     prose ("the key does not exist") and a placeholder (`$VAR`, `${…}`, `***`) pass.
+   - **A URL with credentials:** `https://user:pass@…`, `https://token@…`.
+
+   It knows these shapes only; it is a screen, not proof that a text holds no secret. The title is screened as well as the body. The text is never
    cleaned and sent anyway. A commit hash is not a hit. Why it is not `maskSecrets`: that
    function masks loosely for a log and is part of the router's bundle.
 5. **The repository's facts, read once per call** (`gh repo view --json
    visibility,hasIssuesEnabled,viewerPermission`): issues turned off for the repository is a
-   refusal; a **public** repository needs `issues.allowPublic` (refused, naming the command that
+   refusal; so is **read access only** (`viewerPermission` is `READ`), in `doctor`'s words and
+   before any write, because GitHub drops the labels of an issue from an account without push
+   access, and with the found label the dedupe would be lost; a **public** repository needs `issues.allowPublic` (refused, naming the command that
    turns it on).
 
 `gh` is started through the one runner (`runGh` in `src/workflow/merge-check.ts`: a timeout, no
@@ -111,6 +126,9 @@ issues that carry `foundLabel`, every state, **once** (`gh issue list --label �
 --limit 1000 --json number,url,body`) and looks for the marker line itself. Consequences:
 
 - A marker pasted into an issue **without** the label is not ours; the kit never rewrites it.
+- Nor is a marker in an issue **another account wrote**: only an issue whose author is the kit's
+  own account (`kitAccount`, `sameAccount`, as every marker reader checks) is updated. A copy
+  elsewhere is never edited, and the kit files its own issue beside it.
 - A closed issue with the marker is still the same finding: the body is updated, and the issue is
   not reopened. (Reopening is a person's or a later part's.)
 - A label with 1000 issues is refused (the list may be cut); close the settled ones.
@@ -120,7 +138,7 @@ issues that carry `foundLabel`, every state, **once** (`gh issue list --label �
 - A missing label is created (`gh label create`, which takes the **Write** role; its options come
   first and its name after `--`, so a name can never be read as an option). A label name may not
   start with `-` (`isLabelName`), and labels are screened like the text.
-- The list read asks for `number,url,body,state,labels` and gets the write time, `GH_WRITE_TIMEOUT_MS`:
+- The list read asks for `number,url,body,state,labels,author` and gets the write time, `GH_WRITE_TIMEOUT_MS`:
   up to 1000 bodies are fetched a page at a time.
 
 **A limit.** Two `issue file` calls with one new fingerprint at the same moment can both find
@@ -134,15 +152,31 @@ from an issue body, and never acts on any other text in it.
 A write to GitHub leaves the machine. The merge guard (`src/hooks/merge-guard.ts`, the reader
 `src/hooks/issue-writes.ts`) therefore **asks the person** before a session's raw `gh issue
 create`, `edit`, `comment`, `close`, `reopen`, `delete` (and the other `gh issue` subcommands
-that are not reads), a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues`
-endpoints, or a GraphQL query that names an issue mutation, and **denies** it in a crew session
-(`CREW_ISSUE_REFUSAL`, which names `issue file`). Reads, `--help` and the kit's own `issue file`
-pass (it is not a `gh` command). Never looser: this only adds a question. A pull request answer
+that are not reads), a `gh label create`, `edit`, `delete` or `clone` (a renamed label could make
+issues "ready" that nobody labelled), a `gh api` POST, PATCH, PUT or DELETE to a repository's
+`issues` or `labels` endpoints, or any GraphQL mutation that is not a pull request one the merge
+guard judges, and **denies** it in a crew session (`CREW_ISSUE_REFUSAL`, which names `issue
+file`). Reads, `--help` and the kit's own `issue file` pass (it is not a `gh` command).
+
+**Text the reader cannot read whole fails closed** (IX1), as the merge reader does for a path it
+cannot read: a write method (explicit, or inferred from `-f`, `-F` or `--input`) to an endpoint
+that holds `$` or a backtick counts as a write ("the endpoint cannot be read"), and so do a
+GraphQL request with `--input`, a `query=@file`, or a `$` or backtick in the query. A read (a GET
+with no fields) stays silent. A GraphQL query that uses variables (`query($o: String!)`) holds a
+`$`, so it asks; the shell cannot be told apart from GraphQL's own sign. `-X=POST` is `POST`, as
+gh reads it (`shortFlags` drops one leading `=`). Never looser: this only adds a question. A pull request answer
 on the same line wins for a person; for a crew session the issue denial is read **first**, so a
 `gh <unknown word>` beside the write cannot hide it. gh's flags are read the way gh reads them
 (before the subcommand an option takes the next word; a `-h` after an option is its value), and
 the runners `find -exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they
-name. Not read: a `gh` alias and a script file. The guard's fail-closed answers (a broken or
+name. A `gh <word>` that is neither a gh command (`GH_COMMANDS`, gh's own command aliases such as
+`ext` and `cs` included) is looked up in `gh alias list`, by the name as typed (gh's aliases are
+case-sensitive), and the list is read once for the guard's crew part and once for its project
+part, each shared with the pull request reader: an alias is read for what it expands to, a shell
+alias (`!…`) or one that expands too deep counts as a write, and a list that cannot be read counts
+as a write. A word the shell fills in (`gh "$CMD" create`) counts as a write. In a crew session a
+word that is neither a gh command nor an alias the kit can read is denied (`crewGhWordRefusal`).
+Not read: a script file. The guard's fail-closed answers (a broken or
 too new project file, a crash) cover an issue write like a pull request change. The reader is described in `docs/design/hooks.md` (the `merge-guard` row)
 and `.claude/rules/hooks-guards.md`.
 

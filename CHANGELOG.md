@@ -89,6 +89,17 @@ own repository, instead of losing them as a line in a summary.
   hand-back, fake a mark, or add an issue to a release. A watch pass settles at most three marks
   and gives the issue work one time budget, after the crew's own lines; a phase names at most 10
   issues.
+- **The review's fixes to what the kit writes to GitHub.** The raw-write guard now fails closed on
+  text it cannot read whole: a `gh api` write to an endpoint, or a GraphQL query, that the shell
+  fills in (`$EP`, `$(…)`), a request from `--input` or `query=@file`, and a `gh` alias that runs
+  a shell command. `gh api -X=POST` is read as `POST`, as gh reads it. Any GraphQL mutation that is
+  not a pull request one counts as a write, and so do `gh label create`, `edit`, `delete` and
+  `clone` and a write to a repository's labels. A `gh` alias is read for what it expands to, and a
+  crew session is denied a `gh` word it cannot read. The screen finds secret names with letters
+  before them (`APIKEY=`, `PGPASSWORD=`), a home in its Git Bash and WSL spellings, and Tavily,
+  Groq, Stripe restricted, Slack and Discord webhook keys. `issue file` refuses an account with read
+  access only, edits only an issue the kit's own account wrote, and accepts an `origin` with user
+  info (never printed). The docs now say exactly what the screen catches.
 - Design: `docs/design/issues.md`.
 
 **What to run for 1.4.0:** nothing for the update itself (`router.js` did not change, and the

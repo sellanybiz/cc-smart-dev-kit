@@ -10,7 +10,14 @@ import type { Check } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import { GH_TIMEOUT_MS, type GhCall, type GhExec } from "../workflow/merge-check";
 import { publicIssuesOff } from "../workflow/pr-switches";
-import { ownRepository, parseRepoFacts, REPO_FIELDS, resolveSwitch } from "./file";
+import {
+  ownRepository,
+  parseRepoFacts,
+  READ_ONLY,
+  REPO_FIELDS,
+  readOnlyWhy,
+  resolveSwitch,
+} from "./file";
 
 type Env = Record<string, string | undefined>;
 
@@ -29,11 +36,10 @@ const HOST = "github.com";
  * Triage applies labels but cannot create one (GitHub's repository roles table, researched in
  * `.claude/research/`). Write, Maintain and Admin do both.
  */
-const READ_ONLY = "READ";
 const TRIAGE = "TRIAGE";
 
 /** The fix that takes the switch off again. */
-const SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+const SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false for your own file, and set it false in the project's .claude/cc-smart-dev-kit.json too when that file turns it on`;
 
 /** The checks for GitHub Issues in the folder `world.cwd`: none while the switch is off. */
 export async function issuesChecks(world: IssuesDoctorWorld): Promise<Check[]> {
@@ -119,7 +125,7 @@ export async function issuesChecks(world: IssuesDoctorWorld): Promise<Check[]> {
       {
         fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
         ok: false,
-        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`,
+        text: `issues: ${readOnlyWhy(named)}`,
       },
     ];
   }

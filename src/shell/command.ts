@@ -969,16 +969,29 @@ export function programName(word: string): string {
 
 /**
  * The letters of a short option group (`-fdx` → `fdx`), up to the first one that takes a
- * value (the rest of the word, or the next word when nothing is attached).
+ * value (the rest of the word, or the next word when nothing is attached). `value` is the
+ * attached rest of the word, with one leading `=` dropped: gh's flag library (pflag) reads
+ * `-X=POST` as `POST`, as it reads `-XPOST`. A caller for a program that keeps the `=` (git's
+ * `-c=x` is `=x`) slices the word itself.
  */
-export function shortFlags(arg: string, valued: string): { flags: string; wantsNext: boolean } {
+export function shortFlags(
+  arg: string,
+  valued: string,
+): { flags: string; value: string; wantsNext: boolean } {
   let flags = "";
   for (let i = 1; i < arg.length; i++) {
     const letter = arg.charAt(i);
     flags += letter;
-    if (valued.includes(letter)) return { flags, wantsNext: i === arg.length - 1 };
+    if (valued.includes(letter)) {
+      const attached = arg.slice(i + 1);
+      return {
+        flags,
+        value: attached.startsWith("=") ? attached.slice(1) : attached,
+        wantsNext: i === arg.length - 1,
+      };
+    }
   }
-  return { flags, wantsNext: false };
+  return { flags, value: "", wantsNext: false };
 }
 
 /** `-x` or `-xyz`, not `--long` and not a bare `-`. */

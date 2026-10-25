@@ -16,6 +16,7 @@ import {
   redirectionTargets,
   shellSegments,
   shellSteps,
+  shortFlags,
   withoutRedirections,
   wordsOf,
 } from "./command";
@@ -755,5 +756,19 @@ describe("the dialect of a tool, and the programs of a line", () => {
     expect(programsOf(paths, "bash")).toEqual(["cd"]);
     expect(programsOf(paths, "powershell")).toEqual(["cd", "git", "cd"]);
     expect(programsOf(paths)).toEqual(["cd", "git", "cd"]);
+  });
+});
+
+describe("shortFlags — the value attached to a short option (IX1)", () => {
+  test("IX1-2: one leading `=` is dropped, as gh's flag library reads `-X=POST`", () => {
+    expect(shortFlags("-X=POST", "X")).toEqual({ flags: "X", value: "POST", wantsNext: false });
+    expect(shortFlags("-XPOST", "X")).toEqual({ flags: "X", value: "POST", wantsNext: false });
+    expect(shortFlags("-X==POST", "X")).toEqual({ flags: "X", value: "=POST", wantsNext: false });
+    expect(shortFlags("-iX=PUT", "X")).toEqual({ flags: "iX", value: "PUT", wantsNext: false });
+  });
+
+  test("IX1-2: a letter with nothing attached takes the next word, and has no value here", () => {
+    expect(shortFlags("-X", "X")).toEqual({ flags: "X", value: "", wantsNext: true });
+    expect(shortFlags("-ab", "X")).toEqual({ flags: "ab", value: "", wantsNext: false });
   });
 });

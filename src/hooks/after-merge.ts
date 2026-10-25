@@ -69,14 +69,21 @@ import { isSessionId } from "./session-name";
  * The gh commands this plugin knows (gh 2.102.0: `gh --help` and `gh help reference` read
  * 2026-10-16). A word after `gh` that is not one of these is a name of the person's — an
  * alias, or an extension — and is never guessed: `mergeCalls` reads `gh alias list` for it,
- * and a word that neither is an alias nor expands to a merge is left alone.
+ * and a word that neither is an alias nor expands to a merge is left alone. It holds gh's own
+ * command aliases too (`ext`, `cs`, `at`, `rs`, `agent`, … — each shown under ALIASES in the
+ * command's `--help`) and the hidden `version`: a crew session is denied a word that is none of
+ * these, so a real gh command left out here would be refused.
  */
-const GH_COMMANDS: ReadonlySet<string> = new Set([
+export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "accessibility",
   "actions",
+  "agent",
   "agent-task",
+  "agent-tasks",
+  "agents",
   "alias",
   "api",
+  "at",
   "attestation",
   "auth",
   "browse",
@@ -86,10 +93,13 @@ const GH_COMMANDS: ReadonlySet<string> = new Set([
   "completion",
   "config",
   "copilot",
+  "cs",
   "discussion",
   "environment",
   "exit-codes",
+  "ext",
   "extension",
+  "extensions",
   "formatting",
   "gist",
   "gpg-key",
@@ -105,6 +115,7 @@ const GH_COMMANDS: ReadonlySet<string> = new Set([
   "reference",
   "release",
   "repo",
+  "rs",
   "ruleset",
   "run",
   "search",
@@ -114,6 +125,7 @@ const GH_COMMANDS: ReadonlySet<string> = new Set([
   "status",
   "telemetry",
   "variable",
+  "version",
   "workflow",
 ]);
 
@@ -756,14 +768,14 @@ function openingCall(
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, CREATE_SHORT_WITH_VALUE);
+      const { flags, value, wantsNext } = shortFlags(word, CREATE_SHORT_WITH_VALUE);
       // A group of letters: `-fd` is `--fill --draft`; the last letter may take the value.
       const last = flags.slice(-1);
       const own =
         last !== "" && CREATE_SHORT_WITH_VALUE.includes(last) ? flags.slice(0, -1) : flags;
       if (own.includes("d")) draft = true;
       if (last !== "" && CREATE_SHORT_WITH_VALUE.includes(last)) {
-        const given = wantsNext ? (args[index + 1] ?? null) : word.slice(flags.length + 1);
+        const given = wantsNext ? (args[index + 1] ?? null) : value;
         if (last === "R") repo = given === "" ? repo : given;
         if (last === "B") base = given === "" ? null : given;
         if (last === "H") head = given === "" ? null : given;
@@ -858,13 +870,13 @@ function mergeArguments(words: string[]): {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      const { flags, value: attached, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
       for (const letter of flags) {
         if (!MERGE_LETTERS.includes(letter)) unknown ??= `-${letter}`;
       }
       const letter = flags.slice(-1);
       if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
-        const value = wantsNext ? (words[index + 1] ?? null) : word.slice(flags.length + 1);
+        const value = wantsNext ? (words[index + 1] ?? null) : attached;
         if (letter === "R") repo = value === "" ? null : value;
         if (wantsNext) index += 1;
       }
@@ -951,7 +963,7 @@ function apiCalls(rest: string[]): MergeCall[] {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const { flags, value: attached, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
       const unknown = flags
         .split("")
         .find((one) => one !== "i" && !API_VALUE_LETTERS.includes(one));
@@ -964,7 +976,7 @@ function apiCalls(rest: string[]): MergeCall[] {
       }
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter)) continue;
-      const value = wantsNext ? (rest[index + 1] ?? "") : word.slice(flags.length + 1);
+      const value = wantsNext ? (rest[index + 1] ?? "") : attached;
       if (wantsNext) index += 1;
       if (letter === "f" || letter === "F") fields.push(value);
       if (letter === "X") method = value;
@@ -1018,7 +1030,9 @@ function graphqlCalls(fields: string[], body: boolean): MergeCall[] {
   for (const field of fields) {
     if (!field.startsWith("query=")) continue;
     const query = field.slice("query=".length);
-    if (query.startsWith("@") || /\$\(|\$\{|`/.test(query)) {
+    // A `$` is the shell's (`"$Q"`, `$(…)`, `${Q}`) or a GraphQL variable: either way the
+    // text that is sent is not the text read here, so the guard asks.
+    if (query.startsWith("@") || /[$`]/.test(query)) {
       return [
         call({
           refusal:
@@ -1108,10 +1122,11 @@ export function pullRequestCallsWithAliases(
   env: Env,
   timeoutMs: number = ALIAS_TIMEOUT_MS,
   dialect?: Dialect,
+  readAliases: AliasReader = onceAliases(folder, env, timeoutMs),
 ): MergeCall[] {
   const unread = pullRequestCalls(command, null, dialect);
   if (!unread.some((one) => one.unknown !== null)) return unread;
-  const aliases = readGhAliases(folder, env, timeoutMs);
+  const aliases = readAliases();
   if (aliases === null) {
     return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
   }
@@ -1128,13 +1143,29 @@ const GH_TIMEOUT_MS = 10_000;
  */
 const ALIAS_TIMEOUT_MS = 3_000;
 
+/** The person's gh aliases as name → expansion, or null when they could not be read. */
+export type AliasReader = () => Map<string, string> | null;
+
+/**
+ * A reader of the person's gh aliases that runs `gh alias list` at most once, however many
+ * readers of one hook run ask (the pull request reader and the issue reader share it), and not
+ * at all when none asks. A failed read is kept too: the guard asks about it once.
+ */
+export function onceAliases(folder: string, env: Env, timeoutMs: number): AliasReader {
+  let read: { aliases: Map<string, string> | null } | null = null;
+  return () => {
+    read ??= { aliases: readGhAliases(folder, env, timeoutMs) };
+    return read.aliases;
+  };
+}
+
 /**
  * The person's gh aliases (`gh alias list`, read-only), or null when gh could not list them.
  * gh exits non-zero with "no aliases configured" when there are none (its own message, from
  * the 2.102.0 source): that is an empty list, not a failure. No time left at all (`timeoutMs`
  * or less): null, never a call — the guard asks rather than overruns.
  */
-function readGhAliases(
+export function readGhAliases(
   folder: string,
   env: Env,
   timeoutMs: number = ALIAS_TIMEOUT_MS,

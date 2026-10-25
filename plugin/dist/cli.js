@@ -10224,7 +10224,7 @@ function gitFailureCause(detail) {
   return "unknown";
 }
 function githubRepoInUrl(url) {
-  const match = /^(?:git@|ssh:\/\/|https?:\/\/)(?:git@)?github\.com[:/](.+?)\/*$/i.exec(url);
+  const match = /^(?:git@github\.com[:/]|(?:ssh|https?):\/\/(?:[^/\s]+@)?github\.com[:/])(.+?)\/*$/i.exec(url);
   if (!match?.[1])
     return null;
   const repo = match[1].replace(/\.git$/, "");
@@ -14744,6 +14744,11 @@ ${markerLine(hash)}
 // src/issues/screen.ts
 var TOKEN_SHAPES = [
   /\bsk[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,256}/g,
+  /\brk_(?:live|test)_[A-Za-z0-9]{16,256}/g,
+  /\bgsk_[A-Za-z0-9]{20,256}/g,
+  /\btvly-[A-Za-z0-9_-]{16,256}/g,
+  /(?:https?:\/\/)?hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]{16,256}/g,
+  /(?:https?:\/\/)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d{5,32}\/[A-Za-z0-9._-]{16,256}/g,
   /\bnpm_[A-Za-z0-9]{30,256}/g,
   /\bglpat-[A-Za-z0-9_-]{16,256}/g,
   /\bhf_[A-Za-z0-9]{30,256}/g,
@@ -14756,23 +14761,46 @@ var TOKEN_SHAPES = [
   /-----BEGIN [A-Z ]{0,32}PRIVATE KEY(?: BLOCK)?-----/g,
   /\b(?:Bearer|Basic)[ \t]{1,4}[A-Za-z0-9._~+/=-]{16,512}/g
 ];
-var ASSIGNED_SECRET = /(?<![A-Za-z])(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
-var CAMEL_ASSIGNED_SECRET = /(?<=[a-z])(?:Key|Token|Secret|Passw(?:or)?d)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/g;
+var ASSIGNED_SECRET = /(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
 function isPlaceholder(value) {
   return /^[$*%{]/.test(value) || /^(?:x{4,}|\.{3,}|-{3,})$/i.test(value);
 }
 var URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,31}):\/\/([^/?#\s'"<>@]{1,256})@/gi;
-function homePattern(home) {
+function homeShape(trimmed) {
+  const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+  const windows = /^([A-Za-z]):(?:[\\/]|$)/.exec(trimmed);
+  if (windows !== null)
+    return { drive: windows[1] ?? null, parts: parts.slice(1) };
+  const wsl = /^[\\/]mnt[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (wsl !== null)
+    return { drive: wsl[1] ?? null, parts: parts.slice(2) };
+  const msys = /^[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (msys !== null)
+    return { drive: msys[1] ?? null, parts: parts.slice(1) };
+  return { drive: null, parts };
+}
+function homePatterns(home) {
   if (home === null)
-    return null;
+    return [];
   const trimmed = home.replace(/[\\/]+$/, "");
   if (trimmed.length < 2)
-    return null;
-  const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+    return [];
+  const { drive, parts } = homeShape(trimmed);
   const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
-  const flags = /^[A-Za-z]:/.test(trimmed) ? "gi" : "g";
-  return new RegExp(`${lead}${escaped.join("[\\\\/]+")}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, flags);
+  const below = escaped.join("[\\\\/]+");
+  const end = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])";
+  if (drive === null) {
+    const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
+    return [new RegExp(`${lead}${escaped.join("[\\\\/]+")}${end}`, "g")];
+  }
+  if (below === "")
+    return [];
+  const rest = `[\\\\/]+${below}`;
+  return [
+    `${drive}:${rest}`,
+    `(?<![A-Za-z0-9_~])[\\\\/]${drive}${rest}`,
+    `[\\\\/]mnt[\\\\/]${drive}${rest}`
+  ].map((source) => new RegExp(`${source}${end}`, "gi"));
 }
 function position(text, index) {
   const before = text.slice(0, index);
@@ -14799,14 +14827,11 @@ function findings(text, home) {
     for (const span of spans)
       hits.push({ ...span, kind });
   };
-  const homeRule = homePattern(home);
-  if (homeRule !== null)
+  for (const homeRule of homePatterns(home))
     add("a home path", starts(text, homeRule));
   for (const shape of TOKEN_SHAPES)
     add("a key or token", starts(text, shape));
-  for (const assigned of [ASSIGNED_SECRET, CAMEL_ASSIGNED_SECRET]) {
-    add("a key or token", starts(text, assigned, (match) => !isPlaceholder(match[1] ?? "")));
-  }
+  add("a key or token", starts(text, ASSIGNED_SECRET, (match) => !isPlaceholder(match[1] ?? "")));
   add("a URL with credentials", starts(text, URL_USERINFO, (match) => {
     const scheme = (match[1] ?? "").toLowerCase();
     return TOKEN_SCHEMES.has(scheme) || (match[2] ?? "").includes(":");
@@ -14910,6 +14935,10 @@ async function kitAccount(read) {
 function sameAccount(author, login) {
   return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
 }
+var READ_ONLY = "READ";
+function readOnlyWhy(named) {
+  return `gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`;
+}
 var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
 function parseRepoFacts(out) {
   try {
@@ -14980,7 +15009,9 @@ function parseListed(out, ready) {
       if (typeof row.number !== "number" || typeof row.url !== "string") {
         return { why: "gh answered something this command cannot read" };
       }
+      const author = row.author?.login;
       issues.push({
+        author: typeof author === "string" ? author : null,
         body: typeof row.body === "string" ? row.body : "",
         closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
@@ -15049,6 +15080,9 @@ async function fileIssue(world, request) {
   if (!facts.hasIssues) {
     return refuse(`${repo} has issues turned off; turn them on in the repository's settings first`);
   }
+  if (facts.permission === READ_ONLY) {
+    return refuse(`${readOnlyWhy(repo)}; ask for write access to it first`);
+  }
   if (facts.isPublic) {
     const publicOff = publicIssuesOff(policy.resolved, policy.base);
     if (publicOff !== null)
@@ -15065,6 +15099,9 @@ async function fileIssue(world, request) {
   } catch {
     return refuse("gh answered something this command cannot read about the labels");
   }
+  const account = await kitAccount(read);
+  if ("why" in account)
+    return refuse(account.why);
   const hash = fingerprintHash(request.fingerprint);
   const listed = await write([
     "issue",
@@ -15078,14 +15115,14 @@ async function fileIssue(world, request) {
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body,state,labels"
+    "number,url,body,state,labels,author"
   ]);
   if (listed.kind !== "ok")
     return refuse(ghProblem("listed the issues", listed));
   const all = parseListed(listed.out, policy.resolved.issues.readyLabel.value);
   if ("why" in all)
     return refuse(all.why);
-  const double = all.issues.find((issue) => hasMarker(issue.body, hash));
+  const double = all.issues.find((issue) => hasMarker(issue.body, hash) && sameAccount(issue.author, account.login));
   if (double === undefined && all.issues.length >= LIST_LIMIT) {
     return refuse(`${LIST_LIMIT} issues carry the label ${found}, as many as one list returns, so the kit cannot tell whether this finding is filed; close the settled ones first`);
   }
@@ -39287,8 +39324,10 @@ created.
 
 It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
 and the project's file as committed on the base), and a public repository needs issues.allowPublic
-too. A title or body that holds a home path, a key or token, or a URL with credentials is refused
-with its line and column, and nothing is sent.
+too. A title or body that holds a home path (in any spelling of it), a key or token of a known
+shape or a value after key, token, secret or password, or a URL with credentials is refused with
+its line and column, and nothing is sent. The screen knows those shapes only: read a text before
+you file it.
 
 issue fixed prints one \`Fixes #<n>\` line for each open issue the kit marked fixed (it carries the
 label issues.fixedLabel) whose fix is in <base>..<head>: the lines a release's pull request body
@@ -40113,10 +40152,16 @@ function shortFlags(arg, valued) {
   for (let i = 1;i < arg.length; i++) {
     const letter = arg.charAt(i);
     flags += letter;
-    if (valued.includes(letter))
-      return { flags, wantsNext: i === arg.length - 1 };
+    if (valued.includes(letter)) {
+      const attached = arg.slice(i + 1);
+      return {
+        flags,
+        value: attached.startsWith("=") ? attached.slice(1) : attached,
+        wantsNext: i === arg.length - 1
+      };
+    }
   }
-  return { flags, wantsNext: false };
+  return { flags, value: "", wantsNext: false };
 }
 function isShort(arg) {
   return /^-[^-]/.test(arg);
@@ -52921,9 +52966,13 @@ function runsGit(command, dialect) {
 var GH_COMMANDS = new Set([
   "accessibility",
   "actions",
+  "agent",
   "agent-task",
+  "agent-tasks",
+  "agents",
   "alias",
   "api",
+  "at",
   "attestation",
   "auth",
   "browse",
@@ -52933,10 +52982,13 @@ var GH_COMMANDS = new Set([
   "completion",
   "config",
   "copilot",
+  "cs",
   "discussion",
   "environment",
   "exit-codes",
+  "ext",
   "extension",
+  "extensions",
   "formatting",
   "gist",
   "gpg-key",
@@ -52952,6 +53004,7 @@ var GH_COMMANDS = new Set([
   "reference",
   "release",
   "repo",
+  "rs",
   "ruleset",
   "run",
   "search",
@@ -52961,6 +53014,7 @@ var GH_COMMANDS = new Set([
   "status",
   "telemetry",
   "variable",
+  "version",
   "workflow"
 ]);
 var WORDS = {
@@ -53347,13 +53401,13 @@ function openingCall(kind, args, moved, carried) {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, CREATE_SHORT_WITH_VALUE);
+      const { flags, value, wantsNext } = shortFlags(word, CREATE_SHORT_WITH_VALUE);
       const last = flags.slice(-1);
       const own = last !== "" && CREATE_SHORT_WITH_VALUE.includes(last) ? flags.slice(0, -1) : flags;
       if (own.includes("d"))
         draft = true;
       if (last !== "" && CREATE_SHORT_WITH_VALUE.includes(last)) {
-        const given = wantsNext ? args[index + 1] ?? null : word.slice(flags.length + 1);
+        const given = wantsNext ? args[index + 1] ?? null : value;
         if (last === "R")
           repo = given === "" ? repo : given;
         if (last === "B")
@@ -53430,14 +53484,14 @@ function mergeArguments(words) {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      const { flags, value: attached, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
       for (const letter of flags) {
         if (!MERGE_LETTERS.includes(letter))
           unknown ??= `-${letter}`;
       }
       const letter = flags.slice(-1);
       if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
-        const value = wantsNext ? words[index + 1] ?? null : word.slice(flags.length + 1);
+        const value = wantsNext ? words[index + 1] ?? null : attached;
         if (letter === "R")
           repo = value === "" ? null : value;
         if (wantsNext)
@@ -53514,7 +53568,7 @@ function apiCalls(rest) {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const { flags, value: attached, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
       const unknown = flags.split("").find((one) => one !== "i" && !API_VALUE_LETTERS.includes(one));
       if (unknown !== undefined) {
         return [
@@ -53526,7 +53580,7 @@ function apiCalls(rest) {
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter))
         continue;
-      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      const value = wantsNext ? rest[index + 1] ?? "" : attached;
       if (wantsNext)
         index += 1;
       if (letter === "f" || letter === "F")
@@ -53574,7 +53628,7 @@ function graphqlCalls(fields, body) {
     if (!field.startsWith("query="))
       continue;
     const query = field.slice("query=".length);
-    if (query.startsWith("@") || /\$\(|\$\{|`/.test(query)) {
+    if (query.startsWith("@") || /[$`]/.test(query)) {
       return [
         call({
           refusal: "the GraphQL query is read from a file or built by the shell, so this guard cannot read it"
@@ -53621,11 +53675,11 @@ function pullRequestsPath(endpoint) {
 function mergeCalls(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS, dialect) {
   return pullRequestCallsWithAliases(command, folder, env, timeoutMs, dialect).filter(isMerge);
 }
-function pullRequestCallsWithAliases(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS, dialect) {
+function pullRequestCallsWithAliases(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS, dialect, readAliases = onceAliases(folder, env, timeoutMs)) {
   const unread = pullRequestCalls(command, null, dialect);
   if (!unread.some((one) => one.unknown !== null))
     return unread;
-  const aliases = readGhAliases(folder, env, timeoutMs);
+  const aliases = readAliases();
   if (aliases === null) {
     return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
   }
@@ -53633,6 +53687,13 @@ function pullRequestCallsWithAliases(command, folder, env, timeoutMs = ALIAS_TIM
 }
 var GH_TIMEOUT_MS3 = 1e4;
 var ALIAS_TIMEOUT_MS = 3000;
+function onceAliases(folder, env, timeoutMs) {
+  let read = null;
+  return () => {
+    read ??= { aliases: readGhAliases(folder, env, timeoutMs) };
+    return read.aliases;
+  };
+}
 function readGhAliases(folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
   if (timeoutMs <= 0)
     return null;
@@ -54321,15 +54382,44 @@ function fableSession(input, env, paths) {
 
 // src/hooks/issue-writes.ts
 var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
+var LABEL_READS = new Set(["help", "list", "ls"]);
 var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
-var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/issues(?:\/.*)?$/i;
-var ISSUE_MUTATION = /\b(?:createIssue|updateIssue|deleteIssue|closeIssue|reopenIssue|transferIssue|pinIssue|unpinIssue|addComment|updateIssueComment|deleteIssueComment|lockLockable|unlockLockable|addLabelsToLabelable|removeLabelsFromLabelable)\b/;
+var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/(?:issues|labels)(?:\/.*)?$/i;
+var SHELL_FILLED = /[$`]/;
+var PULL_REQUEST_MUTATIONS = new Set([
+  "createPullRequest",
+  "enablePullRequestAutoMerge",
+  "markPullRequestReadyForReview",
+  "mergePullRequest"
+]);
 function apiPath(endpoint) {
-  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+  return endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "").replace(/^api\/v3\//i, "");
 }
 function isGraphql(endpoint) {
   const path = apiPath(endpoint).toLowerCase();
   return path === "graphql" || path.endsWith("/graphql");
+}
+function graphqlWrite(fields, body) {
+  if (body) {
+    return "a gh api graphql request that cannot be read (its body comes from a file or standard input)";
+  }
+  for (const field of fields) {
+    if (!field.startsWith("query="))
+      continue;
+    const query = field.slice("query=".length);
+    if (query.startsWith("@") || SHELL_FILLED.test(query)) {
+      return "a gh api graphql request that cannot be read (its query comes from a file or the shell)";
+    }
+    if (!/\bmutation\b/i.test(query))
+      continue;
+    const tokens = query.replace(/#[^\r\n]*|[,\uFEFF]/g, " ");
+    const named = [...tokens.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((one) => one[1]);
+    const issueWrites = named.filter((name) => name !== undefined && !PULL_REQUEST_MUTATIONS.has(name));
+    if (named.length > 0 && issueWrites.length === 0)
+      continue;
+    return issueWrites.length > 0 ? `a gh api graphql mutation (${[...new Set(issueWrites)].join(", ")})` : "a gh api graphql mutation";
+  }
+  return null;
 }
 function apiIssueWrite(rest) {
   const fields = [];
@@ -54361,11 +54451,11 @@ function apiIssueWrite(rest) {
       continue;
     }
     if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const { flags, value: attached, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter))
         continue;
-      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      const value = wantsNext ? rest[index + 1] ?? "" : attached;
       if (wantsNext)
         index += 1;
       if (letter === "f" || letter === "F")
@@ -54378,19 +54468,16 @@ function apiIssueWrite(rest) {
   }
   if (endpoint === null)
     return null;
-  if (isGraphql(endpoint)) {
-    for (const field of fields) {
-      if (!field.startsWith("query="))
-        continue;
-      const mutation = ISSUE_MUTATION.exec(field)?.[0];
-      if (mutation !== undefined)
-        return `a gh api graphql mutation (${mutation})`;
-    }
-    return null;
-  }
   const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  if (!WRITE_METHODS.has(used) && !SHELL_FILLED.test(used))
+    return null;
+  if (SHELL_FILLED.test(endpoint)) {
+    return `a gh api ${used} to an endpoint that cannot be read (${endpoint})`;
+  }
+  if (isGraphql(endpoint))
+    return graphqlWrite(fields, body);
   const path = apiPath(endpoint);
-  return WRITE_METHODS.has(used) && ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
+  return ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
 }
 function isHelpAt(words, index) {
   const word = words[index] ?? "";
@@ -54399,7 +54486,22 @@ function isHelpAt(words, index) {
   const before = words[index - 1] ?? "";
   return !(before.startsWith("-") && !before.includes("="));
 }
-function ghIssueWrite(args) {
+function aliasWrite(word, rest, aliases, found, depth, named) {
+  const expansion = aliases?.get(word);
+  if (expansion === undefined) {
+    if (!found.unnamed.includes(word))
+      found.unnamed.push(word);
+    return null;
+  }
+  if (expansion.startsWith("!")) {
+    return `a gh alias that runs a shell command (\`gh ${named}\`)`;
+  }
+  if (depth >= MAX_NESTING) {
+    return `a gh alias that expands to further commands (\`gh ${named}\`)`;
+  }
+  return ghIssueWrite([...wordsOf2(expansion), ...rest], aliases, found, depth + 1, named);
+}
+function ghIssueWrite(args, aliases, found, depth = 0, named = "") {
   const dashes = args.indexOf("--");
   const words = dashes === -1 ? args : args.slice(0, dashes);
   if (words.some((_, index) => isHelpAt(words, index)))
@@ -54413,35 +54515,65 @@ function ghIssueWrite(args) {
       continue;
     }
     positional.push(word);
-    if (positional[0] === "api")
-      return apiIssueWrite(args.slice(index + 1));
+    if (positional.length === 1) {
+      const command = word.toLowerCase();
+      if (command === "api")
+        return apiIssueWrite(args.slice(index + 1));
+      if (SHELL_FILLED.test(word))
+        return `a gh command the shell fills in (\`gh ${word}\`)`;
+      if (!GH_COMMANDS.has(command)) {
+        const rest = args.slice(index + 1);
+        return aliasWrite(word, rest, aliases, found, depth, named === "" ? word : named);
+      }
+      if (command !== "issue" && command !== "label")
+        return null;
+    }
     if (positional.length === 2)
       break;
   }
   const [group, sub] = positional;
-  if (group !== "issue" || sub === undefined)
+  if (sub === undefined)
     return null;
   const name = sub.toLowerCase();
+  if (group?.toLowerCase() === "label") {
+    return LABEL_READS.has(name) ? null : `gh label ${name}`;
+  }
   if (ISSUE_READS.has(name))
     return null;
   if (name === "develop" && args.some((word) => word === "-l" || word === "--list"))
     return null;
   return `gh issue ${name}`;
 }
-function issueWrites(command, dialect) {
-  const found = [];
-  const note = (write) => {
-    if (write !== null && !found.includes(write))
-      found.push(write);
-  };
+function readLine(command, dialect, aliases) {
+  const found = { writes: [], unnamed: [] };
   for (const run of invocationsOf(command, dialect)) {
-    if (!run.computed && run.program === "gh")
-      note(ghIssueWrite(run.args));
+    if (run.computed || run.program !== "gh")
+      continue;
+    const write = ghIssueWrite(run.args, aliases, found);
+    if (write !== null && !found.writes.includes(write))
+      found.writes.push(write);
   }
   return found;
 }
+function issueWrites(command, dialect, aliases = null) {
+  return readLine(command, dialect, aliases).writes;
+}
+function issueWritesWithAliases(command, readAliases, dialect) {
+  const plain = readLine(command, dialect, null);
+  if (plain.unnamed.length === 0)
+    return plain;
+  const aliases = readAliases();
+  if (aliases === null) {
+    const words = plain.unnamed.map((word) => `gh ${word}`).join(", ");
+    return {
+      writes: [...plain.writes, `a gh alias that cannot be read (${words})`],
+      unnamed: plain.unnamed
+    };
+  }
+  return readLine(command, dialect, aliases);
+}
 function computedIssueRisk(command, dialect) {
-  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)issues?(?:\/|$)/i.test(word) || /^issues?$/i.test(word)));
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /(?:^|\/)(?:issue|label)s?(?:\/|$)/i.test(word) || /^(?:issue|label)s?$/i.test(word)));
 }
 function requestsIssueWrite(command, dialect) {
   return issueWrites(command, dialect).length > 0 || computedIssueRisk(command, dialect);
@@ -55315,8 +55447,22 @@ function mainFolderGuard(context) {
 
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
+var ALIAS_READERS = new WeakMap;
+function aliasReaderOf(context, timeoutMs) {
+  let reader = ALIAS_READERS.get(context);
+  if (reader === undefined) {
+    reader = onceAliases(context.cwd, context.env, timeoutMs);
+    ALIAS_READERS.set(context, reader);
+  }
+  return reader;
+}
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
 var CREW_ISSUE_REFUSAL = `A crew session writes no GitHub issue with a raw gh command: an issue leaves the machine, and nobody is here to approve it. File a finding with \`${COMMAND} issue file --title <t> --body-file - --fingerprint <key>\` (it files in the project's own repository, and only when issues.enabled is on), or put it in your report for your lead.`;
+function crewGhWordRefusal(words) {
+  const plain = (word) => [...word].filter((char) => char >= " " && char !== "\x7F").join("");
+  const named = words.map((word) => `\`gh ${plain(word)}\``).join(", ");
+  return `A crew session runs no ${named}: it is neither a gh command nor an alias the kit can read, so the kit cannot tell whether it writes to GitHub. Use a gh command written out in full, or put the finding in your report for your lead.`;
+}
 var CREW_MERGE_REFUSAL = "A crew session never merges a pull request: nobody is at the machine to answer the guard's " + "question, and the step is the same without one. It commits on its own branch, and the lead " + "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
 function crewPullRequestAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
@@ -55325,15 +55471,20 @@ function crewPullRequestAnswer(input, env, cwd) {
   if (command === null)
     return SILENT;
   const dialect = dialectOfTool(input.tool_name);
-  if (requestsIssueWrite(command, dialect))
+  const readAliases = onceAliases(cwd, env, ALIAS_LIMIT_MS);
+  const issue = issueWritesWithAliases(command, readAliases, dialect);
+  if (issue.writes.length > 0 || computedIssueRisk(command, dialect)) {
     return toolDecision("deny", CREW_ISSUE_REFUSAL);
+  }
+  if (issue.unnamed.length > 0)
+    return toolDecision("deny", crewGhWordRefusal(issue.unnamed));
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
   if (computedMergeRisk(command, dialect))
     return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect))
     return toolDecision("deny", CREW_PR_REFUSAL);
-  const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect, readAliases);
   if (calls.some((one) => isMerge(one) && !one.disarms)) {
     return toolDecision("deny", CREW_MERGE_REFUSAL);
   }
@@ -55396,7 +55547,7 @@ function issueWriteQuestion(context) {
   if (command === null || project.config === null)
     return null;
   const dialect = dialectOfTool(input.tool_name);
-  const writes = issueWrites(command, dialect);
+  const writes = issueWritesWithAliases(command, aliasReaderOf(context, ALIAS_LIMIT_MS), dialect).writes;
   if (writes.length === 0 && !computedIssueRisk(command, dialect))
     return null;
   const what = writes.length > 0 ? `writes to GitHub's issues (${writes.join(", ")})` : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
@@ -55491,7 +55642,8 @@ async function pullRequestGuard(context) {
       return null;
     return into === expected ? null : opensElsewhere(into, head, expected);
   };
-  const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
+  const aliasTime = timeFor(ALIAS_LIMIT_MS);
+  const calls = pullRequestCallsWithAliases(command, cwd, env, aliasTime, dialect, aliasReaderOf(context, aliasTime));
   const merges = calls.filter((one) => isMerge(one) && !one.disarms);
   const openings = calls.filter((one) => !isMerge(one));
   const integration = config.worktrees?.base ?? null;
@@ -56062,7 +56214,7 @@ function judgeWrites(raw, folder, ctx, found, dialect) {
     found.asks.add(`This command writes to a path it works out when it runs (${computed}), and it names the kit's own settings. ${SETTINGS_TAIL}`);
   }
 }
-function readLine(line, reading, start, folder, depth, found, ctx) {
+function readLine2(line, reading, start, folder, depth, found, ctx) {
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
@@ -56095,7 +56247,7 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
           for (const inner of readingsOf(nested, nestedDialect(program))) {
-            const after = readLine(nested, inner, here, where, depth + 1, found, ctx);
+            const after = readLine2(nested, inner, here, where, depth + 1, found, ctx);
             if (program === "eval")
               dropped = after ?? dropped;
           }
@@ -56103,7 +56255,7 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
         if (resets !== null) {
           for (const operand of operands.filter((one) => /\s/.test(one))) {
             for (const inner of readingsOf(operand, "bash")) {
-              readLine(operand, inner, here, where, depth + 1, found, ctx);
+              readLine2(operand, inner, here, where, depth + 1, found, ctx);
             }
           }
         }
@@ -56134,7 +56286,7 @@ function judgeShell(input, paths, platform, crew) {
     text: command
   };
   for (const reading of readingsOf(command, dialectOfTool(input.tool_name))) {
-    readLine(command, reading, null, ctx.cwd, 0, found, ctx);
+    readLine2(command, reading, null, ctx.cwd, 0, found, ctx);
   }
   if (found.denials.size > 0)
     return toolDecision("deny", [...found.denials].join(`
@@ -56858,9 +57010,8 @@ var MACHINE_WIDE_HOOKS = [
 
 // src/issues/doctor.ts
 var HOST = "github.com";
-var READ_ONLY = "READ";
 var TRIAGE = "TRIAGE";
-var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false for your own file, and set it false in the project's .claude/cc-smart-dev-kit.json too when that file turns it on`;
 async function issuesChecks(world) {
   const policy = resolveSwitch({ ...world, home: null });
   if ("why" in policy || !policy.resolved.issues.enabled.value)
@@ -56939,7 +57090,7 @@ async function issuesChecks(world) {
       {
         fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
         ok: false,
-        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`
+        text: `issues: ${readOnlyWhy(named)}`
       }
     ];
   }

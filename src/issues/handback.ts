@@ -9,8 +9,9 @@
  * It is an outbound write, so it keeps GI1's rules: the switch must be on now (read as `issue
  * file` reads it), a public repository needs `issues.allowPublic`, the repository is `origin`'s
  * and the one the record names, and the comment goes through the one `gh` runner. The text is
- * the crew session's own words, so it is cleaned before it is sent — a secret or a home path is
- * redacted, an `@name` is broken so it pings nobody — and it never makes the hand-back fail:
+ * the crew session's own words, so it is screened before it is sent — a secret or a home path
+ * means nothing is posted (screened, not cleaned), and an `@name` is broken so it pings nobody —
+ * and it never makes the hand-back fail:
  * when GitHub cannot be reached the answer says why, and the report goes on without a comment.
  */
 import type { HandBackReport } from "../crew/store";
