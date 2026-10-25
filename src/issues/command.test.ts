@@ -12,6 +12,7 @@ import { commitConfig, makeRepo, writePersonalWorkflow } from "../testing/hooks"
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { GH_WRITE_TIMEOUT_MS, runGh } from "../workflow/merge-check";
 import { ISSUE_USAGE, type IssueContext, runIssue } from "./command";
+import { fixedComment } from "./fixed";
 
 function setup(enabled = true) {
   const repo = makeRepo("my-app");
@@ -169,5 +170,59 @@ describe.skipIf(process.platform === "win32")("the real gh executor", () => {
 
   test("a write is given more time than a read", () => {
     expect(GH_WRITE_TIMEOUT_MS).toBeGreaterThan(10_000);
+  });
+});
+
+describe("issue fixed: the command", () => {
+  /** A release branch that holds one marked fix. */
+  function released() {
+    const run = setup();
+    git(run.repo, "checkout", "-q", "-b", "release");
+    git(run.repo, "commit", "-q", "--allow-empty", "-m", "the fix");
+    const tip = git(run.repo, "rev-parse", "HEAD").trim();
+    git(run.repo, "checkout", "-q", "main");
+    run.gh.issues.push({
+      body: "A bug",
+      comments: [fixedComment({ base: "release", branch: "crew/x", issue: 4, merge: null, tip })],
+      labels: ["fixed-unreleased"],
+      number: 4,
+      title: "A bug",
+      url: "https://github.com/example-org/my-app/issues/4",
+    });
+    return run;
+  }
+
+  test("prints one Fixes line per issue and nothing else, exit 0", async () => {
+    const run = released();
+    expect(await runIssue(["fixed", "--base", "main", "--head", "release"], run.context)).toBe(0);
+    expect(run.lines).toEqual(["Fixes #4"]);
+    expect(run.errors).toEqual([]);
+  });
+
+  test("the switch off: nothing printed, exit 0, gh never called", async () => {
+    const run = setup(false);
+    expect(await runIssue(["fixed", "--base", "main", "--head", "main"], run.context)).toBe(0);
+    expect(run.lines).toEqual([]);
+    expect(run.gh.calls).toEqual([]);
+  });
+
+  test("GitHub down: nothing on stdout, the reason on stderr, exit 1", async () => {
+    const run = released();
+    run.gh.mode = "timeout";
+    expect(await runIssue(["fixed", "--base", "main", "--head", "release"], run.context)).toBe(1);
+    expect(run.lines).toEqual([]);
+    expect(run.errors[0]).toStartWith("issue fixed: gh timed out");
+  });
+
+  test.each([
+    [["fixed", "--base", "main"], "--head is needed, once"],
+    [["fixed", "--head", "x"], "--base is needed, once"],
+    [["fixed", "--base", "a", "--base", "b", "--head", "x"], "--base is needed, once"],
+    [["fixed", "--title", "t"], "Unknown option: --title"],
+  ])("usage error %p: exit 2", async (argv, said) => {
+    const run = setup();
+    expect(await runIssue(argv, run.context)).toBe(2);
+    expect(run.lines).toEqual([]);
+    expect(run.errors[0]).toContain(said);
   });
 });

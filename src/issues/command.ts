@@ -11,8 +11,10 @@ import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { fileIssue, type IssueRequest, issueLine } from "./file";
+import { listFixed, openGate } from "./fixed";
 
 export const ISSUE_USAGE = `Usage: ${COMMAND} issue file --title <title> --body-file <file|-> --fingerprint <key> [--label <label>…]
+       ${COMMAND} issue fixed --base <branch> --head <branch>
 
 Files one finding as a GitHub issue in this project's own repository (the one \`origin\` names,
 on github.com), and prints one line: filed #<n> <url>, updated #<n> <url>, or refused: <why>.
@@ -24,7 +26,13 @@ created.
 It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
 and the project's file as committed on the base), and a public repository needs issues.allowPublic
 too. A title or body that holds a home path, a key or token, or a URL with credentials is refused
-with its line and column, and nothing is sent.`;
+with its line and column, and nothing is sent.
+
+issue fixed prints one \`Fixes #<n>\` line for each open issue the kit marked fixed (it carries the
+label issues.fixedLabel) whose fix is in <base>..<head>: the lines a release's pull request body
+carries, so GitHub closes those issues when it merges into the default branch. It prints nothing
+when the switch is off or no issue is listed, and exits 1 (the reason on standard error) when
+GitHub or the branches cannot be read: an empty list from a failed call would look complete.`;
 
 type Env = Record<string, string | undefined>;
 
@@ -45,15 +53,17 @@ type Parsed =
   | { bodyFile: string; ok: true; request: Omit<IssueRequest, "body"> }
   | { ok: false; why: string };
 
-const VALUED = ["--title", "--body-file", "--fingerprint", "--label"] as const;
-
-function parse(argv: string[]): Parsed {
+/** The options of one command, each with its values in the order given; or why the line is not one. */
+function parseOptions(
+  argv: string[],
+  valued: readonly string[],
+): { given: Record<string, string[]>; ok: true } | { ok: false; why: string } {
   const given: Record<string, string[]> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? "";
     const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
     const name = at === -1 ? arg : arg.slice(0, at);
-    if (!(VALUED as readonly string[]).includes(name)) {
+    if (!valued.includes(name)) {
       return { ok: false, why: `Unknown option: ${arg}` };
     }
     const value = at === -1 ? argv[index + 1] : arg.slice(at + 1);
@@ -64,9 +74,21 @@ function parse(argv: string[]): Parsed {
     if (at === -1) index += 1;
     given[name] = [...(given[name] ?? []), value];
   }
-  for (const name of ["--title", "--body-file", "--fingerprint"] as const) {
-    if ((given[name]?.length ?? 0) !== 1) return { ok: false, why: `${name} is needed, once` };
-  }
+  return { given, ok: true };
+}
+
+/** Each name is needed exactly once; the first that is not is said. */
+function onceEach(given: Record<string, string[]>, names: readonly string[]): null | string {
+  const bad = names.find((name) => (given[name]?.length ?? 0) !== 1);
+  return bad === undefined ? null : `${bad} is needed, once`;
+}
+
+function parse(argv: string[]): Parsed {
+  const read = parseOptions(argv, ["--title", "--body-file", "--fingerprint", "--label"]);
+  if (!read.ok) return read;
+  const { given } = read;
+  const missing = onceEach(given, ["--title", "--body-file", "--fingerprint"]);
+  if (missing !== null) return { ok: false, why: missing };
   return {
     bodyFile: given["--body-file"]?.[0] ?? "",
     ok: true,
@@ -78,9 +100,44 @@ function parse(argv: string[]): Parsed {
   };
 }
 
+/** `issue fixed --base <b> --head <h>`: one `Fixes #<n>` line per issue; the exit code. */
+async function runFixed(rest: string[], context: IssueContext): Promise<number> {
+  const read = parseOptions(rest, ["--base", "--head"]);
+  const missing = read.ok ? onceEach(read.given, ["--base", "--head"]) : read.why;
+  if (!read.ok || missing !== null) {
+    context.error(`${missing}\n\n${ISSUE_USAGE}`);
+    return 2;
+  }
+  const world = {
+    cwd: context.cwd,
+    env: context.env,
+    gh: context.gh ?? runGh,
+    home: context.paths.home,
+    paths: context.paths,
+  };
+  const gate = await openGate(world);
+  // The switch is off here: there are no marked issues, so there is nothing to list.
+  if (gate.kind === "off") return 0;
+  if (gate.kind === "failed") {
+    context.error(`issue fixed: ${gate.why}`);
+    return 1;
+  }
+  const listed = await listFixed(gate, {
+    base: read.given["--base"]?.[0] ?? "",
+    head: read.given["--head"]?.[0] ?? "",
+  });
+  if (listed.kind === "failed") {
+    context.error(`issue fixed: ${listed.why}`);
+    return 1;
+  }
+  for (const number of listed.issues) context.print(`Fixes #${number}`);
+  return 0;
+}
+
 /** `cc-smart-dev-kit issue …`; the exit code. */
 export async function runIssue(argv: string[], context: IssueContext): Promise<number> {
   const [sub, ...rest] = argv;
+  if (sub === "fixed") return runFixed(rest, context);
   if (sub !== "file") {
     context.error(
       sub === undefined
