@@ -232,7 +232,7 @@ describe("workflow set and unset", () => {
     const run = context(tempDir("not-git"), env);
     expect(await runWorkflow(["set", "alerts.events", "needs-you,finished"], run.context)).toBe(0);
     expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
-      `${JSON.stringify({ alerts: { events: ["needs-you", "finished"] } }, null, 2)}\n`,
+      '{\n  "alerts": {\n    "events": ["needs-you", "finished"]\n  }\n}\n',
     );
   });
 
@@ -247,17 +247,13 @@ describe("workflow set and unset", () => {
     const run = context(repo, env);
     expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
     expect(run.lines).toEqual([`~ ${file}: autoCommit = true`]);
-    // The indent (four spaces here) stays; a one-line object is written out, as any JSON writer does.
+    // The indent (four spaces here) stays, and so does every line the change does not touch: the
+    // one-line object and the one-line array stay as they were.
     expect(readFileSync(file, "utf8")).toBe(
       [
         "{",
-        '    "worktrees": {',
-        '        "base": "main",',
-        '        "guardMainFolder": true',
-        "    },",
-        '    "autoMode": [',
-        '        "one rule"',
-        "    ],",
+        '    "worktrees": { "base": "main", "guardMainFolder": true },',
+        '    "autoMode": ["one rule"],',
         '    "workflow": {',
         '        "autoCommit": true',
         "    }",

@@ -24,6 +24,7 @@ import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { checkCcSmartDevKitConfig } from "../project/config";
 import { raisedRequires, requiresFloor } from "../project/init";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { jsonTextFor } from "../setup/json-edit";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
@@ -124,7 +125,7 @@ export function writePersonalSetting(paths: CliPaths, key: string, value: unknow
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true)) return shownNothing(shown, wanted, value);
   mkdirSync(dirname(file), { mode: 0o700, recursive: true });
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}\n`, 0o600);
+  atomicWrite(file, jsonTextFor(text, data, indent), 0o600);
   return shownWrite(shown, wanted, value, text === null);
 }
 
@@ -189,7 +190,7 @@ function writeProjectFile(
   backupFile(cliPaths(env).stateDir, file);
   // `realTarget`: a file linked into a dotfiles repo stays a link, and its target gets the
   // change — an atomic write straight at the link would replace it with a plain file.
-  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}\n`, 0o644);
+  atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 0o644);
   return shownWrite(file, key, value, text === null);
 }
 
