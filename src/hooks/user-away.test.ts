@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { cliPaths } from "../cli/paths";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import {
@@ -11,6 +11,7 @@ import {
   setAvailable,
   setUnavailable,
 } from "../user-away/state";
+import { askLogFile } from "./ask-log";
 import { toolDecision } from "./io";
 import { gitGuardHook, userAwayHook } from "./specs";
 import { askedWhileAway, userAwayAnswer } from "./user-away";
@@ -199,7 +200,9 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
     );
     const item = readAway(paths.stateDir).items[0];
     expect(item?.command).toBeNull();
-    expect(item?.text).toBe("Claude Code's own permission prompt: Write /etc/hosts");
+    expect(item?.text).toBe(
+      `Claude Code's own permission prompt: Write /etc/hosts {"content":"x"}`,
+    );
   });
 
   test("the same prompt asked again is the same parked item", async () => {
@@ -246,9 +249,16 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
 
   test("a list that is full still denies, and says to park it by hand", async () => {
     const { env, paths } = await away();
-    for (let index = 0; index < 500; index += 1) {
-      await parkItem(paths.stateDir, draft({ text: `q${index}` }), T0);
-    }
+    // The list at its cap, written once: 500 locked, fsynced parks one after the other would
+    // test how fast the disk is (they ran past the test timeout on a busy machine), not the cap.
+    const full = readAway(paths.stateDir);
+    full.items = Array.from({ length: 500 }, (_, index) => ({
+      ...draft({ text: `q${index}` }),
+      id: index + 1,
+      at: "2026-10-25T01:00:00.000Z",
+    }));
+    full.nextId = 501;
+    writeFileSync(awayStateFile(paths.stateDir), JSON.stringify(full));
     const result = await userAwayAnswer(
       permissionRequest("Bash", { command: "ls -la" }),
       "PermissionRequest",
@@ -578,5 +588,122 @@ describe("the hook as the frame runs it", () => {
       OPTIONS,
     );
     expect(JSON.parse(readFileSync(awayStateFile(paths.stateDir), "utf8")).items).toHaveLength(1);
+  });
+});
+
+describe("what the review found", () => {
+  const permissionRequest = (tool: string, toolInput: Record<string, unknown>) => ({
+    hook_event_name: "PermissionRequest",
+    session_id: SESSION,
+    cwd: "/work/app",
+    tool_name: tool,
+    tool_input: toolInput,
+  });
+
+  test("a crew session's question goes to its lead, not to the person's list", async () => {
+    const { env, paths } = await away();
+    const crewEnv = { ...env, CC_SMART_DEV_KIT_CREW: "UA1-x-1" };
+    for (const tool of ["AskUserQuestion", "ExitPlanMode"]) {
+      const denied = await userAwayAnswer(
+        preToolUse(tool),
+        "PreToolUse",
+        crewEnv,
+        paths,
+        T0,
+        OPTIONS,
+      );
+      const reason = decisionOf(denied.stdout).permissionDecisionReason;
+      expect(decisionOf(denied.stdout).permissionDecision).toBe("deny");
+      expect(reason).toContain("crew report --question");
+      expect(reason).not.toContain("user park");
+    }
+    // An ordinary session still reads the park step.
+    const plain = await userAwayAnswer(
+      preToolUse("AskUserQuestion"),
+      "PreToolUse",
+      env,
+      paths,
+      T0,
+      OPTIONS,
+    );
+    expect(decisionOf(plain.stdout).permissionDecisionReason).toContain("user park");
+  });
+
+  test("two prompts of one tool for different targets are two items, each naming its target", async () => {
+    const { env, paths } = await away();
+    const ask = (tool: string, toolInput: Record<string, unknown>) =>
+      userAwayAnswer(
+        permissionRequest(tool, toolInput),
+        "PermissionRequest",
+        env,
+        paths,
+        T0,
+        OPTIONS,
+      );
+    await ask("WebFetch", { url: "https://example.com/a", prompt: "x" });
+    await ask("WebFetch", { url: "https://example.com/b", prompt: "x" });
+    await ask("Edit", { file_path: "/work/app/f.ts", old_string: "one", new_string: "two" });
+    await ask("Edit", { file_path: "/work/app/f.ts", old_string: "three", new_string: "four" });
+    const items = readAway(paths.stateDir).items;
+    expect(items).toHaveLength(4);
+    expect(items[0]?.text).toContain("https://example.com/a");
+    expect(items[1]?.text).toContain("https://example.com/b");
+    expect(items[2]?.text).toContain("/work/app/f.ts");
+    expect(items[2]?.text).toContain("two");
+    expect(items[3]?.text).toContain("four");
+    // The same call twice is still one item.
+    await ask("WebFetch", { url: "https://example.com/a", prompt: "x" });
+    expect(readAway(paths.stateDir).items).toHaveLength(4);
+  });
+
+  test("a crash on the events that ask nobody is one line on stderr, and on the question tools an ask", async () => {
+    const { env, paths } = await away();
+    const context = { env, paths, nowMs: T0 };
+    for (const event of ["PermissionRequest", "UserPromptSubmit"]) {
+      const result = userAwayHook.onCrash?.("boom", permissionRequest("Bash", {}), event, context);
+      expect(result?.stderr).toBe("cc-smart-dev-kit user-away: boom");
+      expect(result?.stdout).toBeUndefined();
+    }
+    const asked = userAwayHook.onCrash?.(
+      "boom",
+      preToolUse("AskUserQuestion"),
+      "PreToolUse",
+      context,
+    );
+    expect(decisionOf(asked?.stdout).permissionDecision).toBe("ask");
+  });
+
+  test("a permission prompt with a state file it cannot read: no answer, one line why", async () => {
+    const { env, paths } = await away();
+    writeFileSync(awayStateFile(paths.stateDir), "{ nope");
+    const result = await userAwayAnswer(
+      permissionRequest("Bash", { command: "make deploy" }),
+      "PermissionRequest",
+      env,
+      paths,
+      T0,
+      OPTIONS,
+    );
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
+  });
+
+  test("an ask that became a deny is on the person's list and not in the record of asks", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { protectedBranches: ["main"] });
+    const env = hookEnv();
+    const input = preToolUse("Bash", { command: "git push --force origin main" });
+    input.cwd = repo;
+    const log = askLogFile(cliPaths(env).stateDir);
+    const lines = () =>
+      existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+
+    await runHook(gitGuardHook, input, env);
+    expect(lines()).toHaveLength(1);
+
+    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
+    const denied = await runHook(gitGuardHook, input, env);
+    expect(decisionOf(denied.stdout).permissionDecision).toBe("deny");
+    expect(lines()).toHaveLength(1);
   });
 });

@@ -17645,9 +17645,10 @@ Commands:
   status [--json]
                  Whether they can answer, and how many items wait.
   park --kind <question|action|decision> "<text>" [--command "<command>"]
-       [--option "<option>"]... [--recommend <n>]
+       [--option "<option>"]... [--recommend <n>] [--crew <name>]
                  Put one item on the list. An action names its exact command, a question its
-                 options and the recommended one (counted from 1).
+                 options and the recommended one (counted from 1). --crew names the crew
+                 session the item is for, when a lead parks its crew session's question.
   list [--json]  The items, each with its exact command.
   clear <n>... | --all
                  Take answered items off the list.
@@ -17693,7 +17694,9 @@ function questionStep(when) {
 function planStep(when) {
   return `The person is unavailable${when}: the plan cannot be approved now. Park it with \`${COMMAND} user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${UNAVAILABLE_SKILL}.`;
 }
-function questionToolStep(tool, when) {
+function questionToolStep(tool, when, env) {
+  if (crewIdOf(env) !== null)
+    return CREW_QUESTION_STEP;
   return tool === "ExitPlanMode" ? planStep(when) : questionStep(when);
 }
 function parkedStep(when, item) {
@@ -17702,11 +17705,18 @@ function parkedStep(when, item) {
 function notParkedStep(when, why) {
   return `The person is unavailable${when}, so this was not asked, and it could not be parked (${why}): park it by hand with \`${COMMAND} user park --kind action "<what>" --command "<command>"\`, then go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
 }
+var TARGET_FIELDS = ["file_path", "notebook_path", "to", "url", "path", "pattern", "query"];
+var DETAIL_MAX = 300;
 function callLabel(input) {
   const tool = stringField(input.tool_name) ?? "a tool";
+  if (SHELL_TOOLS.includes(tool))
+    return tool;
   const args = toolInput(input);
-  const target = stringField(args.file_path) ?? stringField(args.notebook_path) ?? stringField(args.to);
-  return target === null ? tool : `${tool} ${target}`;
+  const field = TARGET_FIELDS.find((name) => stringField(args[name]) !== null);
+  const target = field === undefined ? null : maskedLine(stringField(args[field]) ?? "", [], DETAIL_MAX);
+  const rest = Object.fromEntries(Object.entries(args).filter(([name]) => name !== field));
+  const detail = Object.keys(rest).length === 0 ? "" : ` ${maskedLine(JSON.stringify(rest), [], DETAIL_MAX)}`;
+  return `${tool}${target === null ? "" : ` ${target}`}${detail}`;
 }
 function callCommand(input) {
   const tool = stringField(input.tool_name);
@@ -17753,7 +17763,7 @@ async function permissionAnswer(input, env, paths, nowMs, options) {
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
   if (AWAY_ASK_TOOLS.includes(tool)) {
-    return permissionDeny(questionToolStep(tool, when));
+    return permissionDeny(questionToolStep(tool, when, env));
   }
   const parked = await parkCall(input, env, paths, nowMs, `Claude Code's own permission prompt: ${callLabel(input)}`);
   if (parked.ok)
@@ -17805,7 +17815,7 @@ async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
       const state = readAway(paths.stateDir);
       if (!state.unavailable)
         return SILENT;
-      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options)));
+      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options), env));
     }
     if (event === "PermissionRequest")
       return await permissionAnswer(input, env, paths, nowMs, options);
@@ -24797,9 +24807,9 @@ function seenClaudeModels(ctx) {
   const state = parseLimitState(text);
   return Object.keys(state?.seenClaude ?? {}).filter((id) => isClaudeModelId(id)).sort();
 }
-var DETAIL_MAX = 300;
+var DETAIL_MAX2 = 300;
 function shownDetail(text, keys) {
-  return maskedLine(redactUrlsIn(text), keys, DETAIL_MAX);
+  return maskedLine(redactUrlsIn(text), keys, DETAIL_MAX2);
 }
 async function backendRows(ctx, config) {
   const rows = [];
@@ -35496,7 +35506,7 @@ var userAwayHook = {
   alwaysOn: true,
   onConfigProblem: (_message, input, event, _checkout, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   outsideGit: (input, event, _why, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  onCrash: guardCrash("whether the person is available", inAwayDomain),
+  onCrash: (why, input, event, context) => event === "PermissionRequest" || event === "UserPromptSubmit" ? { stderr: `cc-smart-dev-kit user-away: ${why}` } : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
   run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs)
 };
 var agentGuardHook = {

@@ -29,20 +29,26 @@ Say it in a few lines: what shipped, what failed, what waits.
 
 ## 3. The list
 
-`cc-smart-dev-kit user list --json`: each item has `id`, `kind`, `text`, `command`, `options`,
-`recommend` (counted from 1), `session`, `crew` and `at`. Three kinds, in this order:
+`cc-smart-dev-kit user list --json`: each item has `id`, `kind`, `text`, `command`, `cwd` (the
+folder an action was parked in), `options`, `recommend` (counted from 1), `session`, `crew` and
+`at`. The text view of `user list` is for reading: it shows some control characters as spaces
+(it says so), so a command is taken from the JSON, never copied from the text. Three kinds, in
+this order:
 
 1. **Decisions** (taken for the person): show what was chosen, why and how to undo it. Ask keep or
    undo, one question each, `keep` first, in `AskUserQuestion` calls of at most four. An undo is
    done as the decision's own words say, then the item is cleared.
 2. **Questions:** one `AskUserQuestion` call (more than four: the next call), each item's `text`
-   as the question and its `options` in order, **the recommended one first and marked**. Act on
-   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`). A question a crew session
-   asked (`crew` is set): `cc-smart-dev-kit crew answer <name> "<the answer>"`.
-3. **Actions:** show each with its `text` and its exact `command`, and ask yes or no. A yes runs
-   that command, as it is; it is that action's yes and no other's. Check first that it still makes
-   sense (the branch moved, the pull request merged). A command whose `text` says it was cut, or
-   that has no `command`, is not runnable as it stands: do it from its words, or ask.
+   as the question and its `options` in order, **the recommended one first and marked**. The tool
+   takes two to four options a question: with more, keep the recommended one and the likeliest,
+   and say the rest in the question; with none or one, put it as the plain question it is. Act on
+   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`). A question for a crew
+   session (`crew` is set): `cc-smart-dev-kit crew answer <name> "<the answer>"`.
+3. **Actions:** show each with its `text`, its `cwd` and its exact `command`, and ask yes or no. A
+   yes runs that command, as it is, in its `cwd` (a push or a delete in another folder is another
+   action); it is that action's yes and no other's. Check first that it still makes sense (the
+   branch moved, the pull request merged). A command whose `text` says it was cut, or that has no
+   `command`, is not runnable as it stands: do it from its words, or ask.
 
 ## 4. Clear what was answered
 

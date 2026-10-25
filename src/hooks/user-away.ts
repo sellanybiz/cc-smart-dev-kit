@@ -33,7 +33,7 @@
 
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { crewIdOf } from "../crew/session";
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { formatClock } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
 import {
@@ -110,7 +110,13 @@ function planStep(when: string): string {
   return `The person is unavailable${when}: the plan cannot be approved now. Park it with \`${COMMAND} user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${UNAVAILABLE_SKILL}.`;
 }
 
-function questionToolStep(tool: string, when: string): string {
+/**
+ * What a denied question tool reads. A crew session reads its own step (its lead takes the
+ * question, and the lead parks what is the person's); `crew-role` denies the same call with the
+ * same step, so the two reasons agree. Any other session parks the question itself.
+ */
+function questionToolStep(tool: string, when: string, env: Env): string {
+  if (crewIdOf(env) !== null) return CREW_QUESTION_STEP;
   return tool === "ExitPlanMode" ? planStep(when) : questionStep(when);
 }
 
@@ -124,13 +130,31 @@ function notParkedStep(when: string, why: string): string {
   return `The person is unavailable${when}, so this was not asked, and it could not be parked (${why}): park it by hand with \`${COMMAND} user park --kind action "<what>" --command "<command>"\`, then go on with work that does not need it. The rules: ${UNAVAILABLE_SKILL}.`;
 }
 
-/** The tool and what it works on: `Bash`, `Write /etc/hosts`, `SendMessage lead`. */
+/** The fields that name what a call works on, in the order a person would look for them. */
+const TARGET_FIELDS = ["file_path", "notebook_path", "to", "url", "path", "pattern", "query"];
+
+/** The longest piece of a call's other arguments a parked item keeps. */
+const DETAIL_MAX = 300;
+
+/**
+ * The tool and what it works on: `Bash`, `Write /etc/hosts {"content":"…"}`, `WebFetch
+ * https://example.com {"prompt":"…"}`. A shell call is its `command`, kept whole on the item, so
+ * its label is the tool alone. Any other call keeps its target and a short, masked piece of its
+ * other arguments: two calls of one tool at different targets are two things for the person to
+ * answer, and the item says which is which.
+ */
 function callLabel(input: HookInput): string {
   const tool = stringField(input.tool_name) ?? "a tool";
+  if (SHELL_TOOLS.includes(tool)) return tool;
   const args = toolInput(input);
+  const field = TARGET_FIELDS.find((name) => stringField(args[name]) !== null);
+  // A target may carry a secret too (a URL with a token in its query), so it is masked like the rest.
   const target =
-    stringField(args.file_path) ?? stringField(args.notebook_path) ?? stringField(args.to);
-  return target === null ? tool : `${tool} ${target}`;
+    field === undefined ? null : maskedLine(stringField(args[field]) ?? "", [], DETAIL_MAX);
+  const rest = Object.fromEntries(Object.entries(args).filter(([name]) => name !== field));
+  const detail =
+    Object.keys(rest).length === 0 ? "" : ` ${maskedLine(JSON.stringify(rest), [], DETAIL_MAX)}`;
+  return `${tool}${target === null ? "" : ` ${target}`}${detail}`;
 }
 
 /** The exact command of a shell call; null for any other tool. */
@@ -204,7 +228,7 @@ async function permissionAnswer(
   // The two tools that ask are denied by their PreToolUse answer first; Claude Code's prompt for
   // one, if it ever gets here, reads the same step and parks nothing: the session parks it.
   if ((AWAY_ASK_TOOLS as readonly string[]).includes(tool)) {
-    return permissionDeny(questionToolStep(tool, when));
+    return permissionDeny(questionToolStep(tool, when, env));
   }
   const parked = await parkCall(
     input,
@@ -292,7 +316,7 @@ export async function userAwayAnswer(
       if (tool === null || !(AWAY_ASK_TOOLS as readonly string[]).includes(tool)) return SILENT;
       const state = readAway(paths.stateDir);
       if (!state.unavailable) return SILENT;
-      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options)));
+      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options), env));
     }
     if (event === "PermissionRequest")
       return await permissionAnswer(input, env, paths, nowMs, options);

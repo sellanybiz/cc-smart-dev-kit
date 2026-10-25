@@ -628,8 +628,9 @@ hold the line, and the sessions **park** what needs the person on a list instead
 (`/cc-smart-dev-kit:user-unavailable`); `/cc-smart-dev-kit:user-available` goes through it when
 they are back.
 
-**The state, one home** (`src/user-away/state.ts`). One file, `<stateDir>/user-away/state.json`,
-mode 0600, written whole through the kit's atomic write, under the folder's **own** lock (not
+**The state, one home** (`src/user-away/state.ts`). One file, `<stateDir>/user-away/state.json`
+(the kit's state folder: the machine's `~/.claude/cc-smart-dev-kit/` unless Claude Code runs on
+another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailable`), mode 0600, written whole through the kit's atomic write, under the folder's **own** lock (not
 setup's: a hook that parks must never wait for a setup run) so two sessions that park at once
 both keep their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the
 `items`, `nextId` (an id is never reused) and `said` (the note each session heard). `until` is
@@ -654,8 +655,13 @@ where there was a question, never an allow.
 - **`PermissionRequest`, Claude Code's own prompt** (a hook event of 2.1.310; its decision is
   `{"behavior":"deny","message":…}`, `docs/claude-code-contract.md` § Hooks): denied with the
   step, and the call parked as an `action` with its exact command. This is the answer for every
-  prompt Claude Code raises itself, and for a project's own copy of a guard (`ownHooks`), which
-  the frame never runs.
+  prompt Claude Code raises itself. It should also catch the prompt that follows a project's own
+  copy of a guard (`ownHooks`), which the frame never runs — **not proved**: the contract row
+  proves Claude Code's own prompt on `claude -p`, nothing about an own copy. A call that is no
+  shell command keeps its target and a short, masked piece of its other arguments in the item's
+  words (`WebFetch <url> {"prompt":…}`, `Edit <file> {"old_string":…}`), so two prompts of one tool
+  at different targets are two items, and a session denied the same call again is told the
+  same number. A shell call is its `command`, kept whole.
 - **A kit guard that would ask** — the frame's step 6, for every hook, so a new guard needs
   nothing: the ask becomes a deny that keeps the guard's own words and adds "parked as #N", and
   the call is parked as an `action`. A deny, an allow and silence pass through unchanged. A park
@@ -682,15 +688,26 @@ tools like any guard; on the other events it says one line on stderr and the ses
 what it would have been without this feature: the question or the ask goes to the person as it
 always did.
 
-**Crew sessions** never ask the person (§ Lead and the crew): `crew-role` refuses the two
-question tools with the `crew report --question` step first, and a crew session's prompt gets the
-once-per-change note only. A permission prompt in a crew session while the person is away is
-denied and parked with the crew session's name, so its lead knows what waits.
+**Crew sessions** never ask the person (§ Lead and the crew): `crew-role` and `user-away` both
+deny the two question tools in a crew session, and both give the same step (`crew report
+--question`, `CREW_QUESTION_STEP`), so the two reasons agree: the lead takes the question and
+parks what is the person's. A crew session's prompt gets the once-per-change note only. A
+permission prompt in a crew session while the person is away is denied and parked with the crew
+session's name, so its lead knows what waits; a lead parks its crew session's question with
+`park --crew <name>`, so `user-available` sends the answer back to that crew session.
+
+**The notifier stays quiet for a denied question.** `notify` raises "Claude asks you" on
+`AskUserQuestion` and `ExitPlanMode`; while the person is away those calls are denied and nothing
+waits for them, so it raises no alert (a state it cannot read keeps the alert).
 
 **What it cannot reach.** A project's own copy of a guard (`ownHooks`) answers in Claude Code
 directly: only the prompt Claude Code then raises is caught, by the `PermissionRequest` answer.
 The shim's `--missing=ask` (no bun at all) cannot read any state, so there the ask goes to the
-person. `PermissionRequest` is proved live on `claude -p` only — an interactive and a `--bg`
+person. A session that started before the update carries an older plugin version with none of this
+(no step 6, no `PermissionRequest` entry), and `user unavailable` still succeeds for it: restart it.
+In Claude Code's default permission mode a session's own `user park` call is a command that asks, so
+it is denied and parked like any other; the person allows `Bash(cc-smart-dev-kit user park:*)`
+once (the hook cannot allow it: it answers only with a deny). `PermissionRequest` is proved live on `claude -p` only — an interactive and a `--bg`
 session are owed — and `AskUserQuestion` does not exist in `claude -p`, so its PreToolUse deny is
 proved by the hook's tests alone. **It stops mistakes, not a session set on getting past it:**
 `user available` is the person's command, run through `/cc-smart-dev-kit:user-available`, and

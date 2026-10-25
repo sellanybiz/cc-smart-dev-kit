@@ -186,9 +186,10 @@ function runStatus(args: string[], ctx: UserContext): number {
   if (stray !== null) return stray;
   const state = readAway(ctx.paths.stateDir);
   if (parsed.flags.has("--json")) {
+    // No `items`: a status answers "can they answer, and how many wait". The words and commands
+    // are `list`'s, read on purpose: a command may hold a secret, and a status is asked often.
     ctx.out.json({
       counts: countsOf(state.items),
-      items: state.items,
       since: state.since,
       unavailable: state.unavailable,
       until: state.until,
@@ -237,15 +238,25 @@ function runList(args: string[], ctx: UserContext): number {
   for (const item of items) {
     ctx.out.heading(`#${String(item.id)} ${item.kind} · ${whoText(ctx, item)}`);
     ctx.out.say(plainText(item.text), 3);
+    // An action runs where the session that parked it stood: a branch, a build folder.
+    if (item.kind === "action" && item.cwd !== "") ctx.out.say(`in ${plainText(item.cwd)}`, 3);
     for (const [index, option] of item.options.entries()) {
       const mark = item.recommend === index + 1 ? " (recommended)" : "";
       ctx.out.say(`${String(index + 1)}. ${plainText(option)}${mark}`, 3);
     }
     if (item.command !== null) {
       // A command is printed as it is, line by line: wrapped, it would not copy whole.
-      const lines = plainText(item.command, { keepNewlines: true }).split("\n");
-      for (const [index, line] of lines.entries())
+      const shown = plainText(item.command, { keepNewlines: true });
+      for (const [index, line] of shown.split("\n").entries())
         ctx.print(`   ${index === 0 ? "$ " : "  "}${line}`);
+      // A terminal would obey a control character, so the view turned some into spaces: the
+      // exact command is in the JSON, and a person who runs it from here must know.
+      if (shown !== item.command) {
+        ctx.out.say(
+          `This view changed some characters of the command (control characters): ${COMMAND} user list --json holds it exact.`,
+          3,
+        );
+      }
     }
   }
   return 0;
@@ -260,7 +271,7 @@ const KIND_WORDS: Record<ParkKind, string> = {
 async function runPark(args: string[], ctx: UserContext): Promise<number> {
   const parsed = parseOptions(
     args,
-    ["--kind", "--command", "--option", "--recommend"],
+    ["--kind", "--command", "--option", "--recommend", "--crew"],
     [],
     ["--option"],
   );
@@ -278,7 +289,19 @@ async function runPark(args: string[], ctx: UserContext): Promise<number> {
     return usageProblem(ctx, "What is parked takes one text: put the words in quotes");
   }
   const text = parsed.positionals[0] ?? "";
+  if (text.trim() === "") {
+    return usageProblem(ctx, 'What is parked needs its words: park --kind <kind> "<text>"');
+  }
   const command = parsed.options.get("--command") ?? null;
+  if (command !== null && command.trim() === "") {
+    return usageProblem(ctx, "--command needs the exact command the person's yes runs");
+  }
+  // The crew session an item is for: a lead parks its crew session's question, so the answer
+  // goes back to that crew session (`user-available`). Without it, the session that parks.
+  const crewOption = parsed.options.get("--crew");
+  if (crewOption !== undefined && crewOption.trim() === "") {
+    return usageProblem(ctx, "--crew needs a crew session's name");
+  }
   if (command !== null && parkKind !== "action") {
     return usageProblem(ctx, "--command is for an action: the exact command the person's yes runs");
   }
@@ -303,7 +326,7 @@ async function runPark(args: string[], ctx: UserContext): Promise<number> {
   }
   const draft: ParkDraft = {
     command,
-    crew: crewIdOf(ctx.env) ?? "",
+    crew: crewOption?.trim() ?? crewIdOf(ctx.env) ?? "",
     cwd: ctx.cwd,
     kind: parkKind,
     options,

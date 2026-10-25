@@ -1,6 +1,6 @@
 ---
 name: user-unavailable
-description: Use when a hook note or `cc-smart-dev-kit user status` says the person cannot answer. Never stop to ask - park their questions and the actions that need their yes, and go on.
+description: Use when the person says they are away, or a hook note or `cc-smart-dev-kit user status` says they cannot answer. Never stop to ask - park their questions and the actions that need their yes, and go on.
 ---
 
 # While The Person Cannot Answer
@@ -12,6 +12,19 @@ The person is away: asleep, in a meeting, or on a phone. A question or a permiss
 stops the work for hours and nobody reads it. So you **park** what needs them on a list, and go
 on. They answer the list when they are back, with `/cc-smart-dev-kit:user-available`.
 `cc-smart-dev-kit user status` says whether this is on, and since when.
+
+## 0. Switch it on, once
+
+The hooks act only on the state, so the person's words are not enough. When the person invoked
+this skill, or said they are going away, and `cc-smart-dev-kit user status` says they are still
+available, run `cc-smart-dev-kit user unavailable [--until <time>]` first, with the time from
+their words (`8h`, `07:30`; `--until` is a note, it never switches back). Already unavailable:
+do not run it again, it would drop the time the person gave. A session that reads this skill
+because a hook note told it only follows the rules below.
+
+In Claude Code's default permission mode, a session's own `cc-smart-dev-kit user park` call is a
+command that asks, so it would be denied and parked as an action. Tell the person once, in one
+line, to allow `Bash(cc-smart-dev-kit user park:*)` if their sessions run in that mode.
 
 ## 1. The rule
 
@@ -44,8 +57,8 @@ When unsure whether a choice is easy to undo, it is the person's: park a `questi
   `action` itself ("parked as #N"). Do not park it a second time, and never run it another way
   (another shell, a script, a wrapper, another tool): a deny is the person's line, not a bug.
 - Claude Code's own permission prompt gets the same answer, where its hook is live. Where it is
-  not, a prompt waits for nobody. So prefer tools that never prompt: reads, searches, and edits
-  inside your own worktree. Park the rest as an `action`.
+  not, a prompt waits for nobody. So prefer tools that never prompt: reads and searches, and the
+  edits and commands your permission mode allows without asking. Park the rest as an `action`.
 - A project's own copy of a guard (`ownHooks`) answers in Claude Code directly, so only its
   resulting prompt is caught.
 
@@ -62,9 +75,9 @@ questions.
 
 - **Technical questions** of a crew session: answer them, as always (`lead` § 5).
 - **A question that is the person's:** park it as a `question` with the crew session's options
-  and its recommended one, then `cc-smart-dev-kit crew answer <name> "parked for the person as
-  #N: go on with what it does not block"`. A crew session's own channel is not a message that needs
-  the person's yes.
+  and its recommended one, and `--crew <name>` so the answer goes back to that crew session, then
+  `cc-smart-dev-kit crew answer <name> "parked for the person as #N: go on with what it does not
+  block"`. A crew session's own channel is not a message that needs the person's yes.
 - **A permission prompt in a crew session** is denied and parked by the hook, with the crew
   session's name. Do not wait on it: start what is unblocked.
 - **Start what is unblocked, and merge what passed its gate** into your own branch. A push, a pull

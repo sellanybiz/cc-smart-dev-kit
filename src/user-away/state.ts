@@ -1,14 +1,15 @@
 /**
- * Whether the person can answer, and what waits for them: one file for the machine,
- * `<stateDir>/user-away/state.json`.
+ * Whether the person can answer, and what waits for them: one file per kit state folder,
+ * `<stateDir>/user-away/state.json` (`$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/`, the machine's
+ * `~/.claude/cc-smart-dev-kit/` unless the person runs Claude Code on another config folder).
  *
  * WHY ONE FILE, AND WHY HERE
  *   The person may be asleep, in a meeting or on a phone. While they cannot answer, a question
  *   or a permission prompt only stops the work. So a session reads this file to know the person is
  *   away, and **parks** what needs them — a question, an action a guard would not let through, a
  *   decision it took itself — in the list this file holds. The person goes through the list when
- *   they are back. The state is the machine's, not a project's: the person is one, so every
- *   project and every session sees the same answer.
+ *   they are back. The state is the person's, not a project's: the person is one, so every
+ *   project and every session that shares the state folder sees the same answer.
  *
  * WHAT IT HOLDS
  *   `unavailable`/`since`/`until` (the expected return, for the note only: it never switches the

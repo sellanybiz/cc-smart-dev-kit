@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { createOut, textSink } from "../cli/ui/out";
 import { detectTerminal } from "../cli/ui/terminal";
+import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { runUser, type UserContext } from "./command";
 import { readAway } from "./state";
@@ -134,7 +136,9 @@ describe("user unavailable, status, available", () => {
     expect(data.unavailable).toBe(true);
     expect(data.since).toBe("2026-10-25T01:00:00.000Z");
     expect(data.counts).toEqual({ action: 0, decision: 1, question: 0 });
-    expect(data.items[0].text).toBe("Chose A. Undo: revert it.");
+    // The parked words and commands are read with `list`; a status line must not carry them into
+    // whichever session asks for the time (a command may hold a secret).
+    expect(data.items).toBeUndefined();
     expect(data.said).toBeUndefined();
   });
 });
@@ -215,6 +219,19 @@ describe("user park", () => {
     ).toEqual(["one", "two"]);
   });
 
+  test("--crew names the crew session an item is for, over the session that parks it", async () => {
+    const own = await user(["park", "--kind", "question", "Which name?", "--crew", "UA1-x-2"]);
+    expect(stateOf(own).items[0]?.crew).toBe("UA1-x-2");
+    const over = await user(["park", "--kind", "question", "Which name?", "--crew", "UA1-x-2"], {
+      env: { CC_SMART_DEV_KIT_CREW: "UA1-x-1" },
+    });
+    expect(stateOf(over).items[0]?.crew).toBe("UA1-x-2");
+    const none = await user(["park", "--kind", "question", "Which name?"], {
+      env: { CC_SMART_DEV_KIT_CREW: "UA1-x-1" },
+    });
+    expect(stateOf(none).items[0]?.crew).toBe("UA1-x-1");
+  });
+
   test("the same action parked again says it is already parked", async () => {
     const home = tempDir("user-cmd");
     await user(["park", "--kind", "action", "push", "--command", "git push"], { home });
@@ -229,6 +246,12 @@ describe("user park", () => {
     [["park", "Which name?"], "--kind is required"],
     [["park", "--kind", "idea", "x"], "--kind is question, action or decision"],
     [["park", "--kind", "question"], "What is parked needs its words"],
+    [["park", "--kind", "question", ""], "What is parked needs its words"],
+    [["park", "--kind", "decision", "   "], "What is parked needs its words"],
+    [["park", "--kind", "action", "x", "--command", ""], "--command needs a value"],
+    [["park", "--kind", "action", "x", "--command", "  "], "--command needs the exact command"],
+    [["park", "--kind", "question", "x", "--crew", ""], "--crew needs a value"],
+    [["park", "--kind", "question", "x", "--crew", "  "], "--crew needs a crew session's name"],
     [["park", "--kind", "question", "a", "b"], "What is parked takes one text"],
     [["park", "--kind", "question", "x", "--command", "ls"], "--command is for an action"],
     [
@@ -286,6 +309,7 @@ describe("user list and clear", () => {
         "   2. beta (recommended)",
         "#2 action · 01:01",
         "   Push the branch",
+        "   in /work/app",
         "   $ git push origin x",
         "",
       ].join("\n"),
@@ -311,6 +335,20 @@ describe("user list and clear", () => {
     const run = await user(["list"], { home });
     expect(run.out).not.toContain("\u001b");
     expect(run.out).not.toContain("\u0007");
+  });
+
+  test("a command the view had to change says so, and list --json still holds it exact", async () => {
+    const home = tempDir("user-cmd");
+    // A tab and a line break stay in the view; a carriage return or an escape do not.
+    const command = "printf 'a\tb'\r\nls";
+    await user(["park", "--kind", "action", "Print a line", "--command", command], { home });
+    const view = await user(["list"], { home });
+    expect(view.out).toContain("list --json");
+    expect(view.out).toContain("changed");
+    expect(JSON.parse((await user(["list", "--json"], { home })).out)[0].command).toBe(command);
+    // A plain command needs no such line.
+    const plain = await seeded();
+    expect((await user(["list"], { home: plain })).out).not.toContain("list --json");
   });
 
   test("clear takes the named items out; a missing id is an error and removes nothing", async () => {
@@ -375,4 +413,48 @@ describe("the command line", () => {
     expect(run.code).toBe(1);
     expect(run.err).toContain("is not a state file");
   });
+});
+
+describe("sessions that park at once, each in its own process", () => {
+  // The in-process test above shares one event loop, so it cannot tell whether the lock is there:
+  // a read-change-write with no await in it never interleaves. Separate processes do.
+  test("every park is kept, with its own number", async () => {
+    const home = tempDir("user-cmd");
+    const guard = subprocessGuard();
+    const entry = join(import.meta.dir, "..", "entries", "cli.ts");
+    const count = 8;
+    const runs = Array.from({ length: count }, (_, index) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          ...guard.args,
+          entry,
+          "user",
+          "park",
+          "--kind",
+          "question",
+          `question ${String(index)}`,
+        ],
+        {
+          env: {
+            ...guard.env,
+            CLAUDE_CONFIG_DIR: `${home}/.claude`,
+            HOME: home,
+            PATH: process.env.PATH ?? "",
+          },
+          stderr: "pipe",
+          stdout: "pipe",
+        },
+      ),
+    );
+    const codes = await Promise.all(runs.map((run) => run.exited));
+    expect(codes).toEqual(Array.from({ length: count }, () => 0));
+    const items = readAway(
+      cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: `${home}/.claude` }).stateDir,
+    ).items;
+    expect(items.map((item) => item.text).sort()).toEqual(
+      Array.from({ length: count }, (_, index) => `question ${String(index)}`).sort(),
+    );
+    expect(new Set(items.map((item) => item.id)).size).toBe(count);
+  }, 60_000);
 });

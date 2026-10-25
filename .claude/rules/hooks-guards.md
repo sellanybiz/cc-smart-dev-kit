@@ -144,7 +144,8 @@ live: after a `cd`, the rewritten command ran in the new folder, not in the hook
 
 ## While the person is away
 
-`cc-smart-dev-kit user unavailable` sets one state for the machine (`src/user-away/state.ts`).
+`cc-smart-dev-kit user unavailable` sets one state per kit state folder (`src/user-away/state.ts`:
+the machine's, unless Claude Code runs on another `CLAUDE_CONFIG_DIR`).
 While it is on, nobody reads a question, so no hook may leave one open. The design is
 `docs/design/hooks.md` § While the person is away; this is what every hook owes it:
 

@@ -492,7 +492,13 @@ export const userAwayHook: HookSpec = {
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   outsideGit: (input, event, _why, context) =>
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  onCrash: guardCrash("whether the person is available", inAwayDomain),
+  // The two tools that ask the person are a guard's domain: a crash asks about them, as any guard
+  // does. On the other two events there is no call to ask about; the crash is one line on stderr,
+  // and Claude Code's own prompt, or the prompt's text, goes on as it would without this hook.
+  onCrash: (why, input, event, context) =>
+    event === "PermissionRequest" || event === "UserPromptSubmit"
+      ? { stderr: `cc-smart-dev-kit user-away: ${why}` }
+      : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
   run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs),
 };
 
