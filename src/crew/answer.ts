@@ -53,6 +53,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
+import { actorOfCaller } from "./runs-actor";
 import {
   ANSWER_BEAT_STALE_MS,
   answerCrewQuestion,
@@ -268,6 +269,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       session,
       // A resume carries the answer as its prompt: that is its delivery.
       { correction: correcting, delivered: session !== null },
+      actorOfCaller(ctx, repo),
     );
   } catch (error) {
     // A copy that runs while the record still names the old session: the line names the copy.

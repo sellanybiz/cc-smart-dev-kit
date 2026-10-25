@@ -40,7 +40,11 @@ the work) is an ordinary session's rule. A lead follows this section instead.
   the person's asks and your open work — each phase to start, each question to answer, each
   branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
   so it never goes stale unseen; you are never held back by it.
-- **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
+- **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug> --plan-file <plan file>`.
+  The plan file is the one the plan-task skill wrote; its folder, beside it, holds the briefs and the
+  record of each crew run (§ 3). Leave the flag out only when the plan is the one file
+  `<plans dir>/*-<plan slug>.md`: the first line it prints says which file it took, or that it found
+  none. It
   names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
   itself (no setting; it replaces the name the session had, and a name the person gives it
   with `/rename` after that stays), so there is nothing for the person to type. Only a session
@@ -74,7 +78,7 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 ## 3. Start each phase
 
 ```sh
-cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
+cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   --files <glob,...> [--effort <effort>] [--waits-for <phase,...>] [--base <ref>]
 ```
 
@@ -112,7 +116,12 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 
-**The brief** is a file (`--brief <file>`, or `-` for stdin). `crew start` adds a frame after
+**The brief** is a file in the plan's own folder: `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`,
+beside the plan file `<plans dir>/<plan stem>.md` and named as the crew branch `crew/<PHASE>-<slug>`.
+Write it there before the start; `crew start` with no `--brief` takes it and its first line says
+which file (none there: refused, with the path). `--brief <file>`, or `-` for stdin, still names
+another. The folder is the plan's, never one per lead: the plan outlives its leads. `crew start` adds
+a frame after
 it — who the crew session is, its worktree and branch, the git rule, how it reports and asks — so the
 brief carries only the phase:
 
@@ -218,6 +227,10 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
 5. **In the same turn,** check that the watch started the phases that waited for this merge,
    and start any phase it unblocked that was never started (§ 3).
 
+**The kit records the run itself**: the merge (its commit, and the lead session that made it) and the
+removal go into `<plan folder>/runs/<crew id>.json` with the sessions, pauses and times. Never write or
+edit a run file by hand, and never delete one; `cc-smart-dev-kit crew history` reads them.
+
 **Read the diff only when something does not add up** — a red line in the report, a file
 outside the brief, a failed check after the merge, a report that contradicts itself — and then
 only the part that does not.
@@ -266,7 +279,10 @@ again is too big: split what is left.
 
 ## 9. Restart and compaction
 
-The plan file and the crew store hold the state, not your context. After a compaction: read
+The plan file and the crew store hold the state, not your context. **The record of each run
+survives a restart, a new lead and `crew rm`**: `<plan folder>/runs/<crew id>.json` keeps the
+session ids, the times and who answered, merged and removed; `cc-smart-dev-kit crew history`
+reads it. Commit the plan's folder with the plan. After a compaction: read
 the plan, then one `crew list`. After this session restarts: the same, and run this skill
 again so its monitor runs. After the machine restarts: `cc-smart-dev-kit crew resume <name>`
 for each stopped crew session — never `claude respawn --all`, never `claude daemon stop`.

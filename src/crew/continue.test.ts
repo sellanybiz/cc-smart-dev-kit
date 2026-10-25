@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
@@ -26,7 +26,7 @@ const NAME = "C my-app B6b portal-live";
 const NEXT = { randomSuffix: () => "9f8e7d" };
 
 /** A world with a lead and one crew session that handed off, owning `files`. */
-async function handoffWorld(files: string[] = []) {
+async function handoffWorld(files: string[] = [], planFile?: string) {
   const world = crewWorld();
   await writeLead(
     world.paths.stateDir,
@@ -62,6 +62,7 @@ async function handoffWorld(files: string[] = []) {
       permissionMode: "auto",
       phase: "B6b",
       plan: "master-plan",
+      ...(planFile === undefined ? {} : { planFile }),
       pr: null,
       questions: [],
       repo: world.repo,
@@ -541,5 +542,38 @@ describe("NM1: a continuation keeps the commit it starts from", () => {
     );
     expect(after?.state).toBe("starting");
     expect(after?.base).toEqual({ ref: "crew/B6b-portal-live", sha: world.head });
+  });
+});
+
+describe("IN1: a continuation's run record keeps the commit it starts from", () => {
+  test("the run is linked both ways, has no base while it queues, and takes the pinned commit when it starts", async () => {
+    const plans = join(tempDir("plans"), "2026-10-21-master-plan.md");
+    writeFileSync(plans, "# the plan\n");
+    const world = await handoffWorld([], plans);
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { waitsFor: ["Z9"] }, T0);
+    expect(await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT))).toBe(0);
+    const next = crewNamed(
+      listCrew(world.paths.stateDir, world.repo).records,
+      "C my-app master-plan B6b portal-live 2",
+    ) as CrewRecord;
+    expect(next.state).toBe("queued");
+    const runsFolder = join(dirname(plans), "2026-10-21-master-plan", "runs");
+    const runOf = (id: string) => JSON.parse(readFileSync(join(runsFolder, `${id}.json`), "utf8"));
+    // Queued: it continues the old run, which names it back, and it has no start commit yet.
+    expect(runOf(next.id)).toMatchObject({ base: null, continues: ID, state: "queued" });
+    expect(runOf(ID).continuedBy).toBe(next.id);
+    // The old branch goes; the continuation starts from the commit it pinned, and its run says so.
+    expect(await runCrew(["rm", ID], world.ctx())).toBe(0);
+    await updateCrew(world.paths.stateDir, world.repo, next.id, { waitsFor: [] }, T0);
+    const { startQueued } = await import("./start");
+    const { defaultResolved } = await import("../testing/fake-workflow");
+    await startQueued({ ...next, waitsFor: [] }, world.ctx(NEXT), defaultResolved());
+    expect(runOf(next.id)).toMatchObject({
+      base: { ref: "crew/B6b-portal-live", sha: world.head },
+      baseRef: "crew/B6b-portal-live",
+      continues: ID,
+      state: "starting",
+    });
   });
 });

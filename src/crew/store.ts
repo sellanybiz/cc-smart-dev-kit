@@ -58,6 +58,7 @@ import { FALLBACK_STALE_MS, holderIsGone, type ProcessHolder, withLock } from ".
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
+import { type RunActor, type RunChange, recordRun, recordRunNote } from "./runs";
 
 /** The schema version this kit writes. A record may carry a higher one: read it all the same. */
 export const CREW_STORE_VERSION = 1;
@@ -549,6 +550,14 @@ const crewFields = z.object({
       indexArchived: text,
     })
     .optional(),
+  /**
+   * The plan file the phase belongs to (the lead record's `planFile`, copied when the run starts,
+   * PL1): its folder holds the run's record, which lasts after `crew rm`. Absent on a record an
+   * older kit wrote, and null when no plan file was known: that run is not recorded.
+   */
+  planFile: text.nullable().optional(),
+  /** The brief the run started from: its path (null for stdin) and the sha-256 of its text. */
+  briefSource: z.looseObject({ path: z.string().nullable(), sha256: text }).optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -579,6 +588,11 @@ const leadFields = z.object({
   tag: text,
   /** The folder the lead works in. */
   cwd: text,
+  /**
+   * The plan's file (`crew lead --plan-file`), absolute: its folder beside it holds the plan's
+   * briefs and the record of each crew run (PL1). Absent when none was known.
+   */
+  planFile: text.nullable().optional(),
   /** The plan ended; absent on leads recorded before this field existed. */
   endedAt: text.nullable().optional(),
   /** First successful agent-view read that did not know this lead; cleared when it returns. */
@@ -811,6 +825,36 @@ function appendEvent(stateDir: string, repo: string, event: CrewEvent): void {
   appendFileSync(file, `${JSON.stringify(line)}\n`, { mode: 0o600 });
 }
 
+/**
+ * Says a run record could not be written (PL1): the change it follows is already in the store,
+ * so the write is not undone, and the person reads one line. A test hands in its own.
+ */
+let reportRunFailure: (line: string) => void = (line) => {
+  process.stderr.write(`${line}\n`);
+};
+
+/** Replaces the run-record failure line's writer; returns the one it replaced. */
+export function setRunFailureWriter(write: (line: string) => void): (line: string) => void {
+  const old = reportRunFailure;
+  reportRunFailure = write;
+  return old;
+}
+
+/**
+ * The run record of a change (`runs.ts`), written under the same hold of the store's lock as the
+ * change and its event. **A run record that cannot be written never undoes the change**: it is
+ * said in one line, and the store goes on (the events log still holds the change).
+ */
+function recordRunOf(change: RunChange): void {
+  try {
+    recordRun(change);
+  } catch (error) {
+    reportRunFailure(
+      `crew: the run record of ${change.after.name} was not written: ${reasonOf(error)}`,
+    );
+  }
+}
+
 /** Runs `write` holding the repository's store lock (its folder made 0700 first). */
 async function underStoreLock<T>(stateDir: string, repo: string, write: () => T): Promise<T> {
   const folder = crewStoreDir(stateDir, repo);
@@ -890,6 +934,7 @@ export async function createCrew(
     }
     writeJsonFile(file, record);
     appendEvent(stateDir, crew.repo, eventOf(record, at, "created", null));
+    recordRunOf({ after: record, at, before: null });
     return record;
   });
 }
@@ -911,12 +956,20 @@ export async function updateCrew(
   atMs: number,
   text: null | string = null,
   memoryMb: null | number = null,
+  by: RunActor | null = null,
 ): Promise<CrewRecord> {
-  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
-    change,
-    event: (after) =>
-      after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
-  }));
+  const { record } = await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => ({
+      change,
+      event: (after) =>
+        after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
+    }),
+    by,
+  );
   return record;
 }
 
@@ -1011,70 +1064,80 @@ export async function answerCrewQuestion(
   resumes: null | CrewState = null,
   session: null | { sessionId: string; shortId: string } = null,
   how: AnswerHow = {},
+  by: RunActor | null = null,
 ): Promise<CrewRecord> {
-  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
-    const asked = before.questions[index];
-    if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
-    // A superseded question has no answer, so this comes first: a correction to it would
-    // otherwise say "no answer to correct", and the line that names the newest is the useful one.
-    if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
-      // Follow the pointers to the newest: a superseded question points at the one that replaced it.
-      let newest = asked.supersededBy;
-      for (
-        let next = before.questions[newest]?.supersededBy;
-        next !== undefined && next !== null;
-        next = before.questions[newest]?.supersededBy
-      ) {
-        newest = next;
-      }
-      throw new CrewStoreError(
-        `question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`,
-      );
-    }
-    if (how.correction === true) {
-      if (asked.answer === null || asked.answeredAt === null) {
+  const { record } = await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => {
+      const asked = before.questions[index];
+      if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
+      // A superseded question has no answer, so this comes first: a correction to it would
+      // otherwise say "no answer to correct", and the line that names the newest is the useful one.
+      if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
+        // Follow the pointers to the newest: a superseded question points at the one that replaced it.
+        let newest = asked.supersededBy;
+        for (
+          let next = before.questions[newest]?.supersededBy;
+          next !== undefined && next !== null;
+          next = before.questions[newest]?.supersededBy
+        ) {
+          newest = next;
+        }
         throw new CrewStoreError(
-          `question ${index} of crew session "${id}" has no answer to correct`,
+          `question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`,
         );
       }
-    } else if (asked.answer !== null) {
-      throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
-    }
-    const questions = before.questions.map((one, which) => {
-      if (which !== index) return one;
-      const { deliveredAt: _earlier, ...rest } = one;
-      const kept =
-        how.correction === true && one.answer !== null && one.answeredAt !== null
-          ? [
-              ...(one.superseded ?? []),
-              {
-                answer: one.answer,
-                answeredAt: one.answeredAt,
-                // A record from before the field has none, and its answer was heard.
-                ...(one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }),
-              },
-            ]
-          : one.superseded;
+      if (how.correction === true) {
+        if (asked.answer === null || asked.answeredAt === null) {
+          throw new CrewStoreError(
+            `question ${index} of crew session "${id}" has no answer to correct`,
+          );
+        }
+      } else if (asked.answer !== null) {
+        throw new CrewStoreError(
+          `question ${index} of crew session "${id}" has its answer already`,
+        );
+      }
+      const questions = before.questions.map((one, which) => {
+        if (which !== index) return one;
+        const { deliveredAt: _earlier, ...rest } = one;
+        const kept =
+          how.correction === true && one.answer !== null && one.answeredAt !== null
+            ? [
+                ...(one.superseded ?? []),
+                {
+                  answer: one.answer,
+                  answeredAt: one.answeredAt,
+                  // A record from before the field has none, and its answer was heard.
+                  ...(one.deliveredAt === undefined ? {} : { deliveredAt: one.deliveredAt }),
+                },
+              ]
+            : one.superseded;
+        return {
+          ...rest,
+          answer,
+          answeredAt: at,
+          deliveredAt: how.delivered === true ? at : null,
+          ...(kept === undefined ? {} : { superseded: kept }),
+        };
+      });
+      const waiting = before.state === "blocked" || before.state === "stopped";
+      const state = resumes !== null && waiting ? resumes : null;
       return {
-        ...rest,
-        answer,
-        answeredAt: at,
-        deliveredAt: how.delivered === true ? at : null,
-        ...(kept === undefined ? {} : { superseded: kept }),
+        change: {
+          questions,
+          ...(state === null ? {} : { state }),
+          ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+        },
+        event: (after) =>
+          state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
       };
-    });
-    const waiting = before.state === "blocked" || before.state === "stopped";
-    const state = resumes !== null && waiting ? resumes : null;
-    return {
-      change: {
-        questions,
-        ...(state === null ? {} : { state }),
-        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
-      },
-      event: (after) =>
-        state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
-    };
-  });
+    },
+    by,
+  );
   return record;
 }
 
@@ -1191,6 +1254,7 @@ async function changeCrew(
   id: string,
   atMs: number,
   plan: (before: CrewRecord, at: string) => null | PlannedChange,
+  by: RunActor | null = null,
 ): Promise<{ changed: boolean; record: CrewRecord }> {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -1233,6 +1297,7 @@ async function changeCrew(
     writeJsonFile(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
+    recordRunOf({ after, at, before, by: by ?? undefined, event: line });
     return { changed: true, record: after };
   });
 }
@@ -1245,6 +1310,28 @@ export function readLead(stateDir: string, repo: string, sessionId: string): Lea
 /** Every lead of `repo`, oldest first. Never throws for a broken record: it is named. */
 export function listLeads(stateDir: string, repo: string): Listed<LeadRecord> {
   return listRecords(leadRecordSchema, join(crewStoreDir(stateDir, repo), "leads"));
+}
+
+/**
+ * Records the plan file a lead found later (`crew start`, PL1) and changes nothing else: the lead
+ * record is read again under the store's lock, so a write another process made since (the
+ * presence mark) is never undone by a stale copy. Null when the lead is not recorded.
+ */
+export async function setLeadPlanFile(
+  stateDir: string,
+  repo: string,
+  sessionId: string,
+  planFile: string,
+  atMs: number,
+): Promise<LeadRecord | null> {
+  const file = leadFile(stateDir, repo, sessionId);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(leadRecordSchema, file);
+    if (before === null) return null;
+    const after = checked(leadRecordSchema, { ...before, planFile, updatedAt: iso(atMs) }, file);
+    writeJsonFile(file, after);
+    return after;
+  });
 }
 
 /**
@@ -1458,6 +1545,35 @@ export async function setCrewMemory(
 }
 
 /**
+ * Adds one line to crew session `id`'s run record that is no change of its record: its model was
+ * changed while it ran (MC1 calls this with `detail: { from, to }`), or a note a later phase adds.
+ * Under the store's lock like every other write; it changes nothing else and writes no event.
+ * A crew session with no run record (no plan file) takes nothing.
+ */
+export async function noteCrewRun(
+  stateDir: string,
+  repo: string,
+  id: string,
+  atMs: number,
+  note: { by?: RunActor | null; detail?: Record<string, unknown>; text: string },
+): Promise<void> {
+  const file = crewFile(stateDir, repo, id);
+  await underStoreLock(stateDir, repo, () => {
+    const record = readRecord(crewRecordSchema, file);
+    if (record === null) {
+      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+    }
+    try {
+      recordRunNote(record, iso(atMs), note);
+    } catch (error) {
+      reportRunFailure(
+        `crew: the run record of ${record.name} was not written: ${reasonOf(error)}`,
+      );
+    }
+  });
+}
+
+/**
  * The state a report's status puts the crew session in: the status names the same state, except
  * `handoff`, which is its own. A status a newer kit wrote (the store reads one as itself) leaves
  * the state as it is: the kit does not guess what a word it does not know means.
@@ -1489,6 +1605,7 @@ export async function recordCrewReport(
   id: string,
   report: HandBackReport,
   atMs: number,
+  contextTokens: null | number = null,
 ): Promise<{ file: string; record: CrewRecord }> {
   const file = crewReportFile(stateDir, repo, id);
   const value = checked(handBackReportSchema, report, file);
@@ -1518,6 +1635,7 @@ export async function recordCrewReport(
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
+    recordRunOf({ after, at, before, by: null, contextTokens, report: value });
     return after;
   });
   return { file, record };

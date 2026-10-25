@@ -25,6 +25,7 @@ import { type ModelArgs, runCrewModel } from "./model";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
 import { runCrewRm } from "./remove";
 import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } from "./report";
+import { type HistoryArgs, runCrewHistory } from "./runs-history";
 import { runCrewSelfWatch } from "./self-watch";
 import { runCrewStart, type StartArgs } from "./start";
 import { CREW_STEPS, isCrewStep, runCrewStep } from "./step";
@@ -87,16 +88,18 @@ const STEPS_LINE = wrapText(
 export const CREW_USAGE = `Usage: ${COMMAND} crew <command>
 
 Commands:
-  lead [--plan <slug>] [--tag <tag>] [--end]
+  lead [--plan <slug>] [--plan-file <path>] [--tag <tag>] [--end]
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads: the session takes that name at its next prompt.
+                 --plan-file is the plan's file: the folder beside it holds the
+                 plan's briefs and the record of each crew run (crew history).
                  --end records its plan ended; crew work stays unless on the base.
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as
                  one line, and prints one SendMessage line per lead.
-  start <phase> --slug <slug> --kind <kind> --brief <file|-> [--base <ref>]
+  start <phase> --slug <slug> --kind <kind> [--brief <file|->] [--base <ref>]
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
                  Starts one crew session: a background Claude Code session named
@@ -104,6 +107,8 @@ Commands:
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
                  returns at once: started, queued (the caps, the free memory, or
                  the phases it waits for), or failed, with the reason.
+                 With no --brief it takes the plan's own brief, <plan folder>/briefs/
+                 <phase>-<slug>.md, and says which file; none there is refused.
                  --continue <crew session> starts the hand-off's next crew session: the
                  same phase, cut from the old crew session's head, with the old brief
                  and the old crew session's report, and the next number in its name.
@@ -232,10 +237,6 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
   if (kindText !== undefined && kind === null) {
     return { error: `Unknown kind: ${kindText} (the kinds: ${CREW_KIND_NAMES.join(", ")})` };
   }
-  const brief = options.get("--brief");
-  if (brief === undefined && continueFrom === null) {
-    return { error: "Give the crew session its brief: --brief <file>, or --brief - for stdin" };
-  }
   const effort = options.get("--effort")?.toLowerCase() ?? null;
   const badEffort = effortMistake(effort);
   if (badEffort !== null) return { error: badEffort };
@@ -247,7 +248,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
   if (waitsFor.includes(phase)) return { error: `The phase ${phase} cannot wait for itself` };
   return {
     base: options.get("--base") ?? null,
-    brief: brief ?? "",
+    brief: options.get("--brief") ?? null,
     continueFrom,
     effort,
     files: commaList(options.get("--files")),
@@ -261,7 +262,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
 
 /** `crew lead`'s arguments, checked; or the mistake. */
 export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: string } {
-  const parsed = parseOptions(argv, ["--plan", "--tag"], ["--end"]);
+  const parsed = parseOptions(argv, ["--plan", "--plan-file", "--tag"], ["--end"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
@@ -271,8 +272,30 @@ export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: stri
     return { error: `The tag "${tag}" is not one: a tag is ${TAG_RULE}` };
   return {
     plan: parsed.options.get("--plan") ?? null,
+    planFile: parsed.options.get("--plan-file") ?? null,
     tag,
     ...(parsed.flags.has("--end") ? { end: true } : {}),
+  };
+}
+
+/** `crew history`'s arguments, checked; or the mistake. */
+export function parseHistoryArgs(argv: readonly string[]): HistoryArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--plan"], ["--json", "--backfill"]);
+  if ("error" in parsed) return parsed;
+  const [phase, ...extra] = parsed.positionals;
+  if (extra.length > 0) return { error: `Unknown argument: ${extra.join(" ")}` };
+  if (phase !== undefined && !isPhase(phase)) {
+    return { error: `The phase "${phase}" is not one: a phase is ${PHASE_RULE}` };
+  }
+  const plan = parsed.options.get("--plan") ?? null;
+  if (plan !== null && /[\\/]/.test(plan)) {
+    return { error: `--plan is a plan's file name without .md, not a path: "${plan}"` };
+  }
+  return {
+    backfill: parsed.flags.has("--backfill"),
+    json: parsed.flags.has("--json"),
+    phase: phase ?? null,
+    plan,
   };
 }
 
@@ -440,6 +463,14 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       return 2;
     }
     return await guarded(sub, ctx, () => runCrewList(args, ctx));
+  }
+  if (sub === "history") {
+    const args = parseHistoryArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () => runCrewHistory(args, ctx));
   }
   if (sub === "kinds") {
     const mistake = parseKindsArgs(rest);
