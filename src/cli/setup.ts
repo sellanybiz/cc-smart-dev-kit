@@ -353,8 +353,10 @@ function applySetup(
   // why it is `false` and not a removed key, in `src/setup/auto-update.ts`.
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   // Remote Control connects at a session's start (D66): a default, written only while the
-  // key is absent. A value of the person's stays, unnamed (`src/setup/remote-control.ts`).
-  if (planRemoteControl(paths)) set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
+  // key is absent. A value of the person's stays, unnamed; one setup wrote and they changed since
+  // is let go once (`src/setup/remote-control.ts`).
+  const remoteControl = planRemoteControl(paths);
+  if (remoteControl === "set") set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
   if (managed.tavilyKeyPlan.kind === "write") {
@@ -390,7 +392,12 @@ function applySetup(
     // and the settings file is left at mode 600.
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
-    remove: [...(tavilyOwned ? [TAVILY_KEY_PATH] : []), ...watchdogOwned],
+    remove: [
+      ...(tavilyOwned ? [TAVILY_KEY_PATH] : []),
+      ...watchdogOwned,
+      // A key the person deleted or changed since setup wrote it: the claim goes, the key stays.
+      ...(remoteControl === "drop" ? [REMOTE_CONTROL_KEY] : []),
+    ],
     // An `env` setup created goes with its last key; one the person had stays.
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,

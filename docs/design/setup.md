@@ -57,9 +57,11 @@ The guarantees:
 - **A default that is a managed key, written only while it is absent.** Setup writes
   `remoteControlAtStartup: true` (Remote Control's auto-connect, D66) into the user's
   settings with no question, through `applyManagedJson` (`src/setup/remote-control.ts` plans
-  it). A value of the person's (`true` or `false`), or one they changed or deleted after
-  setup wrote it, is theirs: setup neither writes nor names it. A second setup changes
-  nothing, and `restore` removes the key only while it still holds `true`.
+  it). A value of the person's own (`true` or `false`) is theirs: setup neither writes nor
+  names it. A key setup wrote and the person changed or deleted since is theirs too: setup
+  gives up its claim in the record (one quiet `·` line, once), so a `true` they write later is
+  never taken for setup's. A second setup changes nothing, and `restore` removes the key only
+  while it still holds the `true` setup wrote.
 - **`--dry-run`** shows every change and writes nothing at all: no state folder, no
   lock. Every setup runs this read-only pass first, outside the lock.
 - **`restore`** removes what cc-smart-dev-kit added and keeps everything else: its own JSON

@@ -58,19 +58,25 @@ describe("setup and Remote Control's auto-connect", () => {
     },
   );
 
-  test("a value the person changed since setup is kept by restore, and a later setup leaves it", async () => {
+  test("a value the person changed since setup is kept by restore; setup lets go of its claim once", async () => {
     const w = world();
     expect(await w.setup()).toBe(0);
     withSettings(w, { [KEY]: false });
     printed.length = 0;
     expect(await w.setup()).toBe(0);
     expect(readJson(w.paths.settingsFile)[KEY]).toBe(false);
+    expect(printed).toContain(
+      "  · ~/.claude/settings.json: remoteControlAtStartup: changed since cc-smart-dev-kit set it; left alone",
+    );
+    // The claim is gone: the next run says nothing, and restore keeps the person's value.
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
     expect(printed.join("\n")).not.toContain(KEY);
     restore(w.paths.stateDir);
     expect(readJson(w.paths.settingsFile)[KEY]).toBe(false);
   });
 
-  test("a key the person deleted since setup wrote it is not put back", async () => {
+  test("a key the person deleted is not put back, and a true they write later is theirs for restore", async () => {
     const w = world();
     expect(await w.setup()).toBe(0);
     const settings = readJson(w.paths.settingsFile);
@@ -79,7 +85,16 @@ describe("setup and Remote Control's auto-connect", () => {
     printed.length = 0;
     expect(await w.setup()).toBe(0);
     expect(readJson(w.paths.settingsFile)[KEY]).toBeUndefined();
+    expect(printed).toContain(
+      "  · ~/.claude/settings.json: remoteControlAtStartup: not in the file any more (removed since cc-smart-dev-kit set it); left alone",
+    );
+    // The person writes true themselves, and setup runs again: restore must not remove it.
+    withSettings(w, { [KEY]: true });
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
     expect(printed.join("\n")).not.toContain(KEY);
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile)[KEY]).toBe(true);
   });
 
   test("a settings file with other keys and its own layout changes only by the key", async () => {

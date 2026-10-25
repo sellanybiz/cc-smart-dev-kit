@@ -599,7 +599,12 @@ describe("cc-smart-dev-kit setup", () => {
         '"autoUpdate"\n      ],\n      "value": true',
       ),
     );
-    expect(readFileSync(ownedFile, "utf8")).toContain('"value": true');
+    // The owned.json record of the autoUpdate key, read as data (other keys have records too).
+    const autoUpdateRecord = () =>
+      (Object.values(readJson(ownedFile)).flat() as { path: string[]; value: unknown }[]).find(
+        (record) => record.path.at(-1) === "autoUpdate",
+      );
+    expect(autoUpdateRecord()?.value).toBe(true);
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
@@ -617,10 +622,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
       false,
     );
-    // The autoUpdate record holds false again (the Remote Control key's own record holds true).
-    expect(readFileSync(ownedFile, "utf8")).not.toContain(
-      '"autoUpdate"\n      ],\n      "value": true',
-    );
+    expect(autoUpdateRecord()?.value).toBe(false);
   });
 
   test("the backups go into the state folder, never beside the files", () => {

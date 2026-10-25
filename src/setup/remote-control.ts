@@ -25,17 +25,23 @@ export interface RemoteControlPaths {
   stateDir: string;
 }
 
+/** What setup does with the key on this run. */
+export type RemoteControlPlan = "set" | "drop" | "leave";
+
 /**
- * Whether setup sets the key on this run: when it is absent (a first run), or when it holds
- * the value setup wrote and still owns (a later run, which then changes nothing). Any other
- * state is the person's, and setup does not touch it or say a word about it.
+ * - `set`: the key is absent (a first run), or it holds the `true` setup wrote and still owns
+ *   (a later run, which then changes nothing);
+ * - `drop`: setup wrote it once, and the person deleted or changed it since. The key is
+ *   theirs: setup gives up its claim (one quiet line, once), so a later `true` of their own
+ *   is never taken for setup's and removed by `restore`;
+ * - `leave`: a value of the person's own (`true` or `false`), never claimed: setup does not
+ *   touch it or say a word about it.
  */
-export function planRemoteControl(paths: RemoteControlPaths): boolean {
+export function planRemoteControl(paths: RemoteControlPaths): RemoteControlPlan {
   const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
   const whose = ownership(records, REMOTE_CONTROL_KEY, current);
-  // Absent: a first run sets it, but a key setup wrote and the person deleted since is theirs
-  // (`whose` is "changed") and is not put back.
-  if (!current.found) return whose !== "changed";
-  return Bun.deepEquals(current.value, REMOTE_CONTROL_VALUE, true) && whose === "ours";
+  if (whose === "changed") return "drop";
+  if (whose === "ours" || !current.found) return "set";
+  return "leave";
 }
