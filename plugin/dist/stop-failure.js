@@ -6971,6 +6971,8 @@ var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ONE = { kind: "whole", min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
 var ABOVE_ZERO = { kind: "positive" };
+var WATCH_MINUTES_FLOOR = 2;
+var WATCH_MINUTES = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
 function numberSchema(rule) {
   if (rule.kind === "positive")
     return number2().positive();
@@ -6993,6 +6995,7 @@ var NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -7005,6 +7008,19 @@ function isLabelName(name) {
   return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
 }
 var labelSchema = string2().refine(isLabelName, LABEL_RULE);
+function labelsClash(labels) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
 var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
 function parseCrewKeep(entry) {
@@ -7037,9 +7053,19 @@ var workflowSchema = strictObject({
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
+    watch: boolean2().optional(),
+    watchMinutes: numberField("issues.watchMinutes"),
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
+  }).superRefine((issues, context) => {
+    const clash = labelsClash({
+      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
+    });
+    if (clash !== null)
+      context.addIssue({ code: "custom", message: clash });
   }).optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
@@ -7084,6 +7110,8 @@ var workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready"
@@ -7129,6 +7157,8 @@ var POLICY_KEYS = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
@@ -7980,6 +8010,18 @@ var stopStateFields = object({
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
 var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
 
 // src/cli/usage-window.ts
 var WINDOW_SPAN_MS = 5 * 60 * 60000;

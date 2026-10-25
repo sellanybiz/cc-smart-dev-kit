@@ -22,6 +22,19 @@ export function fingerprintHash(key: string): string {
   return new Bun.CryptoHasher("sha256").update(key).digest("hex").slice(0, HASH_HEX_LENGTH);
 }
 
+/**
+ * True when `body` holds a line that reads as any of the kit's hidden markers (`issue`, `fixed`,
+ * `handback`: `<!-- cc-smart-dev-kit:<kind> … -->`). Plain text anyone can write, so it says a
+ * comment *may* be the kit's; only the kit's own account makes it so (`kitAccount`).
+ */
+export function hasKitMarker(body: string): boolean {
+  const start = `<!-- ${COMMAND}:`;
+  return body.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return trimmed.startsWith(start) && trimmed.endsWith("-->");
+  });
+}
+
 /** The marker line for a hash. */
 export function markerLine(hash: string): string {
   return `${MARKER_PREFIX}${hash} -->`;

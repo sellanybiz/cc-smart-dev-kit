@@ -46,6 +46,16 @@ const AT_LEAST_ONE: NumberRule = { kind: "whole", min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
 const ABOVE_ZERO: NumberRule = { kind: "positive" };
 
+/**
+ * The fewest minutes between two looks at GitHub (`issues.watchMinutes`). One look is two
+ * requests, so 2 minutes is at most 60 requests an hour for a repository, against the 5 000 an
+ * authenticated account has; a look that finds nothing new is a `304`, which is free against that
+ * limit (`.claude/research/2026-10-25-gi4-conditional.md`). A lower floor would only raise the
+ * chance of a secondary limit. At most a day, so a typo cannot silence the watch for good.
+ */
+export const WATCH_MINUTES_FLOOR = 2;
+const WATCH_MINUTES: NumberRule = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
+
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
   if (rule.kind === "positive") return z.number().positive();
@@ -70,6 +80,7 @@ const NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -105,6 +116,37 @@ export function isLabelName(name: string): boolean {
 }
 
 const labelSchema = z.string().refine(isLabelName, LABEL_RULE);
+
+/** The three labels GitHub Issues uses, by the name each has in `workflow.issues`. */
+export interface IssueLabels {
+  fixedLabel: string;
+  foundLabel: string;
+  readyLabel: string;
+}
+
+/**
+ * Why the three labels cannot work together, or null when they differ (compared lower-cased:
+ * GitHub treats a label name that way). The ready label is a person's choice — a phase starts
+ * from an issue that carries it, added by someone with write access — so neither of the kit's
+ * own labels may be the same word: the kit adds `foundLabel` to every issue it files and
+ * `fixedLabel` at a merge, through the person's own `gh` login, and would then make an issue
+ * ready by itself. The found and fixed labels differ too, or "fixed" could not be told from
+ * "found". One home: the schema checks a file with it, and `issue file` and the fixed mark check
+ * the resolved values (the person's file and the project's can each hold one of a pair).
+ */
+export function labelsClash(labels: IssueLabels): string | null {
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
 
 /** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
 const tagSchema = z.string().refine(isNameTag, TAG_RULE);
@@ -196,12 +238,30 @@ export const workflowSchema = z.strictObject({
       enabled: z.boolean().optional(),
       /** It may file them in a public repository, where everyone reads them. Default: false. */
       allowPublic: z.boolean().optional(),
+      /**
+       * The lead's watch looks at the project's issues and comments now and then and prints a
+       * line for each new one (1.4.0, `src/issues/feed.ts`). A second switch, off by default even
+       * with `enabled` on: it needs `enabled`, and reads only. Default: false.
+       */
+      watch: z.boolean().optional(),
+      /** Minutes between two looks, 2 or more (`WATCH_MINUTES_FLOOR`). Default: 5. */
+      watchMinutes: numberField("issues.watchMinutes"),
       /** The label on every issue the kit files. Default: kit:found. */
       foundLabel: labelSchema.optional(),
       /** The label of an issue whose fix is merged and not yet released. Default: fixed-unreleased. */
       fixedLabel: labelSchema.optional(),
       /** The label of an issue the kit may pick up and build. Default: kit:ready. */
       readyLabel: labelSchema.optional(),
+    })
+    .superRefine((issues, context) => {
+      // A label this object does not set stands as its default, so a file cannot name the
+      // default of another label (`labelsClash`).
+      const clash = labelsClash({
+        fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+        foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+        readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel,
+      });
+      if (clash !== null) context.addIssue({ code: "custom", message: clash });
     })
     .optional(),
   alerts: z
@@ -313,6 +373,8 @@ export const workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
+    watch: false,
+    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready",
@@ -377,6 +439,8 @@ export type WorkflowKey =
   | "clearWorktreeAfterMerge"
   | "issues.enabled"
   | "issues.allowPublic"
+  | "issues.watch"
+  | "issues.watchMinutes"
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
@@ -418,6 +482,8 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
+  "issues.watch",
+  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",

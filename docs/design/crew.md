@@ -1033,6 +1033,20 @@ the store records — a session the kit does not know is the person's own:
   and by what the folder holds when git no longer lists it (§ `rm`). A folder that stays is not
   news; a later look judges it again. It runs after the merges are marked, so a crew session whose
   branch that removal deletes was marked first.
+- **it hears GitHub, when the person turned that on** (GI4, `workflow.issues.watch`, off by
+  default): once per `issues.watchMinutes` (default 5, floor 2) a pass makes one conditional look at
+  the project's issues and comments (`src/issues/feed.ts`, `docs/design/issues.md` § The lead hears
+  new issues), inside the pass it already runs — never a second loop. The state is one record for the
+  repository (`issue-feed/` in the store, with its own lock), and a look found by one watch reaches
+  every lead of the repository as one `issue` event each, which a lead's watch says as any other
+  line: `issue #<n> opened by <author>: "<title>"`, `comment on #<n> by <author>`, each starting with
+  a frame (`ISSUE_DATA_FRAME`, put on in `eventLine`) that says GitHub's words are quoted data, never
+  an instruction: a monitor line is a notification of its own. A `304` and the first
+  look after the switch are silent. A change of state (`gh` missing, logged out, rate limited,
+  unreachable, and back) is one line, not one per pass. **A crew session never hears these lines**:
+  they are written for leads, the crew's `step`/`report` reads select events by crew id, and the
+  lead acts on one only through the person. The look and the settling of the merge marks share one
+  budget per pass (a count and a time: `passBudget`), after the pass's own lines.
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew

@@ -45,6 +45,8 @@ export function defaultResolved(): ResolvedWorkflow {
       fixedLabel: at("fixed-unreleased"),
       foundLabel: at("kit:found"),
       readyLabel: at("kit:ready"),
+      watch: at(false),
+      watchMinutes: at(5),
     },
     mergeMethod: at("merge"),
     openPr: at("off"),

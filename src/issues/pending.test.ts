@@ -7,7 +7,14 @@ import { join } from "node:path";
 import { issuesWorld } from "../testing/issues-world";
 import { tempDir } from "../testing/temp";
 import type { FixedMark } from "./fixed";
-import { queueMarks, RETRY_MS, readPending, settleMarks } from "./pending";
+import {
+  MARKS_PER_PASS,
+  passBudget,
+  queueMarks,
+  RETRY_MS,
+  readPending,
+  settleMarks,
+} from "./pending";
 import { phaseIssues, recordIssueNumbers } from "./phase-issues";
 
 const MARK: FixedMark = {
@@ -106,6 +113,92 @@ describe("settleMarks", () => {
     expect(await settleMarks(path, made.world, 1_000 + RETRY_MS)).toEqual([]);
     expect(made.gh.calls.length).toBeGreaterThan(0);
     expect(readPending(path)).toHaveLength(1);
+  });
+});
+
+describe("GI4: a pass has one budget for its issue work", () => {
+  const manyIssues = (count: number) =>
+    Array.from({ length: count }, (_, at) => ({
+      body: "",
+      labels: ["kit:found"],
+      number: at + 1,
+      title: "t",
+      url: `https://github.com/example-org/my-app/issues/${at + 1}`,
+    }));
+  const marks = (count: number): FixedMark[] =>
+    Array.from({ length: count }, (_, at) => ({
+      ...MARK,
+      issue: at + 1,
+      merge: (at + 1).toString(16).padStart(40, "0"),
+    }));
+
+  test("only the budget's count of due marks is settled; the rest stay queued and due", async () => {
+    const made = issuesWorld({ gh: { issues: manyIssues(30) } });
+    const path = file();
+    queueMarks(path, marks(30));
+    const lines = await settleMarks(
+      path,
+      made.world,
+      0,
+      passBudget(() => 0),
+    );
+    expect(lines).toHaveLength(MARKS_PER_PASS);
+    const left = readPending(path);
+    expect(left).toHaveLength(30 - MARKS_PER_PASS);
+    // Untouched: never tried, so the next pass takes them first.
+    expect(left.every((one) => one.triedAt === undefined && !one.told)).toBe(true);
+    expect(left.map((one) => one.issue)).toEqual(
+      Array.from({ length: 30 - MARKS_PER_PASS }, (_, at) => at + MARKS_PER_PASS + 1),
+    );
+  });
+
+  test("the next pass settles the next ones, until the queue is empty", async () => {
+    const made = issuesWorld({ gh: { issues: manyIssues(7) } });
+    const path = file();
+    queueMarks(path, marks(7));
+    for (const left of [4, 1, 0]) {
+      await settleMarks(
+        path,
+        made.world,
+        0,
+        passBudget(() => 0),
+      );
+      expect(readPending(path)).toHaveLength(left);
+    }
+  });
+
+  test("time spent elsewhere in the pass leaves no time: no call at all, the queue as it was", async () => {
+    const made = issuesWorld({ gh: { issues: manyIssues(3) } });
+    const path = file();
+    queueMarks(path, marks(3));
+    let clock = 0;
+    const budget = passBudget(() => clock, { ms: 1_000 });
+    clock = 1_000;
+    expect(await settleMarks(path, made.world, 0, budget)).toEqual([]);
+    expect(made.gh.calls).toEqual([]);
+    expect(readPending(path)).toHaveLength(3);
+  });
+
+  test("time that runs out in the middle stops before the next mark", async () => {
+    const made = issuesWorld({ gh: { issues: manyIssues(5) } });
+    const path = file();
+    queueMarks(path, marks(5));
+    let clock = 0;
+    const real = made.world.gh;
+    // Each gh call takes 400 ms of the 1 000 ms budget.
+    made.world.gh = async (args, call) => {
+      clock += 400;
+      return await real(args, call);
+    };
+    const lines = await settleMarks(
+      path,
+      made.world,
+      0,
+      passBudget(() => clock, { ms: 1_000 }),
+    );
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThan(MARKS_PER_PASS + 1);
+    expect(readPending(path).length).toBeGreaterThan(5 - MARKS_PER_PASS);
   });
 });
 

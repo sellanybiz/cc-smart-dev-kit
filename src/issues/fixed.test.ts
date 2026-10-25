@@ -78,8 +78,10 @@ describe("markFixed", () => {
       ["kit:found", "fixed-unreleased"],
     ]);
     expect(gh.labels).toContain("fixed-unreleased");
-    // Every call names the project's own repository.
-    for (const call of gh.calls) expect(repoOf(call.args)).toBe(OWN_REPO);
+    // Every call names the project's own repository, but `gh api user`, which names an account.
+    for (const call of gh.calls.filter((one) => !one.args.includes("user"))) {
+      expect(repoOf(call.args)).toBe(OWN_REPO);
+    }
     // The posted text is the comment, with its marker.
     expect(gh.issues[0]?.comments?.[0]).toBe(fixedComment(MARK));
   });
@@ -131,6 +133,26 @@ describe("markFixed", () => {
     expect(gh.calls.some((call) => call.args[0] === "label" && call.args[1] === "create")).toBe(
       false,
     );
+  });
+
+  test("GI4: a stranger's copy of the marker does not count as the kit's mark", async () => {
+    const copy = { author: "stranger", body: fixedComment(MARK) };
+    const { gate, gh } = await gateOf({
+      gh: { issues: [{ ...openIssue(), comments: [copy] }] },
+    });
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    expect(await markFixed(gate, MARK)).toEqual({ commented: true, kind: "marked", labeled: true });
+    expect(gh.issues[0]?.comments).toHaveLength(2);
+  });
+
+  test("the kit's own account's marker still counts, in any letter case", async () => {
+    const mine = { author: "KIT-Account", body: fixedComment(MARK) };
+    const { gate, gh } = await gateOf({
+      gh: { issues: [{ ...openIssue(), comments: [mine] }] },
+    });
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    expect((await markFixed(gate, MARK)).kind).toBe("marked");
+    expect(gh.issues[0]?.comments).toHaveLength(1);
   });
 
   test("a closed issue gets nothing", async () => {
@@ -195,6 +217,26 @@ describe("the gate", () => {
     expect(gate.kind).toBe("off");
   });
 
+  test("GI4: the account the kit posts as is read once, at the gate", async () => {
+    const { gate, gh } = await gateOf();
+    expect(gate.kind).toBe("ready");
+    expect(gh.calls.filter((call) => call.args.includes("user")).map((call) => call.args)).toEqual([
+      ["api", "--hostname", "github.com", "user", "--jq", ".login"],
+    ]);
+  });
+
+  test("GI4: an account that cannot be read is a failure, so no marker is trusted blind", async () => {
+    const made = issuesWorld();
+    const real = made.world.gh;
+    made.world.gh = async (args, call) =>
+      args.includes("user")
+        ? { code: 1, err: "gh: HTTP 500", kind: "failed", out: "" }
+        : await real(args, call);
+    const gate = await openGate(made.world);
+    expect(gate.kind).toBe("failed");
+    expect(gate.kind === "failed" ? gate.why : "").toContain("which account");
+  });
+
   test("GitHub unreachable at the gate: failed, with the reason", async () => {
     const { gate } = await gateOf({ gh: { mode: "logged-out" } });
     expect(gate.kind).toBe("failed");
@@ -255,12 +297,46 @@ describe("listFixed: the Fixes lines of a release", () => {
     });
   });
 
+  test("a fixed label that is the ready label is a failure, so no merge adds the person's label", async () => {
+    // Each file alone is valid; together the labels clash (`labelsClash`).
+    const made = issuesWorld({
+      committed: {
+        worktrees: { base: "main" },
+        workflow: { issues: { enabled: true, fixedLabel: "go" } },
+      },
+      gh: { issues: [openIssue()] },
+      personal: { issues: { readyLabel: "GO" } },
+    });
+    const gate = await openGate(made.world);
+    expect(gate).toEqual({
+      kind: "failed",
+      why: "issues.fixedLabel and issues.readyLabel are both go: the ready label is only a person's to add, so the kit's fixed label must be another word",
+    });
+    expect(made.gh.calls).toEqual([]);
+  });
+
   test("a policy that cannot be read is a failure to retry, never an off switch", async () => {
     // The project's file is committed on main, but origin/main was never fetched.
     const made = issuesWorld();
     git(made.repo, "update-ref", "-d", "refs/remotes/origin/main");
     const gate = await openGate(made.world);
     expect(gate.kind).toBe("failed");
+  });
+
+  test("GI4: a marker a stranger copied is not a fix to list", async () => {
+    const made = issuesWorld();
+    const { inRelease } = history(made);
+    const copied = marked(1, inRelease, { merge: "d".repeat(40) });
+    made.gh.issues.push({
+      ...copied,
+      comments: copied.comments.map((body) => ({ author: "stranger", body })),
+    });
+    const gate = await openGate(made.world);
+    if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
+    expect(await listFixed(gate, { base: "main", head: "release" })).toEqual({
+      issues: [],
+      kind: "listed",
+    });
   });
 
   test("a fix already on the base is not listed again", async () => {

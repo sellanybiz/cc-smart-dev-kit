@@ -19,10 +19,12 @@ import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
 import {
   ghProblem,
   type IssueWorld,
+  kitAccount,
   ownRepository,
   parseRepoFacts,
   REPO_FIELDS,
   resolveSwitch,
+  sameAccount,
 } from "./file";
 import { screenText } from "./screen";
 
@@ -201,9 +203,13 @@ export async function commentHandBack(
     if (!Array.isArray(comments)) {
       return failed("gh answered something this command cannot read about the comments");
     }
-    const said = (comments.flat() as { body?: unknown }[]).some(
+    // Only the kit's own account counts: the marker line is plain text a stranger can copy.
+    const account = await kitAccount((args) => run(args, GH_TIMEOUT_MS));
+    if ("why" in account) return failed(account.why);
+    const said = (comments.flat() as { body?: unknown; user?: { login?: unknown } | null }[]).some(
       (one) =>
         typeof one.body === "string" &&
+        sameAccount(one.user?.login, account.login) &&
         one.body.split(/\r?\n/).some((line) => line.trim() === marker),
     );
     if (said) return { kind: "already" };

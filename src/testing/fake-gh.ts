@@ -6,13 +6,19 @@
  */
 import type { GhCall, GhExec, GhResult } from "../workflow/merge-check";
 
+/** The account the fake's `gh` is logged in as, unless a test names another. */
+export const FAKE_LOGIN = "kit-account";
+
+/** A comment: its body alone (written by the fake's own account), or by another account. */
+export type FakeComment = string | { author: string; body: string };
+
 /** One issue the fake holds. */
 export interface FakeIssue {
   body: string;
   /** True: the issue is closed (`state: CLOSED` in a list). */
   closed?: boolean;
-  /** The bodies of the comments on it, oldest first. */
-  comments?: string[];
+  /** The comments on it, oldest first. */
+  comments?: FakeComment[];
   labels: string[];
   number: number;
   title: string;
@@ -29,6 +35,8 @@ export interface FakeGhOptions {
   hasIssuesEnabled?: boolean;
   issues?: FakeIssue[];
   labels?: string[];
+  /** The account `gh api user` names. Default: `FAKE_LOGIN`. */
+  login?: string;
   /** Every call ends this way, as a missing gh, a logged-out one, or a timeout does. */
   mode?: FakeGhMode;
   /** The viewer's role on the repository, as `viewerPermission` prints it. Default: `WRITE`. */
@@ -75,7 +83,11 @@ function values(args: readonly string[], flag: string): string[] {
 function listedRow(issue: FakeIssue) {
   return {
     body: issue.body,
-    comments: (issue.comments ?? []).map((body) => ({ body })),
+    comments: (issue.comments ?? []).map((one) =>
+      typeof one === "string"
+        ? { author: { login: FAKE_LOGIN }, body: one }
+        : { author: { login: one.author }, body: one.body },
+    ),
     labels: issue.labels.map((name) => ({ name })),
     number: issue.number,
     state: issue.closed === true ? "CLOSED" : "OPEN",
@@ -95,6 +107,9 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
       if (state.mode === "logged-out") return result("failed", "", LOGGED_OUT);
       const [group, action] = args;
       if (group === "auth" && action === "status") return result("ok", "Logged in to github.com\n");
+      if (group === "api" && args.includes("user")) {
+        return result("ok", `${options.login ?? FAKE_LOGIN}\n`);
+      }
       if (group === "repo" && action === "view") {
         return result(
           "ok",

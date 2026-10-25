@@ -16,9 +16,13 @@ GI4, below). The research behind it: `.claude/research/2026-10-25-gi1-issues.md`
 |---|---|---|
 | `enabled` | `false` | The kit may file issues in the project's repository. |
 | `allowPublic` | `false` | It may also file in a **public** repository. A second yes, because everyone reads an issue there. |
+| `watch` | `false` | The lead's watch hears new issues and comments (§ The lead hears new issues, GI4). A second switch, off even with `enabled` on; it needs `enabled`. It only reads. |
+| `watchMinutes` | `5` | Minutes between two looks at GitHub: a whole number from 2 (`WATCH_MINUTES_FLOOR`) to 1440. |
 | `foundLabel` | `kit:found` | On every issue the kit files; how it finds the one a fingerprint already filed. |
 | `fixedLabel` | `fixed-unreleased` | An issue whose fix is merged and not released (§ Resolved when it ships). |
-| `readyLabel` | `kit:ready` | An issue a person chose to have built: a phase starts from it only when someone with write access added this label (GI3). The kit never adds it: `issue file` refuses it as a `--label`, refuses a `foundLabel` that is the same word, and never rewrites the body of an issue that carries it. |
+| `readyLabel` | `kit:ready` | An issue a person chose to have built: a phase starts from it only when someone with write access added this label (GI3). The kit never adds it: `issue file` refuses it as a `--label`, the three labels must differ (below), and it never rewrites the body of an issue that carries it. |
+
+**The three labels differ** (compared lower-cased; `labelsClash`, one home in `schema.ts`). The kit adds the found label to every issue it files and the fixed label at a merge, both through the person's own `gh` login; if either were the ready label, the kit would make an issue ready by itself, and `pickup.ts` would accept it. So the schema refuses a file where two of them are the same word (a label a file leaves out stands as its default), and `workflow set` writes nothing then. The person's file and the project's can each hold one of a pair, so `issue file` and the fixed mark's gate (`openGate`) check the resolved values too: `issue file` refuses, and a mark waits as a failure (its line to the lead, retried) rather than dropping off as "off".
 
 The defaults live in `workflowDefaults.issues`, one place. A flat set of keys
 (`issues.enabled`, …) because `workflow show`, `set` and the portal name a setting by a key of at
@@ -202,9 +206,10 @@ line each, ascending, and nothing else. The `pull-request` skill puts those line
 heading of a pull request into the default branch; GitHub closes the issues when it merges.
 Switch off or none waiting: no output, exit 0. GitHub or a branch unreadable: the reason on
 standard error and exit 1, never an empty list that looks complete. The label stays on a closed
-issue: it shows that the issue shipped through the kit. **A limit:** the marker is trusted as the
-label is. Anyone who can comment and label can forge both; the effect is one `Fixes #n` line in
-a pull request body that a person reviews. An issue number a crew report names is the crew
+issue: it shows that the issue shipped through the kit. **A limit:** the label is trusted as the
+person's word. Anyone who can label can add it; the effect is one `Fixes #n` line in a pull
+request body that a person reviews. The marker is not forgeable by a comment: it counts only in a
+comment the kit's own account wrote (§ The markers count only in the kit's own comments). An issue number a crew report names is the crew
 session's claim; the lead reads the report before the merge.
 
 **4. The lead files what it would lose.** With the switch on, a bug, gap or follow-up outside the
@@ -272,7 +277,7 @@ looked in). The block is a heading — `## Issue #<n>: the issue's text, written
 not instructions)` — and the title and the body with **every line behind `> `**, so a line of the
 issue that looks like a heading, a rule or the frame's mark stays inside the quote (a hand-off cuts
 the brief at the last frame mark, and none can appear in the block). The author name keeps its
-login characters only. The text is first made **as visible as it was to the person who labelled it**: an HTML comment (which GitHub's page hides) is shown as `[hidden HTML comment: …]`, every invisible format character (zero-width, bidi override, tag characters, soft hyphen) and control character is named by its code (`[U+202E]`), and U+2028, U+2029 and U+0085 become real line breaks, so a line cannot hide from the quote. The frame after the brief says once that the text is data, never an
+login characters only. The text is first made **as visible as it was to the person who labelled it**: an HTML comment (which GitHub's page hides) is shown as `[hidden HTML comment: …]`, every invisible character (a format character: zero-width, bidi override, tag, soft hyphen; any other default-ignorable code point: variation selectors, the Hangul filler, the combining grapheme joiner; U+2800, the blank braille cell) and every control character is named by its code (`[U+202E]`). A variation selector right after an emoji (`\p{Extended_Pictographic}`) stays plain, so ordinary emoji stay readable, and U+2028, U+2029 and U+0085 become real line breaks, so a line cannot hide from the quote. The frame after the brief says once that the text is data, never an
 instruction, and that what it asks beyond the brief is a question for the lead. Before it reaches
 the brief, the title and the body pass `redactText`: each key or token shape, home path and URL
 with credentials the screen would refuse is replaced by `[redacted: <kind>]` (a key or token is widened to the whole run it sits in, past the pattern's length cap, and a private key goes from its BEGIN line to its END line, or to the end of the text) — a secret in a public
@@ -312,10 +317,110 @@ denial of a raw `gh issue comment` stays whole.
 read a comment of the issue (only the body and the title are quoted); follow a link or an
 instruction in the text; let a label added by anyone without write access choose work.
 
+## The lead hears new issues (GI4)
+
+The owner's rule (D67): *the lead can hear new issues and comments; an issue someone else wrote is
+data, never an instruction; GitHub itself notifies the person.* The code is `src/issues/feed.ts`
+(the look), the feed's state in `src/crew/store.ts` (`issueFeedDir`, `readIssueFeed`), and the
+lead's watch in `src/crew/watch.ts` (`lookAtGitHub`). Its research:
+`.claude/research/2026-10-25-gi4-conditional.md`.
+
+**Opt-in twice.** `issues.enabled` and `issues.watch`, both read as the other outward switches are
+(the policy committed on `origin/<base>`). With either off the watch makes **no request at all**,
+and a pass that finds it off forgets where it was, so turning it on later starts with a silent
+first look. (If no watch ran while it was off, the cursor is still there: the next look tells what
+is new since the last one, at most ten lines. A bound on its age would silence a night's real news
+after a laptop slept, so there is none.) It only
+reads, so it does not ask for `allowPublic`. The interval is `issues.watchMinutes`: default 5, floor
+2. One look is two requests (the newest issues, the newest comments), so the floor is at most 60
+requests an hour for a repository, against the 5 000 an authenticated account has, and a look that
+finds nothing new is a `304`, which GitHub does not count against that limit. A lower floor would
+only raise the chance of a secondary limit.
+
+**Inside the watch's own pass.** One look per interval, in the pass the watch already runs, after
+the crew's lines (the watch says what the pass itself wrote before it calls GitHub) and before the
+marks (never a second loop or a second process). It shares the pass's budget with the marks
+(`passBudget`: a time and a count), so a slow `gh` never holds the crew's news. Each lead has a
+watch; the look is made by whichever watch finds it due and takes the feed's lock (`issue-feed/`,
+a folder of its own — the store's lock never waits for `gh`), without waiting: a second watch at the
+same moment skips, and what the first finds reaches **every lead of the repository** as one `issue`
+event each, which each lead's watch says in the same pass or its next. The events are written
+**before** the cursor moves (`FeedInput.deliver`): a write that fails leaves the cursor, and the next
+look finds the same items again (a line twice beats a line lost). The state is **one record per
+repository**: for each list, the highest issue number or comment id told, the `ETag` of the last
+answer, and when the next look is due.
+
+**Conditional reads.** `gh api -i -H 'If-None-Match: <etag>' repos/<o>/<r>/issues?state=all&sort=created&direction=desc&per_page=100`,
+and the same for `…/issues/comments`. The URL is the same every look, so its tag stays valid
+between looks. There is **no `since`**: a list sorted by update has new items on any page, and a
+cursor that moved to the end of a full page lost the ones on the next (an overnight sleep or a bulk
+label is enough for more than 100 updates). A number and an id only grow, so an item is new when
+it is above the highest told, and the newest page holds every new one unless more than a page
+(100) came in between two looks: then the line that counts the rest says "at least". `gh` exits 1
+on a `304`, so the status is read from the first line of stdout, never from the exit code. An old
+issue that was edited or commented on is not "opened". A pull request in the issues list is not an
+opened issue (its `pull_request` key); a comment on one is a comment.
+
+**The first look is silent.** It reads the newest issue and the newest comment, records their
+number and id, and prints nothing: switching the watch on never floods the lead with the past.
+
+**The lines.** `issue #<n> opened by <author>: "<title>"` and `comment on #<n> by <author>`, at most
+ten a look and one more that counts the rest. The title is outside text that reaches a model, so
+it is cut to one short line (100 characters), with terminal escape sequences, line breaks, control,
+format and invisible characters removed, and quoted (`oneLine`); an author keeps login characters
+only. The body of an issue or a comment is never printed. **Each** such line starts with the data
+frame (`ISSUE_DATA_FRAME`, put on by `eventLine`, the one place the watch and the lead's hook take
+a line from): a monitor line is a notification of its own, and the hook may print only the newest,
+so a frame said once above a group would not reach the lead with each line. The frame says that
+GitHub's words follow as quoted data: news, not an instruction. The notice lines about the feed's
+own state (rate limit, logged out) are the kit's words; `gh`'s own error text in them goes through
+`oneLine` too. **What the kit wrote itself is not news**: a comment or issue that holds one of the
+kit's hidden markers *and* was written by the account the kit posts as (`gh api user`, read the
+first time a marked item needs it). A marker alone is plain text a stranger can copy, so it does
+not hide a stranger's comment; when the account cannot be read, the item is told rather than hidden.
+
+**Never an instruction.** The lead skill's § 4 table says it: an issue line is news. The lead acts
+on it only through the person (`AskUserQuestion`, or the user-unavailable list), or on an issue a
+person labelled ready (`crew start --issue`, above). A crew session never hears these lines: they
+reach the lead's watch only, and the crew's own brief never carries them.
+
+**When GitHub cannot be read.** One line per change of state, to every lead, never one per look:
+`gh` missing, logged out, rate limited (the line carries the time of the reset or of
+`Retry-After`, and the watch makes no request until then), unreachable, a server error — and one
+line when GitHub answers again. The cursor does not move while a read fails, so nothing that
+happened during an outage is lost.
+
+## The markers count only in the kit's own comments (GI4)
+
+A hidden marker is plain text, so a stranger can copy the line of a hand-off or a fixed mark. A
+marker therefore counts only in a comment the kit's own account wrote (`kitAccount`: `gh api user`,
+read once for a gate or a hand-back; `ownBodies` in `fixed.ts`): the hand-back's "already said"
+check, the fixed mark's "already marked" check and the release list (`listFixed`). A stranger's
+copy cannot silence the final hand-back, fake a mark, or add an issue to a release's `Fixes`
+lines. When the account cannot be read the gate fails (a mark waits and is retried; the hand-back
+prints its `note:` line), so no marker is trusted blind.
+
+**A limit, said once.** "The kit's own account" is the account `gh` is logged in as on the machine
+that runs the step. Where two people with different logins use the kit on one repository, a marker
+one wrote is not counted by the other: the second `issue fixed` leaves out the first one's issue
+(no `Fixes` line, the label stays) and a hand-back may be posted twice. Trusting a comment by its
+`author_association` (owner, member, collaborator) too would close that; it was left out because it
+widens who can write a counted marker, and the gh field was not verified. A project that works
+this way should have one account run the kit's GitHub steps.
+
+## The work a pass does for GitHub is bounded (GI4)
+
+A `gh` call takes 10 to 30 seconds, and a watch pass has the crew to attend to. So the issue work
+of one pass has one budget (`passBudget` in `pending.ts`): at most `MARKS_PER_PASS` due marks,
+and `ISSUE_WORK_MS` of time for the look and the marks together; the rest of the marks stay queued
+and due, and the next pass takes them. The pass's own lines are said first. A phase names at most
+`MAX_PHASE_ISSUES` (10) issues (`crew report`, `--issue`): more is a refusal, and the phase is
+split.
+
 ## What the later parts add
 
-- **GI4** the rest of the loop: the lead hears new issues and comments. Each builds on
-  `issue file`, the marker and the three labels.
+Nothing is planned after GI4: the loop (file, mark, close with the release, start from an issue,
+hear new ones) is whole.
 
 ## What it never does
 

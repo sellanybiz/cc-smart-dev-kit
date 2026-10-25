@@ -25,3 +25,10 @@ export function phaseIssues(
     (a, b) => a - b,
   );
 }
+
+/**
+ * The most issues one phase may fix. Each one is a mark at the merge (a comment and a label, a few
+ * `gh` calls); the watch settles a few per pass, and a report that named hundreds would hold the
+ * queue for hours. A phase that fixes more is split.
+ */
+export const MAX_PHASE_ISSUES = 10;

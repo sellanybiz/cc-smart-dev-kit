@@ -10,6 +10,8 @@ import {
   appendCrewEvent,
   createCrew,
   crewEventsFile,
+  ISSUE_DATA_NOTE,
+  ISSUE_EVENT_CREW,
   leadFile,
   listCrew,
   type NewCrew,
@@ -18,6 +20,7 @@ import {
   writeNotesState,
   writeStoreFile,
 } from "../crew/store";
+import { ISSUE_DATA_FRAME } from "../crew/watch";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
@@ -168,6 +171,30 @@ describe("one note, then none", () => {
       addContext("UserPromptSubmit", stepLine("tests-green")),
     );
     expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("GI4: a line of GitHub's words carries its own data frame, since only the newest line is shown", async () => {
+    const world = await leadWorld();
+    await appendCrewEvent(
+      world.stateDir,
+      world.repo,
+      {
+        crew: ISSUE_EVENT_CREW,
+        lead: LEAD_SESSION,
+        name: "issues",
+        note: ISSUE_DATA_NOTE,
+        state: "working",
+        text: 'issue #2 opened by alice: "Login fails"',
+        type: "issue",
+      },
+      T0,
+    );
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext(
+        "UserPromptSubmit",
+        `${ISSUE_DATA_FRAME} — issue #2 opened by alice: "Login fails"`,
+      ),
+    );
   });
 
   test("the newest line, and how many older ones this turn did not print", async () => {

@@ -48,13 +48,20 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  rmSync,
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { CrewKind } from "../models/launch-policy";
 import { samePath } from "../path-compare";
-import { FALLBACK_STALE_MS, holderIsGone, type ProcessHolder, withLock } from "../setup/lock";
+import {
+  FALLBACK_STALE_MS,
+  holderIsGone,
+  LockBusyError,
+  type ProcessHolder,
+  withLock,
+} from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
@@ -121,7 +128,11 @@ export function isKnownState(state: string): state is CrewState {
  * (D55) — their word wins over the brief, and the lead reads the next report against it;
  * `lead-tell` is one lead telling another lead of the same repository a note (D55); `clash` is a
  * new crew session whose `--files` another lead's crew session holds too (D55); `merge` is a pull
- * request merged into the base, for the other leads (D55).
+ * request merged into the base, for the other leads (D55); `issue` is news from GitHub (GI4): a
+ * new issue or comment, or the feed's own change of state — one event for each lead of the
+ * repository, written by whichever watch made the look. It names no crew session (`crew` is
+ * `ISSUE_EVENT_CREW`, `state` is `working`), and its `note` is `ISSUE_DATA_NOTE` when `text`
+ * quotes GitHub's words.
  *
  * **`clash` and `person` name a real crew session** (the one whose files another phase wants,
  * the one the person typed into). A `lead-tell` and a `merge` happen outside any crew session:
@@ -140,7 +151,17 @@ export const CREW_EVENT_TYPES = [
   "lead-tell",
   "clash",
   "merge",
+  "issue",
 ] as const;
+
+/**
+ * The `crew` of an `issue` event: it is about no crew session, and a fixed word keeps the field a
+ * plain file name like the others (`FILE_ID`).
+ */
+export const ISSUE_EVENT_CREW = "issues";
+
+/** The `note` of an `issue` event whose `text` quotes GitHub's words: the watch frames those as data. */
+export const ISSUE_DATA_NOTE = "data";
 export type CrewEventType = (typeof CREW_EVENT_TYPES)[number];
 
 /** How a crew session's hand-back ends. */
@@ -2056,4 +2077,83 @@ export function writeSelfWatchState(
   state: SelfWatchState,
 ): void {
   writeStoreFile(selfWatchStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+/**
+ * Where the issue feed of `repo` keeps its state (GI4, `src/issues/feed.ts`): a folder of its own
+ * — one record per repository, never per lead, since every lead of it hears the same GitHub — that
+ * holds the state file and the lock of the one look at a time. Its own folder, not the store's: a
+ * look waits on `gh` for seconds, and the store's lock must never wait that long.
+ */
+export function issueFeedDir(stateDir: string, repo: string): string {
+  return join(crewStoreDir(stateDir, repo), "issue-feed");
+}
+
+/** Where one list is up to: the newest number or id told, and the tag of the last answer. */
+const feedCursor = z.object({
+  /** The tag GitHub sent with the answer for the list's own URL; null when it sent none yet. */
+  etag: z.string().nullable(),
+  /** The highest issue number (or comment id) already told or passed over. */
+  top: count,
+});
+
+const issueFeedFields = z.object({
+  /** Where the comments list is up to; null before the first look succeeded. */
+  comments: feedCursor.nullable(),
+  /** Where the issues list is up to; null before the first look succeeded. */
+  issues: feedCursor.nullable(),
+  /** Not before this time (ms): the interval, or a rate limit's reset. */
+  nextAt: count,
+  /** The kind of the problem the lead was last told, or null: a line is said when this changes. */
+  problem: z.string().nullable(),
+  /** The repository the cursors belong to (`owner/name`): another one starts the feed over. */
+  source: z.string().min(1),
+  version: z.literal(1),
+});
+
+export type IssueFeedState = z.infer<typeof issueFeedFields>;
+
+/** The feed's state; null when there is none yet, or the file cannot be read (the feed then starts over). */
+export function readIssueFeed(stateDir: string, repo: string): IssueFeedState | null {
+  try {
+    const raw = readFileSync(join(issueFeedDir(stateDir, repo), "state.json"), "utf8");
+    const parsed = issueFeedFields.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
+  } catch {
+    // None yet, or one that cannot be read: the first look is silent, so nothing is told twice.
+  }
+  return null;
+}
+
+/** Writes the feed's state (atomic, 0600). Call it while holding the feed's lock. */
+export function writeIssueFeed(stateDir: string, repo: string, state: IssueFeedState): void {
+  writeStoreFile(
+    join(issueFeedDir(stateDir, repo), "state.json"),
+    `${JSON.stringify(state, null, 2)}\n`,
+  );
+}
+
+/** Forgets the feed's state: the switch is off, and a later first look must be silent again. */
+export function clearIssueFeed(stateDir: string, repo: string): void {
+  rmSync(join(issueFeedDir(stateDir, repo), "state.json"), { force: true });
+}
+
+/**
+ * Runs `look` holding the feed's lock without waiting: `held: false` when another look holds it
+ * (that one is the look of this interval, and what it finds reaches every lead).
+ */
+export async function underIssueFeedLock<T>(
+  stateDir: string,
+  repo: string,
+  look: () => Promise<T>,
+): Promise<{ held: false } | { held: true; value: T }> {
+  const folder = issueFeedDir(stateDir, repo);
+  // Private like the store's own folders (the lock would make it with the umask's mode).
+  mkdirSync(folder, { mode: 0o700, recursive: true });
+  try {
+    return { held: true, value: await withLock(folder, look, { waitMs: 0 }) };
+  } catch (error) {
+    if (error instanceof LockBusyError) return { held: false };
+    throw error;
+  }
 }

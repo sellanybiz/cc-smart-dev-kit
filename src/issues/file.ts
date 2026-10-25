@@ -41,7 +41,7 @@ import {
 } from "../workflow/merge-check";
 import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
 import { type ResolvedWorkflow, resolveGate } from "../workflow/resolve";
-import { isLabelName, LABEL_RULE } from "../workflow/schema";
+import { isLabelName, LABEL_RULE, labelsClash } from "../workflow/schema";
 import { bodyWithMarker, fingerprintHash, hasMarker, holdsMarker } from "./marker";
 import { screenText } from "./screen";
 
@@ -153,6 +153,28 @@ export function ghProblem(
   return `gh failed while it ${what} (${last.slice(0, 200)})`;
 }
 
+/**
+ * The login the kit's own `gh` posts as (`gh api user`). A marker the kit left in a comment counts
+ * only when this account wrote the comment: the marker is plain text, so a stranger who copies a
+ * hand-off's or a mark's line could otherwise silence the kit or fake its mark (`sameAccount`).
+ */
+export async function kitAccount(
+  read: (args: string[]) => Promise<GhResult>,
+): Promise<{ login: string } | { why: string }> {
+  const result = await read(["api", "--hostname", "github.com", "user", "--jq", ".login"]);
+  if (result.kind !== "ok")
+    return { why: ghProblem("read which account the kit posts as", result) };
+  const login = result.out.trim();
+  return login === ""
+    ? { why: "gh did not say which account the kit posts as, so no marker can be trusted" }
+    : { login };
+}
+
+/** True when `author` is the account `login` (GitHub logins are case-insensitive). */
+export function sameAccount(author: unknown, login: string): boolean {
+  return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
+}
+
 /** What `gh repo view --json` (`REPO_FIELDS`) says, or why it could not be read. */
 export type RepoFacts =
   | { hasIssues: boolean; isPublic: boolean; permission: string | null }
@@ -228,6 +250,20 @@ export function resolveSwitch(
   } catch (error) {
     return { retry: true, why: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * Why the resolved labels cannot be used, or null: the kit's found or fixed label is the ready
+ * label, which only a person adds (`labelsClash`). The schema checks one file; the person's file
+ * and the project's can each hold one of a pair, so every use of the labels checks the resolved
+ * values too.
+ */
+export function labelsProblem(resolved: ResolvedWorkflow): string | null {
+  return labelsClash({
+    fixedLabel: resolved.issues.fixedLabel.value,
+    foundLabel: resolved.issues.foundLabel.value,
+    readyLabel: resolved.issues.readyLabel.value,
+  });
 }
 
 /** The issues that carry `label`, every state, once: number, url and body. */
@@ -308,6 +344,8 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if ("why" in policy) return refuse(`the issue switch cannot be read: ${policy.why}`);
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null) return refuse(off);
+  const clash = labelsProblem(policy.resolved);
+  if (clash !== null) return refuse(clash);
 
   // The ready label is the person's choice: a phase starts from an issue that carries it, added by
   // someone with write access (`pickup.ts`). The kit files under that person's login, so it must

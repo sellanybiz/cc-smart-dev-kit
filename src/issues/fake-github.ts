@@ -5,7 +5,13 @@
  * hand-back posts, and records every call. Everything else (`repo view`, `auth status`)
  * goes to the issue fake (`src/testing/fake-gh.ts`). Nothing here reaches GitHub.
  */
-import { type FakeGh, type FakeGhOptions, fakeGh } from "../testing/fake-gh";
+import {
+  FAKE_LOGIN,
+  type FakeComment,
+  type FakeGh,
+  type FakeGhOptions,
+  fakeGh,
+} from "../testing/fake-gh";
 import type { GhCall, GhExec, GhResult } from "../workflow/merge-check";
 
 /** One event on an issue's timeline. */
@@ -40,7 +46,7 @@ export interface FakeRestIssue {
 
 export interface FakeIssueGhOptions {
   /** The comments already on an issue, by number. */
-  comments?: Record<number, string[]>;
+  comments?: Record<number, FakeComment[]>;
   /** Makes the read of one path fail, the way an unreadable API does. */
   failing?: readonly string[];
   gh?: FakeGhOptions;
@@ -95,6 +101,8 @@ export function fakeIssueGh(options: FakeIssueGhOptions): FakeIssueGh {
         return ok("https://github.com/example-org/my-app/issues/1#issuecomment-1\n");
       }
       if (args[0] !== "api") return await base.exec(args, call);
+      // `gh api user`: who the kit posts as, answered by the issue fake (`src/testing/fake-gh.ts`).
+      if (args.includes("user")) return await base.exec(args, call);
       const path = args.find((arg) => arg.startsWith("repos/") || arg === "graphql") ?? "";
       if (options.failing?.some((part) => path.includes(part)) === true) return notFound();
       if (path === "graphql") {
@@ -126,7 +134,12 @@ export function fakeIssueGh(options: FakeIssueGhOptions): FakeIssueGh {
         const issue = options.issues.find((one) => one.number === number);
         if (issueMatch[2] === "/comments") {
           // `--paginate --slurp` gives a list of pages.
-          return ok([(options.comments?.[number] ?? []).map((body) => ({ body }))]);
+          return ok([
+            (options.comments?.[number] ?? []).map((one) => {
+              const comment = typeof one === "string" ? { author: FAKE_LOGIN, body: one } : one;
+              return { body: comment.body, user: { login: comment.author } };
+            }),
+          ]);
         }
         if (issue === undefined) return notFound();
         if (issueMatch[2] === "/events") {

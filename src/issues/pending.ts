@@ -76,17 +76,60 @@ export function queueMarks(file: string, marks: readonly FixedMark[]): void {
   writePending(file, [...queued, ...added.map((mark) => ({ ...mark, told: false }))]);
 }
 
+/** How many due marks one watch pass settles; the rest stay due for the next pass. */
+export const MARKS_PER_PASS = 3;
+
+/**
+ * How long one watch pass may spend on GitHub, whatever the work: the poll for new issues
+ * (`feed.ts`) and the marks share it. A `gh` call can take 10-30 s, and the watch has its own
+ * work to do (the crew's lines, the starts, the stops), so the issue work never holds a pass.
+ */
+export const ISSUE_WORK_MS = 45_000;
+
+/** What one pass may still spend on GitHub: a count of marks, and a time. */
+export interface PassBudget {
+  clock: () => number;
+  deadline: number;
+  marks: number;
+}
+
+/** A fresh budget for one pass, from `clock` now. */
+export function passBudget(
+  clock: () => number,
+  limits: { marks?: number; ms?: number } = {},
+): PassBudget {
+  return {
+    clock,
+    deadline: clock() + (limits.ms ?? ISSUE_WORK_MS),
+    marks: limits.marks ?? MARKS_PER_PASS,
+  };
+}
+
+/** True while the pass has time for another call. */
+export function hasTime(budget: PassBudget): boolean {
+  return budget.clock() < budget.deadline;
+}
+
 /** Why a mark is worth a line to the lead, said in plain words. */
 const where = (mark: FixedMark): string => `#${mark.issue} (${mark.branch})`;
 
 /**
- * Try every queued mark that is due. Returns the lines for the lead. Never throws: a gate that
- * fails marks every due entry as tried and says it once. `gh` and the clock come from the caller.
+ * Try the queued marks that are due, at most what `budget` still allows (the rest stay queued and
+ * due). Returns the lines for the lead. Never throws: a gate that fails marks the due entries it
+ * was to try as tried and says it once. `gh` and the clock come from the caller.
  */
-export async function settleMarks(file: string, world: IssueWorld, now: number): Promise<string[]> {
+export async function settleMarks(
+  file: string,
+  world: IssueWorld,
+  now: number,
+  budget: PassBudget = passBudget(() => now),
+): Promise<string[]> {
   const queued = readPending(file);
-  const due = queued.filter((mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS);
-  if (due.length === 0) return [];
+  const allDue = queued.filter(
+    (mark) => mark.triedAt === undefined || now - mark.triedAt >= RETRY_MS,
+  );
+  if (allDue.length === 0 || budget.marks <= 0 || !hasTime(budget)) return [];
+  const due = allDue.slice(0, budget.marks);
   const lines: string[] = [];
   const gate = await openGate(world);
   const left: Pending[] = queued.filter((mark) => !due.includes(mark));
@@ -107,6 +150,12 @@ export async function settleMarks(file: string, world: IssueWorld, now: number):
     return lines;
   }
   for (const mark of due) {
+    // The time can run out inside the loop (a slow `gh`): the rest stay queued, untouched.
+    if (!hasTime(budget)) {
+      left.push(mark);
+      continue;
+    }
+    budget.marks -= 1;
     const done = await markFixed(gate, mark);
     if (done.kind === "failed") {
       left.push({ ...mark, told: true, triedAt: now });
