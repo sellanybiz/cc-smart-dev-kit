@@ -184,10 +184,19 @@ async function changeModel(
   }
   const decided = await withPlacesLock(ctx.paths.stateDir, async () => {
     // The watch's retry acts on a record it read a pass ago: a change asked for or dropped since
-    // is the lead's newer word.
+    // is the lead's newer word, and a session that moved on since (it reported `done`, was
+    // stopped, or came back as a copy with a new id) is no longer the one this pass judged: the
+    // next pass reads it again.
     if (retry) {
       const fresh = readCrew(ctx.paths.stateDir, record.repo, record.id);
-      if (fresh?.pendingLaunch?.at !== record.pendingLaunch?.at) return "stale";
+      if (
+        fresh === null ||
+        fresh.pendingLaunch?.at !== record.pendingLaunch?.at ||
+        fresh.state !== record.state ||
+        fresh.sessionId !== record.sessionId
+      ) {
+        return "stale";
+      }
     }
     // A queued crew session is judged by its start, which reads the record.
     const why =
@@ -269,6 +278,14 @@ async function moveSession(
       return { line: `${head} · ${stopped.why}; nothing changed`, ok: false };
     }
     state = stopped.state;
+    // The stop never overwrites an end: a session that reported `done` (or failed, or was merged)
+    // since the record was read is not brought back. The new values are kept for a later resume.
+    if (state !== "stopped") {
+      return {
+        line: `${head} · it ended its phase (${state}) while it was stopped; ${kept}`,
+        ok: false,
+      };
+    }
   }
   const resumed = await resumeSession(
     ctx,

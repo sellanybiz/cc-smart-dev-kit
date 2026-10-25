@@ -1026,14 +1026,22 @@ export async function updateCrewIfState(
   change: CrewChange,
   atMs: number,
   text: null | string = null,
+  by: RunActor | null = null,
 ): Promise<{ changed: boolean; record: CrewRecord }> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
-    if (!(states as readonly string[]).includes(before.state)) return null;
-    return {
-      change,
-      event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
-    };
-  });
+  return await changeCrew(
+    stateDir,
+    repo,
+    id,
+    atMs,
+    (before, at) => {
+      if (!(states as readonly string[]).includes(before.state)) return null;
+      return {
+        change,
+        event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+      };
+    },
+    by,
+  );
 }
 
 /**

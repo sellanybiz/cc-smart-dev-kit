@@ -75,13 +75,7 @@ import { resolveWorkflow } from "../workflow/resolve";
 import { repoKey } from "../workflow/reviews";
 import { ARCHIVE_PROJECTS, crewArchiveRoot } from "./archive-read";
 import type { Env } from "./context";
-import {
-  type CrewRecord,
-  crewSessions,
-  listAllCrew,
-  listAllLeads,
-  writeStoreFile,
-} from "./store";
+import { type CrewRecord, crewSessions, listAllCrew, listAllLeads, writeStoreFile } from "./store";
 import { transcriptFile } from "./transcript";
 
 /** The schema version of `archive.json`. */
@@ -402,7 +396,10 @@ export async function archiveConversation(input: ArchiveInput): Promise<ArchiveO
     .filter(isSessionId);
   let archived: Extract<ArchiveOutcome, { kind: "archived" }> | undefined;
   let kept: string | undefined;
-  let nothing: Extract<ArchiveOutcome, { kind: "nothing" }> = { folderGone: false, kind: "nothing" };
+  let nothing: Extract<ArchiveOutcome, { kind: "nothing" }> = {
+    folderGone: false,
+    kind: "nothing",
+  };
   let moved = 0;
   for (const sessionId of ids) {
     const one = await archiveSession(input, sessionId);

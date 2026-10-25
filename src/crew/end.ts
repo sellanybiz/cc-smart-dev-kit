@@ -59,6 +59,7 @@ import {
   readCrew,
   readLead,
   updateCrew,
+  updateCrewIfState,
 } from "./store";
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
@@ -203,9 +204,26 @@ export async function stopSession(record: CrewRecord, ctx: CrewContext): Promise
   const gone = stop !== null && sessionUnknown(ctx, record);
   if (stop !== null && !gone) return { ok: false, why: stop };
   const running = (RUNNING_STATES as readonly string[]).includes(record.state);
+  if (!running) return { gone, ok: true, state: record.state, stored: true };
   const text = gone ? "its session was gone already" : "stopped by the lead";
-  const stored = running ? await markState(record, "stopped", text, ctx) : true;
-  return { gone, ok: true, state: running ? "stopped" : record.state, stored };
+  // The record was read before the stop: a crew session that reported `done` (or was merged or
+  // removed) since is not written over. The write holds only while it is still in a running state.
+  try {
+    const result = await updateCrewIfState(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      RUNNING_STATES,
+      { state: "stopped" },
+      ctx.now(),
+      text,
+      actorOfCaller(ctx, record.repo),
+    );
+    return { gone, ok: true, state: result.record.state, stored: true };
+  } catch (error) {
+    ctx.error(`crew: the store could not record ${record.name} as stopped: ${reasonOf(error)}`);
+    return { gone, ok: true, state: "stopped", stored: false };
+  }
 }
 
 /** How long a leftover program gets to end on SIGTERM before SIGKILL. */
