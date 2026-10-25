@@ -1090,7 +1090,11 @@ fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose bre
 `currentBreakers`, so only while the router keeps the record fresh; a profile's reads
 `worker slot in profile <name>: … → gateway profile <name> slot worker <targets>`, the command
 that works whether the profile names the slot or uses the machine's chain), and the plan usage
-`5h 23% · 7d 41%`, which warns from 85 %. **A fallback or breaker line shows only in a session on
+`5h 23% · 7d 41%`, which warns from 85 %. Right after the model it shows the session's context
+use and reasoning effort (`ctx 312k · 78% of 400k · xhigh`, SL1): when the session's slot answers
+from a backend target with a pinned effort (D64), the effort shown is that pin, found the way the
+router finds the slot (`pinnedEffortOf`, `src/cli/statusline-context.ts`); otherwise it is the
+input's own `effort.level`. **A fallback or breaker line shows only in a session on
 its chain**: the status line command's environment carries the session's own
 `ANTHROPIC_BASE_URL` (`docs/claude-code-contract.md`), so a session on the machine's address sees
 the machine's records, one on `…/p/<name>` sees that profile's, and one off the gateway (Anthropic's
