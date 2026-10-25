@@ -55690,6 +55690,20 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
   });
 }
 
+// src/setup/remote-control.ts
+var REMOTE_CONTROL_KEY = ["remoteControlAtStartup"];
+var REMOTE_CONTROL_VALUE = true;
+function planRemoteControl(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, REMOTE_CONTROL_KEY);
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  const whose = ownership(records, REMOTE_CONTROL_KEY, current);
+  if (whose === "changed")
+    return "drop";
+  if (whose === "ours" || !current.found)
+    return "set";
+  return "leave";
+}
+
 // src/cli/setup.ts
 function show5(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
@@ -55780,6 +55794,9 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     add("mcp", mark, `${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
   const set = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
+  const remoteControl = planRemoteControl(paths);
+  if (remoteControl === "set")
+    set.push([REMOTE_CONTROL_KEY, REMOTE_CONTROL_VALUE]);
   if (managed.statusline)
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on")
@@ -55797,7 +55814,11 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     stateDir: paths.stateDir,
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
-    remove: [...tavilyOwned ? [TAVILY_KEY_PATH] : [], ...watchdogOwned],
+    remove: [
+      ...tavilyOwned ? [TAVILY_KEY_PATH] : [],
+      ...watchdogOwned,
+      ...remoteControl === "drop" ? [REMOTE_CONTROL_KEY] : []
+    ],
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun
   });

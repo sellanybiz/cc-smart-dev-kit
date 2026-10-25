@@ -1893,9 +1893,10 @@ waits for each session's next restart harmlessly.
   Claude Code compares the host, so that counts as unset (`src/gateway/settings.test.ts` ›
   "Remote Control" proves what `off` leaves; `docs/claude-code-contract.md` § The gateway
   has the proof and what is not proved yet). A session that started with the gateway on
-  connects again after a restart, or after `/remote-control` (not proved live). Whether a
-  session connects by itself at its start is the person's own setting,
-  `remoteControlAtStartup`, which the kit never writes. A project's own router address
+  connects again after a restart, or after `/remote-control` (not proved live). Setup turns
+  Remote Control's auto-connect on by default (`remoteControlAtStartup: true`, written only
+  while the key is absent), so with the gateway off a session connects by itself; with the
+  gateway on the key stays, and Remote Control stays off. A project's own router address
   (`gateway project on`) keeps Remote Control off in that project.
 - **A shell `ANTHROPIC_BASE_URL` loses to the settings file after `off`.** Settings files
   outrank the shell for `env` (`docs/claude-code-contract.md` § The gateway), so the explicit
