@@ -22,6 +22,7 @@
  * the person.
  */
 import { z } from "zod";
+import { phaseIssues } from "../issues/phase-issues";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -402,7 +403,8 @@ export function buildReport(
     changed: facts.changed,
     checks: model.checks,
     docs: model.docs,
-    issues: [...new Set([...model.issues, ...issues])].sort((a, b) => a - b),
+    // The model's list, `--issue`, and the issue `crew start --issue` stored on the record.
+    issues: phaseIssues(record, { issues: [...model.issues, ...issues] }),
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,

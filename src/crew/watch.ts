@@ -50,9 +50,13 @@
  * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
+import { queueMarks, settleMarks } from "../issues/pending";
+import { phaseIssues } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
+import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
@@ -77,6 +81,7 @@ import { startQueued } from "./start";
 import {
   type CrewEvent,
   type CrewRecord,
+  crewStoreDir,
   keepWatchLease,
   listCrew,
   listLeads,
@@ -458,6 +463,48 @@ export interface WatchScope {
    * paused one: each launches a Claude session. Left out (a test's own pass): always true.
    */
   goesOn?: () => Promise<boolean>;
+  /**
+   * The `gh` the issue marks run (D67): left out, the real one. A test hands in its own fake: no
+   * test reaches GitHub.
+   */
+  gh?: GhExec;
+}
+
+/**
+ * Where the marks a lead's merges still owe GitHub are queued (`src/issues/pending.ts`): beside
+ * the lead's other state, so they outlive the removal of the crew session that earned them.
+ */
+export function issueMarksFile(stateDir: string, repo: string, leadSessionId: string): string {
+  return join(crewStoreDir(stateDir, repo), "issue-marks", `${leadSessionId}.json`);
+}
+
+/**
+ * A crew session's merge is known (the one place: the watch marking its record merged): queue one
+ * mark for each issue its phase fixes. The marks are sent by `settleIssueMarks`, in this pass and
+ * every later one until GitHub has taken them. A report that cannot be read has no issues to
+ * name; the record's own issue (`crew start --issue`) still counts.
+ */
+function queueIssueMarks(
+  record: CrewRecord,
+  proof: NonNullable<CrewRecord["mergeProof"]>,
+  file: string,
+): void {
+  let report: ReturnType<typeof readReport> = null;
+  try {
+    report = record.reportPath === null ? null : readReport(record.reportPath);
+  } catch {
+    // A report that cannot be read names no issue; the record's own still counts.
+  }
+  queueMarks(
+    file,
+    phaseIssues(record, report).map((issue) => ({
+      base: proof.leadRef,
+      branch: record.branch,
+      issue,
+      merge: proof.leadCommit,
+      tip: proof.head,
+    })),
+  );
 }
 
 /**
@@ -854,6 +901,13 @@ export async function watchPass(
       if (record.state !== "merged") {
         const proof = mergeProof(record, ctx);
         if (proof === undefined) continue;
+        // Queued before the mark, so a pass that stops between the two loses nothing: the
+        // next pass queues the same marks again, and the queue keeps each once (D67).
+        queueIssueMarks(
+          record,
+          proof,
+          issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
+        );
         await updateCrew(
           ctx.paths.stateDir,
           record.repo,
@@ -1094,6 +1148,24 @@ export async function watchPass(
           agents,
           say,
         );
+
+  // The marks the lead's merges owe GitHub (D67): sent now, and again every pass until GitHub
+  // takes them. Only the watch that holds its lead's lease talks to GitHub (WF1). A failure is
+  // one line to the lead, never a failed merge; the queue is the memory.
+  if ((await scope.goesOn?.()) !== false) {
+    const marks = await settleMarks(
+      issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
+      {
+        cwd: scope.repo,
+        env: ctx.env,
+        gh: scope.gh ?? runGh,
+        home: ctx.paths.home,
+        paths: ctx.paths,
+      },
+      ctx.now(),
+    );
+    for (const line of marks) say(line);
+  }
 
   // What this pass itself wrote is said now, in the same pass — once.
   offset = sayEvents(offset, scope, ctx, say);

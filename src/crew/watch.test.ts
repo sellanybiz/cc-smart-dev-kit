@@ -16,10 +16,14 @@ import {
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
+import { readPending } from "../issues/pending";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { currentHolder } from "../setup/lock";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
+import { fakeGh } from "../testing/fake-gh";
+import { commitConfig } from "../testing/hooks";
+import { ISSUES_ON } from "../testing/issues-world";
 import { git } from "../testing/temp";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
@@ -43,12 +47,20 @@ import {
   type WatchLease,
   type WatchState,
   watchLeaseFile,
+  writeJsonFile,
   writeLead,
   writeStoreFile,
   writeWatchState,
 } from "./store";
 import type { GatewayNow } from "./wait";
-import { eventLine, PARKED_PASS_MS, WatchEnd, type WatchScope, watchPass } from "./watch";
+import {
+  eventLine,
+  issueMarksFile,
+  PARKED_PASS_MS,
+  WatchEnd,
+  type WatchScope,
+  watchPass,
+} from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -3084,5 +3096,147 @@ describe("WF1: the lease in the store", () => {
     expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)).toBeNull();
     const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
     expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+  });
+});
+
+describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
+  const ISSUE_URL = "https://github.com/example-org/my-app/issues";
+  const openIssue = (number: number) => ({
+    body: "A bug",
+    labels: ["kit:found"],
+    number,
+    title: `Bug ${number}`,
+    url: `${ISSUE_URL}/${number}`,
+  });
+
+  /** A lead world whose project has the issue switch (on or off), a done crew session whose report names `issues`, and its merged branch. */
+  async function mergedWorld(options: { issues: number[]; on?: boolean }) {
+    const world = await leadWorld();
+    git(world.repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
+    commitConfig(world.repo, options.on === false ? { worktrees: { base: "main" } } : ISSUES_ON, [
+      "main",
+    ]);
+    const reportPath = join(world.paths.stateDir, "issue-report.json");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    const base = git(world.repo, "rev-parse", "main").trim();
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    const tip = git(worktree, "rev-parse", "HEAD").trim();
+    writeJsonFile(reportPath, {
+      base: { ref: "main", sha: base },
+      branch: { name: "crew/B6b-portal-live", sha: tip },
+      changed: { deletions: 0, files: 1, insertions: 1 },
+      checks: [],
+      docs: [],
+      issues: options.issues,
+      needsLead: [],
+      open: [],
+      outsideBrief: [],
+      phase: "B6b",
+      pr: null,
+      question: null,
+      review: null,
+      status: "done",
+      tests: { full: null, targeted: [] },
+      version: 1,
+    });
+    await addCrew(world, "done", { base: { ref: "main", sha: base }, reportPath });
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    const gh = fakeGh({ issues: [openIssue(1), openIssue(2), openIssue(3)] });
+    const ctx = world.ctx(
+      { scanFacts: { containers: [], programs: [], sessions: [] } },
+      { FAKE_AGENTS_JSON: agentsJson([]) },
+    );
+    const scope = {
+      gh: gh.exec,
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const pass = (state: WatchState, over: Partial<CrewContext> = {}) =>
+      watchPass(state, { ...ctx, ...over }, scope);
+    const start: WatchState = {
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+      parkedAt: T0,
+    };
+    const queue = () => readPending(issueMarksFile(world.paths.stateDir, world.repo, LEAD_SESSION));
+    const said = () => world.out.filter((line) => line.startsWith("issues:"));
+    return { gh, pass, queue, said, start, tip, world };
+  }
+
+  const MARKED = (issue: number) =>
+    `issues: #${issue} (crew/B6b-portal-live) marked fixed on main; it closes when main ships`;
+
+  test("a merge with two issues: two comments and two labels, one line each", async () => {
+    const { gh, pass, said, start, tip } = await mergedWorld({ issues: [1, 2] });
+    await pass(start);
+    expect(gh.issues.map((one) => one.comments?.length ?? 0)).toEqual([1, 1, 0]);
+    expect(gh.issues.map((one) => one.labels)).toEqual([
+      ["kit:found", "fixed-unreleased"],
+      ["kit:found", "fixed-unreleased"],
+      ["kit:found"],
+    ]);
+    expect(gh.issues[0]?.comments?.[0]).toContain(
+      `Fixed on \`crew/B6b-portal-live\` at \`${tip.slice(0, 7)}\`, merged into \`main\``,
+    );
+    expect(said()).toEqual([MARKED(1), MARKED(2)]);
+  });
+
+  test("the same merge seen twice is marked once", async () => {
+    const { gh, pass, start } = await mergedWorld({ issues: [1] });
+    const comments = () =>
+      gh.calls.filter((call) => call.args[0] === "issue" && call.args[1] === "comment").length;
+    const first = await pass(start);
+    expect(comments()).toBe(1);
+    await pass(first.state);
+    await pass(first.state);
+    expect(comments()).toBe(1);
+    expect(gh.issues[0]?.comments).toHaveLength(1);
+  });
+
+  test("the switch off: nothing is sent, and nothing stays queued", async () => {
+    const { gh, pass, queue, said, start } = await mergedWorld({ issues: [1, 2], on: false });
+    await pass(start);
+    expect(gh.calls).toEqual([]);
+    expect(said()).toEqual([]);
+    expect(queue()).toEqual([]);
+  });
+
+  test("a report that names no issue sends nothing", async () => {
+    const { gh, pass, start } = await mergedWorld({ issues: [] });
+    await pass(start);
+    expect(gh.calls).toEqual([]);
+  });
+
+  test("GitHub unreachable: the merge still counts, one line, tried again later, done once", async () => {
+    const { gh, pass, queue, said, start, world } = await mergedWorld({ issues: [1] });
+    gh.mode = "timeout";
+    const first = await pass(start);
+    // The merge is not failed by it: the crew session is merged and removed.
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
+    const [line, ...more] = said();
+    expect(more).toEqual([]);
+    expect(line).toContain("could not mark #1 (crew/B6b-portal-live) fixed");
+    expect(line).toContain("tried again every 5 minutes");
+    // The queue is the memory.
+    expect(queue()).toHaveLength(1);
+    // A pass before the retry is due touches nothing and says nothing more.
+    world.out.length = 0;
+    gh.calls.length = 0;
+    const second = await pass(first.state);
+    expect(gh.calls).toEqual([]);
+    expect(world.out).toEqual([]);
+    // GitHub comes back and the retry is due: the mark is done, once, and the queue is empty.
+    gh.mode = null;
+    await pass(second.state, { now: () => T0 + 6 * 60_000 });
+    expect(gh.issues[0]?.comments).toHaveLength(1);
+    expect(gh.issues[0]?.labels).toContain("fixed-unreleased");
+    expect(said()).toEqual([MARKED(1)]);
+    expect(queue()).toEqual([]);
   });
 });
