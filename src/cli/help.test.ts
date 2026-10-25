@@ -161,7 +161,7 @@ describe("the top-level help", () => {
       `  ${COMMAND} doctor              the health check`,
       "",
       "More commands: workflow, update, restore, migrate, launch, sessions,",
-      "  worktrees, usage, report, portal, mcp, omniroute, job, crew, hook,",
+      "  worktrees, usage, report, portal, mcp, omniroute, job, crew, user, hook,",
       "  statusline, version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
     ].join("\n");
