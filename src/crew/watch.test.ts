@@ -55,6 +55,14 @@ const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
 
+/**
+ * A machine with nothing at work, for `CrewContext.scanFacts`: no containers, no mount points,
+ * no programs, no sessions. Every fact is given, mounts too: a fact left out is read from this
+ * host, and only Linux can list its mount points (`mountPoints`), so a moved-aside folder would
+ * stay everywhere else (D62).
+ */
+const quietScan = () => ({ containers: [], mounts: [], programs: [], sessions: [] });
+
 /** A world with a lead and no crew session. */
 async function leadWorld() {
   const world = crewWorld();
@@ -1086,10 +1094,7 @@ describe("crew watch", () => {
     // `crew rm` stopped there, and the record is still `done`.
     const parked = `${worktree}-removing-1761300000000`;
     git(world.repo, "worktree", "move", worktree, parked);
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     // Marked merged, then removed with `crew rm`'s own steps: the parked folder goes first.
     expect(existsSync(parked)).toBe(false);
     expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
@@ -1110,10 +1115,7 @@ describe("crew watch", () => {
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
     const parked = `${worktree}-removing-1761300000000`;
     git(world.repo, "worktree", "move", worktree, parked);
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     // The folder was the lead's own removal, left half done: it is finished. The record is
     // marked merged and stays for the lead's `crew rm` (D62).
     expect(existsSync(parked)).toBe(false);
@@ -1140,10 +1142,7 @@ describe("crew watch", () => {
     git(world.repo, "worktree", "move", worktree, parked);
     // The removal had deleted a tracked file of it before it stopped.
     rmSync(join(parked, "README.md"));
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     expect(existsSync(parked)).toBe(false);
     expect(git(world.repo, "worktree", "list")).not.toContain("-removing-");
     // Its commit is safe on the branch the folder stood on.
@@ -1157,7 +1156,7 @@ describe("crew watch", () => {
     writeFileSync(join(folder, "docs", "guide.md"), "left\n");
     const before = new Date(1761300000000 - 60_000);
     utimesSync(join(folder, "docs", "guide.md"), before, before);
-    const ctx = world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } });
+    const ctx = world.ctx({ scanFacts: quietScan() });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(existsSync(folder)).toBe(false);
     expect(world.out).toEqual([
@@ -1170,7 +1169,7 @@ describe("crew watch", () => {
     let clock = T0;
     const ctx = world.ctx({
       now: () => clock,
-      scanFacts: { containers: [], programs: [], sessions: [] },
+      scanFacts: quietScan(),
     });
     const leftover = (name: string): string => {
       const folder = join(world.repo, ".claude", "worktrees", `${name}-removing-1761300000000`);
@@ -1201,10 +1200,7 @@ describe("crew watch", () => {
     const parked = `${worktree}-removing-1761300000000`;
     git(world.repo, "worktree", "move", worktree, parked);
     writeFileSync(join(parked, "mine.txt"), "someone's notes\n");
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     // Said nothing, removed nothing: the next pass judges it again.
     expect(world.out).toEqual([]);
     expect(existsSync(join(parked, "mine.txt"))).toBe(true);
@@ -1224,9 +1220,8 @@ describe("crew watch", () => {
     try {
       const ctx = world.ctx({
         scanFacts: {
-          containers: [],
+          ...quietScan(),
           programs: [{ parentPid: 1, path: join(worktree, "check.sh"), pid: check.pid }],
-          sessions: [],
         },
       });
       await runCrew(["watch", "--once", "--timeout", "0"], ctx);
@@ -1256,7 +1251,7 @@ describe("crew watch", () => {
     try {
       const ctx = world.ctx({
         scanFacts: {
-          containers: [],
+          ...quietScan(),
           programs: [
             {
               cwd: worktree,
@@ -1265,7 +1260,6 @@ describe("crew watch", () => {
               startedAt: T0 - 60_000,
             },
           ],
-          sessions: [],
         },
       });
       await runCrew(["watch", "--once", "--timeout", "0"], ctx);
@@ -1306,11 +1300,7 @@ describe("crew watch", () => {
     const ctx = world.ctx(
       {
         now: () => clock,
-        scanFacts: {
-          containers: [{ name: "db", sources: [record.worktree] }],
-          programs: [],
-          sessions: [],
-        },
+        scanFacts: { ...quietScan(), containers: [{ name: "db", sources: [record.worktree] }] },
       },
       {
         REAL_GIT: realGit ?? "",
@@ -1401,7 +1391,7 @@ describe("crew watch", () => {
     const old = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     delete old.mergedWhileStopped;
     writeFileSync(file, JSON.stringify(old));
-    const ctx = world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } });
+    const ctx = world.ctx({ scanFacts: quietScan() });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.mergedWhileStopped).toBe(true);
@@ -1437,10 +1427,7 @@ describe("crew watch", () => {
       T0,
       "merged",
     );
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
     expect(existsSync(record.worktree)).toBe(false);
     expect(world.claudeCalls()).toContainEqual(["rm", "aaaa1111"]);
@@ -1449,10 +1436,7 @@ describe("crew watch", () => {
   test("a merged record with a deleted branch is removed on the next pass", async () => {
     const world = await leadWorld();
     await addCrew(world, "merged", { shortId: null });
-    await runCrew(
-      ["watch", "--once", "--timeout", "0"],
-      world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } }),
-    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ scanFacts: quietScan() }));
     expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
   });
 
@@ -1710,7 +1694,7 @@ describe("crew watch", () => {
       chain.push(record);
     }
     git(world.repo, "merge", "--no-ff", "-m", "first two parts", "crew/chain-1");
-    const ctx = world.ctx({ scanFacts: { containers: [], programs: [], sessions: [] } });
+    const ctx = world.ctx({ scanFacts: quietScan() });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     for (const record of chain.slice(0, 2)) {
       expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");

@@ -120,8 +120,15 @@ function project(config: Record<string, unknown> = { worktrees: { base: "main" }
 }
 
 /**
- * The run's dependencies: no containers, no programs, no sessions; a free lock; and a clock
- * two hours ahead, so a worktree made a moment ago counts as left alone for an hour.
+ * A machine with nothing at work: no containers, no mount points, no programs, no sessions.
+ * Every fact is given, mounts too: left out, the clean reads this host's own, which only Linux
+ * can list (`mountPoints`), so a leftover folder stays everywhere else (D62).
+ */
+const quietFacts = () => ({ containers: [], mounts: [], programs: [], sessions: [] });
+
+/**
+ * The run's dependencies: a quiet machine (`quietFacts`); a free lock; and a clock two hours
+ * ahead, so a worktree made a moment ago counts as left alone for an hour.
  */
 function deps(
   env: Record<string, string>,
@@ -130,7 +137,7 @@ function deps(
 ): AutoCleanDeps {
   return {
     env,
-    facts: { containers: [], programs: [], sessions: [] },
+    facts: quietFacts(),
     hold: async () => freeLock(),
     now: () => at,
     paths: cliPaths(env),
@@ -284,6 +291,33 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(line).toContain("files were written in it after the removal moved it: mine.txt");
   });
 
+  test("D62: a leftover folder stays when the mount points cannot be read, and the log says why", async () => {
+    // What every machine but Linux answers (`mountPoints`): unknown is not "none", so no
+    // leftover folder is finished there, and the log names the reason.
+    const { add, env, repo } = project();
+    add("live");
+    const parkedAt = 1761300000000;
+    const folder = join(repo, "..", `app-wt-gone-removing-${String(parkedAt)}`);
+    mkdirSync(join(folder, "docs"), { recursive: true });
+    writeFileSync(join(folder, "docs", "guide.md"), "left\n");
+    const before = new Date(parkedAt - 60_000);
+    utimesSync(join(folder, "docs", "guide.md"), before, before);
+
+    expect(
+      await runAutoClean(
+        repo,
+        "session",
+        deps(env, { facts: { ...quietFacts(), mounts: "unknown" } }),
+      ),
+    ).toBe("cleaned");
+
+    expect(existsSync(folder)).toBe(true);
+    const [line] = logLines(env);
+    expect(line).not.toContain("finished 1 leftover folder");
+    expect(line).toContain("left 1 leftover folder (");
+    expect(line).toContain(`${folder}: its mount points could not be read`);
+  });
+
   test("a commit that is not on the base keeps the worktree", async () => {
     const { add, env, repo } = project();
     const ahead = add("ahead");
@@ -320,11 +354,7 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     const sessions = [{ cwd: join(busy, "src"), name: "build it", pid: 4242, sessionId: "abc" }];
 
     expect(
-      await runAutoClean(
-        repo,
-        "session",
-        deps(env, { facts: { containers: [], programs: [], sessions } }),
-      ),
+      await runAutoClean(repo, "session", deps(env, { facts: { ...quietFacts(), sessions } })),
     ).toBe("cleaned");
 
     // Only the finished one went.
@@ -363,7 +393,7 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     const done = add("done");
     squash(done);
     const at = Date.now() + 2 * HOUR;
-    const facts = { containers: [], programs: [], sessions: [] };
+    const facts = quietFacts();
     const attempt = async (over: Partial<AutoCleanDeps>, plus = 0) =>
       await runAutoClean(repo, "merge", deps(env, over, at + plus * MINUTE));
 
