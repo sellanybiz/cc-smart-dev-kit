@@ -611,6 +611,12 @@ export interface JudgeContext {
   env: Env;
   input: HookInput;
   paths: CliPaths;
+  /**
+   * When the hook started (ms since the epoch: the frame's `nowMs`). The time budget of the
+   * git calls a question makes counts from there, so the frame's own project lookup, which
+   * runs first, is already spent from it. Unset: from the judge's own start.
+   */
+  startedAtMs?: number;
 }
 
 /** The `crew start` line a raw background launch is told to use instead. */
@@ -655,18 +661,6 @@ function proposeActs(base: null | string): string {
 /** Said after every question about a proposal: the person decides. */
 const APPROVE_IF_MEANT = "Approve it if you meant it.";
 
-/**
- * The reason the project cannot be named when git used up the hook's time. `job-route` has 10 s
- * in `hooks.json` and Claude Code kills a hook that overruns, so the question's git calls share
- * one budget (`budget.ts`) and, with none left, the judge asks instead of waiting.
- */
-const GIT_TOO_SLOW = "git did not answer within the hook's own time budget";
-
-/** True when the budget has no time left for one more git call. */
-function outOfTime(timeFor: TimeFor): boolean {
-  return timeFor(GUARD_GIT_TIMEOUT_MS) <= 0;
-}
-
 /** The question when the judge cannot name the project a proposal goes into, with why. */
 function cannotTellProject(why: string): string {
   return `${proposeActs(null)}\n${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
@@ -684,17 +678,14 @@ function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor
   let checkout: ReturnType<typeof locateCheckout>;
   let base: null | string;
   try {
+    // `job-route` has 10 s in `hooks.json`, and Claude Code kills a hook that overruns: the git
+    // calls here share one budget (`budget.ts`). A call that timed out, or was not made for want of
+    // time, is an error saying git did not answer (`GIT_TIMED_OUT`), never "not in a git project".
     checkout = locateCheckout(folder, { env: context.env, timeFor });
-    if (checkout === null) {
-      return cannotTellProject(
-        outOfTime(timeFor) ? GIT_TOO_SLOW : `${folder} is not in a git project`,
-      );
-    }
+    if (checkout === null) return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(
-      outOfTime(timeFor) ? GIT_TOO_SLOW : error instanceof Error ? error.message : String(error),
-    );
+    return cannotTellProject(error instanceof Error ? error.message : String(error));
   }
   const acts = proposeActs(base);
   try {
@@ -704,11 +695,7 @@ function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor
       timeoutMs: GUARD_GIT_TIMEOUT_MS,
     });
     if (!read.ok) {
-      // A call that spent its whole slice is a git that hung, not a ref that is missing.
-      const why = outOfTime(timeFor)
-        ? `reading the workflow committed on ${base} would have taken longer than the hook's own time budget allows`
-        : `the workflow committed on ${base} cannot be read (${read.why})`;
-      return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: ${why}. ${APPROVE_IF_MEANT}`;
+      return `${acts}\n${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
     }
     const { autoPush, openPr } = read.gate.resolved;
     const off: string[] = [];
@@ -732,8 +719,14 @@ function proposeQuestion(folder: string, context: JudgeContext, timeFor: TimeFor
  */
 function judgeProposals(proposals: readonly Proposal[], context: JudgeContext): BashVerdict | null {
   const cwd = stringField(context.input.cwd);
-  // One deadline for every git call the questions make, whatever the number of proposals.
-  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS);
+  // One deadline for every git call the questions make, whatever the number of proposals,
+  // counted from the hook's start.
+  const { timeFor } = startBudget(
+    context.env,
+    Date.now,
+    SHORT_GUARD_BUDGET_MS,
+    context.startedAtMs,
+  );
   let question: null | string = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {

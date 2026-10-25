@@ -869,8 +869,11 @@ with the one shell reader and answers five things:
   file three, each up to 5 s, so on a git that hangs they would add up past the hook, and a hook
   Claude Code kills answers nothing. Each call gets the smaller of its own limit and the time
   left, a call with none left is not made, and the question then says that git did not answer
-  in time. Every proposal on a line draws on the same budget. The frame's own project lookup
-  runs before the judge and is not counted.
+  in time (`GIT_TIMED_OUT`, `src/project/resolve.ts`: a call that was stopped or never made is
+  no answer about the repository, so it is never read as "not in git" or "the ref is not
+  known"). Every proposal on a line draws on the same budget, and it counts from the hook's
+  start (the frame's `nowMs`), so the frame's own project lookup, which runs first, is already
+  spent from it.
 - **polling**: a `crew list` / `crew status` read or a `claude agents --json` read that repeats
   over time — inside a `while` / `until` / `do` loop (bash, the condition included) or a
   PowerShell `while` / `do`, or a `watch` — or beside a `sleep` or `Start-Sleep`, is denied — a

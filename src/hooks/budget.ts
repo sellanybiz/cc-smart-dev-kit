@@ -49,12 +49,17 @@ export interface Budget {
   timeFor: (limitMs: number) => number;
 }
 
-/** Starts the budget of this run (`budgetMs(env, ceilingMs)` from now). */
+/**
+ * Starts the budget of this run: `budgetMs(env, ceilingMs)` from now, or from `startedAtMs` when
+ * the hook knows when it started (the frame's `nowMs`), so the time spent before the hook's own
+ * code ran — the frame looks the project up first — is already out of it.
+ */
 export function startBudget(
   env: Env,
   now: () => number = Date.now,
   ceilingMs: number = GUARD_BUDGET_MS,
+  startedAtMs?: number,
 ): Budget {
-  const budgetAt = now() + budgetMs(env, ceilingMs);
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }

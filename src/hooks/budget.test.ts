@@ -46,6 +46,20 @@ describe("the hook budget", () => {
     expect(timeFor(5_000)).toBeLessThanOrEqual(0);
   });
 
+  test("a hook that knows when it started counts the budget from there", () => {
+    // The frame's own project lookup runs first: 5 s spent before the hook's code starts leave a
+    // fresh 8 s budget only 3 s, and the margin takes 2 s of that.
+    let now = 105_000;
+    const { timeFor } = startBudget({}, () => now, SHORT_GUARD_BUDGET_MS, 100_000);
+    expect(timeFor(5_000)).toBe(1_000);
+    // Started late, the budget is gone before the hook's own code runs a call.
+    now = 108_500;
+    expect(timeFor(5_000)).toBeLessThanOrEqual(0);
+    // Without the start time it counts from the call, as before.
+    const fresh = startBudget({}, () => now, SHORT_GUARD_BUDGET_MS);
+    expect(fresh.timeFor(5_000)).toBe(5_000);
+  });
+
   test("each call gets its own limit or what is left, and nothing is left at the end", () => {
     const env = { [GUARD_BUDGET_ENV]: "10000" };
     let now = 1_000;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
+import { slowGitEnv } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   CcSmartDevKitConfigError,
@@ -11,9 +12,12 @@ import {
 import {
   type Checkout,
   GIT_NOT_FOUND,
+  GIT_TIMED_OUT,
   locateCheckout,
+  locateCheckoutAsync,
   ownHooksOf,
   readCommittedConfig,
+  readCommittedConfigAsync,
   resolveProject,
   resolveProjectAsync,
 } from "./resolve";
@@ -438,13 +442,50 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
     expect(limits).toEqual([5_000]);
     expect(readCommittedConfig(checkout, "dev", { timeFor, timeoutMs: 2_000 }).found).toBe(true);
     expect(limits).toEqual([5_000, 2_000, 2_000, 2_000]);
-    // Nothing is left: no git runs, so a repo that is there is not found, and the committed
-    // file is not known (the callers read the budget to tell it from a missing ref).
+    // Nothing is left: no git runs, and the answer is that git did not answer in time — never
+    // "not in git" or "the ref is not known".
     const spent = (): number => 0;
-    expect(locateCheckout(repo, { timeFor: spent })).toBeNull();
-    expect(readCommittedConfig(checkout, "dev", { timeFor: spent })).toMatchObject({
+    expect(() => locateCheckout(repo, { timeFor: spent })).toThrow(GIT_TIMED_OUT);
+    expect(readCommittedConfig(checkout, "dev", { timeFor: spent })).toEqual({
       found: false,
       where: "origin/dev:.claude/cc-smart-dev-kit.json",
+      why: GIT_TIMED_OUT,
+    });
+  });
+
+  // A fake git that hangs on the call named stands in for a stuck one. POSIX only (`slowGitEnv`).
+  describe.skipIf(process.platform === "win32")("a git that hangs", () => {
+    /** The environment of a hung `git <on>…`, with a budget that stops a call at 300 ms. */
+    function hung(on: string) {
+      return {
+        env: slowGitEnv(cleanGitEnv(), on, "exec sleep 30"),
+        timeFor: (limitMs: number): number => Math.min(limitMs, 300),
+      };
+    }
+
+    test("the project lookup says git did not answer, not that the folder is outside git", async () => {
+      const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+      const options = hung("rev-parse --path-format");
+      expect(() => locateCheckout(repo, options)).toThrow(GIT_TIMED_OUT);
+      await expect(locateCheckoutAsync(repo, options)).rejects.toThrow(GIT_TIMED_OUT);
+      // The same repo, asked without a hung git, is found: it is the hang that spoke.
+      expect(locateCheckout(repo)?.root).toBeString();
+    });
+
+    test("the committed file's reads say git did not answer, not that the ref is missing", async () => {
+      const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+      const checkout = checkoutOf(repo);
+      const options = hung("rev-parse --verify");
+      const expected = {
+        found: false as const,
+        where: "origin/dev:.claude/cc-smart-dev-kit.json",
+        why: GIT_TIMED_OUT,
+      };
+      expect(readCommittedConfig(checkout, "dev", options)).toEqual(expected);
+      expect(await readCommittedConfigAsync(checkout, "dev", options)).toEqual(expected);
+      // A hung `cat-file` too: the file's own read.
+      const text = hung("cat-file");
+      expect(readCommittedConfig(checkout, "dev", text)).toEqual(expected);
     });
   });
 

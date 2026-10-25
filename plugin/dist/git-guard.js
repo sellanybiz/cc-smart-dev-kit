@@ -6618,7 +6618,13 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-var NO_TIME_LEFT = { ok: false, stdout: "", stderr: "no time left in the hook's budget" };
+var GIT_TIMED_OUT = "git did not answer in time";
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
 function callLimit(timeoutMs, timeFor) {
   return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
 }
@@ -6640,7 +6646,8 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
       return {
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
-        stderr: result.stderr.toString()
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
       };
     } catch (error) {
       throw gitNotFound(error);
@@ -6667,7 +6674,7 @@ function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
         new Response(child.stderr).text(),
         child.exited
       ]);
-      return { ok: code === 0, stdout, stderr };
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
     } catch (error) {
       throw gitNotFound(error);
     }
@@ -6686,6 +6693,8 @@ function requireGitVersion(git) {
   requireGitVersionText(git(["--version"]).stdout);
 }
 function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new Error(GIT_TIMED_OUT);
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -6733,6 +6742,8 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
+  if (revParse.timedOut === true)
+    throw new Error(GIT_TIMED_OUT);
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -6771,17 +6782,26 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function refNotKnown(where, ref) {
+function gitTimedOut(where) {
+  return { found: false, where, why: GIT_TIMED_OUT };
+}
+function refNotKnown(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return {
     found: false,
     where,
     why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
   };
 }
-function noCommittedFile(where, ref) {
+function noCommittedFile(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
-function unreadableCommitted(where) {
+function unreadableCommitted(where, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
 function committedOf(text, where, options) {
@@ -6797,13 +6817,13 @@ function readCommittedConfig(checkout, branch, options = {}) {
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
@@ -6812,7 +6832,7 @@ async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
   if (!commit.ok)
-    return refNotKnown(where, ref);
+    return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
     "--verify",
@@ -6820,10 +6840,10 @@ async function readCommittedConfigAsync(checkout, branch, options = {}) {
     `${commit.stdout.trim()}:${CONFIG_PATH}`
   ]);
   if (!blob.ok)
-    return noCommittedFile(where, ref);
+    return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
-    return unreadableCommitted(where);
+    return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
@@ -9507,8 +9527,8 @@ function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
   const given = Number(env[GUARD_BUDGET_ENV]);
   return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
 }
-function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS) {
-  const budgetAt = now() + budgetMs(env, ceilingMs);
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
@@ -15939,10 +15959,6 @@ function proposeActs(base) {
   return `This runs \`${COMMAND} workflow propose\`: it pushes a new branch to origin and opens a pull request into ${into} that is ready for review, in child processes no hook sees, so the git and merge guards never ask about either.`;
 }
 var APPROVE_IF_MEANT = "Approve it if you meant it.";
-var GIT_TOO_SLOW = "git did not answer within the hook's own time budget";
-function outOfTime(timeFor) {
-  return timeFor(GUARD_GIT_TIMEOUT_MS) <= 0;
-}
 function cannotTellProject(why) {
   return `${proposeActs(null)}
 ${COMMAND} cannot tell which project's workflow this line proposes into (${why}), so it cannot read the gate. ${APPROVE_IF_MEANT}`;
@@ -15952,12 +15968,11 @@ function proposeQuestion(folder, context, timeFor) {
   let base;
   try {
     checkout = locateCheckout(folder, { env: context.env, timeFor });
-    if (checkout === null) {
-      return cannotTellProject(outOfTime(timeFor) ? GIT_TOO_SLOW : `${folder} is not in a git project`);
-    }
+    if (checkout === null)
+      return cannotTellProject(`${folder} is not in a git project`);
     base = loadProjectConfig(checkout).config?.worktrees?.base ?? null;
   } catch (error) {
-    return cannotTellProject(outOfTime(timeFor) ? GIT_TOO_SLOW : error instanceof Error ? error.message : String(error));
+    return cannotTellProject(error instanceof Error ? error.message : String(error));
   }
   const acts = proposeActs(base);
   try {
@@ -15967,9 +15982,8 @@ function proposeQuestion(folder, context, timeFor) {
       timeoutMs: GUARD_GIT_TIMEOUT_MS
     });
     if (!read.ok) {
-      const why = outOfTime(timeFor) ? `reading the workflow committed on ${base} would have taken longer than the hook's own time budget allows` : `the workflow committed on ${base} cannot be read (${read.why})`;
       return `${acts}
-${COMMAND} cannot tell whether the push and the pull request are allowed: ${why}. ${APPROVE_IF_MEANT}`;
+${COMMAND} cannot tell whether the push and the pull request are allowed: the workflow committed on ${base} cannot be read (${read.why}). ${APPROVE_IF_MEANT}`;
     }
     const { autoPush, openPr } = read.gate.resolved;
     const off = [];
@@ -15990,7 +16004,7 @@ ${COMMAND} cannot tell whether the push and the pull request are allowed: the wo
 }
 function judgeProposals(proposals, context) {
   const cwd = stringField(context.input.cwd);
-  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS);
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.startedAtMs);
   let question = null;
   for (const proposal of proposals) {
     if ("unread" in proposal) {
@@ -16186,7 +16200,8 @@ function judgeCommandAnswer(input, context) {
   const verdict = judgeBash(readBash(command, inputDialect(input)), {
     env: context.env,
     input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   return verdict === null ? null : judgeAnswer(verdict);
 }
@@ -16203,7 +16218,8 @@ function jobRoute(context) {
   const verdict = judgeBash(reading, {
     env: context.env,
     input: context.input,
-    paths: context.paths
+    paths: context.paths,
+    startedAtMs: context.nowMs
   });
   if (verdict !== null)
     return judgeAnswer(verdict);
@@ -16249,7 +16265,12 @@ function routeFacts(input, context) {
   if (command === null)
     return {};
   const reading = readBash(command, inputDialect(input));
-  const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
+  const verdict = judgeBash(reading, {
+    env: context.env,
+    input,
+    paths: context.paths,
+    startedAtMs: context.nowMs
+  });
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);

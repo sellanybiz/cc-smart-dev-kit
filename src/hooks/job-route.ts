@@ -267,6 +267,7 @@ export function judgeCommandAnswer(input: HookInput, context: HookEnvContext): n
     env: context.env,
     input,
     paths: context.paths,
+    startedAtMs: context.nowMs,
   });
   return verdict === null ? null : judgeAnswer(verdict);
 }
@@ -299,6 +300,7 @@ export function jobRoute(context: HookContext): HookResult {
     env: context.env,
     input: context.input,
     paths: context.paths,
+    startedAtMs: context.nowMs,
   });
   if (verdict !== null) return judgeAnswer(verdict);
   if (dialect !== "bash") return SILENT;
@@ -380,7 +382,12 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
   const command = commandOf(input);
   if (command === null) return {};
   const reading = readBash(command, inputDialect(input));
-  const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
+  const verdict = judgeBash(reading, {
+    env: context.env,
+    input,
+    paths: context.paths,
+    startedAtMs: context.nowMs,
+  });
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
   if (reading.crewNeverRuns.length > 0) facts.crew_commands = reading.crewNeverRuns;

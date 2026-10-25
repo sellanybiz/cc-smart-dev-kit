@@ -44,7 +44,19 @@ export interface ResolveOptions {
 /** `rev-parse --path-format` came in git 2.31. */
 export const MIN_GIT_VERSION = "2.31.0";
 
-type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
+/**
+ * What one git call answered. `timedOut`: the call was stopped at its time limit, or never made
+ * because its shared budget had none left — git did not answer, which is no answer about the
+ * repository (a ref that is not there, a folder that is not in git).
+ */
+interface GitResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}
+
+type Git = (args: string[]) => GitResult;
 
 /**
  * Each git call here may take this long. A hook resolves its project first, and a guard's
@@ -57,7 +69,7 @@ export const GIT_NOT_FOUND =
   "git was not found, so this project's own values cannot be read. Install git, then try again.";
 
 /** A git runner that does not block the caller: `gitInAsync`. */
-type GitAsync = (args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+type GitAsync = (args: string[]) => Promise<GitResult>;
 
 /** What a failed spawn says when there is no git at all, in words a page can act on. */
 function gitNotFound(error: unknown): unknown {
@@ -69,8 +81,16 @@ function gitNotFound(error: unknown): unknown {
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 
+/** What a caller is told when git did not answer: the reason of a question, never a guess. */
+export const GIT_TIMED_OUT = "git did not answer in time";
+
 /** What a call answers when its shared budget has no time left: it was never made. */
-const NO_TIME_LEFT = { ok: false, stdout: "", stderr: "no time left in the hook's budget" };
+const NO_TIME_LEFT: GitResult = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true,
+};
 
 /**
  * How long one call may take: `timeoutMs`, or what the shared budget leaves if that is less;
@@ -104,6 +124,7 @@ function gitIn(
         ok: result.exitCode === 0,
         stdout: result.stdout.toString(),
         stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true,
       };
     } catch (error) {
       throw gitNotFound(error);
@@ -140,7 +161,8 @@ function gitInAsync(
         new Response(child.stderr).text(),
         child.exited,
       ]);
-      return { ok: code === 0, stdout, stderr };
+      // Bun stops a call at its time limit with SIGTERM, and a git that ends otherwise has none.
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
     } catch (error) {
       throw gitNotFound(error);
     }
@@ -170,10 +192,8 @@ async function requireGitVersionAsync(git: GitAsync): Promise<void> {
  * The first `worktree` entry of `git worktree list --porcelain` is the main checkout: the
  * one parse both readers of the list use.
  */
-function mainCheckoutFrom(
-  list: { ok: boolean; stdout: string; stderr: string },
-  cwd: string,
-): string | null {
+function mainCheckoutFrom(list: GitResult, cwd: string): string | null {
+  if (list.timedOut === true) throw new Error(GIT_TIMED_OUT);
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split("\n\n");
   const lines = firstEntry.split("\n");
@@ -249,6 +269,8 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
+  // A git that did not answer says nothing about the folder: not "outside git".
+  if (revParse.timedOut === true) throw new Error(GIT_TIMED_OUT);
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     requireGitVersion(git);
@@ -288,6 +310,7 @@ export async function locateCheckoutAsync(
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
+  if (revParse.timedOut === true) throw new Error(GIT_TIMED_OUT);
   const parts = revParseParts(revParse);
   if (parts === "not-understood") {
     await requireGitVersionAsync(git);
@@ -360,8 +383,14 @@ export interface CommittedOptions {
   pluginVersion?: string;
 }
 
+/** The answer when git was stopped, or never run, before it said what the ref holds. */
+function gitTimedOut(where: string): CommittedConfig {
+  return { found: false, where, why: GIT_TIMED_OUT };
+}
+
 /** The answer when `origin/<branch>` is not in this repository. */
-function refNotKnown(where: string, ref: string): CommittedConfig {
+function refNotKnown(where: string, ref: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return {
     found: false,
     where,
@@ -370,12 +399,14 @@ function refNotKnown(where: string, ref: string): CommittedConfig {
 }
 
 /** The answer when the ref's commit has no project file. */
-function noCommittedFile(where: string, ref: string): CommittedConfig {
+function noCommittedFile(where: string, ref: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
 }
 
 /** The answer when git could not read the file it found. */
-function unreadableCommitted(where: string): CommittedConfig {
+function unreadableCommitted(where: string, read: GitResult): CommittedConfig {
+  if (read.timedOut === true) return gitTimedOut(where);
   return { found: false, where, why: `git could not read ${where}` };
 }
 
@@ -417,11 +448,11 @@ export function readCommittedConfig(
     options.timeFor,
   );
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) return refNotKnown(where, ref);
+  if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok) return noCommittedFile(where, ref);
+  if (!blob.ok) return noCommittedFile(where, ref, blob);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok) return unreadableCommitted(where);
+  if (!text.ok) return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
@@ -444,16 +475,16 @@ export async function readCommittedConfigAsync(
     options.timeFor,
   );
   const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) return refNotKnown(where, ref);
+  if (!commit.ok) return refNotKnown(where, ref, commit);
   const blob = await git([
     "rev-parse",
     "--verify",
     "--quiet",
     `${commit.stdout.trim()}:${CONFIG_PATH}`,
   ]);
-  if (!blob.ok) return noCommittedFile(where, ref);
+  if (!blob.ok) return noCommittedFile(where, ref, blob);
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok) return unreadableCommitted(where);
+  if (!text.ok) return unreadableCommitted(where, text);
   return committedOf(text, where, options);
 }
 
