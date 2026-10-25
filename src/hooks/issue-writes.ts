@@ -15,8 +15,9 @@
  * `-X=POST` is `POST`. The runners (`find -exec`, `watch`, `su -c`, `parallel`, `xargs`) are the
  * reader's own (`nestedCommand`, `WRAPPERS`): `invocationsOf` already hands back the `gh` they run.
  *
- * **Text it cannot read whole fails closed.** A write method to an endpoint that holds `$` or a
- * backtick (the shell fills it in), a GraphQL query that does, a request body from a file
+ * **Text it cannot read whole fails closed.** A write method to an endpoint the shell fills in
+ * (a `$` expansion or a backtick outside single quotes: the reader asks the shell reader, which
+ * knows the quotes, `RunInvocation.filled`), a GraphQL query it fills in, a request body from a file
  * (`--input`, `query=@file`), and a `gh` alias that runs a shell command or expands too deep all
  * count as a write. A `gh <word>` is looked up in the person's aliases when the caller gives the
  * list (`issueWritesWithAliases`, like the merge reader); a word that is neither a gh command nor
@@ -25,7 +26,10 @@
  * is a risk of its own (`computedIssueRisk`).
  */
 import {
+  anyFill,
   type Dialect,
+  type FillTest,
+  fillTest,
   invocationsOf,
   isShort,
   MAX_NESTING,
@@ -37,6 +41,7 @@ import {
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
   API_VALUE_LETTERS,
+  type ApiText,
   computedInvocationRisk,
   GH_COMMANDS,
 } from "./after-merge";
@@ -55,9 +60,6 @@ const WRITE_METHODS: ReadonlySet<string> = new Set(["DELETE", "PATCH", "POST", "
  * label on an issue), or by repository id.
  */
 const ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/(?:issues|labels)(?:\/.*)?$/i;
-
-/** Text the shell fills in when the line runs: the guard reads it as written, not as sent. */
-const SHELL_FILLED = /[$`]/;
 
 /**
  * The GraphQL mutations of pull requests: the merge guard judges these (a merge, an opening, a
@@ -89,17 +91,18 @@ function isGraphql(endpoint: string): boolean {
 /**
  * What a GraphQL request writes, named, or null. Every GitHub mutation is `name(input: …)`, so
  * the names are the words before `(input:`; a mutation made only of pull request mutations is
- * the merge guard's. A request the guard cannot read (a file, the shell) counts as a write: it
- * cannot be told from a mutation.
+ * the merge guard's. A request the guard cannot read (a file, text the shell fills in) counts as
+ * a write: it cannot be told from a mutation. A `$` GraphQL names its own variables with
+ * (`query($n: Int!)`) is text, not the shell's.
  */
-function graphqlWrite(fields: readonly string[], body: boolean): string | null {
+function graphqlWrite(fields: readonly ApiText[], body: boolean): string | null {
   if (body) {
     return "a gh api graphql request that cannot be read (its body comes from a file or standard input)";
   }
-  for (const field of fields) {
-    if (!field.startsWith("query=")) continue;
-    const query = field.slice("query=".length);
-    if (query.startsWith("@") || SHELL_FILLED.test(query)) {
+  for (const { filled, value } of fields) {
+    if (!value.startsWith("query=")) continue;
+    const query = value.slice("query=".length);
+    if (query.startsWith("@") || filled) {
       return "a gh api graphql request that cannot be read (its query comes from a file or the shell)";
     }
     if (!/\bmutation\b/i.test(query)) continue;
@@ -117,16 +120,23 @@ function graphqlWrite(fields: readonly string[], body: boolean): string | null {
   return null;
 }
 
-/** What a `gh api …` call writes to the issues or labels, named; null when it writes none. */
-function apiIssueWrite(rest: readonly string[]): string | null {
-  const fields: string[] = [];
-  let endpoint: string | null = null;
+/**
+ * What a `gh api …` call writes to the issues or labels, named; null when it writes none.
+ * `isFilled`: the shell fills in this word (`RunInvocation.filled`); a value counts as text the
+ * guard cannot read only when the word it came from is one.
+ */
+function apiIssueWrite(rest: readonly string[], isFilled: FillTest): string | null {
+  const fields: ApiText[] = [];
+  let endpoint: ApiText | null = null;
   let body = false;
-  let method: string | null = null;
+  let method: ApiText | null = null;
+  /** `value`, taken out of `word`: filled when `word` is. */
+  const from = (word: string, value: string): ApiText => ({ filled: isFilled(word), value });
   for (let index = 0; index < rest.length; index++) {
     const word = rest[index] ?? "";
     if (word === "--") {
-      endpoint ??= rest[index + 1] ?? null;
+      const after = rest[index + 1];
+      if (endpoint === null && after !== undefined) endpoint = from(after, after);
       break;
     }
     if (word === "-h" || word === "--help") return null;
@@ -136,10 +146,11 @@ function apiIssueWrite(rest: readonly string[]): string | null {
       // A flag this reader does not know is the merge reader's refusal already (`apiCalls`).
       if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name)) return null;
       if (name === "--input") body = true;
-      if (name === "--method") method = at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1);
-      if (name === "--field" || name === "--raw-field") {
-        fields.push(at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1));
-      }
+      // The value is the next word, or what follows the `=` of this one.
+      const source = at === -1 ? (rest[index + 1] ?? "") : word;
+      const value = at === -1 ? source : word.slice(at + 1);
+      if (name === "--method") method = from(source, value);
+      if (name === "--field" || name === "--raw-field") fields.push(from(source, value));
       if (at === -1 && API_VALUE_FLAGS.has(name)) index += 1;
       continue;
     }
@@ -147,25 +158,26 @@ function apiIssueWrite(rest: readonly string[]): string | null {
       const { flags, value: attached, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter)) continue;
-      const value = wantsNext ? (rest[index + 1] ?? "") : attached;
+      const source = wantsNext ? (rest[index + 1] ?? "") : word;
+      const value = wantsNext ? source : attached;
       if (wantsNext) index += 1;
-      if (letter === "f" || letter === "F") fields.push(value);
-      if (letter === "X") method = value;
+      if (letter === "f" || letter === "F") fields.push(from(source, value));
+      if (letter === "X") method = from(source, value);
       continue;
     }
-    endpoint ??= word;
+    endpoint ??= from(word, word);
   }
   if (endpoint === null) return null;
   // gh sends GET, and POST once a parameter or a body is added (`gh api --help`).
-  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  const used = (method?.value ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
   // A method the shell fills in could be any of them: it is read as a write.
-  if (!WRITE_METHODS.has(used) && !SHELL_FILLED.test(used)) return null;
+  if (!WRITE_METHODS.has(used) && method?.filled !== true) return null;
   // An endpoint the shell fills in cannot be read: the call may reach any issue or label.
-  if (SHELL_FILLED.test(endpoint)) {
-    return `a gh api ${used} to an endpoint that cannot be read (${endpoint})`;
+  if (endpoint.filled) {
+    return `a gh api ${used} to an endpoint that cannot be read (${endpoint.value})`;
   }
-  if (isGraphql(endpoint)) return graphqlWrite(fields, body);
-  const path = apiPath(endpoint);
+  if (isGraphql(endpoint.value)) return graphqlWrite(fields, body);
+  const path = apiPath(endpoint.value);
   return ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
 }
 
@@ -200,6 +212,7 @@ function aliasWrite(
   found: Reading,
   depth: number,
   named: string,
+  isFilled: FillTest,
 ): string | null {
   const expansion = aliases?.get(word);
   if (expansion === undefined) {
@@ -212,7 +225,11 @@ function aliasWrite(
   if (depth >= MAX_NESTING) {
     return `a gh alias that expands to further commands (\`gh ${named}\`)`;
   }
-  return ghIssueWrite([...wordsOf(expansion), ...rest], aliases, found, depth + 1, named);
+  // The expansion is the person's own config, read by no shell of this line: a `$` in it is
+  // gh's (`$1`) or a variable of its own, so its words fail closed by their text.
+  const own = wordsOf(expansion);
+  const filled: FillTest = (text) => (own.includes(text) && anyFill(text)) || isFilled(text);
+  return ghIssueWrite([...own, ...rest], aliases, found, filled, depth + 1, named);
 }
 
 /** What a `gh …` invocation writes to the issues or labels, named; null when it writes none. */
@@ -220,6 +237,7 @@ function ghIssueWrite(
   args: readonly string[],
   aliases: ReadonlyMap<string, string> | null,
   found: Reading,
+  isFilled: FillTest,
   depth = 0,
   named = "",
 ): string | null {
@@ -241,14 +259,15 @@ function ghIssueWrite(
     if (positional.length === 1) {
       const command = word.toLowerCase();
       // `gh api` reads its own flags; the rest of the line is its.
-      if (command === "api") return apiIssueWrite(args.slice(index + 1));
+      if (command === "api") return apiIssueWrite(args.slice(index + 1), isFilled);
       // A command the shell fills in (`gh "$CMD" create`) cannot be read: it may be any.
-      if (SHELL_FILLED.test(word)) return `a gh command the shell fills in (\`gh ${word}\`)`;
+      if (isFilled(word)) return `a gh command the shell fills in (\`gh ${word}\`)`;
       // A word that names no gh command: one of the person's aliases, or an extension. gh's
       // commands are found in any case, its aliases only as typed.
       if (!GH_COMMANDS.has(command)) {
         const rest = args.slice(index + 1);
-        return aliasWrite(word, rest, aliases, found, depth, named === "" ? word : named);
+        const alias = named === "" ? word : named;
+        return aliasWrite(word, rest, aliases, found, depth, alias, isFilled);
       }
       if (command !== "issue" && command !== "label") return null;
     }
@@ -275,7 +294,7 @@ function readLine(
   const found: Reading = { writes: [], unnamed: [] };
   for (const run of invocationsOf(command, dialect)) {
     if (run.computed || run.program !== "gh") continue;
-    const write = ghIssueWrite(run.args, aliases, found);
+    const write = ghIssueWrite(run.args, aliases, found, fillTest(run.filled));
     if (write !== null && !found.writes.includes(write)) found.writes.push(write);
   }
   return found;

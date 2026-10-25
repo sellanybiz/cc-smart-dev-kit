@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import {
   dialectOfTool,
   invocationOf,
+  invocationsOf,
   nestedCommand,
   nestedDialect,
   programsOf,
@@ -19,6 +20,7 @@ import {
   shortFlags,
   withoutRedirections,
   wordsOf,
+  wordsWithFill,
 } from "./command";
 
 const ps = { dialect: "powershell" } as const;
@@ -265,9 +267,9 @@ describe("shellSegments — a line that goes on", () => {
 describe("shellSteps — the command piped into each one", () => {
   test("names the text of the command before a pipe", () => {
     expect(shellSteps("echo hi | sh; ls")).toEqual([
-      { text: "echo hi ", pipedFrom: null },
-      { text: " sh", pipedFrom: "echo hi " },
-      { text: " ls", pipedFrom: null },
+      { text: "echo hi ", pipedFrom: null, expanded: false },
+      { text: " sh", pipedFrom: "echo hi ", expanded: false },
+      { text: " ls", pipedFrom: null, expanded: false },
     ]);
   });
 });
@@ -770,5 +772,143 @@ describe("shortFlags — the value attached to a short option (IX1)", () => {
   test("IX1-2: a letter with nothing attached takes the next word, and has no value here", () => {
     expect(shortFlags("-X", "X")).toEqual({ flags: "X", value: "", wantsNext: true });
     expect(shortFlags("-ab", "X")).toEqual({ flags: "ab", value: "", wantsNext: false });
+  });
+});
+
+describe("wordsWithFill — which words the shell fills in (IX3)", () => {
+  const filledOf = (segment: string, dialect: "bash" | "powershell" = "bash") =>
+    wordsWithFill(segment, dialect).map((one) => one.filled);
+
+  test("gives the same texts as wordsOf, each with its flag", () => {
+    expect(wordsWithFill("gh api 'a b' \"$x\"")).toEqual([
+      { text: "gh", filled: false },
+      { text: "api", filled: false },
+      { text: "a b", filled: false },
+      { text: "$x", filled: true },
+    ]);
+    for (const line of [
+      "git commit -m \"a b\" 'c d' main>log",
+      'g\\it $\'\\x67it\' "a\\$b" $"t"',
+    ]) {
+      expect(wordsWithFill(line).map((one) => one.text)).toEqual(wordsOf(line));
+    }
+  });
+
+  test("bash: an expansion outside single quotes is filled, in every spelling", () => {
+    // `$(cat q)` and a backtick pair split on their space: each piece is a word of its own.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf("a $x ${x} $(cat q) $((1+2)) `cat q` $1 $? x$y")).toEqual([
+      false, // a
+      true, // $x
+      true, // ${x}
+      true, // $(cat
+      false, // q)
+      true, // $((1+2))
+      true, // `cat
+      true, // q`
+      true, // $1
+      true, // $?
+      true, // x$y
+    ]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf('a "$x" "q=$(cat q)" "`cat q`" "pre${x}post"')).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(filledOf('a $"x $y"')).toEqual([false, true]);
+  });
+
+  test("bash: single quotes, $'…' and an escaped $ fill nothing", () => {
+    expect(filledOf("a 'q($n)' '$x' '`x`' $'a$b' \\$x \"a\\$b\" \"a\\`b\"")).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    // A `$` before a character that makes it text (`$.`, `$~`) is text.
+    expect(filledOf("a $. $~ 'x'$.")).toEqual([false, false, false, false]);
+    expect(filledOf("a $-")).toEqual([false, true]);
+  });
+
+  test("a `$` the line reader cut off from what follows is filled: it may expand into anything", () => {
+    // The line reader joins `$\<newline>P` into `$ P` and cuts PowerShell's `${env:P}` at its
+    // brace, so the word ends in a lone `$`. A lone `$` is never a word to trust as text.
+    expect(filledOf("a repos/o/r/$ P")).toEqual([false, true, false]);
+    expect(filledOf('a "repos/o/r/$" b')).toEqual([false, true, false]);
+    expect(filledOf("a repos/o/r/$\\\nP")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$", "powershell")).toEqual([false, true]);
+    expect(filledOf("a repos/o/r/$`\nP", "powershell")).toEqual([false, true]);
+    // Single quotes and an escaped `$` still fill nothing.
+    expect(filledOf("a 'repos/o/r/$' \\$")).toEqual([false, false, false]);
+  });
+
+  test("bash: one filled piece makes the whole word filled", () => {
+    expect(filledOf("'a$b'$c")).toEqual([true]);
+    expect(filledOf("'a$b'c")).toEqual([false]);
+    expect(filledOf("query='query($n: Int!) { x }'\"$S\"")).toEqual([true]);
+  });
+
+  test("PowerShell: bare and double-quoted $ is filled, single quotes and `$ are not", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
+    expect(filledOf('a $x $(Get-Q) ${x} "$n" "q=$($x)"', "powershell")).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(filledOf("a '$n' 'it''s $n' \"`$n\" `$n", "powershell")).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    // The backtick is PowerShell's escape, never an expansion.
+    expect(filledOf('a `x "`x"', "powershell")).toEqual([false, false, false]);
+  });
+});
+
+describe("invocationsOf — the filled words of each command (IX3)", () => {
+  const gh = (line: string, dialect?: "bash" | "powershell") =>
+    invocationsOf(line, dialect).filter((one) => one.program === "gh");
+
+  test("a command lists the texts of its words the shell fills", () => {
+    const [run] = gh("gh api graphql -f query='query($n: Int!) { x }' -F n=\"$N\"");
+    expect(run?.filled).toEqual(["n=$N"]);
+    expect(run?.args).toContain("query=query($n: Int!) { x }");
+  });
+
+  test("bash -c '…' reads its string again: its own quotes decide", () => {
+    const [literal] = gh(`bash -c "gh api graphql -f query='query(\\$n: Int!) { x }'"`);
+    expect(literal?.filled).toEqual([]);
+    const [inner] = gh(`bash -c 'gh api graphql -f query="$Q"'`);
+    expect(inner?.filled).toEqual(["query=$Q"]);
+  });
+
+  test("a string the outer shell filled in is filled all through, whatever its inner quotes", () => {
+    const [run] = gh(`bash -c "gh api -X POST 'repos/o/r/$K/5/comments'"`);
+    expect(run?.filled).toContain("repos/o/r/$K/5/comments");
+    const [piped] = gh(`echo "gh api -X POST 'repos/o/r/$K/5/comments'" | bash`);
+    expect(piped?.filled).toContain("repos/o/r/$K/5/comments");
+    const [evaled] = gh(`eval "gh api 'repos/o/r/$K/x'"`);
+    expect(evaled?.filled).toContain("repos/o/r/$K/x");
+  });
+
+  test("a here-doc script: quoted is read as written, unquoted is filled in first", () => {
+    const [quoted] = gh("bash <<'EOF'\ngh api 'repos/o/r/$K/x'\nEOF");
+    expect(quoted?.filled).toEqual([]);
+    const [open] = gh("bash <<EOF\ngh api 'repos/o/r/$K/x'\nEOF");
+    expect(open?.filled).toContain("repos/o/r/$K/x");
+    const [plain] = gh("bash <<EOF\ngh api 'repos/o/r/x'\nEOF");
+    expect(plain?.filled).toEqual([]);
   });
 });

@@ -401,3 +401,150 @@ describe("IX1 review: what the second opinion found", () => {
     ).toBe(false);
   });
 });
+
+// The 1.4.0 review (IX3): the shell reader now says which words the shell fills in, so a `$`
+// inside single quotes (GraphQL's own variables) is text, and a `$` the shell fills still fails closed.
+describe("IX3: only text the shell fills in cannot be read whole", () => {
+  const READ_QUERY =
+    'gh api graphql -f query=\'query($n: Int!) { repository(owner: "o", name: "r") { issue(number: $n) { title } } }\' -F n=5';
+
+  test("a GraphQL read with its own $n variable in single quotes is no write", () => {
+    expect(issueWrites(READ_QUERY, "bash")).toEqual([]);
+    expect(requestsIssueWrite(READ_QUERY, "bash")).toBe(false);
+    expect(
+      issueWrites(
+        'gh api graphql -f query=\'query($n: Int!) { repository(owner: "o", name: "r") { issue(number: $n) { title } } }\' -F n=5',
+        "powershell",
+      ),
+    ).toEqual([]);
+  });
+
+  test.each([
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -f query="query { viewer { login } } $(cat q)"',
+    'gh api graphql -f query="`cat q`"',
+    "gh api graphql -F query=$Q",
+    'gh api graphql -f query="query($n: Int!) { a(number: $n) { b } }" -F n=5',
+    "bash -c 'gh api graphql -f query=\"$Q\"'",
+  ])("%s still fails closed: the shell fills the query in", (command) => {
+    expect(issueWrites(command, "bash")).toEqual([
+      "a gh api graphql request that cannot be read (its query comes from a file or the shell)",
+    ]);
+  });
+
+  test("a literal mutation with variables is judged by its name, as before", () => {
+    expect(
+      issueWrites(
+        "gh api graphql -f query='mutation($id: ID!, $b: String!) { addComment(input: {subjectId: $id, body: $b}) { clientMutationId } }'",
+        "bash",
+      ),
+    ).toEqual(["a gh api graphql mutation (addComment)"]);
+    expect(
+      issueWrites(
+        "gh api graphql -f query='mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }'",
+        "bash",
+      ),
+    ).toEqual([]);
+  });
+
+  test("an endpoint in single quotes with a literal $ is read as written", () => {
+    expect(issueWrites("gh api -X POST 'repos/o/r/issues/$x' -f body=hi", "bash")).toEqual([
+      "a gh api POST to repos/o/r/issues/$x",
+    ]);
+    expect(issueWrites("gh api 'repos/o/r/issues/$x'", "bash")).toEqual([]);
+    // Not an issue endpoint, and no `$` the shell fills: nothing to ask about.
+    expect(issueWrites("gh api -X POST 'repos/o/r/pulls/$x/comments' -f body=hi", "bash")).toEqual(
+      [],
+    );
+  });
+
+  test("an escaped \\$ in bash is a literal $", () => {
+    expect(issueWrites("gh api -X POST repos/o/r/issues/\\$x -f body=hi", "bash")).toEqual([
+      "a gh api POST to repos/o/r/issues/$x",
+    ]);
+    expect(
+      issueWrites("gh api graphql -f query=query\\(\\$n:Int!\\){viewer{login}}", "bash"),
+    ).toEqual([]);
+  });
+
+  test("an endpoint with a filled $ still fails closed, in double quotes and unquoted", () => {
+    expect(requestsIssueWrite('gh api "repos/o/r/$K/5/comments" -f body=hi', "bash")).toBe(true);
+    expect(requestsIssueWrite("gh api repos/o/r/$K/5/comments -f body=hi", "bash")).toBe(true);
+    expect(issueWrites('gh api -X POST "repos/o/r/$K/5/comments"', "bash")).toEqual([
+      "a gh api POST to an endpoint that cannot be read (repos/o/r/$K/5/comments)",
+    ]);
+  });
+
+  test("PowerShell: '$n' is text, \"$n\" is filled in, and a backtick-escaped $ is text", () => {
+    const write = (endpoint: string) =>
+      issueWrites(`gh api -X POST ${endpoint} -f body=hi`, "powershell");
+    expect(write("'repos/o/r/issues/$n'")).toEqual(["a gh api POST to repos/o/r/issues/$n"]);
+    expect(write('"repos/o/r/$n/5/comments"')).toEqual([
+      "a gh api POST to an endpoint that cannot be read (repos/o/r/$n/5/comments)",
+    ]);
+    expect(write("repos/o/r/$($n)/5/comments")).toEqual([
+      "a gh api POST to an endpoint that cannot be read (repos/o/r/$($n)/5/comments)",
+    ]);
+    expect(write('"repos/o/r/issues/`$n"')).toEqual(["a gh api POST to repos/o/r/issues/$n"]);
+  });
+
+  test("a line the outer shell fills in first is filled all through its inner quotes", () => {
+    for (const command of [
+      `bash -c "gh api -X POST 'repos/o/r/$K/5/comments' -f body=hi"`,
+      `echo "gh api -X POST 'repos/o/r/$K/5/comments' -f body=hi" | bash`,
+      `eval "gh api -X POST 'repos/o/r/$K/5/comments' -f body=hi"`,
+      "bash <<EOF\ngh api -X POST 'repos/o/r/$K/5/comments' -f body=hi\nEOF",
+    ]) {
+      expect(requestsIssueWrite(command, "bash")).toBe(true);
+    }
+    // The same text with the shell's hands off is read as written.
+    expect(
+      requestsIssueWrite(
+        "bash <<'EOF'\ngh api -X POST 'repos/o/r/$K/5/comments' -f body=hi\nEOF",
+        "bash",
+      ),
+    ).toBe(false);
+  });
+
+  test("a `$` the line reader cuts off from what follows still fails closed", () => {
+    // `$\<newline>P` joins into `$ P`; PowerShell's `${env:P}` is cut at its brace.
+    for (const command of [
+      "gh api -X POST repos/o/r/$\\\nP -f a=1",
+      'gh api -X POST "repos/o/r/$\\\nP" -f a=1',
+      "gh api graphql -f query=$\\\nQ",
+      'gh api graphql -f query="$\\\nQ"',
+    ]) {
+      expect([command, requestsIssueWrite(command, "bash")]).toEqual([command, true]);
+    }
+    for (const command of [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "gh api -X POST repos/o/r/${env:P} -f a=1",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "gh api graphql -f query=${env:Q}",
+      "gh api -X POST repos/o/r/$`\nP -f a=1",
+    ]) {
+      expect([command, requestsIssueWrite(command, "powershell")]).toEqual([command, true]);
+    }
+  });
+
+  test("words a wrapper splits out of a string of its own are read by their text", () => {
+    // `env -S` expands `${K}` itself, and `script -c` hands its string to a shell: no quote of
+    // this line says what those words become, so a `$` in them fails closed.
+    for (const command of [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the reader under test.
+      "env -S 'gh api -X POST repos/o/r/${K}/5/comments -f body=hi'",
+      "script -c 'gh api -X POST repos/o/r/$K/5/comments -f body=hi' /dev/null",
+    ]) {
+      expect(requestsIssueWrite(command, "bash")).toBe(true);
+    }
+    expect(requestsIssueWrite("env -S 'gh api repos/o/r/issues/5'", "bash")).toBe(false);
+  });
+
+  test.each([
+    "gh api graphql -f query=@change.graphql",
+    "gh api graphql --input body.json",
+    "gh api -X POST repos/o/r/issues --input -",
+  ])("%s stays a request that cannot be read", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(true);
+  });
+});

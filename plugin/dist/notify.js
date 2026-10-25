@@ -8807,6 +8807,7 @@ function lex(text, options) {
   const double = DOUBLE[dialect];
   const segments = [];
   const piped = [];
+  const expanded = [];
   const owed = [];
   let open = false;
   let unparsable = false;
@@ -8814,11 +8815,12 @@ function lex(text, options) {
   let afterPipe = false;
   let matching = null;
   let semicolons = null;
-  const push = (piece, from) => {
+  const push = (piece, from, filledIn = false) => {
     segments.push(piece);
     piped.push(from);
+    expanded.push(filledIn);
   };
-  function addInner(inner, body) {
+  function addInner(inner, body, filledIn = false) {
     const depth = (options.depth ?? 0) + 1;
     if (depth > MAX_INNER) {
       open = true;
@@ -8830,7 +8832,7 @@ function lex(text, options) {
     if (read.unparsable)
       unparsable = true;
     for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null);
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
     }
   }
   function skipBodies() {
@@ -8852,9 +8854,10 @@ function lex(text, options) {
       }
       if (closedAt === -1 && blind)
         continue;
-      if (script)
-        addInner(text.slice(at, bodyEnd), false);
-      else if (!quoted)
+      if (script) {
+        const body = text.slice(at, bodyEnd);
+        addInner(body, false, !quoted && /[$`]/.test(body));
+      } else if (!quoted)
         addInner(text.slice(at, bodyEnd), true);
       if (closedAt === -1) {
         open = true;
@@ -8977,6 +8980,7 @@ function lex(text, options) {
     open = true;
     segments.length = mark;
     piped.length = mark;
+    expanded.length = mark;
     return raw;
   }
   function hereDocOpener() {
@@ -9172,14 +9176,18 @@ function lex(text, options) {
     readDouble(false);
   else
     read(false);
-  return { open, piped, segments, unparsable };
+  return { expanded, open, piped, segments, unparsable };
 }
 function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
   const read = lex(command, { blind: false, dialect, join: joinLines });
   if (read.unparsable)
     return [];
   const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+  return chosen.segments.map((text, index) => ({
+    expanded: chosen.expanded[index] === true,
+    pipedFrom: chosen.piped[index] ?? null,
+    text
+  }));
 }
 var ANSI_ESCAPES = {
   a: "\x07",
@@ -9219,24 +9227,40 @@ var POWERSHELL_ESCAPES = {
   v: "\v"
 };
 function wordsOf(segment, dialect = "bash") {
+  return wordsWithFill(segment, dialect).map((one) => one.text);
+}
+var EXPANDS = {
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
+  powershell: /[A-Za-z_0-9{(?$^:]/
+};
+function wordsWithFill(segment, dialect = "bash") {
   const bash = dialect === "bash";
   const escaper = ESCAPE[dialect];
   const single = SINGLE[dialect];
   const double = DOUBLE[dialect];
+  const expands = EXPANDS[dialect];
   const words = [];
   let word = "";
   let inWord = false;
   let quoted = false;
+  let filled = false;
   const end = () => {
     if (inWord)
-      words.push(word);
+      words.push({ text: word, filled });
     word = "";
     inWord = false;
     quoted = false;
+    filled = false;
   };
   const add = (piece) => {
     word += piece;
     inWord = true;
+  };
+  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf(double, after);
+  const addExpandable = (char, after) => {
+    if (char === "$" && startsExpansion(after) || bash && char === "`")
+      filled = true;
+    add(char);
   };
   let i = 0;
   while (i < segment.length) {
@@ -9311,12 +9335,12 @@ function wordsOf(segment, dialect = "bash") {
           i += 2;
           continue;
         }
-        add(inside);
+        addExpandable(inside, after);
         i++;
       }
       i++;
     } else {
-      add(char);
+      addExpandable(char, next);
       i++;
     }
   }

@@ -2560,6 +2560,46 @@ describe("IX1: gh aliases and unreadable gh words in the issue part of the guard
     });
   });
 
+  test("IX3: a GraphQL read with its own $n variable is silent for the person and allowed in a crew session", async () => {
+    const { env, repo } = ready(CONFIG);
+    const read =
+      'gh api graphql -f query=\'query($n: Int!) { repository(owner: "o", name: "r") { issue(number: $n) { title } } }\' -F n=5';
+    expect(await decide(env, repo, read)).toBeNull();
+    expect(await decide({ ...env, ...CREW }, repo, read)).toBeNull();
+    // The same query read from a variable the shell fills in is still the person's question.
+    const filled = 'gh api graphql -f query="$Q" -F n=5';
+    // (The pull request part asks first, in its own words.)
+    expect((await decide(env, repo, filled))?.decision).toBe("ask");
+    for (const command of [
+      filled,
+      'gh api graphql -f query="query { viewer { login } } $(cat q)"',
+      'gh api graphql -f query="`cat q`"',
+      "gh api graphql -F query=$Q",
+    ]) {
+      expect(await decide({ ...env, ...CREW }, repo, command)).toEqual({
+        decision: "deny",
+        reason: CREW_ISSUE_REFUSAL,
+      });
+    }
+  });
+
+  test("IX3: an endpoint in single quotes is read as written, one the shell fills in is not", async () => {
+    const { env, repo } = ready(CONFIG);
+    const literal = "gh api -X POST 'repos/o/r/issues/$x' -f body=hi";
+    expect((await decide(env, repo, literal))?.reason).toContain(
+      "a gh api POST to repos/o/r/issues/$x",
+    );
+    const filled = 'gh api -X POST "repos/o/r/$K/5/comments" -f body=hi';
+    expect((await decide(env, repo, filled))?.reason).toContain("an endpoint that cannot be read");
+    for (const command of [literal, filled]) {
+      expect(await decide({ ...env, ...CREW }, repo, command)).toEqual({
+        decision: "deny",
+        reason: CREW_ISSUE_REFUSAL,
+      });
+    }
+    expect(await decide({ ...env, ...CREW }, repo, "gh api 'repos/o/r/issues/$x'")).toBeNull();
+  });
+
   test("IX1-11: a label write is asked about, and denied in a crew session", async () => {
     const { env, repo } = ready(CONFIG);
     const asked = await decide(env, repo, "gh label create ready");

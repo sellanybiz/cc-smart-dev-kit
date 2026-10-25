@@ -7698,6 +7698,7 @@ function lex(text, options) {
   const double = DOUBLE[dialect];
   const segments = [];
   const piped = [];
+  const expanded = [];
   const owed = [];
   let open = false;
   let unparsable = false;
@@ -7705,11 +7706,12 @@ function lex(text, options) {
   let afterPipe = false;
   let matching = null;
   let semicolons = null;
-  const push = (piece, from) => {
+  const push = (piece, from, filledIn = false) => {
     segments.push(piece);
     piped.push(from);
+    expanded.push(filledIn);
   };
-  function addInner(inner, body) {
+  function addInner(inner, body, filledIn = false) {
     const depth = (options.depth ?? 0) + 1;
     if (depth > MAX_INNER) {
       open = true;
@@ -7721,7 +7723,7 @@ function lex(text, options) {
     if (read.unparsable)
       unparsable = true;
     for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null);
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
     }
   }
   function skipBodies() {
@@ -7743,9 +7745,10 @@ function lex(text, options) {
       }
       if (closedAt === -1 && blind)
         continue;
-      if (script)
-        addInner(text.slice(at, bodyEnd), false);
-      else if (!quoted)
+      if (script) {
+        const body = text.slice(at, bodyEnd);
+        addInner(body, false, !quoted && /[$`]/.test(body));
+      } else if (!quoted)
         addInner(text.slice(at, bodyEnd), true);
       if (closedAt === -1) {
         open = true;
@@ -7868,6 +7871,7 @@ function lex(text, options) {
     open = true;
     segments.length = mark;
     piped.length = mark;
+    expanded.length = mark;
     return raw;
   }
   function hereDocOpener() {
@@ -8063,14 +8067,18 @@ function lex(text, options) {
     readDouble(false);
   else
     read(false);
-  return { open, piped, segments, unparsable };
+  return { expanded, open, piped, segments, unparsable };
 }
 function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
   const read = lex(command, { blind: false, dialect, join: joinLines });
   if (read.unparsable)
     return [];
   const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+  return chosen.segments.map((text, index) => ({
+    expanded: chosen.expanded[index] === true,
+    pipedFrom: chosen.piped[index] ?? null,
+    text
+  }));
 }
 function shellSegments(command, options = {}) {
   return shellSteps(command, options).map((step) => step.text);
@@ -8113,24 +8121,40 @@ var POWERSHELL_ESCAPES = {
   v: "\v"
 };
 function wordsOf(segment, dialect = "bash") {
+  return wordsWithFill(segment, dialect).map((one) => one.text);
+}
+var EXPANDS = {
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
+  powershell: /[A-Za-z_0-9{(?$^:]/
+};
+function wordsWithFill(segment, dialect = "bash") {
   const bash = dialect === "bash";
   const escaper = ESCAPE[dialect];
   const single = SINGLE[dialect];
   const double = DOUBLE[dialect];
+  const expands = EXPANDS[dialect];
   const words = [];
   let word = "";
   let inWord = false;
   let quoted = false;
+  let filled = false;
   const end = () => {
     if (inWord)
-      words.push(word);
+      words.push({ text: word, filled });
     word = "";
     inWord = false;
     quoted = false;
+    filled = false;
   };
   const add = (piece) => {
     word += piece;
     inWord = true;
+  };
+  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf(double, after);
+  const addExpandable = (char, after) => {
+    if (char === "$" && startsExpansion(after) || bash && char === "`")
+      filled = true;
+    add(char);
   };
   let i = 0;
   while (i < segment.length) {
@@ -8205,12 +8229,12 @@ function wordsOf(segment, dialect = "bash") {
           i += 2;
           continue;
         }
-        add(inside);
+        addExpandable(inside, after);
         i++;
       }
       i++;
     } else {
-      add(char);
+      addExpandable(char, next);
       i++;
     }
   }
@@ -9058,28 +9082,47 @@ function programsIn(command, dialect) {
   walk(command, dialect, 0);
   return found;
 }
+var anyFill = (word) => /[$`]/.test(word);
+function fillTest(filled) {
+  const set = new Set(filled);
+  return (word) => set.has(word);
+}
+function derivedFill(words, args) {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
+function fillOfStep(step, words, dialect, inherited) {
+  const all = inherited || step.expanded;
+  const own = words.some((word) => word.filled);
+  const piped = step.pipedFrom !== null && wordsWithFill(step.pipedFrom, dialect).some((w) => w.filled);
+  const filled = words.filter((word) => all || word.filled).map((word) => word.text);
+  return { filled: [...new Set(filled)], passes: all || own || piped };
+}
 function invocationsOf(command, dialect) {
-  const walk = (line, one, depth, into) => {
+  const walk = (line, one, depth, into, inherited) => {
     for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
-      const words = wordsOf(step.text, one);
+      const read = wordsWithFill(step.text, one);
+      const words = read.map((word) => word.text);
+      const fill = fillOfStep(step, read, one, inherited);
       const invocation = invocationOf(words);
       if (invocation === undefined)
         continue;
       into.push({
         args: invocation.args,
         computed: invocation.computed,
+        filled: [...fill.filled, ...derivedFill(words, invocation.args)],
         program: invocation.program,
         words
       });
       const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
       if (inner !== undefined && depth < MAX_NESTING) {
-        walk(inner, nestedDialect(invocation.program), depth + 1, into);
+        walk(inner, nestedDialect(invocation.program), depth + 1, into, fill.passes);
       }
     }
   };
   const found = [];
   for (const one of dialect === undefined ? ["bash", "powershell"] : [dialect]) {
-    walk(command, one, 0, found);
+    walk(command, one, 0, found, false);
   }
   const seen = new Set;
   return found.filter((one) => {
@@ -11586,7 +11629,8 @@ function pullRequestCalls(command, aliases, dialect) {
   const seen = new Set;
   const calls = [];
   for (const reading of readingsOf(command, dialect)) {
-    for (const one of readMerges(command, reading.dialect, reading.joinLines, aliases, 0, null)) {
+    const merges = readMerges(command, reading.dialect, reading.joinLines, aliases, 0, null, false);
+    for (const one of merges) {
       const key = JSON.stringify(one);
       if (seen.has(key))
         continue;
@@ -11596,11 +11640,13 @@ function pullRequestCalls(command, aliases, dialect) {
   }
   return calls;
 }
-function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
+function readMerges(command, dialect, joinLines, aliases, depth, movedBefore, filledIn) {
   const calls = [];
   let moved = movedBefore;
   for (const step of shellSteps(command, { dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const read = wordsWithFill(step.text, dialect);
+    const words = read.map((word) => word.text);
+    const fill = fillOfStep(step, read, dialect, filledIn);
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
@@ -11612,6 +11658,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
       continue;
     }
     const { program } = invocation;
+    const isFilled = fillTest([...fill.filled, ...derivedFill(words, invocation.args)]);
     const args = withoutRedirections(invocation.args);
     if (program === "git")
       moved ??= gitMoved(args);
@@ -11623,21 +11670,21 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
       moved ??= runnerWord.moved;
     const prefix = prefixMoved(invocation.prefix);
     if (program === "gh" && runner === null) {
-      calls.push(...dispatch(args, moved ?? prefix, aliases, depth));
+      calls.push(...dispatch(args, moved ?? prefix, aliases, depth, null, isFilled));
       moved ??= ghSwitchReason(args, aliases, depth);
     } else if (runner !== null) {
       calls.push(...runnerCalls(words, runner, aliases, depth, dialect));
     }
     const nested = nestedCommand(program, invocation.args, step.pipedFrom);
     if (nested !== undefined && depth < MAX_NESTING) {
-      const merges = lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved);
+      const merges = lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved, fill.passes);
       calls.push(...runner !== null && isRunnerProgram(program) ? refuseRunner(merges, runner) : merges);
     }
   }
   return calls;
 }
-function lineMerges(line, dialect, aliases, depth, moved) {
-  return readingsOf(line, dialect).flatMap((reading) => readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved));
+function lineMerges(line, dialect, aliases, depth, moved, filledIn) {
+  return readingsOf(line, dialect).flatMap((reading) => readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved, filledIn));
 }
 var RUNNERS = {
   doas: {
@@ -11694,7 +11741,7 @@ function runnerCalls(words, runner, aliases, depth, dialect) {
   const held = words.find((word) => /\bgh\b/i.test(word) && /\b(merge|create|new|ready)\b/i.test(word));
   if (held === undefined)
     return [];
-  return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null), runner);
+  return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null, true), runner);
 }
 function refuseRunner(calls, runner) {
   return calls.filter((one) => !one.disarms).map((one) => call({
@@ -11764,7 +11811,7 @@ function onlyOpens(rest) {
   const words = rest.slice(1).map((word) => word.toLowerCase());
   return words.some((word) => PR_OPENERS.has(word)) && !words.includes("merge");
 }
-function dispatch(words, moved, aliases, depth, repo = null) {
+function dispatch(words, moved, aliases, depth, repo = null, isFilled = anyFill) {
   const leading = leadingFlags(words);
   const carried = repo ?? leading.repo;
   if (leading.unknown !== null) {
@@ -11782,33 +11829,33 @@ function dispatch(words, moved, aliases, depth, repo = null) {
   if (command === "pr")
     return prCalls(leading.rest.slice(1), moved, carried);
   if (command === "api")
-    return apiCalls(leading.rest.slice(1));
+    return apiCalls(leading.rest.slice(1), isFilled);
   if (GH_COMMANDS.has(command))
     return [];
   const rest = leading.rest.slice(1);
   if (aliases === null)
-    return [call({ unknown: command })];
-  const expansion = aliases.get(command);
+    return [call({ unknown: word })];
+  const expansion = aliases.get(word);
   if (expansion === undefined) {
-    return leading.rest.some((word) => /merge/i.test(word)) ? [
+    return leading.rest.some((one) => /merge/i.test(one)) ? [
       call({
-        refusal: `\`gh ${command}\` is no gh command or alias, and its words name a merge, which this guard does not judge`
+        refusal: `\`gh ${word}\` is no gh command or alias, and its words name a merge, which this guard does not judge`
       })
     ] : [];
   }
   if (expansion.startsWith("!")) {
-    return [
-      call({ refusal: `\`gh ${command}\` is a shell alias, so what it runs cannot be read` })
-    ];
+    return [call({ refusal: `\`gh ${word}\` is a shell alias, so what it runs cannot be read` })];
   }
   if (depth >= MAX_NESTING) {
     return [
       call({
-        refusal: `\`gh ${command}\` expands to further commands, which this guard does not follow`
+        refusal: `\`gh ${word}\` expands to further commands, which this guard does not follow`
       })
     ];
   }
-  return dispatch([...wordsOf(expansion), ...rest], moved, aliases, depth + 1, carried);
+  const own = wordsOf(expansion);
+  const filled = (text) => own.includes(text) && anyFill(text) || isFilled(text);
+  return dispatch([...own, ...rest], moved, aliases, depth + 1, carried, filled);
 }
 function ghSwitchReason(words, aliases, depth) {
   if (depth > MAX_NESTING)
@@ -11816,7 +11863,8 @@ function ghSwitchReason(words, aliases, depth) {
   const leading = leadingFlags(words);
   if (leading.unknown !== null)
     return null;
-  const command = leading.rest[0]?.toLowerCase();
+  const typed = leading.rest[0];
+  const command = typed?.toLowerCase();
   const args = leading.rest.slice(1);
   if (command === "co") {
     return "an earlier `gh co` in the same command changes the branch gh works on";
@@ -11827,9 +11875,9 @@ function ghSwitchReason(words, aliases, depth) {
   if (command === "repo" && args[0] === "set-default") {
     return "an earlier `gh repo set-default` in the same command changes the repository gh works on";
   }
-  if (command === undefined || GH_COMMANDS.has(command))
+  if (typed === undefined || command === undefined || GH_COMMANDS.has(command))
     return null;
-  const expansion = aliases?.get(command);
+  const expansion = aliases?.get(typed);
   if (expansion === undefined || expansion.startsWith("!"))
     return null;
   return ghSwitchReason([...wordsOf(expansion), ...args], aliases, depth + 1);
@@ -12063,7 +12111,7 @@ var API_PLAIN_FLAGS = new Set([
 ]);
 var API_VALUE_LETTERS = "FHXfpqt";
 var API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not judge";
-function apiCalls(rest) {
+function apiCalls(rest, isFilled) {
   const fields = [];
   let endpoint = null;
   let body = false;
@@ -12088,10 +12136,12 @@ function apiCalls(rest) {
       }
       if (name === "--input")
         body = true;
+      const source = at === -1 ? rest[index + 1] ?? "" : word;
+      const value = at === -1 ? source : word.slice(at + 1);
       if (name === "--method")
-        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
+        method = value;
       if (name === "--field" || name === "--raw-field") {
-        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+        fields.push({ filled: isFilled(source), value });
       }
       if (at === -1 && API_VALUE_FLAGS.has(name))
         index += 1;
@@ -12110,11 +12160,12 @@ function apiCalls(rest) {
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter))
         continue;
-      const value = wantsNext ? rest[index + 1] ?? "" : attached;
+      const source = wantsNext ? rest[index + 1] ?? "" : word;
+      const value = wantsNext ? source : attached;
       if (wantsNext)
         index += 1;
       if (letter === "f" || letter === "F")
-        fields.push(value);
+        fields.push({ filled: isFilled(source), value });
       if (letter === "X")
         method = value;
       continue;
@@ -12139,7 +12190,7 @@ function apiCalls(rest) {
   const created = pullRequestsPath(endpoint);
   if (created === null || !posts)
     return [];
-  const draft = fields.some((field) => /^draft=true$/i.test(field));
+  const draft = fields.some((field) => /^draft=true$/i.test(field.value));
   return [call({ draft, opens: "create", target: { ref: null, repo: created.repo } })];
 }
 function isGraphqlEndpoint(endpoint) {
@@ -12154,11 +12205,11 @@ function graphqlCalls(fields, body) {
       })
     ];
   }
-  for (const field of fields) {
-    if (!field.startsWith("query="))
+  for (const { filled, value } of fields) {
+    if (!value.startsWith("query="))
       continue;
-    const query = field.slice("query=".length);
-    if (query.startsWith("@") || /[$`]/.test(query)) {
+    const query = value.slice("query=".length);
+    if (query.startsWith("@") || filled) {
       return [
         call({
           refusal: "the GraphQL query is read from a file or built by the shell, so this guard cannot read it"
@@ -16809,7 +16860,6 @@ var ISSUE_READS = new Set(["help", "list", "ls", "status", "view"]);
 var LABEL_READS = new Set(["help", "list", "ls"]);
 var WRITE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 var ISSUES_PATH = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)\/(?:issues|labels)(?:\/.*)?$/i;
-var SHELL_FILLED = /[$`]/;
 var PULL_REQUEST_MUTATIONS = new Set([
   "createPullRequest",
   "enablePullRequestAutoMerge",
@@ -16827,11 +16877,11 @@ function graphqlWrite(fields, body) {
   if (body) {
     return "a gh api graphql request that cannot be read (its body comes from a file or standard input)";
   }
-  for (const field of fields) {
-    if (!field.startsWith("query="))
+  for (const { filled, value } of fields) {
+    if (!value.startsWith("query="))
       continue;
-    const query = field.slice("query=".length);
-    if (query.startsWith("@") || SHELL_FILLED.test(query)) {
+    const query = value.slice("query=".length);
+    if (query.startsWith("@") || filled) {
       return "a gh api graphql request that cannot be read (its query comes from a file or the shell)";
     }
     if (!/\bmutation\b/i.test(query))
@@ -16845,15 +16895,18 @@ function graphqlWrite(fields, body) {
   }
   return null;
 }
-function apiIssueWrite(rest) {
+function apiIssueWrite(rest, isFilled) {
   const fields = [];
   let endpoint = null;
   let body = false;
   let method = null;
+  const from = (word, value) => ({ filled: isFilled(word), value });
   for (let index = 0;index < rest.length; index++) {
     const word = rest[index] ?? "";
     if (word === "--") {
-      endpoint ??= rest[index + 1] ?? null;
+      const after = rest[index + 1];
+      if (endpoint === null && after !== undefined)
+        endpoint = from(after, after);
       break;
     }
     if (word === "-h" || word === "--help")
@@ -16865,11 +16918,12 @@ function apiIssueWrite(rest) {
         return null;
       if (name === "--input")
         body = true;
+      const source = at === -1 ? rest[index + 1] ?? "" : word;
+      const value = at === -1 ? source : word.slice(at + 1);
       if (name === "--method")
-        method = at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1);
-      if (name === "--field" || name === "--raw-field") {
-        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
-      }
+        method = from(source, value);
+      if (name === "--field" || name === "--raw-field")
+        fields.push(from(source, value));
       if (at === -1 && API_VALUE_FLAGS.has(name))
         index += 1;
       continue;
@@ -16879,28 +16933,29 @@ function apiIssueWrite(rest) {
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter))
         continue;
-      const value = wantsNext ? rest[index + 1] ?? "" : attached;
+      const source = wantsNext ? rest[index + 1] ?? "" : word;
+      const value = wantsNext ? source : attached;
       if (wantsNext)
         index += 1;
       if (letter === "f" || letter === "F")
-        fields.push(value);
+        fields.push(from(source, value));
       if (letter === "X")
-        method = value;
+        method = from(source, value);
       continue;
     }
-    endpoint ??= word;
+    endpoint ??= from(word, word);
   }
   if (endpoint === null)
     return null;
-  const used = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
-  if (!WRITE_METHODS.has(used) && !SHELL_FILLED.test(used))
+  const used = (method?.value ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase();
+  if (!WRITE_METHODS.has(used) && method?.filled !== true)
     return null;
-  if (SHELL_FILLED.test(endpoint)) {
-    return `a gh api ${used} to an endpoint that cannot be read (${endpoint})`;
+  if (endpoint.filled) {
+    return `a gh api ${used} to an endpoint that cannot be read (${endpoint.value})`;
   }
-  if (isGraphql(endpoint))
+  if (isGraphql(endpoint.value))
     return graphqlWrite(fields, body);
-  const path = apiPath(endpoint);
+  const path = apiPath(endpoint.value);
   return ISSUES_PATH.test(path) ? `a gh api ${used} to ${path}` : null;
 }
 function isHelpAt(words, index) {
@@ -16910,7 +16965,7 @@ function isHelpAt(words, index) {
   const before = words[index - 1] ?? "";
   return !(before.startsWith("-") && !before.includes("="));
 }
-function aliasWrite(word, rest, aliases, found, depth, named) {
+function aliasWrite(word, rest, aliases, found, depth, named, isFilled) {
   const expansion = aliases?.get(word);
   if (expansion === undefined) {
     if (!found.unnamed.includes(word))
@@ -16923,9 +16978,11 @@ function aliasWrite(word, rest, aliases, found, depth, named) {
   if (depth >= MAX_NESTING) {
     return `a gh alias that expands to further commands (\`gh ${named}\`)`;
   }
-  return ghIssueWrite([...wordsOf(expansion), ...rest], aliases, found, depth + 1, named);
+  const own = wordsOf(expansion);
+  const filled = (text) => own.includes(text) && anyFill(text) || isFilled(text);
+  return ghIssueWrite([...own, ...rest], aliases, found, filled, depth + 1, named);
 }
-function ghIssueWrite(args, aliases, found, depth = 0, named = "") {
+function ghIssueWrite(args, aliases, found, isFilled, depth = 0, named = "") {
   const dashes = args.indexOf("--");
   const words = dashes === -1 ? args : args.slice(0, dashes);
   if (words.some((_, index) => isHelpAt(words, index)))
@@ -16942,12 +16999,13 @@ function ghIssueWrite(args, aliases, found, depth = 0, named = "") {
     if (positional.length === 1) {
       const command = word.toLowerCase();
       if (command === "api")
-        return apiIssueWrite(args.slice(index + 1));
-      if (SHELL_FILLED.test(word))
+        return apiIssueWrite(args.slice(index + 1), isFilled);
+      if (isFilled(word))
         return `a gh command the shell fills in (\`gh ${word}\`)`;
       if (!GH_COMMANDS.has(command)) {
         const rest = args.slice(index + 1);
-        return aliasWrite(word, rest, aliases, found, depth, named === "" ? word : named);
+        const alias = named === "" ? word : named;
+        return aliasWrite(word, rest, aliases, found, depth, alias, isFilled);
       }
       if (command !== "issue" && command !== "label")
         return null;
@@ -16973,7 +17031,7 @@ function readLine(command, dialect, aliases) {
   for (const run of invocationsOf(command, dialect)) {
     if (run.computed || run.program !== "gh")
       continue;
-    const write = ghIssueWrite(run.args, aliases, found);
+    const write = ghIssueWrite(run.args, aliases, found, fillTest(run.filled));
     if (write !== null && !found.writes.includes(write))
       found.writes.push(write);
   }

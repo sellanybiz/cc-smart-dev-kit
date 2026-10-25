@@ -123,6 +123,11 @@ interface Lexed {
   segments: string[];
   /** For each segment: the text of the command it is piped from (`a | b`), else null. */
   piped: (string | null)[];
+  /**
+   * For each segment: the shell fills text into it before it runs, so its quotes say nothing
+   * about what the program gets (the script of a here-doc with no quoted delimiter).
+   */
+  expanded: boolean[];
 }
 
 interface LexOptions {
@@ -169,6 +174,7 @@ function lex(text: string, options: LexOptions): Lexed {
   const double = DOUBLE[dialect];
   const segments: string[] = [];
   const piped: (string | null)[] = [];
+  const expanded: boolean[] = [];
   const owed: OwedBody[] = [];
   let open = false;
   let unparsable = false;
@@ -180,13 +186,14 @@ function lex(text: string, options: LexOptions): Lexed {
   /** Where each `;` is, counted up to an index: an arithmetic expansion holds none. */
   let semicolons: Int32Array | null = null;
 
-  const push = (piece: string, from: string | null): void => {
+  const push = (piece: string, from: string | null, filledIn = false): void => {
     segments.push(piece);
     piped.push(from);
+    expanded.push(filledIn);
   };
 
   /** Reads `inner` as text of its own and adds the commands it runs (a substitution, a script). */
-  function addInner(inner: string, body: boolean): void {
+  function addInner(inner: string, body: boolean, filledIn = false): void {
     const depth = (options.depth ?? 0) + 1;
     if (depth > MAX_INNER) {
       open = true;
@@ -196,7 +203,7 @@ function lex(text: string, options: LexOptions): Lexed {
     if (read.open) open = true;
     if (read.unparsable) unparsable = true;
     for (let i = 0; i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null);
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
     }
   }
 
@@ -220,8 +227,11 @@ function lex(text: string, options: LexOptions): Lexed {
       if (closedAt === -1 && blind) continue; // read blind, its lines are commands
       // A shell reads the body as its script (`sh <<'EOF' … EOF`): read it as one. An unquoted
       // body is expanded first, so its substitutions run, even with no closing line.
-      if (script) addInner(text.slice(at, bodyEnd), false);
-      else if (!quoted) addInner(text.slice(at, bodyEnd), true);
+      if (script) {
+        const body = text.slice(at, bodyEnd);
+        // With no quoted delimiter the shell fills the body in first: its quotes mean nothing.
+        addInner(body, false, !quoted && /[$`]/.test(body));
+      } else if (!quoted) addInner(text.slice(at, bodyEnd), true);
       if (closedAt === -1) {
         open = true;
         at = text.length;
@@ -359,6 +369,7 @@ function lex(text: string, options: LexOptions): Lexed {
     open = true;
     segments.length = mark;
     piped.length = mark;
+    expanded.length = mark;
     return raw;
   }
 
@@ -574,7 +585,7 @@ function lex(text: string, options: LexOptions): Lexed {
 
   if (options.body === true) readDouble(false);
   else read(false);
-  return { open, piped, segments, unparsable };
+  return { expanded, open, piped, segments, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -595,6 +606,11 @@ export interface ShellStep {
   text: string;
   /** The text of the command this one is piped from (`a | b`), else null. */
   pipedFrom: string | null;
+  /**
+   * The shell fills text into this command before it runs, so its quotes say nothing about
+   * what the program gets: the script of a here-doc whose delimiter is not quoted.
+   */
+  expanded: boolean;
 }
 
 /**
@@ -610,7 +626,11 @@ export function shellSteps(
   if (read.unparsable) return [];
   const chosen =
     read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+  return chosen.segments.map((text, index) => ({
+    expanded: chosen.expanded[index] === true,
+    pipedFrom: chosen.piped[index] ?? null,
+    text,
+  }));
 }
 
 /** `shellSteps`, the text of each command only. */
@@ -668,24 +688,72 @@ const POWERSHELL_ESCAPES: Record<string, string> = {
  * `>log`; `2>x` keeps its `2`).
  */
 export function wordsOf(segment: string, dialect: Dialect = "bash"): string[] {
+  return wordsWithFill(segment, dialect).map((one) => one.text);
+}
+
+/** One word of a command, and whether the shell fills in part of it before the program runs. */
+export interface ShellWord {
+  text: string;
+  /**
+   * An expansion (`$x`, `${x}`, `$(…)`, `$((…))`) or a bash backtick outside single quotes: the
+   * program gets the shell's answer, not this text. Single quotes, bash's `$'…'` and an escaped
+   * `$` (`\$`, PowerShell's `` `$ ``) fill nothing.
+   */
+  filled: boolean;
+}
+
+/** The character after a `$` that starts an expansion; a lone `$` is text. */
+const EXPANDS: Record<Dialect, RegExp> = {
+  bash: /[A-Za-z_0-9{([@*#?$!-]/,
+  powershell: /[A-Za-z_0-9{(?$^:]/,
+};
+
+/**
+ * `wordsOf` with a flag on each word: does the shell fill in part of it (`ShellWord.filled`)?
+ * The one lexer for both, so the quote rules have one home. A guard that reads text the shell
+ * changes before the program sees it (a `$` in a `gh api` endpoint) asks this, because the
+ * quotes are gone from `wordsOf`'s words: `'$n'` and `"$n"` read alike there.
+ */
+export function wordsWithFill(segment: string, dialect: Dialect = "bash"): ShellWord[] {
   const bash = dialect === "bash";
   const escaper = ESCAPE[dialect];
   const single = SINGLE[dialect];
   const double = DOUBLE[dialect];
-  const words: string[] = [];
+  const expands = EXPANDS[dialect];
+  const words: ShellWord[] = [];
   let word = "";
   let inWord = false;
   /** The word so far has a quote or an escape: it cannot be a redirection's file number. */
   let quoted = false;
+  /** The word so far holds an expansion. */
+  let filled = false;
   const end = () => {
-    if (inWord) words.push(word);
+    if (inWord) words.push({ text: word, filled });
     word = "";
     inWord = false;
     quoted = false;
+    filled = false;
   };
   const add = (piece: string) => {
     word += piece;
     inWord = true;
+  };
+  /**
+   * A `$` that may expand: one before an expansion's first character, or one the line reader cut
+   * off from what follows (`$\<newline>P` is joined into `$ P`, PowerShell's `${x}` is cut at
+   * its brace), so the word ends in a lone `$` before a space, an escape, a closing quote or
+   * the end. A lone `$` can become anything, so it counts: the guards read it as filled.
+   */
+  const startsExpansion = (after: string) =>
+    expands.test(after) ||
+    after === "" ||
+    /\s/.test(after) ||
+    after === escaper ||
+    oneOf(double, after);
+  /** Adds a character read outside single quotes: a `$` that expands, or a bash backtick, fills. */
+  const addExpandable = (char: string, after: string) => {
+    if ((char === "$" && startsExpansion(after)) || (bash && char === "`")) filled = true;
+    add(char);
   };
   let i = 0;
   while (i < segment.length) {
@@ -750,12 +818,12 @@ export function wordsOf(segment: string, dialect: Dialect = "bash"): string[] {
           i += 2;
           continue;
         }
-        add(inside);
+        addExpandable(inside, after);
         i++;
       }
       i++;
     } else {
-      add(char);
+      addExpandable(char, next);
       i++;
     }
   }
@@ -1885,12 +1953,78 @@ function programsIn(command: string, dialect: Dialect): string[] {
   return found;
 }
 
+/** Does the shell fill in the word with this text? A reader of a command's arguments asks this. */
+export type FillTest = (word: string) => boolean;
+
+/**
+ * The test for text no shell read: any `$` or backtick counts as filled. A reader falls back to
+ * it for words that came from somewhere else (a gh alias's expansion) or that its caller did
+ * not read with `wordsWithFill`, so it errs toward "cannot be read".
+ */
+export const anyFill: FillTest = (word) => /[$`]/.test(word);
+
+/** The test for a command whose filled words are known (`RunInvocation.filled`). */
+export function fillTest(filled: readonly string[]): FillTest {
+  const set = new Set(filled);
+  return (word) => set.has(word);
+}
+
+/**
+ * The arguments of a command that are no word of its step: a wrapper cut them out of a string of
+ * its own (`env -S '…'`, `script -c '…'`, `Start-Process -ArgumentList '…'`), and that string is
+ * filled in by the wrapper, not by this line's quotes. They are read by their text: a `$` or a
+ * backtick counts as filled.
+ */
+export function derivedFill(words: readonly string[], args: readonly string[]): string[] {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
+
+/** What the shell fills in for one step of a line (`fillOfStep`). */
+export interface StepFill {
+  /** The texts of the step's words the shell fills in; all of them when the line was filled in. */
+  filled: string[];
+  /**
+   * The line this step hands to a command it runs (`bash -c "…"`, a pipe into `sh`, `eval`) was
+   * filled in too: the quotes in it were written before the shell chose the text, so a reader
+   * of that inner line treats every word of it as filled.
+   */
+  passes: boolean;
+}
+
+/**
+ * Which words of a step the shell fills in. `inherited`: the line holding the step was
+ * filled in already (`StepFill.passes` of the step that ran it). A step in the script of an
+ * unquoted here-doc (`ShellStep.expanded`) is such a line. Conservative on purpose: one filled
+ * word anywhere in a step that runs another line counts the whole inner line as filled.
+ */
+export function fillOfStep(
+  step: ShellStep,
+  words: readonly ShellWord[],
+  dialect: Dialect,
+  inherited: boolean,
+): StepFill {
+  const all = inherited || step.expanded;
+  const own = words.some((word) => word.filled);
+  const piped =
+    step.pipedFrom !== null && wordsWithFill(step.pipedFrom, dialect).some((w) => w.filled);
+  const filled = words.filter((word) => all || word.filled).map((word) => word.text);
+  return { filled: [...new Set(filled)], passes: all || own || piped };
+}
+
 /** One command a line runs: its program, its arguments (redirections left in), and its words. */
 export interface RunInvocation {
   args: string[];
   /** The program is worked out when the line runs (`$GH`, `$(which gh)`). */
   computed: boolean;
   program: string;
+  /**
+   * The texts of the words the shell fills in before the command runs (`ShellWord.filled`). A
+   * line a filled word is part of (`bash -c "…$K…"`, `echo "…$K…" | sh`, an unquoted here-doc
+   * script) hands the command it runs the whole of its words as filled: the quotes inside
+   * that line were written before the shell chose the text.
+   */
+  filled: string[];
   /** Every word of the step, as the reader split it. */
   words: string[];
 }
@@ -1902,26 +2036,35 @@ export interface RunInvocation {
  * not told the tool, both readings, each command once.
  */
 export function invocationsOf(command: string, dialect?: Dialect): RunInvocation[] {
-  const walk = (line: string, one: Dialect, depth: number, into: RunInvocation[]): void => {
+  const walk = (
+    line: string,
+    one: Dialect,
+    depth: number,
+    into: RunInvocation[],
+    inherited: boolean,
+  ): void => {
     for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
-      const words = wordsOf(step.text, one);
+      const read = wordsWithFill(step.text, one);
+      const words = read.map((word) => word.text);
+      const fill = fillOfStep(step, read, one, inherited);
       const invocation = invocationOf(words);
       if (invocation === undefined) continue;
       into.push({
         args: invocation.args,
         computed: invocation.computed,
+        filled: [...fill.filled, ...derivedFill(words, invocation.args)],
         program: invocation.program,
         words,
       });
       const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
       if (inner !== undefined && depth < MAX_NESTING) {
-        walk(inner, nestedDialect(invocation.program), depth + 1, into);
+        walk(inner, nestedDialect(invocation.program), depth + 1, into, fill.passes);
       }
     }
   };
   const found: RunInvocation[] = [];
   for (const one of dialect === undefined ? (["bash", "powershell"] as const) : [dialect]) {
-    walk(command, one, 0, found);
+    walk(command, one, 0, found, false);
   }
   const seen = new Set<string>();
   return found.filter((one) => {
