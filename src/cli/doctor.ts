@@ -16,6 +16,7 @@ import {
 import type { KnownProjects } from "../gateway/commands-project";
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
+import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { hasDesktop } from "../hooks/desktop-alert";
 import {
@@ -958,7 +959,7 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
   const line = await omnirouteDoctorLine({
     confirm: null,
     env,
-    health: (url, init) => fetch(url, init),
+    health: loopbackFetch,
     now: () => Date.now(),
     paths,
     registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
