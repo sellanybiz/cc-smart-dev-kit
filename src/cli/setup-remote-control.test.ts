@@ -4,12 +4,13 @@
  * Run in this process with a fake machine (`src/testing/fake-machine.ts`).
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { applyManagedJson, ForeignKeyError } from "../setup/managed-json";
 import {
   planRemoteControl,
   REMOTE_CONTROL_KEY,
   REMOTE_CONTROL_VALUE,
+  remoteControlReleasedFile,
 } from "../setup/remote-control";
 import { restore } from "../setup/restore";
 import { capturePrinted, changeLines, printed, world } from "../testing/fake-machine";
@@ -140,7 +141,9 @@ describe("setup and Remote Control's auto-connect", () => {
     delete settings[KEY];
     writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
     expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(existsSync(remoteControlReleasedFile(w.paths.stateDir))).toBe(false);
     expect(await w.setup()).toBe(0); // the real run 2 still lets go, once
+    expect(existsSync(remoteControlReleasedFile(w.paths.stateDir))).toBe(true);
     expect(printed).toContain(
       "  · ~/.claude/settings.json: remoteControlAtStartup: not in the file any more (removed since cc-smart-dev-kit set it); left alone",
     );

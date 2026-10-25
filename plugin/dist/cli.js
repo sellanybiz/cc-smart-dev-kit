@@ -41623,7 +41623,18 @@ function writeProjectFile(cwd, path, key, value, env) {
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
   atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 420);
-  return shownWrite(file, key, value, text === null);
+  return shownProjectWrite(file, key, value, text === null, before, data);
+}
+function shownProjectWrite(file, key, value, created, before, after) {
+  if (before.requires === after.requires)
+    return shownWrite(file, key, value, created);
+  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const { requires: _was, ...restBefore } = before;
+  const { requires: _now, ...restAfter } = after;
+  if (Bun.deepEquals(restBefore, restAfter, true)) {
+    return `~ ${file}: ${raised}; ${saidValue(key, value)}${value === undefined ? "" : " (already set)"}`;
+  }
+  return `${shownWrite(file, key, value, created)}; ${raised}`;
 }
 function switchValue(key, value) {
   if (value === undefined)

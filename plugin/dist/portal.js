@@ -17887,7 +17887,18 @@ function writeProjectFile(cwd, path, key, value, env) {
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
   atomicWrite(realTarget(file), jsonTextFor(text, data, indent), 420);
-  return shownWrite(file, key, value, text === null);
+  return shownProjectWrite(file, key, value, text === null, before, data);
+}
+function shownProjectWrite(file, key, value, created, before, after) {
+  if (before.requires === after.requires)
+    return shownWrite(file, key, value, created);
+  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const { requires: _was, ...restBefore } = before;
+  const { requires: _now, ...restAfter } = after;
+  if (Bun.deepEquals(restBefore, restAfter, true)) {
+    return `~ ${file}: ${raised}; ${saidValue(key, value)}${value === undefined ? "" : " (already set)"}`;
+  }
+  return `${shownWrite(file, key, value, created)}; ${raised}`;
 }
 function switchValue(key, value) {
   if (value === undefined)
@@ -38838,6 +38849,12 @@ async function readCleanupOffLoop(ctx, cwd) {
   }
 }
 
+// src/portal/api/page-reads.ts
+function forgetPageReads(ctx) {
+  forgetAgentLists(ctx);
+  forgetCleanups(ctx);
+}
+
 // src/portal/context.ts
 function healthFetch(ctx) {
   return (url, init) => ctx.fetch(url, init);
@@ -40010,8 +40027,7 @@ async function runAction(name, body, action) {
   try {
     return await runActionByName(name, body, action);
   } finally {
-    forgetAgentLists(action.portal);
-    forgetCleanups(action.portal);
+    forgetPageReads(action.portal);
   }
 }
 async function runActionByName(name, body, action) {
@@ -43673,6 +43689,8 @@ function createLiveSources(deps) {
           continue;
         const read = readCrewEvents(deps.paths.stateDir, repo, offset);
         offsets.set(repo, read.offset);
+        if (read.events.length > 0)
+          deps.forgetPageReads?.();
         for (const event of read.events)
           deps.publish("crew", event);
       } catch {}
@@ -44889,6 +44907,7 @@ async function startPortal(ctx, options) {
     paths: ctx.paths,
     pollMs: options.livePollMs,
     publish: (event, data) => hub.publish(event, data),
+    forgetPageReads: () => forgetPageReads(ctx),
     routerPort: () => {
       const found = readConfig(ctx);
       return "config" in found ? found.config.port : null;

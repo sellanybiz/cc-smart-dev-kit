@@ -41,7 +41,8 @@ it is a minor version.
   leave a file that sets `workflow.crew.handoffTokens` under `requires: ">=1.0"`, so a teammate on
   1.1 had the whole file refused instead of hearing "update". `workflow set … --project` now
   raises a `requires` below what the file's fields need on any write (never lowers one; a file
-  that said `>=0.1` becomes `>=0.5.2`), and `doctor` warns about such a file and names the fix.
+  that said `>=0.1` becomes `>=0.5.2`) and the line it prints names the raise, and `doctor` warns
+  about such a file and names the fix.
 - **The portal's header no longer starts heavy children on every refresh.** The Needs and Work
   reads (`crew cleanup --json`, `claude agents --json --all`) are kept for 5 seconds and shared
   while one runs. A removal still reads fresh facts.

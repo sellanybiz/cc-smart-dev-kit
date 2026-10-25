@@ -533,11 +533,17 @@ cleanup --json` (about ten git children per stopped record, and a whole-worktree
 discard facts); `/api/work` and a crew page each started `claude agents --json --all`. Reads
 overlap on a busy machine, so each is now a `shortCache` of 5 s (`PAGE_READ_FRESH_MS`):
 `readCleanupForPage` and `readPortalAgentsForPage`. A failed read (an error, a list that did not
-answer) is shown and not kept. **The removal paths stay uncached**: `crew.rm` and `sessions.rm`
-call `readPortalAgents` and `readCleanupOffLoop` themselves and compare the confirmation token
-with facts they have just read, so a preview kept for a few seconds can never authorize one.
-`runAction` drops both caches when any action ends, so a page that reloads after a click asks
-again.
+answer) is shown and not kept; a fault inside one stopped record's own discard facts
+(`discard.error`) is part of an answer that did arrive, so it is kept for the window like the
+rest. **The removal paths stay uncached**: `crew.rm` and `sessions.rm` call `readPortalAgents`
+and `readCleanupOffLoop` themselves and compare the confirmation token with facts they have
+just read, so a preview kept for a few seconds can never authorize one. Two things drop both
+caches (`forgetPageReads`, `api/page-reads.ts`), because the page that reloads after either must
+not be served a read kept from before it: `runAction` when any action ends, and the live
+stream's crew source just before it publishes crew news (`createLiveSources`), so a `crew rm`
+in a terminal that lands inside the window is not hidden. The sharing that remains is the
+reads one event fans out to (the header and the page open) and the events that are not crew
+news (`update`, `doctor`).
 **The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
 (20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
 manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are

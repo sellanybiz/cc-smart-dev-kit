@@ -83,6 +83,8 @@ function world(options: { now?: () => number; recent?: () => unknown[]; routerUp
     paths,
     pollMs: 3_600_000,
     publish: (event, data) => published.push({ data, event }),
+    // Recorded among the events, so a test sees where the page reads were dropped.
+    forgetPageReads: () => published.push({ data: null, event: "forget-page-reads" }),
     routerPort: () => (options.routerUp === false ? null : 20_199),
   });
   return {
@@ -245,6 +247,34 @@ describe("the live stream's sources", () => {
     expect(all.map((one) => one.type)).toEqual(["step"]);
     expect(all[0]?.text).toBe("step 1");
     expect(crewStoreDir(world1.paths.stateDir, REPO)).toContain("crew");
+  });
+
+  test("crew news drops the kept page reads first, so the page that reloads reads fresh", async () => {
+    // Needs and Work keep a heavy read for a few seconds; an event from outside the portal (a
+    // `crew rm` in a terminal) that lands inside that window must not leave the old list on show.
+    const world1 = world({ routerUp: false });
+    await createCrew(world1.paths.stateDir, queued(), Date.now());
+    await world1.sources.pollOnce();
+    await appendCrewEvent(
+      world1.paths.stateDir,
+      REPO,
+      {
+        crew: "crew-K-contracts",
+        lead: LEAD,
+        name: "C my-app K contracts",
+        state: "working",
+        text: "step 1",
+        type: "step",
+      },
+      Date.now(),
+    );
+    world1.published.length = 0;
+    await world1.sources.pollOnce();
+    expect(world1.published.map((one) => one.event)).toEqual(["forget-page-reads", "crew"]);
+    // A poll with no news drops nothing.
+    world1.published.length = 0;
+    await world1.sources.pollOnce();
+    expect(world1.published.map((one) => one.event)).not.toContain("forget-page-reads");
   });
 
   test("a repository that appears after the first poll publishes its own events", async () => {
