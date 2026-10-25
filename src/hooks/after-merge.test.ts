@@ -176,6 +176,30 @@ describe("did the command merge a pull request?", () => {
     expect(target("ls")).toBeNull();
   });
 
+  test("a merge a runner runs names no pull request: the note is skipped, not guessed (the review of the runner follow-up)", () => {
+    const target = (command: string) => mergeTargetOf(pullRequestMerges(command));
+    // The shell reader reads the command a runner runs; the merge reader must still refuse it
+    // as the runner's, not judge it as if the words on the line were what merges.
+    for (const command of [
+      "su -c 'gh pr merge 5' other",
+      'su - me -c "gh pr merge 5"',
+      "parallel gh pr merge ::: 5 6",
+      "parallel 'gh pr merge {}' ::: 5 6",
+      "find . -name x -exec gh pr merge 17 \\;",
+      "watch -n 5 gh pr merge 16",
+    ]) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
+    // su and parallel feed the command from outside the line: no pull request at all.
+    expect(target("su -c 'gh pr merge 5' other")).toBeNull();
+    expect(target("parallel gh pr merge ::: 5 6")).toBeNull();
+    expect(target("parallel 'gh pr merge {}' ::: 5 6")).toBeNull();
+  });
+
   test("same repository: https, ssh, an ssh alias; case does not matter", () => {
     const url = "https://github.com/Example-Org/App/pull/3";
     expect(sameRepository(url, "git@github.com:example-org/app.git")).toBe(true);

@@ -438,3 +438,33 @@ describe("toolName and toolCallOfArgv", () => {
     expect(toolCallOfArgv(["node", "--version"])).toEqual({ name: "node", args: ["--version"] });
   });
 });
+
+describe("a runner's line is never routed (the review of the runner follow-up)", () => {
+  // find, watch, su and parallel do work of their own — a delete, a user switch, an endless
+  // repeat, remote hosts — and the person's `Bash(find:*)` rules only see the words of the line
+  // that runs. Once the reader knows what they run, the classifier must still leave them alone.
+  test.each([
+    "watch tsc --noEmit",
+    "watch -n 5 bunx vitest run",
+    "find . -delete -exec tsc \\;",
+    "find . -name x -exec bunx tsc --noEmit {} +",
+    "su -c 'tsc --noEmit' root",
+    "parallel -S host1 tsc ::: a b",
+    "parallel 'tsc {}' ::: a b",
+    "cd app && watch tsc --noEmit",
+  ])("%s runs raw", (command) => {
+    expect(classifyRoutableLine(command, DEFAULT_KINDS)).toBeNull();
+  });
+
+  test("the heavy command inside is still counted for a reservation", () => {
+    expect(classifyHeavyCommand("watch tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyHeavyCommand("find . -exec tsc \\;", DEFAULT_KINDS)).toBe("tsc");
+  });
+
+  test("a heavy command alone, behind a wrapper, or in a shell is still routed", () => {
+    expect(classifyRoutableLine("tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyRoutableLine("timeout 60 tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyRoutableLine("bash -c 'tsc --noEmit'", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyRoutableLine("xargs tsc", DEFAULT_KINDS)).toBe("tsc");
+  });
+});

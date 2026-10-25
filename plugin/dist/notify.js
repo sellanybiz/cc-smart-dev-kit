@@ -9441,6 +9441,8 @@ function invocationOf(words) {
   };
 }
 function isComputedWord(word) {
+  if (word === "{}")
+    return true;
   if (!word.startsWith("$") && !word.startsWith("`"))
     return false;
   return /[$`(){}[\]\s]/.test(programName(word));
@@ -9599,15 +9601,18 @@ function writtenText(segment) {
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
+var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch"]);
 var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-var FIND_END = new Set([";", "\\;", "+"]);
+function endsFindCommand(word, before) {
+  return word === ";" || word === "+" && before === "{}";
+}
 function findCommands(args) {
   const commands = [];
   for (let index = 0;index < args.length; index++) {
     if (!FIND_EXEC.has(args[index] ?? ""))
       continue;
     const words = [];
-    for (index++;index < args.length && !FIND_END.has(args[index] ?? ""); index++) {
+    for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
       words.push(args[index] ?? "");
     }
     if (words.length > 0)
@@ -9615,6 +9620,31 @@ function findCommands(args) {
   }
   return commands.length === 0 ? undefined : commands.join(" ; ");
 }
+function longOption(word, names) {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name))
+    return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? starts[0] ?? null : null;
+}
+var WATCH_LONG = [
+  "--beep",
+  "--chgexit",
+  "--color",
+  "--cumulative",
+  "--differences",
+  "--equexit",
+  "--errexit",
+  "--exec",
+  "--help",
+  "--interval",
+  "--no-color",
+  "--no-title",
+  "--no-wrap",
+  "--precise",
+  "--version"
+];
+var WATCH_VALUED = new Set(["--equexit", "--interval"]);
 function watchCommand(args) {
   let exec = false;
   let index = 0;
@@ -9627,13 +9657,14 @@ function watchCommand(args) {
     if (!word.startsWith("-") || word === "-")
       break;
     if (word.startsWith("--")) {
-      if (word === "--exec")
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec")
         exec = true;
-      else if (word === "--interval")
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("="))
         index++;
       continue;
     }
-    const { flags, wantsNext } = shortFlags(word, "n");
+    const { flags, wantsNext } = shortFlags(word, "nq");
     if (flags.includes("x"))
       exec = true;
     if (wantsNext)
@@ -9648,44 +9679,102 @@ function suCommand(args) {
   for (let index = 0;index < args.length; index++) {
     const word = args[index] ?? "";
     if (word === "--")
-      return;
-    if (word.startsWith("--command="))
-      return word.slice("--command=".length);
-    if (word === "--command")
-      return args[index + 1];
+      continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried)
+        index++;
+      continue;
+    }
     if (isShort(word)) {
       const { flags, wantsNext } = shortFlags(word, "cgGsw");
       if (flags.endsWith("c"))
         return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
       if (wantsNext)
         index++;
-      continue;
     }
-    if (word === "--shell" || word === "--group" || word === "--supp-group")
-      index++;
   }
   return;
 }
+var SU_LONG = [
+  "--command",
+  "--fast",
+  "--group",
+  "--help",
+  "--login",
+  "--preserve-environment",
+  "--pty",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--version",
+  "--whitelist-environment"
+];
+var SU_VALUED = new Set([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment"
+]);
 var PARALLEL_VALUED = new Set([
   "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
   "--colsep",
+  "--delay",
   "--delimiter",
+  "--env",
   "--eof",
+  "--halt",
   "--header",
   "--jobs",
   "--joblog",
+  "--load",
   "--max-args",
   "--max-lines",
   "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
   "--results",
   "--retries",
+  "--rpl",
   "--sshlogin",
   "--sshloginfile",
+  "--tagstring",
   "--timeout",
   "--workdir"
 ]);
-function parallelCommand(args) {
-  let index = 0;
+var PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs"
+]);
+var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+function parallelLines(args, from, unknown) {
+  let separator = null;
+  let index = from;
   for (;index < args.length; index++) {
     const word = args[index] ?? "";
     if (word === "--") {
@@ -9695,21 +9784,46 @@ function parallelCommand(args) {
     if (!word.startsWith("-") || word === "-")
       break;
     if (word.startsWith("--")) {
-      if (PARALLEL_VALUED.has(word))
-        index++;
+      const name = word.split("=")[0] ?? word;
+      const carried = word.includes("=");
+      if (name === "--arg-sep") {
+        separator = carried ? word.slice(word.indexOf("=") + 1) : args[index + 1] ?? null;
+        if (!carried)
+          index++;
+      } else if (PARALLEL_VALUED.has(name)) {
+        if (!carried)
+          index++;
+      } else if (!PARALLEL_SWITCHES.has(name) && !carried && unknown < 2) {
+        return [
+          ...parallelLines(args, index + 1, unknown + 1),
+          ...parallelLines(args, index + 2, unknown + 1)
+        ];
+      }
       continue;
     }
-    if (shortFlags(word, "jnNPaduSIELlz").wantsNext)
+    if (shortFlags(word, "jnNPadSIELCsJ").wantsNext)
       index++;
   }
-  const words = [];
+  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const command = [];
+  for (;index < args.length && !isSource(args[index] ?? ""); index++)
+    command.push(args[index] ?? "");
+  if (command.length > 0)
+    return [command.join(" ")];
+  const lines = [];
+  let reading = false;
   for (;index < args.length; index++) {
     const word = args[index] ?? "";
-    if (word === ":::" || word === "::::" || word === ":::+" || word === "::::+")
-      break;
-    words.push(word);
+    if (isSource(word))
+      reading = !word.startsWith("::::");
+    else if (reading)
+      lines.push(word);
   }
-  return words.length === 0 ? undefined : words.join(" ");
+  return lines.length === 0 ? [] : [lines.join(" ; ")];
+}
+function parallelCommand(args) {
+  const lines = [...new Set(parallelLines(args, 0, 0))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
 }
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {

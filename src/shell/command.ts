@@ -1378,6 +1378,19 @@ function writtenText(segment: string): string | null {
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
 
+/**
+ * The programs whose own arguments name a command they run, and that do work of their own
+ * beside it (`find -delete`, `su`'s user switch, `watch`'s endless repeat, `parallel`'s remote
+ * hosts): `nestedCommand` reads the command each runs, and a caller that must not treat the
+ * step as just that command (the job route) asks here. `xargs` is a wrapper, not one of these.
+ */
+const RUNNER_PROGRAMS: ReadonlySet<string> = new Set(["find", "parallel", "su", "watch"]);
+
+/** True when `program` is a runner (`RUNNER_PROGRAMS`). */
+export function isRunnerProgram(program: string): boolean {
+  return RUNNER_PROGRAMS.has(program);
+}
+
 /** `find`'s actions that run a command, up to a `;` or a `+`. */
 const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 

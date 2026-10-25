@@ -195,8 +195,12 @@ matches a person's own Bash rules (`deny`, `ask`) against the words of the comma
 about to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x` would
 hide its `rm` from a `Bash(rm:*)` rule: the line would run what the person denied (proved on
 2.1.308, `claude-code-contract.md`). So a line that runs anything besides heavy commands, a
-`cd` and assignments (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution)
-stays as written, and the person's rules see it. A line of heavy commands only — `cd app &&
+`cd` and assignments (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution, or a
+runner — `find`, `watch`, `su`, `parallel`, which do work of their own beside the command they
+run: `find -delete`, a user switch, an endless repeat, remote hosts)
+stays as written, and the person's rules see it. A runner's inner heavy command still counts
+when a line is queued some other way (`classifyHeavyCommand` reads through it for the
+reservation), but the route never rewrites a runner's line. A line of heavy commands only — `cd app &&
 bunx tsc --noEmit && bunx vitest run`, `FOO=1 bunx tsc --noEmit` — is still queued, under
 the kind that reserves the most.
 

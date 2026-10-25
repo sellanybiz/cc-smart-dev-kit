@@ -130,6 +130,21 @@ describe("which commands are routed", () => {
     expect(routeHeavyCommand('bash -c "npx next build"', KINDS, SHELL)?.kind).toBe("build");
   });
 
+  it("a runner's line stays as written: find, watch, su and parallel do work of their own", () => {
+    // The review of the runner follow-up: the reader now knows what they run, and the route must
+    // still leave them alone — a rewrite would hide `find -delete` or `su` from the person's
+    // own `Bash(find:*)` / `Bash(su:*)` rules, and `watch` would hold a lease for ever.
+    for (const command of [
+      "watch tsc --noEmit",
+      "watch bunx vitest run",
+      "find . -delete -exec tsc \\;",
+      "su -c 'tsc --noEmit' root",
+      "parallel -S host1 tsc ::: a b",
+    ]) {
+      expect([command, routeHeavyCommand(command, KINDS, SHELL)]).toEqual([command, null]);
+    }
+  });
+
   // HK hunch 1, proved live on Claude Code 2.1.308 (`docs/claude-code-contract.md`): a person's
   // own `Bash(rm:*)` deny rule is matched against the rewritten line, which starts with the
   // launcher and holds the person's line as one quoted word, so a routed `echo start && rm -f x`

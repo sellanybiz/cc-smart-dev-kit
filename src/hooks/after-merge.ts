@@ -44,6 +44,7 @@ import {
   type Dialect,
   dialectOfTool,
   invocationOf,
+  isRunnerProgram,
   isShort,
   MAX_NESTING,
   nestedCommand,
@@ -333,13 +334,13 @@ function readMerges(
     }
     const nested = nestedCommand(program, invocation.args, step.pipedFrom);
     if (nested !== undefined && depth < MAX_NESTING) {
-      calls.push(...lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved));
-    }
-    // `su -c '<script>'` reads its command from a word: the script is a line of its own.
-    const script = suScript(program, args);
-    if (script !== undefined && depth < MAX_NESTING) {
-      const merges = lineMerges(script, "bash", aliases, depth + 1, moved);
-      calls.push(...refuseRunner(merges, runner ?? SU_RUNNER));
+      const merges = lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved);
+      // The command a runner runs (`su -c '…'`, `find -exec …`, `parallel …`, `watch …`) is read
+      // by the shell reader, but it is never judged as the line's own: the runner decides whose
+      // gh, how often, and with which arguments, so it is the runner's refusal.
+      calls.push(
+        ...(runner !== null && isRunnerProgram(program) ? refuseRunner(merges, runner) : merges),
+      );
     }
   }
   return calls;
@@ -356,13 +357,6 @@ function lineMerges(
   return readingsOf(line, dialect).flatMap((reading) =>
     readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved),
   );
-}
-
-/** The `-c` of a `su` call (`su -c 'gh pr merge 7'`), or undefined. */
-function suScript(program: string, args: string[]): string | undefined {
-  if (program !== "su") return undefined;
-  const at = args.findIndex((arg) => arg === "-c" || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
-  return at === -1 ? undefined : args[at + 1];
 }
 
 /**
@@ -409,13 +403,6 @@ const RUNNERS: Record<string, { feeds: boolean; moved: string; via: string }> = 
       "an earlier `xargs` in the same command may feed {the} its arguments from outside the line",
     via: "from `xargs`, whose arguments come from outside the line",
   },
-};
-
-/** The runner `su -c '<script>'` is read through: the script's own line follows it. */
-const SU_RUNNER: Runner = {
-  feeds: true,
-  name: "su",
-  via: "from `su`, whose command and environment come from outside the line",
 };
 
 /** One runner and how it runs what follows it. */

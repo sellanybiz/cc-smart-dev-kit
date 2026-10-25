@@ -23,6 +23,7 @@ import {
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isRunnerProgram,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
@@ -473,6 +474,10 @@ function routableKinds(
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
+    // A runner (`find`, `watch`, `su`, `parallel`) does work of its own beside the command it
+    // runs — a delete, a user switch, an endless repeat — and the person's `Bash(find:*)` rules
+    // only see the words of the line that runs: never a pure step (it still reserves, below).
+    if (isRunnerProgram(program)) return null;
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined) {
       // A shell or wrapper that runs a line: that line must be pure too.
