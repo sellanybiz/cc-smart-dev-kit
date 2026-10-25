@@ -708,6 +708,12 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   after 1.2.1: UA1's permission prompt and `AskUserQuestion` in an interactive and a `--bg`
   session (expect "parked as #N"); SL1's footer before and after `/autocompact 400000` and
   `/effort low`; RC1's gateway-on session start with the key set.
+  **SC1 handed back** (`23b1de3`, opus xhigh review, 7,112 pass). **The owner, 2026-10-25:** bound
+  a stream from its headers too (a last target with no other deadline: `streamIdleMs` of total
+  silence ends it; any byte, keep-alives and pings included, resets it), **and end a stalled
+  Anthropic stream the same way** (replaces "backends only"). SC1 resumed with that, plus the
+  `firstByteMs` cap at the timer maximum (the same fault its review found in `streamIdleMs`), and
+  a second opus xhigh review since it now touches how Anthropic answers reach Claude Code.
 
 ### For the owner in the morning
 
