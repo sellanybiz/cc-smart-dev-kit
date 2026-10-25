@@ -25,6 +25,29 @@ says each piece of news once, and a removed crew session's conversation kept out
   "going again — the wait is answered" once when a needs-you wait ends; a merge note never names
   the lead that made it. A `--files` pattern that matches more than a quarter of the repository
   gets one warning.
+- **A `done` report proves itself.** `crew report --status done` refuses a report with no test
+  run, no checks or no review; a phase that ran its own review instead says so with `ownReview`
+  and a reason. A report's summary and any field the kit does not know are kept, never dropped.
+  A question a crew session asked again while the first had no answer closes the first, and an
+  answer to it is refused with the newest question named.
+- **`crew model <name> --model <model> --effort <effort>`** changes a crew session's model or
+  effort, with the same checks as `crew start`. A running one is resumed with the new flags and
+  told what changed; a stopped, paused or queued one takes the values for its next start. A move
+  to the opus tier that a cap holds waits for the cap.
+- **Crew names and continuations hold up after a clean-up.** A continuation keeps the commit it
+  started from after `crew rm`; a name that removed records share means the live one; a
+  continuation's number counts only the records that started.
+- **`workflow set`, `workflow unset` and `project init` keep the file's own layout.** Only the
+  value that changes is written: the other lines, the indent, a tab or CRLF file stay byte for
+  byte, and a new array is printed the way Biome would.
+- **The split review ranks its findings before the budget.** Each finding is ranked by severity,
+  so a busy track of small findings cannot take every refuter; a finding past the budget comes
+  back as unchecked, never dropped. The review and audit runs refuse a malformed argument before
+  any agent starts.
+- **A research sweep.** `research-first` can start `research-sweep` for a question with several
+  sources: one researcher per angle, then a refuter per claim that opens the source and quotes it.
+- **Four tests that failed only on a busy machine** found their cause (a slow child, a held port,
+  a git setup, a wall-clock bound) and pass under load.
 
 ## 1.2.0
 
