@@ -60,6 +60,16 @@ it is a minor version.
   of <old>)`). Two resumes of one record at once are refused instead of starting two copies; a
   resume that printed no session line keeps the record as it was and is never tried again by
   itself. The watch also survives a closed pipe and a busy store.
+- **A resumed crew session leaves nothing behind when it is removed.** A resume is a copy with a
+  new id, and `crew rm` used to remove and archive only the newest one, so every earlier copy
+  stayed in `/resume` and in `claude agents --all`. The record now keeps every earlier session,
+  and `crew rm`, the archive and `sessions --finished --remove` go through all of them. Also
+  fixed: a model change that waited for a cap no longer resumes a session that reported `done`
+  meanwhile; a second removal of one crew session refuses instead of rolling back the first one's
+  discard; the watch no longer waits for a continuation that was removed, discarded or failed; a
+  stop (the lead's `crew stop`, a `crew rm`, or the watch's idle stop) no longer writes `stopped`
+  over a session that reported `done` or was answered meanwhile; and a stop the watch made for an
+  idle blocked session no longer keeps the merged session from being removed.
 - **A removed crew session's conversation moves to the crew archive.** `crew rm` (and the watch's
   removal after a merge) moves the conversation Claude Code keeps after `claude rm` to
   `<state>/crew-archive/`, so `/resume` no longer lists every crew session ever removed; it is

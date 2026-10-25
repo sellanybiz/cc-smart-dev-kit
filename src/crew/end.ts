@@ -59,6 +59,7 @@ import {
   readCrew,
   readLead,
   updateCrew,
+  updateCrewIfState,
 } from "./store";
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
@@ -136,10 +137,17 @@ export function claudeFailure(ctx: CrewContext, repo: string, args: string[]): n
   return `${command} failed (exit ${String(call.run.exitCode)})${said === "" ? "" : `: ${said}`}`;
 }
 
-/** True when agent view, read once, does not list the crew session's Claude session at all. */
-export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
+/**
+ * True when agent view, read once, does not list a Claude session of the crew session at all:
+ * the current one, or the earlier one `shortId` names (a resume is a copy with a new id, WF1).
+ */
+export function sessionUnknown(
+  ctx: CrewContext,
+  record: CrewRecord,
+  shortId: null | string = record.shortId,
+): boolean {
   const binary = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
-  if (binary === null || record.shortId === null) return false;
+  if (binary === null || shortId === null) return false;
   const listed = callClaude(
     claudeDeps(ctx),
     binary,
@@ -149,7 +157,7 @@ export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
   );
   if (!listed.ok || listed.run.exitCode !== 0) return false;
   const rows = parseAgentPresence(listed.run.stdout);
-  return rows !== null && agentRow(rows, record.shortId) === null;
+  return rows !== null && agentRow(rows, shortId) === null;
 }
 
 /**
@@ -196,9 +204,26 @@ export async function stopSession(record: CrewRecord, ctx: CrewContext): Promise
   const gone = stop !== null && sessionUnknown(ctx, record);
   if (stop !== null && !gone) return { ok: false, why: stop };
   const running = (RUNNING_STATES as readonly string[]).includes(record.state);
+  if (!running) return { gone, ok: true, state: record.state, stored: true };
   const text = gone ? "its session was gone already" : "stopped by the lead";
-  const stored = running ? await markState(record, "stopped", text, ctx) : true;
-  return { gone, ok: true, state: running ? "stopped" : record.state, stored };
+  // The record was read before the stop: a crew session that reported `done` (or was merged or
+  // removed) since is not written over. The write holds only while it is still in a running state.
+  try {
+    const result = await updateCrewIfState(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      RUNNING_STATES,
+      { state: "stopped" },
+      ctx.now(),
+      text,
+      actorOfCaller(ctx, record.repo),
+    );
+    return { gone, ok: true, state: result.record.state, stored: true };
+  } catch (error) {
+    ctx.error(`crew: the store could not record ${record.name} as stopped: ${reasonOf(error)}`);
+    return { gone, ok: true, state: "stopped", stored: false };
+  }
 }
 
 /** How long a leftover program gets to end on SIGTERM before SIGKILL. */
@@ -397,6 +422,16 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   }
   const id = record.shortId;
   if (record.state === "stopped") {
+    // The lead's own stop makes it the lead's call to remove it, also when the watch stopped it first.
+    if (record.stoppedByWatch === true) {
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { stoppedByWatch: undefined },
+        ctx.now(),
+      );
+    }
     ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
     return 0;
   }

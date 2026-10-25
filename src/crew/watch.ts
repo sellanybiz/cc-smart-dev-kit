@@ -68,7 +68,13 @@ import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
-import { mergeProof, observeLeadPresence, STOPPED_REMINDER_MS, stoppedCrewNeed } from "./lifecycle";
+import {
+  holdsItsPredecessor,
+  mergeProof,
+  observeLeadPresence,
+  STOPPED_REMINDER_MS,
+  stoppedCrewNeed,
+} from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
@@ -86,6 +92,7 @@ import {
   setCrewMemory,
   takeWatchLease,
   updateCrew,
+  updateCrewIfState,
   type WatchLease,
   type WatchState,
   writeWatchState,
@@ -137,6 +144,7 @@ export const WORKTREE_CONFIRM_MS = 3 * 60_000;
  * because the merge can come after the crew session was stopped. A `stopped` one is marked merged
  * too — what waits for its phase starts on the merge — but **never removed by the watch (D62)**:
  * stopping it was the lead's call, and so is its removal (`mergedWhileStopped`, `store.ts`).
+ * The watch's own idle stop of a blocked session is not the lead's call (`stoppedByWatch`).
  */
 const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "stopped"];
 
@@ -507,18 +515,20 @@ async function stopCrew(
   state: "merged" | "stopped",
   reason: string,
   ctx: CrewContext,
-  row: null | AgentRow,
 ): Promise<null | string> {
   const why = await stopSession(record, ctx);
   if (why !== null) return why;
-  await updateCrew(
+  // The record was read a pass ago: a record that moved on while the session stopped (the lead's
+  // answer brought it back as a copy) is not written over. The next pass reads it again.
+  await updateCrewIfState(
     ctx.paths.stateDir,
     record.repo,
     record.id,
-    { state },
+    [record.state],
+    // A stop the watch makes is its own, not the lead's call (`stoppedByWatch`).
+    { state, ...(state === "stopped" ? { stoppedByWatch: true } : {}) },
     ctx.now(),
     reason,
-    memoryMbOf(row?.pid ?? null),
   );
   return null;
 }
@@ -832,7 +842,13 @@ export async function watchPass(
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
   const allRecords = listCrew(ctx.paths.stateDir, repo).records;
-  const events = readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
+  // The log only grows (`events.jsonl` is never cut), and a pass runs every 20 seconds: it is read
+  // once, and only when a record needs it (a stopped-session reminder, a legacy merge).
+  let eventsRead: CrewEvent[] | undefined;
+  const events = (): readonly CrewEvent[] => {
+    eventsRead ??= readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
+    return eventsRead;
+  };
   for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
     const lastReminder = stoppedRemindedAt[record.id];
@@ -856,7 +872,8 @@ export async function watchPass(
       OVER_STATES.includes(record.state) &&
       (record.state === "merged" || branchMerged(record, ctx))
     ) {
-      const wasStopped = record.state === "stopped";
+      // Stopped by the lead (D62), not by the watch's own idle stop (`stoppedByWatch`, RX1).
+      const wasStopped = record.state === "stopped" && record.stoppedByWatch !== true;
       // Marked once: a record that is merged already is not written again on every pass.
       if (record.state !== "merged") {
         const proof = mergeProof(record, ctx);
@@ -879,7 +896,7 @@ export async function watchPass(
       if (
         record.state === "merged" &&
         record.mergedWhileStopped === undefined &&
-        historicallyMergedWhileStopped(record, events)
+        historicallyMergedWhileStopped(record, events())
       ) {
         await updateCrew(
           ctx.paths.stateDir,
@@ -907,6 +924,7 @@ export async function watchPass(
         (one) =>
           one.id !== record.id &&
           descendants.has(one.id) &&
+          holdsItsPredecessor(one) &&
           !(one.state === "merged" || (one.state === "removed" && one.mergedBeforeRemoval)) &&
           !branchMerged(one, ctx),
       );
@@ -1006,7 +1024,6 @@ export async function watchPass(
           "stopped",
           `it has been blocked for ${minutes} minutes; an answer brings it back`,
           ctx,
-          row,
         );
       }
     }

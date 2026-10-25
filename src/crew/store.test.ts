@@ -42,6 +42,7 @@ import {
   readCrewEvents,
   readLead,
   readReport,
+  recordCrewReport,
   updateCrew,
   updateCrewIfState,
   writeLead,
@@ -290,6 +291,49 @@ describe("the crew record", () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), waitsFor: ["B6a", "B7"] }, T0);
     expect(readCrew(state, REPO, "crew-K-contracts")?.waitsFor).toEqual(["B6a", "B7"]);
+  });
+
+  test("RX1: a change of the session keeps the earlier ones, oldest first, once each", async () => {
+    const state = tempDir("state");
+    const first = "aaaaaaaa-0000-1111-2222-333333333333";
+    const second = "bbbbbbbb-0000-1111-2222-333333333333";
+    const third = "cccccccc-0000-1111-2222-333333333333";
+    await createCrew(
+      state,
+      { ...queued(), sessionId: first, shortId: "aaaaaaaa", state: "working" },
+      T0,
+    );
+    const id = "crew-K-contracts";
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    // A write that does not change the session adds nothing.
+    await updateCrew(state, REPO, id, { lastLine: "hi" }, T1);
+    expect(readCrew(state, REPO, id)?.earlierSessions).toBeUndefined();
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: second, shortId: "bbbbbbbb" }, T1);
+    await updateCrew(state, REPO, id, { sessionId: third, shortId: "cccccccc" }, T1);
+    const record = readCrew(state, REPO, id);
+    expect(record?.sessionId).toBe(third);
+    expect(record?.earlierSessions).toEqual([
+      { sessionId: first, shortId: "aaaaaaaa" },
+      { sessionId: second, shortId: "bbbbbbbb" },
+    ]);
+  });
+
+  test("RX1: stoppedByWatch lasts while the record is stopped, whichever write leaves it", async () => {
+    const state = tempDir("state");
+    const id = "crew-K-contracts";
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBe(true);
+    // A hand-back report moves the state without `changeCrew`.
+    await recordCrewReport(state, REPO, id, { ...report(), status: "done" }, T1 + 1000);
+    expect(readCrew(state, REPO, id)).toMatchObject({ state: "done" });
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
+    // A merge of a record the watch stopped is not "merged while stopped": the lead never stopped it.
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1 + 2000);
+    await updateCrew(state, REPO, id, { state: "merged" }, T1 + 3000);
+    expect(readCrew(state, REPO, id)?.mergedWhileStopped).toBe(false);
+    expect(readCrew(state, REPO, id)?.stoppedByWatch).toBeUndefined();
   });
 
   test("H101: a conditional change is written while the state is the one judged, with its event", async () => {

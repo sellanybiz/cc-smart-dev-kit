@@ -171,7 +171,8 @@ repository, under the state folder:
   Every change of a crew record goes through one read-modify-write (`changeCrew`).
 - **A crew record** holds who it is (its id — a plain file name, known before any session
   exists: `<phase>-<slug>-<6 hex>`, so a second try of a phase never meets the first's record —,
-  its name, its session's id and short id, its lead), what it does (the repository, the plan, the
+  its name, its session's id and short id, the sessions it had before (`earlierSessions`, RX1:
+  set by the store when a write replaces the session id), its lead), what it does (the repository, the plan, the
   phase and slug, the kind, the model as named with the slot and the model that answer it
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
@@ -189,8 +190,10 @@ repository, under the state folder:
   work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
   `removed`, from the state the record was in — the fact a phase that waits for it starts on),
   whether it was merged while it was `stopped` (`mergedWhileStopped`, optional: set by the store
-  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62),
-  and when it was recorded and changed. The states are `queued`, `starting`,
+  when the state goes from `stopped` to `merged` — the watch never removes such a record, D62;
+  false when the watch's own idle stop made it `stopped`), whether the watch itself stopped it
+  for idling (`stoppedByWatch`, RX1, optional: kept only while it is `stopped`), and when it was
+  recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
   id, name, repository, plan, the tag its crew sessions' names carry, and folder, and may hold
@@ -671,7 +674,9 @@ start reads its own (`startedRow`, `claude.ts`). **The record takes the new `ses
 `shortId` in the same write that makes it `working`** — `crew answer`, `crew resume`, `crew
 resume --paused` and the watch alike — so it never names a session that is gone, and the line
 says it: `resumed C kit B6b portal-live as session d7a54fc8 (a copy of c7186986)`. The old session
-is a stopped row with no process, left to the cleanup that removes finished sessions.
+is a stopped row with no process. The record keeps it (`earlierSessions`, RX1), so `crew rm`
+removes it with the rest (§ A removed crew session's conversation); `sessions --finished` never
+offers it, because it is the crew's own.
 
 A resume that printed **no such line**, a note that names another id than the line, or a copy
 agent view cannot show is said with the reason, and the record keeps its state and its session —
@@ -733,6 +738,16 @@ Claude Code expects it). The watch's removal after a merge, the background clean
 orphaned crew session and `crew rm` all call `runCrewRm`, so the move has one home and the watch
 needs no change.
 
+- **Every session the crew session had (RX1).** A resume is a copy with a new id (WF1), and the
+  record's `sessionId` and `shortId` move to it. The write that changes the `sessionId` (`changeCrew`,
+  the one store write) keeps the session it replaces on the record, oldest first
+  (`earlierSessions`; `crewSessions` lists them with the current one first). So `crew rm` runs
+  `claude rm` on each short id (a session agent view no longer lists is gone already), the archive
+  moves each session's conversation into the same folder, and `sessionsNeverTaken`, the finished
+  list and the sweep (`readCrewLeftovers`) all count every one of them: none stays in `/resume` or
+  in `claude agents --all`. A record from before the field has only its current session. When one
+  session's conversation stays (a running Claude holds it) beside one that moved, the outcome says
+  so (`stayed`).
 - **Where it goes.** `<state>/crew-archive/<repo key>/<crew id>/` (the repo key is the crew store's
   own, `repoKey`): `archive.json` (who it was, the project folder, when), `report.json` (a copy of the
   hand-back report) and `projects/<project folder>/…` in **Claude Code's own layout, each file
@@ -985,11 +1000,20 @@ the store records — a session the kit does not know is the person's own:
   and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy; its
   conversation leaves `/resume` for the kit's archive, § A removed crew session's conversation). A
   continuation holds the removal back until its work and every later continuation's work are
-  merged into the first record's base. The line says so once; a refusal — a program runs from its worktree, or work
+  merged into the first record's base — a continuation that failed, was removed or was discarded
+  releases it (`holdsItsPredecessor`, `lifecycle.ts`: the one rule the stopped-session reminder
+  uses too, since a successor removed before it started has no branch to merge, RX1). The line says so once; a refusal — a program runs from its worktree, or work
   nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged
   too, because what waits for its phase starts on the merge, but **never removed by the watch**:
   stopping it was the lead's call, and so is its removal (the store keeps the fact from the state
-  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). The branch must hold a commit of its own (its tip is not
+  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). **The watch's own idle
+  stop is not the lead's call** (RX1): it marks the record `stoppedByWatch`, kept only while the
+  record is `stopped`, and a merge of such a record removes it like any other. One removal of a
+  record runs at a time (a lock in the record's files folder, `crewRemovalLockDir`): a second one —
+  the watch's after the person's `crew rm --discard` changed the worktree — refuses at once and
+  rolls nothing back. A pass reads the events log (it only grows) only when a record needs it, a
+  stopped-session reminder (a `done`, `stopped` or `failed` record of this lead not reminded yet) or
+  a legacy merge: on a log of 3 000 events (1.3 MB) the read takes about 23 ms, on 30 000 about 190 ms. The branch must hold a commit of its own (its tip is not
   the base it was cut from — a crew session that failed before it committed is an ancestor of the
   base for that reason alone), and its work must be on the commit **the branch it was cut from**
   (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record

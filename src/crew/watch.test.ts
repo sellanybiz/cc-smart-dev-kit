@@ -29,6 +29,7 @@ import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewFile,
   crewMcpFile,
   crewSettingsFile,
   crewStoreDir,
@@ -877,6 +878,93 @@ describe("crew watch", () => {
     expect(record?.state).toBe("stopped");
   });
 
+  test("RX1: a stop the watch made for an idle blocked session is not the lead's call: the merge removes it", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]).toMatchObject({
+      state: "stopped",
+      stoppedByWatch: true,
+    });
+    // The lead never stopped it; it merges the branch without answering.
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    world.out.length = 0;
+
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("removed");
+    expect(record?.mergedWhileStopped).toBe(false);
+    expect(record?.stoppedByWatch).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(world.out[0]).toBe(
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    );
+  });
+
+  test("RX1: the watch's idle stop does not overwrite an answer that arrived while it stopped", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    const real = ctx.runProgram;
+    const file = crewFile(world.paths.stateDir, world.repo, ID);
+    ctx.runProgram = (argv, options) => {
+      // The lead's answer brings the session back while `claude stop` runs.
+      if (argv.includes("stop")) {
+        const stored = JSON.parse(readFileSync(file, "utf8"));
+        writeFileSync(file, JSON.stringify({ ...stored, state: "working" }));
+      }
+      return real(argv, options);
+    };
+
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("working");
+    expect(record?.stoppedByWatch).toBeUndefined();
+  });
+
+  test("RX1: the watch's own stop stays removable when the first removal is refused", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // Work nobody committed: the first removal is refused.
+    writeFileSync(join(worktree, "wip.txt"), "unsaved\n");
+    const ctx = world.ctx();
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("merged");
+    // The person commits it; the watch's later pass removes the record.
+    rmSync(join(worktree, "wip.txt"));
+
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.mergedWhileStopped).toBe(false);
+    expect(record?.state).toBe("removed");
+  });
+
   test("D35: a branch the lead merged is removed by the watch's next pass", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");
@@ -1406,6 +1494,19 @@ describe("crew watch", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-q", "-m", "the phase");
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    // A phase it waits for keeps the continuation queued: a queue that could start it would start
+    // it here, and the fake `claude` has no session to give it (it would fail, which releases the
+    // original, RX1).
+    await addCrew(world, "working", {
+      branch: "crew/Z9-hold",
+      id: "Z9-hold-1a2b3c",
+      name: "C my-app Z9 hold",
+      phase: "Z9",
+      sessionId: null,
+      shortId: null,
+      slug: "hold",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-Z9-hold"),
+    });
     const continuation = await addCrew(world, "queued", {
       base: null,
       branch: "crew/B6b-portal-live-2",
@@ -1414,6 +1515,7 @@ describe("crew watch", () => {
       name: "C my-app B6b portal-live 2",
       sessionId: null,
       shortId: null,
+      waitsFor: ["Z9"],
       worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
     });
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
@@ -1421,7 +1523,9 @@ describe("crew watch", () => {
     expect(world.out).toContain(
       "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to merge",
     );
-    const [kept] = listCrew(world.paths.stateDir, world.repo).records;
+    const kept = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === original.id,
+    );
     expect(kept?.state).toBe("merged");
     expect(existsSync(worktree)).toBe(true);
     // The waiting line is said once.
@@ -1452,6 +1556,38 @@ describe("crew watch", () => {
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
   });
+
+  test.each(["removed", "discarded", "failed"])(
+    "RX1: a continuation that is %s before it started releases its merged original",
+    async (ended) => {
+      const world = await leadWorld();
+      const original = await addCrew(world, "done");
+      const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+      git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+      writeFileSync(join(worktree, "done.txt"), "x\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-q", "-m", "the phase");
+      git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+      // Queued, so it has no branch and no worktree; then removed (or failed) before it started.
+      await addCrew(world, ended, {
+        base: null,
+        branch: "crew/B6b-portal-live-2",
+        continues: original.id,
+        id: "B6b-portal-live-2-1a2b3c",
+        name: "C my-app B6b portal-live 2",
+        sessionId: null,
+        shortId: null,
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live-2"),
+      });
+      const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+
+      expect(world.out.join("\n")).not.toContain("waiting for its continuation");
+      expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
+      expect(existsSync(worktree)).toBe(false);
+    },
+  );
 
   test("a handed-off ancestor stays while its continuation has unmerged work", async () => {
     const world = await leadWorld();
