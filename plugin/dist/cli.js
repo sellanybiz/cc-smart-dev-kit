@@ -56782,6 +56782,11 @@ async function runSetup(paths, options) {
   const machine = options.machine;
   const out = options.out ?? createOut(currentTerminal(process.env, machine.platform));
   if (!marketplaceKnown(paths.settingsFile)) {
+    if (marketplaceAdded(paths, MARKETPLACE)) {
+      console.error(`${short(paths.settingsFile)} does not declare the ${MARKETPLACE} marketplace, although Claude Code has it on disk.
+` + `Run: ${MARKETPLACE_ADD_COMMAND}`);
+      return 1;
+    }
     console.error(`${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.
 ` + `Run first: ${MARKETPLACE_ADD_COMMAND}
 ` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);

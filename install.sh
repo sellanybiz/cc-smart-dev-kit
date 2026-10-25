@@ -265,6 +265,17 @@ marketplace_added() { # <name>
   [ "$(json_out "$KNOWN_MARKETPLACES" "Object.prototype.hasOwnProperty.call(d,'$1')")" = "true" ]
 }
 
+# Claude Code's other record of a marketplace: the user settings' `extraKnownMarketplaces`,
+# which `claude plugin marketplace add` writes with the entry's `source`. `setup` reads this
+# one (it writes its `autoUpdate` key into the entry), so a marketplace the first record
+# holds and this one lost — another tool rewriting settings.json — stops `setup`. Only the
+# add writes the entry whole, so only the add repairs it: proved live that a repeat add of a
+# marketplace already on disk declares it again and fetches nothing
+# (docs/claude-code-contract.md).
+marketplace_declared() { # <name>
+  [ "$(json_out "$SETTINGS_FILE" "Object.prototype.hasOwnProperty.call((d.extraKnownMarketplaces||{}),'$1')")" = "true" ]
+}
+
 # True when this machine can run the gateway's router: systemd's user units are what its
 # service uses on Linux, and the plugin's own refusal says the same (`routerServiceKind`:
 # systemd, a Scheduled Task on Windows, else nothing).
@@ -419,7 +430,7 @@ EOF
 # ─── the run ───────────────────────────────────────────────────────────────────────────
 main() {
   local DRY_RUN="no" REPO="" arg
-  local added="" pair name source add_out add_code
+  local added="" redeclared="" pair name source add_out add_code on_disk
   local have_version want_version restart_flag gateway_go
   local cli_have gateway_check_out gateway_check_code gateway_saved gateway_tries gateway_code
   local mcp_asked=""
@@ -624,7 +635,13 @@ main() {
   for pair in "$MARKETPLACE|$REPO" $COMPANION_MARKETPLACES; do
     name="${pair%%|*}"
     source="${pair#*|}"
-    if marketplace_added "$name"; then continue; fi
+    # Added means BOTH of Claude Code's records hold it: known_marketplaces.json and the user
+    # settings. Only the first: the same add runs again, and says it is a repair.
+    on_disk="no"
+    if marketplace_added "$name"; then
+      if marketplace_declared "$name"; then continue; fi
+      on_disk="yes"
+    fi
     if [ "$DRY_RUN" = "no" ]; then
       # Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH
       # key (or a blocked port 22) is refused. The same marketplace over HTTPS works, and it
@@ -646,14 +663,26 @@ main() {
         [ -z "$add_out" ] || printf '%s\n' "$add_out" >&2
         failed "adding the marketplace $source failed" "claude plugin marketplace add $source"
       fi
+      # The add is what writes the settings entry: if it is still missing, `setup` would stop
+      # on it, so stop here with the command.
+      if ! marketplace_declared "$name"; then
+        failed "the settings still do not list the $name marketplace after adding $source" \
+          "claude plugin marketplace add $source"
+      fi
     fi
-    added="${added}${added:+, }$source"
-  done
-  if [ -n "$added" ]; then
-    if [ "$DRY_RUN" = "yes" ]; then
-      skip "4/8 the plan adds: $added"
+    if [ "$on_disk" = "yes" ]; then
+      redeclared="${redeclared}${redeclared:+, }$source"
     else
-      step "4/8 marketplaces added: $added"
+      added="${added}${added:+, }$source"
+    fi
+  done
+  if [ -n "$added" ] || [ -n "$redeclared" ]; then
+    if [ "$DRY_RUN" = "yes" ]; then
+      [ -z "$added" ] || skip "4/8 the plan adds: $added"
+      [ -z "$redeclared" ] || skip "4/8 the plan re-declares in your settings: $redeclared"
+    else
+      [ -z "$added" ] || step "4/8 marketplaces added: $added"
+      [ -z "$redeclared" ] || step "4/8 re-declared in your settings: $redeclared"
     fi
   else
     step "4/8 all three marketplaces are already added"

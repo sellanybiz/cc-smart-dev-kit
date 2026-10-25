@@ -90,6 +90,15 @@ a step that failed, and running it again goes on from there.
   cc-smart-dev-kit marketplace failed` and the exact command that retries it, and running it
   again goes on from there once the network is back. (The Bun step's `curl`, the
   `claude plugin …` steps and `git` all need the network too.)
+- **A marketplace counts as added only when both of Claude Code's records hold it**: its own
+  list (`plugins/known_marketplaces.json`) and your settings (`extraKnownMarketplaces` in
+  `~/.claude/settings.json`), which `setup` reads. On a machine whose settings lost the entry
+  (another tool rewrote `settings.json`, say), step 4 runs `claude plugin marketplace add`
+  again, which declares it in the settings and fetches nothing, and says so:
+  `re-declared in your settings: <source>`. Before 1.3.0, `setup` stopped there with
+  `settings.json does not list the cc-smart-dev-kit marketplace yet`; now `setup` itself, run by
+  hand on such a machine, says `does not declare the cc-smart-dev-kit marketplace, although
+  Claude Code has it on disk` and gives the same one command.
 - **It needs GitHub through your own account.** Claude Code adds a marketplace over ssh by
   default: on a machine with no GitHub SSH key (or a blocked port 22) the installer adds that
   source over HTTPS instead, says so in one line, and goes on — the marketplace's name comes

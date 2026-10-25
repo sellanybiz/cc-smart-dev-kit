@@ -140,6 +140,14 @@ interface WorldOptions {
   claudeSshRefused?: boolean;
   /** The repository cannot be read at all: both forms of the add fail with "Repository not found". */
   claudeAddNotFound?: boolean;
+  /**
+   * The three marketplaces are on disk (`known_marketplaces.json`, with their clones) before
+   * the run. "declared": the user settings hold them too. "lost": the settings do not — the
+   * machine the Windows run of 1.2.0 found (`setup` stopped on "does not list the marketplace").
+   */
+  marketplacesOnDisk?: "declared" | "lost";
+  /** `claude plugin marketplace add` succeeds but leaves the user settings alone. */
+  claudeNoDeclare?: boolean;
 }
 
 /** One `mcp status --json` answer, as the real command writes it. */
@@ -337,6 +345,13 @@ if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
   esac
   "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}d[process.argv[2]]={source:{source:"github",repo:process.argv[3]},installLocation:process.argv[4]};fs.writeFileSync(p,JSON.stringify(d,null,2))' \
     "$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json" "$name" "$4" "$dir"
+  # Claude Code also DECLARES the marketplace in the user settings (extraKnownMarketplaces,
+  # with its source) — on a repeat add of one already on disk too (proved live: Claude Code
+  # 2.1.310, docs/claude-code-contract.md). FAKE_CLAUDE_NO_DECLARE leaves the settings alone.
+  if [ "$FAKE_CLAUDE_NO_DECLARE" != "yes" ]; then
+    "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}d.extraKnownMarketplaces=d.extraKnownMarketplaces||{};d.extraKnownMarketplaces[process.argv[2]]={source:{source:"github",repo:process.argv[3]}};fs.writeFileSync(p,JSON.stringify(d,null,2))' \\
+      "$CLAUDE_CONFIG_DIR/settings.json" "$name" "$4"
+  fi
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "remove" ]; then
   "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}delete d[process.argv[2]];fs.writeFileSync(p,JSON.stringify(d,null,2))' \
@@ -506,6 +521,37 @@ function world(options: WorldOptions = {}): World {
       )}\n`,
     );
   }
+  if (options.marketplacesOnDisk !== undefined) {
+    const sources: Record<string, string> = {
+      "cc-smart-dev-kit": REPO,
+      thedotmack: "thedotmack/claude-mem",
+      "claude-plugins-official": "anthropics/claude-plugins-official",
+    };
+    const known: Record<string, unknown> = {};
+    const declared: Record<string, unknown> = {};
+    for (const [name, repo] of Object.entries(sources)) {
+      const dir = join(configDir, "plugins/marketplaces", name);
+      mkdirSync(join(dir, "plugin/.claude-plugin"), { recursive: true });
+      if (name === "cc-smart-dev-kit") {
+        writeFileSync(
+          join(dir, "plugin/.claude-plugin/plugin.json"),
+          `${JSON.stringify({ name, version: options.cloneVersion ?? MARKETPLACE_VERSION })}\n`,
+        );
+      }
+      known[name] = { source: { source: "github", repo }, installLocation: dir };
+      declared[name] = { source: { source: "github", repo } };
+    }
+    writeFileSync(
+      join(configDir, "plugins/known_marketplaces.json"),
+      `${JSON.stringify(known, null, 2)}\n`,
+    );
+    const file = join(configDir, "settings.json");
+    const settings: Record<string, unknown> = existsSync(file)
+      ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>)
+      : {};
+    if (options.marketplacesOnDisk === "declared") settings.extraKnownMarketplaces = declared;
+    writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+  }
   if (options.progressFile === true) {
     mkdirSync(join(configDir, "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(
@@ -627,6 +673,7 @@ function world(options: WorldOptions = {}): World {
     FAKE_GH_VIEW_FAILS: options.ghRepoViewFails === true ? "yes" : "no",
     FAKE_CLAUDE_SSH_REFUSED: options.claudeSshRefused === true ? "yes" : "no",
     FAKE_CLAUDE_ADD_NOT_FOUND: options.claudeAddNotFound === true ? "yes" : "no",
+    FAKE_CLAUDE_NO_DECLARE: options.claudeNoDeclare === true ? "yes" : "no",
   };
 
   const spawn = (args: string[], env: Record<string, string>, input?: string) => {
@@ -866,6 +913,74 @@ describe("install.sh: a machine, step by step", () => {
     expect(second).toContain(`bun ${w.cli} migrate`);
     expect(second).toContain(`bun ${w.cli} setup`);
     expect(second).toContain("launcher doctor --json");
+  });
+
+  // The live bug (Windows, installer from main, plugin 1.2.0): the marketplaces were on disk
+  // (known_marketplaces.json) but the user settings no longer declared them, so step 4 skipped
+  // the add and `setup` stopped with "does not list the cc-smart-dev-kit marketplace yet". A
+  // marketplace is added only when BOTH records hold it.
+  const ALL_SOURCES = `${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official`;
+  const settingsMarketplaces = (w: World): string[] =>
+    Object.keys(
+      (JSON.parse(w.read(join(w.configDir, "settings.json"))).extraKnownMarketplaces ??
+        {}) as Record<string, unknown>,
+    ).sort();
+
+  test("on disk but not in the settings: step 4 adds them again, and setup passes", () => {
+    const w = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "lost" });
+    expect(settingsMarketplaces(w)).toEqual([]);
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain(`✓ 4/8 re-declared in your settings: ${ALL_SOURCES}\n`);
+    expect(out).not.toContain("already added");
+    expect(w.callsOf("claude").filter((call) => call.startsWith("plugin marketplace add"))).toEqual(
+      [
+        `plugin marketplace add ${REPO}`,
+        "plugin marketplace add thedotmack/claude-mem",
+        "plugin marketplace add anthropics/claude-plugins-official",
+      ],
+    );
+    expect(settingsMarketplaces(w)).toEqual([
+      "cc-smart-dev-kit",
+      "claude-plugins-official",
+      "thedotmack",
+    ]);
+    expect(w.callsOf("bun")).toContain(`${w.cli} setup`);
+  });
+
+  test("on disk and in the settings: step 4 says already added and runs no add", () => {
+    const w = world({ answers: browserAnswers("n", "n"), marketplacesOnDisk: "declared" });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain("✓ 4/8 all three marketplaces are already added\n");
+    expect(out).not.toContain("re-declared");
+    expect(w.callsOf("claude").filter((call) => call.includes("marketplace add"))).toEqual([]);
+  });
+
+  test("--dry-run on a machine whose settings lost the marketplaces: the plan, no add", () => {
+    const w = world({ marketplacesOnDisk: "lost" });
+    const { code, out } = w.run(["--dry-run", REPO]);
+    expect(code).toBe(0);
+    expect(out).toContain(`· 4/8 the plan re-declares in your settings: ${ALL_SOURCES}\n`);
+    expect(w.callsOf("claude")).toEqual([]);
+    expect(settingsMarketplaces(w)).toEqual([]);
+  });
+
+  test("the add runs but the settings still do not declare it: step 4 fails with the command", () => {
+    const w = world({
+      answers: browserAnswers("n", "n"),
+      marketplacesOnDisk: "lost",
+      claudeNoDeclare: true,
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(
+      `✗ the settings still do not list the cc-smart-dev-kit marketplace after adding ${REPO}\n`,
+    );
+    expect(out).toContain(
+      `  Retry just that step with:\n    claude plugin marketplace add ${REPO}\n`,
+    );
+    expect(w.callsOf("claude")).toEqual([`plugin marketplace add ${REPO}`]);
   });
 
   test("a stale marketplace clone: the refresh runs first, then the update", () => {
@@ -1420,8 +1535,10 @@ describe("install.sh: what only the person has", () => {
   });
 
   test("a step that fails stops the run, names the command, and exits 1", () => {
-    // The plugin install fails: exit 1, and the exact command that retries it is printed.
-    const w = world();
+    // The plugin install fails: exit 1, and the exact command that retries it is printed. This
+    // `claude` writes no records, so the marketplaces are already on disk and declared: step 4
+    // adds nothing and the run reaches the install.
+    const w = world({ marketplacesOnDisk: "declared" });
     w.file(
       join(w.home, "fake-bin/claude"),
       `#!/bin/sh\nprintf '%s\\n' "claude $*" >> ${JSON.stringify(join(w.home, "calls.log"))}\ncase "$*" in *"plugin install"*) exit 1 ;; esac\nexit 0\n`,
