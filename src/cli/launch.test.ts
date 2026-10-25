@@ -7,8 +7,16 @@
  * uses (never 20100), and nothing here reaches the network.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
 import { subprocessGuard } from "../testing/port-guard";
@@ -125,6 +133,7 @@ function context(
     print: (line) => printed.push(line),
     printed,
     runSession: realRunSession,
+    settingsFile: join(world.home, ".claude", "settings.json"),
     stateDir: world.stateDir,
     which: (command) => (command === "claude" ? world.claude : null),
     ...overrides,
@@ -553,4 +562,93 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
       expect(await signalLauncher(signal)).toEqual({ code, got: word });
     },
   );
+});
+
+describe("RV3: launch says what its settings file leaves in place (the lead's choice: warn, still start)", () => {
+  /** Writes a settings file holding `body`, making its folder. */
+  function settingsAt(file: string, body: unknown): void {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+  }
+  const userFile = (home: World) => join(home.home, ".claude", "settings.json");
+
+  test("--no-gateway: a login key in the user's file is named with its file and the fix; the session still starts", async () => {
+    const home = world();
+    settingsAt(userFile(home), { env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      "launch: ANTHROPIC_API_KEY is set in ~/.claude/settings.json: this session bills through it, not through your plan's login. Remove it from that file to use the login.",
+    ]);
+    expect(runLog(home)).toContain(`arg=${settingsFileOf(home, "no-gateway")}`);
+  });
+
+  test("a helper and a token in the project's own file are named too, one line each, with that file", async () => {
+    const home = world();
+    const team = join(realpathSync(home.cwd), ".claude", "settings.json");
+    settingsAt(team, { apiKeyHelper: "/bin/true", env: { ANTHROPIC_AUTH_TOKEN: "token-value" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      `launch: ANTHROPIC_AUTH_TOKEN is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+      `launch: apiKeyHelper is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+    ]);
+  });
+
+  test("a login key is named in the gateway modes too: the gateway sends your own login", async () => {
+    const home = world();
+    gatewayConfig(home, ["cheap"]);
+    settingsAt(userFile(home), { env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toHaveLength(1);
+    expect(ctx.errors[0]).toStartWith(
+      "launch: ANTHROPIC_API_KEY is set in ~/.claude/settings.json",
+    );
+    const profile = context(home);
+    expect(await runLaunch(["--profile", "cheap"], profile)).toBe(7);
+    expect(profile.errors).toHaveLength(1);
+  });
+
+  test("--no-gateway: a retired model key that names a slot is named; a model name Anthropic knows is not", async () => {
+    const home = world();
+    settingsAt(userFile(home), {
+      env: {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker",
+      },
+    });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      'launch: env.ANTHROPIC_DEFAULT_SONNET_MODEL is "cc-smart-dev-kit-worker" in ~/.claude/settings.json: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (cc-smart-dev-kit gateway setup removes the ones 0.4.3 wrote).',
+    ]);
+  });
+
+  test("a slot name is fine on the gateway, and a launch with no mode is the settings' own: no note", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    settingsAt(userFile(home), {
+      env: {
+        ANTHROPIC_API_KEY: "sk-ant-test-0123456789",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker",
+      },
+    });
+    const gateway = context(home);
+    expect(await runLaunch(["--gateway"], gateway)).toBe(7);
+    expect(gateway.errors.map((line) => line.split(" is ")[0])).toEqual([
+      "launch: ANTHROPIC_API_KEY",
+    ]);
+    const plain = context(home);
+    expect(await runLaunch([], plain)).toBe(7);
+    expect(plain.errors).toEqual([]);
+  });
+
+  test("a settings file that cannot be read says nothing here, and the session still starts", async () => {
+    const home = world();
+    settingsAt(userFile(home), "{not json");
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([]);
+  });
 });

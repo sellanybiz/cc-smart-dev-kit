@@ -35,7 +35,11 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   stop with `gateway setup` as the fix when it does not answer (after a full `restore`, which
   keeps `gateway.json`, the config is there but the router is not), instead of starting a session
   whose every request fails. A signal sent to the `launch` command alone (`kill <pid>`) now reaches
-  the session it runs, so it no longer leaves a session running behind a finished command.
+  the session it runs, so it no longer leaves a session running behind a finished command. It
+  also says, on stderr and still starting, what its settings file leaves in place: one line per
+  login key or helper in your settings (the session bills through it, not through your plan's
+  login), and in `--no-gateway` per retired model key that names a slot (Anthropic has no such
+  model), each with its file and the fix.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
   so no session needs a restart. A second `restore` takes the key out. One exception: on a

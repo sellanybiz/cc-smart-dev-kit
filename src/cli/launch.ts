@@ -17,6 +17,12 @@
  * (`writeJsonFile`, which `crew start` uses for its own `--settings` file too), and removed
  * when the session ends.
  *
+ * **What the file leaves in place, it says** (the lead's choice, RV3): `env` merges one variable
+ * at a time, so a login key or helper in the person's settings still applies, and a retired
+ * `ANTHROPIC_DEFAULT_*_MODEL` that names a slot still goes to Anthropic in a plain session. The
+ * launch starts anyway and names each such key with its file and the fix (`settingsNotes`),
+ * read through the project's one settings reader (`projectGatewayState`), facts only.
+ *
  * **What it will not do:** start a session inside a session (`CLAUDECODE`), guess a profile the
  * config does not have, point at a gateway this machine never set up, point at a router that
  * does not answer (a config with no router behind it: after `restore`, which keeps
@@ -40,9 +46,9 @@ import {
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
-import { profileUrlOf, readGatewayConfig } from "../gateway/project-state";
-import { routerBaseUrl } from "../gateway/settings";
-import { isProfileName } from "../gateway/targets";
+import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
+import { routerBaseUrl, shownValue } from "../gateway/settings";
+import { isProfileName, isSlotKey } from "../gateway/targets";
 import { tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
@@ -166,6 +172,8 @@ export interface LaunchContext {
   platform: NodeJS.Platform;
   print: (line: string) => void;
   runSession: RunSession;
+  /** The user's own settings file (`cliPaths().settingsFile`): the last of the chain a session reads. */
+  settingsFile: string;
   stateDir: string;
   which: (command: string) => null | string;
 }
@@ -302,6 +310,45 @@ async function launchTarget(
   return { line: `launch: the gateway, profile "${mode.name}" · ${url}`, url };
 }
 
+/**
+ * One line per key the settings chain still gives a session this launch starts (facts only,
+ * never a model suggested). The launch file names only the address, and Claude Code merges `env`
+ * one variable at a time (`docs/claude-code-contract.md`, P3), so:
+ * - a login key or helper (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) in any
+ *   file bills the session through it, not through the plan's login — in every mode that passes
+ *   the file;
+ * - a model key that names a gateway slot (the retired `ANTHROPIC_DEFAULT_*_MODEL` of 0.4.3)
+ *   asks Anthropic for a model that does not exist — only in `--no-gateway`, the path that
+ *   reaches Anthropic; on the gateway a slot name is what the router reads.
+ * No mode: no file, the settings decide as for `claude`, nothing to say. A file that cannot be
+ * read says nothing here (`doctor` and `gateway project status` name it).
+ */
+function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
+  if (mode.kind === "default") return [];
+  const state = projectGatewayState(ctx.cwd, {
+    configPath: ctx.configPath,
+    settingsFile: ctx.settingsFile,
+  });
+  const lines: string[] = [];
+  for (const file of state.files) {
+    if (file.problem !== null) continue;
+    const where = tildify(file.path, ctx.home);
+    for (const key of file.loginOverrides) {
+      lines.push(
+        `launch: ${key} is set in ${where}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+      );
+    }
+    if (mode.kind !== "no-gateway") continue;
+    for (const fact of file.modelKeys) {
+      if (!isSlotKey(fact.value.trim())) continue;
+      lines.push(
+        `launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`,
+      );
+    }
+  }
+  return lines;
+}
+
 /** `launch`; the exit code: the session's own, or 1 refused / 2 a usage mistake. */
 export async function runLaunch(args: readonly string[], ctx: LaunchContext): Promise<number> {
   const parsed = parseLaunchArgs(args);
@@ -360,6 +407,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     }
   }
   ctx.print(target.line);
+  for (const line of settingsNotes(parsed.mode, ctx)) ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,

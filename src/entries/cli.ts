@@ -210,6 +210,7 @@ function launchContext(paths: ReturnType<typeof cliPaths>) {
     platform: process.platform,
     print: (line: string) => console.log(line),
     runSession: realRunSession,
+    settingsFile: paths.settingsFile,
     stateDir: paths.stateDir,
     which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };

@@ -300,8 +300,13 @@ the command's.
   it. `--no-gateway` is plain Claude at Anthropic's address, on the claude.ai login **unless** the
   person's settings hold a login key (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`),
   which the session then uses instead, or one of 0.4.3's retired model keys
-  (`ANTHROPIC_DEFAULT_*_MODEL` naming a slot), which sends that name to Anthropic. `gateway status`
-  and `doctor` list such keys; the launch does not touch them.
+  (`ANTHROPIC_DEFAULT_*_MODEL` naming a slot), which sends that name to Anthropic. The launch
+  touches neither, and starts anyway, but says so on stderr: one line per key, with its file and
+  the fix (remove it from that file), read from the project's settings chain
+  (`projectGatewayState`) and never a model suggested. A login key is named in every mode that
+  passes the file; a slot name only in `--no-gateway`, because on the gateway a slot name is what
+  the router reads. A file that cannot be read is not named here; `doctor` names it. A launch with
+  no mode passes no file and says nothing.
 - **Where the file is:** `<stateDir>/launch/<mode>-<pid>.json` (`no-gateway-<pid>.json`,
   `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600 in a 0700 folder, written by the
   kit's one JSON writer (`writeJsonFile`, `src/crew/store.ts`), which `crew start` uses for its
