@@ -25,6 +25,12 @@ export interface Hit {
 /** A key or token shape, each a pattern with bounded quantifiers (no input makes it backtrack long). */
 const TOKEN_SHAPES: readonly RegExp[] = [
   /\bsk[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,256}/g,
+  /\brk_(?:live|test)_[A-Za-z0-9]{16,256}/g,
+  /\bgsk_[A-Za-z0-9]{20,256}/g,
+  /\btvly-[A-Za-z0-9_-]{16,256}/g,
+  // A webhook URL is the secret: whoever holds it can post to the channel.
+  /(?:https?:\/\/)?hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{16,256}/g,
+  /(?:https?:\/\/)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d{5,32}\/[A-Za-z0-9._-]{16,256}/g,
   /\bnpm_[A-Za-z0-9]{30,256}/g,
   /\bglpat-[A-Za-z0-9_-]{16,256}/g,
   /\bhf_[A-Za-z0-9]{30,256}/g,
@@ -40,15 +46,13 @@ const TOKEN_SHAPES: readonly RegExp[] = [
 
 /**
  * A value after `key`, `token`, `secret`, `password` or `authorization` and a `:` or `=`
- * (`api_key=…`, `"token": "…"`, `?token=…`). Without the `:` or `=` the words after it are
- * prose ("the key does not exist"). The value is group 1, at least 8 characters.
+ * (`api_key=…`, `"token": "…"`, `?token=…`), in any case and with letters before the word and no
+ * space (`APIKEY`, `PGPASSWORD`, `GITHUBTOKEN`, `apiKey`, `accesstoken`). Without the `:` or `=`
+ * the words after it are prose ("the key does not exist"); a short or placeholder value after
+ * "monkey:" passes. The value is group 1, at least 8 characters.
  */
 const ASSIGNED_SECRET =
-  /(?<![A-Za-z])(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
-
-/** The same after a lower-case letter, for a name in camel case: `apiKey=…`, `authToken: …`. */
-const CAMEL_ASSIGNED_SECRET =
-  /(?<=[a-z])(?:Key|Token|Secret|Passw(?:or)?d)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/g;
+  /(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
 
 /** A value that names a place for a secret rather than holding one: `$TOKEN`, `${…}`, `***`, `%VAR%`. */
 function isPlaceholder(value: string): boolean {
@@ -58,18 +62,54 @@ function isPlaceholder(value: string): boolean {
 /** A URL's `user:pass@` or `token@` part. The userinfo is group 1, the scheme group 2. */
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,31}):\/\/([^/?#\s'"<>@]{1,256})@/gi;
 
-/** The pattern to find the real home folder, in the forms a path takes; null when it is too short to mean one. */
-function homePattern(home: string | null): RegExp | null {
-  if (home === null) return null;
-  const trimmed = home.replace(/[\\/]+$/, "");
-  if (trimmed.length < 2) return null;
+/** A home folder told apart: a drive-letter home in any of its spellings, or a plain path. */
+interface HomeShape {
+  /** The drive letter of a Windows home (`C:\Users\x`, Git Bash `/c/Users/x`, WSL `/mnt/c/Users/x`), or null. */
+  drive: string | null;
+  parts: string[];
+}
+
+/** Which folder `home` names: the drive and the names below it. */
+function homeShape(trimmed: string): HomeShape {
   const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+  const windows = /^([A-Za-z]):(?:[\\/]|$)/.exec(trimmed);
+  if (windows !== null) return { drive: windows[1] ?? null, parts: parts.slice(1) };
+  // Git Bash writes `C:\Users\x` as `/c/Users/x`, WSL as `/mnt/c/Users/x`.
+  const wsl = /^[\\/]mnt[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (wsl !== null) return { drive: wsl[1] ?? null, parts: parts.slice(2) };
+  const msys = /^[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (msys !== null) return { drive: msys[1] ?? null, parts: parts.slice(1) };
+  return { drive: null, parts };
+}
+
+/**
+ * The patterns that find the real home folder, one for each spelling a path takes in a session:
+ * the one `$HOME` itself has; for a drive-letter home also `C:\Users\x`, `C:/Users/x`, Git Bash's
+ * `/c/Users/x` and WSL's `/mnt/c/Users/x`, in any case. Empty when the home is too short to mean
+ * one. The one list `screenText` and `redactText` read.
+ */
+function homePatterns(home: string | null): RegExp[] {
+  if (home === null) return [];
+  const trimmed = home.replace(/[\\/]+$/, "");
+  if (trimmed.length < 2) return [];
+  const { drive, parts } = homeShape(trimmed);
   const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
+  const below = escaped.join("[\\\\/]+");
   // The next character must not continue a name: `/home/ab` is not `/home/abc`. A full stop
   // ends a sentence (`it is in /home/user.`) unless a name character follows it.
-  const flags = /^[A-Za-z]:/.test(trimmed) ? "gi" : "g";
-  return new RegExp(`${lead}${escaped.join("[\\\\/]+")}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, flags);
+  const end = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])";
+  if (drive === null) {
+    const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
+    return [new RegExp(`${lead}${escaped.join("[\\\\/]+")}${end}`, "g")];
+  }
+  // A bare drive names no home. Git Bash's `/c/…` must not start inside WSL's `/mnt/c/…`.
+  if (below === "") return [];
+  const rest = `[\\\\/]+${below}`;
+  return [
+    `${drive}:${rest}`,
+    `(?<![A-Za-z0-9_])[\\\\/]${drive}${rest}`,
+    `[\\\\/]mnt[\\\\/]${drive}${rest}`,
+  ].map((source) => new RegExp(`${source}${end}`, "gi"));
 }
 
 /** Where `index` sits in `text`: 1-based line, and column in characters (code points). */
@@ -109,15 +149,12 @@ function findings(text: string, home: string | null): (Span & { kind: HitKind })
   const add = (kind: HitKind, spans: Span[]) => {
     for (const span of spans) hits.push({ ...span, kind });
   };
-  const homeRule = homePattern(home);
-  if (homeRule !== null) add("a home path", starts(text, homeRule));
+  for (const homeRule of homePatterns(home)) add("a home path", starts(text, homeRule));
   for (const shape of TOKEN_SHAPES) add("a key or token", starts(text, shape));
-  for (const assigned of [ASSIGNED_SECRET, CAMEL_ASSIGNED_SECRET]) {
-    add(
-      "a key or token",
-      starts(text, assigned, (match) => !isPlaceholder(match[1] ?? "")),
-    );
-  }
+  add(
+    "a key or token",
+    starts(text, ASSIGNED_SECRET, (match) => !isPlaceholder(match[1] ?? "")),
+  );
   add(
     "a URL with credentials",
     starts(text, URL_USERINFO, (match) => {

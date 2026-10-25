@@ -35,9 +35,9 @@ import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
 import {
   CREW_ISSUE_REFUSAL,
-  crewGhWordRefusal,
   CREW_MERGE_REFUSAL,
   CREW_PR_REFUSAL,
+  crewGhWordRefusal,
   mergeGuard,
   OPENING_DEFAULT_UNREAD,
   opensElsewhere,

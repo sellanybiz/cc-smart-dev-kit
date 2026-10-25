@@ -65,7 +65,7 @@ describe("what passes", () => {
     "/home/tester-two/x",
     "the key does not exist",
     "the token was refreshed",
-    "monkey: bananas1234",
+    "monkey: banana",
     "password=$PASSWORD",
     `token: \${TOKEN}`,
     "api_key=<your key>",
@@ -122,5 +122,132 @@ describe("redactText: nothing of a secret is left behind", () => {
 
   test("text with nothing to hide is returned as it is", () => {
     expect(redact("a commit a1b2c3d4e5f6 and ~/path")).toBe("a commit a1b2c3d4e5f6 and ~/path");
+  });
+});
+
+describe("IX1-5: a secret name with letters before it", () => {
+  test.each([
+    "?apikey=abcdef0123456789",
+    "APIKEY=abcdef0123456789",
+    "OPENAI_APIKEY: abcdef0123456789",
+    "PGPASSWORD=hunter2hunter2",
+    "GITHUBTOKEN=abcdefgh12345678",
+    "accesstoken: abcdefgh12345678",
+    `{"clientsecret": "abcdefgh12345678"}`,
+    "export DBPASSWORD='hunter2hunter2'",
+  ])("%s is refused", (text) => {
+    expect(screenText(text, HOME).map((hit) => hit.kind as string)).toContain("a key or token");
+  });
+
+  test.each([
+    "the key does not exist",
+    "monkey: banana",
+    "monkey: $VALUE",
+    "turkey=***",
+    "PGPASSWORD=$PGPASSWORD",
+    "APIKEY=short",
+    "keyboard=abcdefghijkl",
+    "a token or a key: see the docs",
+  ])("%s passes", (text) => {
+    expect(screenText(text, HOME)).toEqual([]);
+  });
+
+  test("a name with letters before it is redacted too", () => {
+    expect(redactText("run PGPASSWORD=hunter2hunter2 psql", HOME)).toBe(
+      "run PG[redacted: a key or token] psql",
+    );
+  });
+});
+
+describe("IX1-6: a home in every spelling it takes", () => {
+  const kinds = (text: string, home: string) => screenText(text, home).map((hit) => hit.kind);
+
+  test.each([
+    "in C:\\Users\\Tester\\Code\\app",
+    "in C:/Users/Tester/Code/app",
+    "in /c/Users/Tester/Code/app",
+    "in /C/users/tester/Code/app",
+    "in /mnt/c/Users/Tester/Code/app",
+    "in /mnt/C/Users/Tester/Code/app",
+  ])("a drive-letter home: %s", (text) => {
+    expect(kinds(text, "C:\\Users\\Tester")).toEqual(["a home path"]);
+  });
+
+  test.each([
+    "in /c/Users/Tester/Code/app",
+    "in C:\\Users\\Tester\\Code\\app",
+    "in C:/Users/Tester/Code/app",
+    "in c:\\users\\tester\\x",
+    "in /mnt/c/Users/Tester/x",
+  ])("an MSYS home: %s", (text) => {
+    expect(kinds(text, "/c/Users/Tester")).toEqual(["a home path"]);
+  });
+
+  test("a WSL home is found in the Windows and the Git Bash forms", () => {
+    expect(kinds("in C:\\Users\\Tester\\x", "/mnt/c/Users/Tester")).toEqual(["a home path"]);
+    expect(kinds("in /c/Users/Tester/x", "/mnt/c/Users/Tester")).toEqual(["a home path"]);
+  });
+
+  test("another user, another drive and a longer name are no hit", () => {
+    expect(kinds("in /c/Users/Testers/x", "C:\\Users\\Tester")).toEqual([]);
+    expect(kinds("in /d/Users/Tester/x", "C:\\Users\\Tester")).toEqual([]);
+    expect(kinds("in /mnt/d/Users/Tester/x", "C:\\Users\\Tester")).toEqual([]);
+    expect(kinds("in /c/Users/Other/x", "/c/Users/Tester")).toEqual([]);
+  });
+
+  test("a Linux home keeps its one spelling", () => {
+    expect(kinds("in /home/tester/x", "/home/tester")).toEqual(["a home path"]);
+    expect(kinds("in C:\\Users\\Tester\\x", "/home/tester")).toEqual([]);
+  });
+
+  test("redactText hides every spelling too", () => {
+    expect(redactText("a /c/Users/Tester/x b", "C:\\Users\\Tester")).toBe(
+      "a [redacted: a home path]/x b",
+    );
+  });
+});
+
+describe("IX1-9: token shapes of more services", () => {
+  // Built here from parts, never a real key.
+  const filler = "abcdefghijklmnopqrstuvwxyz0123456789";
+  test.each([
+    ["Tavily", `tvly-${filler}`],
+    ["Tavily dev", `tvly-dev-${filler}`],
+    ["Groq", `gsk_${filler}`],
+    ["Groq after a name", `GROQ=gsk_${filler}`],
+    ["a Stripe restricted live key", `rk_live_${filler}`],
+    ["a Stripe restricted test key", `rk_test_${filler}`],
+    ["a Slack webhook", `https://hooks.slack.com/services/T0000000/B0000000/${filler}`],
+    ["a Discord webhook", `https://discord.com/api/webhooks/123456789012345678/${filler}`],
+    [
+      "an old Discord webhook host",
+      `https://discordapp.com/api/webhooks/123456789012345678/${filler}`,
+    ],
+    [
+      "a versioned Discord webhook",
+      `https://discord.com/api/v10/webhooks/123456789012345678/${filler}`,
+    ],
+  ])("%s is refused", (_name, text) => {
+    expect(screenText(`see ${text} here`, HOME).map((hit) => hit.kind as string)).toContain(
+      "a key or token",
+    );
+  });
+
+  test("a webhook is redacted whole", () => {
+    expect(
+      redactText(`x https://hooks.slack.com/services/T0000000/B0000000/${filler} y`, HOME),
+    ).toBe("x [redacted: a key or token] y");
+  });
+
+  test.each([
+    "tvly-",
+    "tvly-short",
+    "the gsk_ prefix",
+    "rk_live_short",
+    "https://hooks.slack.com/",
+    "https://discord.com/api/users/123",
+    "https://discord.com/channels/123/456",
+  ])("%s passes", (text) => {
+    expect(screenText(text, HOME)).toEqual([]);
   });
 });

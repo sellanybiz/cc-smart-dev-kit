@@ -33,10 +33,10 @@ import {
   wordsOf,
 } from "../shell/command";
 import {
+  type AliasReader,
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
   API_VALUE_LETTERS,
-  type AliasReader,
   computedInvocationRisk,
   GH_COMMANDS,
 } from "./after-merge";

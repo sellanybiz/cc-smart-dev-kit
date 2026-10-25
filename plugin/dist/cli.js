@@ -14718,6 +14718,11 @@ ${markerLine(hash)}
 // src/issues/screen.ts
 var TOKEN_SHAPES = [
   /\bsk[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,256}/g,
+  /\brk_(?:live|test)_[A-Za-z0-9]{16,256}/g,
+  /\bgsk_[A-Za-z0-9]{20,256}/g,
+  /\btvly-[A-Za-z0-9_-]{16,256}/g,
+  /(?:https?:\/\/)?hooks\.slack\.com\/services\/[A-Za-z0-9/_-]{16,256}/g,
+  /(?:https?:\/\/)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d{5,32}\/[A-Za-z0-9._-]{16,256}/g,
   /\bnpm_[A-Za-z0-9]{30,256}/g,
   /\bglpat-[A-Za-z0-9_-]{16,256}/g,
   /\bhf_[A-Za-z0-9]{30,256}/g,
@@ -14730,23 +14735,46 @@ var TOKEN_SHAPES = [
   /-----BEGIN [A-Z ]{0,32}PRIVATE KEY(?: BLOCK)?-----/g,
   /\b(?:Bearer|Basic)[ \t]{1,4}[A-Za-z0-9._~+/=-]{16,512}/g
 ];
-var ASSIGNED_SECRET = /(?<![A-Za-z])(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
-var CAMEL_ASSIGNED_SECRET = /(?<=[a-z])(?:Key|Token|Secret|Passw(?:or)?d)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/g;
+var ASSIGNED_SECRET = /(?:key|token|secret|passw(?:or)?d|authorization)["']?[ \t]{0,4}[:=][ \t]{0,4}["']?([^\s"'`,;&<>(){}[\]]{8,256})/gi;
 function isPlaceholder(value) {
   return /^[$*%{]/.test(value) || /^(?:x{4,}|\.{3,}|-{3,})$/i.test(value);
 }
 var URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,31}):\/\/([^/?#\s'"<>@]{1,256})@/gi;
-function homePattern(home) {
+function homeShape(trimmed) {
+  const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+  const windows = /^([A-Za-z]):(?:[\\/]|$)/.exec(trimmed);
+  if (windows !== null)
+    return { drive: windows[1] ?? null, parts: parts.slice(1) };
+  const wsl = /^[\\/]mnt[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (wsl !== null)
+    return { drive: wsl[1] ?? null, parts: parts.slice(2) };
+  const msys = /^[\\/]([A-Za-z])[\\/]/.exec(trimmed);
+  if (msys !== null)
+    return { drive: msys[1] ?? null, parts: parts.slice(1) };
+  return { drive: null, parts };
+}
+function homePatterns(home) {
   if (home === null)
-    return null;
+    return [];
   const trimmed = home.replace(/[\\/]+$/, "");
   if (trimmed.length < 2)
-    return null;
-  const parts = trimmed.split(/[\\/]+/).filter((part) => part !== "");
+    return [];
+  const { drive, parts } = homeShape(trimmed);
   const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
-  const flags = /^[A-Za-z]:/.test(trimmed) ? "gi" : "g";
-  return new RegExp(`${lead}${escaped.join("[\\\\/]+")}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, flags);
+  const below = escaped.join("[\\\\/]+");
+  const end = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])";
+  if (drive === null) {
+    const lead = /^[\\/]/.test(trimmed) ? "[\\\\/]" : "";
+    return [new RegExp(`${lead}${escaped.join("[\\\\/]+")}${end}`, "g")];
+  }
+  if (below === "")
+    return [];
+  const rest = `[\\\\/]+${below}`;
+  return [
+    `${drive}:${rest}`,
+    `(?<![A-Za-z0-9_])[\\\\/]${drive}${rest}`,
+    `[\\\\/]mnt[\\\\/]${drive}${rest}`
+  ].map((source) => new RegExp(`${source}${end}`, "gi"));
 }
 function position(text, index) {
   const before = text.slice(0, index);
@@ -14773,14 +14801,11 @@ function findings(text, home) {
     for (const span of spans)
       hits.push({ ...span, kind });
   };
-  const homeRule = homePattern(home);
-  if (homeRule !== null)
+  for (const homeRule of homePatterns(home))
     add("a home path", starts(text, homeRule));
   for (const shape of TOKEN_SHAPES)
     add("a key or token", starts(text, shape));
-  for (const assigned of [ASSIGNED_SECRET, CAMEL_ASSIGNED_SECRET]) {
-    add("a key or token", starts(text, assigned, (match) => !isPlaceholder(match[1] ?? "")));
-  }
+  add("a key or token", starts(text, ASSIGNED_SECRET, (match) => !isPlaceholder(match[1] ?? "")));
   add("a URL with credentials", starts(text, URL_USERINFO, (match) => {
     const scheme = (match[1] ?? "").toLowerCase();
     return TOKEN_SCHEMES.has(scheme) || (match[2] ?? "").includes(":");
