@@ -275,9 +275,10 @@ fallback picks what takes over while the route's provider is limited: off, claud
 take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
         route, the key and the fallback may change. Nothing in that file changes: each value
         stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
-        key's value is never written down, so restore leaves your key exactly as it is while it
-        is still yours; once ${COMMAND} replaced it, restore leaves that key and names the
-        backup that holds yours. It asks first; --yes takes them over without the question.`;
+        key's value is never written down: restore leaves your key as it is while it is still
+        yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address
+        it was written for; where your address comes back, your key comes back with it, from
+        the backup of your file. It asks first; --yes takes them over without the question.`;
 
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {

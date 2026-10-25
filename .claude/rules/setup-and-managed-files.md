@@ -233,7 +233,9 @@ Each of them:
 - **A key written again is not a key removed.** A key the person set, changed or removed since
   is theirs: `restore` never writes it and never removes it. A file whose key was written
   again stays tracked (its record stays in `changed.json`), so the next `restore` finds the
-  key; every other restored file is forgotten as usual.
+  key; every other restored file is forgotten as usual. "Written again" means a key of the
+  `writeInstead` list only: a value a take-over recorded that comes back (`RestoreResult.putBack`)
+  is the person's own, leaves nothing of ours in the file, and does not keep it tracked.
 
 ## The launcher
 

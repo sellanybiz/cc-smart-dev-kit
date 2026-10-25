@@ -90,6 +90,21 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   claude-mem's OpenRouter provider, pointed at the backend of the model you pick (the card lists
   backend models for the fallback on every route); an empty fallback provider is
   now shown as Claude with the model it really runs on.
+- **`restore` words a taken-over value coming back as what it is.** When a value a take-over
+  recorded goes back to what you had, the line says `put back <key> (yours again)` — it no longer
+  says `set <key> to …`, and the file no longer stays on the list for the second `restore`. A
+  value the file already holds is left alone: no backup, no write.
+- **`restore` never leaves a claude-mem key next to an address it was not made for.** After a
+  take-over, a route change to a gateway backend writes that backend's address and key. Before,
+  `restore` put your own address back and left the backend's key beside it, so that key would go
+  to your host. Now your own key comes back with your address, read from the kit's backup of your
+  file; with no backup that holds it, the kit's key is removed and the line says so. A key you
+  typed in the portal for another address goes the same way; a key written for the address that
+  stays is kept, as before.
+- **`restore`'s first run tells the truth about an address you removed.** When no settings file
+  has an address of the kit's to switch — you set, changed or removed it — the line says so and
+  names the way out (restart the sessions, then run `restore` again), where it used to say the
+  address was "yours" even for one that was not in the file at all.
 
 ### Also in 1.2.0: what 1.1.3 was to ship
 

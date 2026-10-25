@@ -58,8 +58,9 @@ export interface OwnedRecord {
    * A taken-over secret's hash as it was when the key was taken over. The value itself is never
    * kept, so `restore` cannot write it back; while the key still hashes to this, cc-smart-dev-kit
    * never replaced it, and a release with no value leaves the key exactly as it is. A key whose
-   * hash differs is the one cc-smart-dev-kit wrote since: restore leaves that key too, and names
-   * the backup that holds the earlier settings file.
+   * hash differs is the one cc-smart-dev-kit wrote since: the restore of a take-over keeps it only
+   * next to the address it was written for, and otherwise puts back the earlier key from the
+   * backup whose copy hashes to this (`restoreTakenOver`).
    */
   wasSha256?: string;
   /**
@@ -101,6 +102,14 @@ export interface ManagedJsonOptions {
    * which is all a taken-over secret can do (its value was never kept).
    */
   release?: ReadonlyArray<readonly [KeyPath, unknown]>;
+  /**
+   * Keys to take out **and give up**, whatever was taken over there: removes a key only while it
+   * still holds the value cc-smart-dev-kit wrote, and drops the claim either way. `remove` leaves
+   * a taken-over secret where it is (`TAKEN_SECRET_LEFT`); this is for the one case where leaving
+   * it is wrong — the key the kit wrote has no home any more (`restoreTakenOver`: it was written
+   * for an address the restore changes back) and the person's own value cannot be put back.
+   */
+  withdraw?: readonly KeyPath[];
   dryRun?: boolean;
   /**
    * A value that means "nobody chose this yet" (a program's own default, written into the
@@ -556,8 +565,24 @@ function applyOnce(
       });
       continue;
     }
+    // A secret written back is a write that sets a secret: the file stays at 600.
+    if (isSecret(path)) setsSecret = true;
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    // A key the person changed — or took away — since is theirs: only the claim goes.
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
   }
 
   for (const path of options.remove ?? []) {

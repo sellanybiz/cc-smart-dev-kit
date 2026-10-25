@@ -1008,8 +1008,22 @@ function applyOnce(file, options, owned) {
       });
       continue;
     }
+    if (isSecret(path))
+      setsSecret = true;
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);

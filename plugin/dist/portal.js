@@ -12518,8 +12518,22 @@ function applyOnce(file, options, owned) {
       });
       continue;
     }
+    if (isSecret(path))
+      setsSecret = true;
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);
@@ -36882,6 +36896,7 @@ async function followSetup(paths, check = checkAffordableTarget) {
     ok: true
   };
 }
+var TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for; where your address comes back, your key comes back with it, from the backup of your file.`;
 async function takeOver(paths) {
   const ready = readReady(paths);
   if ("blocked" in ready)
@@ -36928,7 +36943,7 @@ async function takeOver(paths) {
         `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as ${COMMAND}'s: each stays exactly as it is until you pick another.`,
         ...taken.map((path) => `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`),
         "restore puts them back.",
-        `A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
+        TAKE_OVER_KEY_NOTE,
         ...moved.map((key) => `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`)
       ],
       ok: true
