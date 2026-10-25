@@ -27,6 +27,7 @@ import {
   crewSettingsFile,
   listCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
 } from "./store";
 
@@ -569,6 +570,34 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
       Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
     ).toEqual(["tavily-websearch"]);
     expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("two starters of one queued record start it once, the second finding it no longer queued", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const ctx = world.ctx({}, { FAKE_PLUGINS: PLUGINS });
+    // Both hold the same stale copy, as a lead's watch and its successor do after a takeover.
+    await Promise.all([
+      startQueued(record, ctx, defaultResolved()),
+      startQueued(record, ctx, defaultResolved()),
+    ]);
+    const launches = world.claudeCalls().filter((call) => call.includes("--bg"));
+    expect(launches).toHaveLength(1);
+    // The second starter did not go on to a second worktree add that fails and marks the first's
+    // crew session failed.
+    const texts = readCrewEvents(world.paths.stateDir, world.repo).events.map((one) => one.text);
+    expect(texts.filter((text) => text === "started from the queue")).toHaveLength(1);
+    expect(texts.some((text) => text?.includes("worktree add failed"))).toBe(false);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("a record that is no longer queued is left alone", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "stopped" }, T0);
+    await startQueued(record, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("stopped");
+    expect(world.claudeCalls()).toEqual([]);
   });
 
   test("the queue holds a queued crew session while the load is past the limit", async () => {

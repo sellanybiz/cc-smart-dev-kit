@@ -25175,6 +25175,8 @@ async function startQueued(record, ctx, resolved) {
   const crew = resolved.crew;
   const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async () => {
+    if (readCrew(ctx.paths.stateDir, record.repo, record.id)?.state !== "queued")
+      return null;
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const running = runningCrew(all);

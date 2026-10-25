@@ -123,6 +123,7 @@ import {
   type LeadRecord,
   listAllCrew,
   listCrew,
+  readCrew,
   readCrewEvents,
   readLead,
   readReport,
@@ -1356,6 +1357,10 @@ export async function startQueued(
   const crew = resolved.crew;
   const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
+    // A compare-and-set: the copy the caller holds may be stale (a watch takeover leaves two
+    // starters of one record, WF1), so the store says whether it is still queued. Only the starter
+    // that finds it queued moves it to `starting`; the other leaves it alone.
+    if (readCrew(ctx.paths.stateDir, record.repo, record.id)?.state !== "queued") return null;
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const running = runningCrew(all);

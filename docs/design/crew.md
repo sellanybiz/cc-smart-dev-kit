@@ -307,7 +307,10 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
+   queued ones, oldest first, so no lead starves another. The start itself is a compare-and-set
+   under the places lock (`startQueued`): it re-reads the record and goes on only while the store
+   still says `queued`, so two starters of one record after a watch takeover (the lease, WF1) start
+   it once. A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
    **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
