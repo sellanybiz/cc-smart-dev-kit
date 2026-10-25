@@ -46,11 +46,37 @@ export interface SavedSession {
 }
 
 /**
+ * A project folder's name is cut at this many characters (seen live, 2.1.310: a path whose name
+ * is 200 characters stays whole, one of 201 is cut and given a hash).
+ */
+const PROJECT_FOLDER_NAME_MAX = 200;
+
+/**
+ * Claude Code's hash of a folder's path, in base 36: the 32-bit `hash * 31 + code` over the
+ * path's UTF-16 units, as a positive number (seen live, 2.1.310: the suffix of three cut names,
+ * `docs/claude-code-contract.md` § Lead and the crew).
+ */
+function pathHash(path: string): string {
+  let hash = 0;
+  for (let index = 0; index < path.length; index += 1) {
+    hash = (hash << 5) - hash + path.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+/**
  * The name Claude Code gives a folder under `projects/`: every character that is not a
  * letter or a digit becomes a dash. `D:\Code\app` and `D:/Code/app` both become `D--Code-app`.
+ * A name longer than 200 characters is cut there and ends with `-` and a hash of the folder's
+ * whole path (the raw path, not the dashed name), so two long paths that share their first 200
+ * characters stay apart.
  */
 export function projectFolderName(path: string): string {
-  return path.replace(/[^A-Za-z0-9]/g, "-");
+  const name = path.replace(/[^A-Za-z0-9]/g, "-");
+  return name.length <= PROJECT_FOLDER_NAME_MAX
+    ? name
+    : `${name.slice(0, PROJECT_FOLDER_NAME_MAX)}-${pathHash(path)}`;
 }
 
 /**

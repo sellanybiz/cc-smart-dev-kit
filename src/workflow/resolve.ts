@@ -92,6 +92,8 @@ export interface ResolvedWorkflow {
     handoffPercent: ResolvedValue<number>;
     softHours: ResolvedValue<number>;
     maxHours: ResolvedValue<number>;
+    /** Days a removed crew session's conversation stays in the kit's archive. */
+    archiveDays: ResolvedValue<number>;
     /** Null: no tag is set, and the main checkout's folder name stands in. */
     tag: ResolvedValue<null | string>;
   };
@@ -362,6 +364,7 @@ const RESOLVED: {
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
+  "crew.archiveDays": (r) => r.crew.archiveDays,
   "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
@@ -450,6 +453,7 @@ export function resolveWorkflow(
       ),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {

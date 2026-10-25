@@ -527,6 +527,94 @@ never `working` on a guess. Such a resume may have started a session nobody can 
 watch **does not try it again by itself**: it says so once, and the lead's own `crew resume`
 brings it back (the hold goes when the record is no longer `paused`).
 
+### A removed crew session's conversation (AR1)
+
+`claude rm` deletes a background session's job and its worktree, never its conversation:
+`~/.claude/projects/<project folder>/<session id>.jsonl` and the `<session id>/` folder beside it
+(its subagents' transcripts, its tool results) stay, so Claude Code's `/resume` lists every crew
+session the kit ever removed (on one machine, 58 of 62 removed crew sessions' conversations were
+still there, in 224 crew-worktree project folders and 10 GB). Claude Code's own `cleanupPeriodDays`
+cannot help: it deletes every conversation older than its days, the person's own included.
+
+So `runCrewRm` ends with one more step (`archiveAfterRemoval`, `remove.ts`; the code is
+`archive.ts`), **only after `claude rm` succeeded** (a failed one keeps the conversation where
+Claude Code expects it). The watch's removal after a merge, the background clean's removal of an
+orphaned crew session and `crew rm` all call `runCrewRm`, so the move has one home and the watch
+needs no change.
+
+- **Where it goes.** `<state>/crew-archive/<repo key>/<crew id>/` (the repo key is the crew store's
+  own, `repoKey`): `archive.json` (who it was, the project folder, when), `report.json` (a copy of the
+  hand-back report) and `projects/<project folder>/…` in **Claude Code's own layout, each file
+  gzipped on its own** (`.jsonl.gz`) and keeping its last-write time. The project folder's name comes
+  from `transcriptFile` (`transcript.ts`, over `projectFolderName`: the one home, with
+  `CLAUDE_CONFIG_DIR` honoured through `cliPaths`), never a second copy of the naming. That naming
+  includes Claude Code's cut for a long path: a name over 200 characters is cut there and ends with
+  `-` and a hash of the whole path (seen live, 2.1.310, § Lead and the crew of the contract); a
+  worktree path past 200 characters would otherwise find nothing. Why not delete
+  at once: the conversation is the only record of why a crew session did what it did; the router's
+  history is metadata only.
+- **How it moves.** Every move and every prune holds one lock on the archive folder
+  (`withArchiveLock`), and a move reads the conversation again once it holds it: two removals of one
+  crew session (the watch's and a `crew rm`, the background clean and a sweep) take turns, and the
+  second finds nothing left. Each file is written to a temporary name, synced and renamed into
+  place, and only then is the original deleted; the original is stat-ed before and after, and a file
+  that grew while it was archived stays where it is and its copy goes. A source that is *gone* after
+  its copy was made keeps the copy (`sourceAfterCopy`): a copy is deleted only when its source is
+  still there and changed. A move that stops halfway leaves every file in one place or the other
+  (or, for a moment, both: the readers count it once) and the next removal or sweep finishes it.
+  **An archived copy is never overwritten**: when any file's archived copy has other bytes (a job
+  that kept running after its files moved was seen to write a new one) nothing of that conversation
+  moves, it stays where it is, and the line says why (`kept`, not a failure: there is nothing the
+  person can clear); the same bytes are the earlier move's leftover, and finish it. The archive's
+  `archivedAt` is written once, by the first try. A session folder that is itself a link is not
+  followed, and nothing under its target moves. Empty folders go with
+  it, the project folder too once it holds nothing — Claude Code leaves an empty `memory/` folder in
+  a project folder (seen live, 2.1.310), which counts as nothing; a note in it, a file, a link or
+  another session's files keep the folder.
+- **What is never taken** (`.claude/rules/setup-and-managed-files.md`: never take what is not
+  ours). A **lead's** session (every lead record's, and every crew record's lead), the session of a
+  crew record that is **not removed** (a failed, handed-off, blocked or stopped phase is archived
+  only when its record is removed, never before), a session a running Claude process holds
+  (`liveSessions`), and every file the store does not name. Only regular files move. A crew or lead
+  record the store cannot read stops the move (`sessionsNeverTaken` throws): nobody can then say
+  whose a session is.
+- **A move that cannot happen never fails the removal.** The line says why
+  (`note: the conversation of session <id> stays in /resume: …`) and names the way on:
+  `sessions --finished --remove` moves it later.
+- **After `workflow.crew.archiveDays` (7)** the archive is deleted. One setting, the only knob: a
+  whole number of days, 1 or more, a project's file over the person's own (`workflow show` prints it).
+  The prune runs when the kit archives (`pruneCrewArchives`) and when the sweep runs, so there is
+  no timer and no service. An archive's age counts from `archive.json`'s `archivedAt`. A
+  repository whose folder is gone (moved or deleted) has no project file to read, so its archives
+  expire by the person's own days like any other; only a settings file that is there and cannot be
+  read keeps an archive (and is said). A prune that finds another run holding the archive fails
+  loudly in the sweep and with a `note:` after a removal, and never fails the removal.
+- **The sweep for what is already there** is `sessions --finished [--remove]` (`finished.ts`,
+  `readCrewLeftovers`): it lists the conversations of removed crew records still in the projects
+  folder, their worktrees' empty project folders and the archives past their days, and `--remove`
+  asks once more (or `--yes`), reads them again, then moves, removes and deletes. A conversation
+  written after its record was removed was resumed by the person since and stays, with the
+  reason; the time of the removal is the `removed` / `discarded` state event's, not the record's
+  `updatedAt`, which moves on whenever the record is touched again (the 30-day prune of a discard
+  archive does). A conversation whose archived copy differs is listed as staying, with that
+  reason. Listing moves nothing, and `--id` (finished background sessions only) leaves
+  this part out.
+- **Who reads the archive.** One reader walks both folders (`archive-read.ts`, `transcriptTree`):
+  - `cc-smart-dev-kit usage` counts an archived session's replies and says so on its line (a past
+    cost report that lost them at the move would be wrong);
+  - the flow report (`flow.ts`) reads the archived copy once (an unzipped read from offset 0 under
+    the same cache) and counts it the same as before the move;
+  - `crew/transcript.ts` (the self-watch's context gauge, the watch's quiet alert) reads sessions
+    that still run: an archived session has no context left to measure, so it never looks there;
+  - the hooks read the transcript of the session that fires them (`transcript_path`), and the
+    portal's live stream reads the store, the router and the job queue, no transcript: neither is
+    affected;
+  - the resume list (`savedSessions`) and the folders `setup` looks in for retired parts leave an
+    archived session on purpose: that is what the move is for.
+- **Bringing one back** (within the days): gunzip its files to the same place under the projects
+  folder (`gunzip -c <file>.gz > <file>`), and `claude --resume <id>` works again (proved live,
+  `docs/claude-code-contract.md` § Lead and the crew).
+
 ### The crew session's steps, its report, and the lead's watch
 
 The lead never waits on a crew session (D25). Everything a crew session says arrives by itself: **the
@@ -650,7 +738,8 @@ the store records — a session the kit does not know is the person's own:
   something else (D62: a phase something stopped before it was over) — and each line says so.
   A stop that fails is said once, not on every pass;
 - it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
-  and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy). A
+  and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy; its
+  conversation leaves `/resume` for the kit's archive, § A removed crew session's conversation). A
   continuation holds the removal back until its work and every later continuation's work are
   merged into the first record's base. The line says so once; a refusal — a program runs from its worktree, or work
   nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged

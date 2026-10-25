@@ -6285,6 +6285,7 @@ var NUMBER_RULES = {
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
+  "crew.archiveDays": AT_LEAST_ONE,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -6340,6 +6341,7 @@ var workflowSchema = strictObject({
     handoffPercent: numberField("crew.handoffPercent"),
     softHours: numberField("crew.softHours"),
     maxHours: numberField("crew.maxHours"),
+    archiveDays: numberField("crew.archiveDays"),
     tag: tagSchema.optional()
   }).optional()
 });
@@ -6377,6 +6379,7 @@ var workflowDefaults = {
     handoffPercent: 70,
     softHours: 2,
     maxHours: 4,
+    archiveDays: 7,
     tag: null
   }
 };
@@ -6410,6 +6413,7 @@ var POLICY_KEYS = [
   "crew.handoffPercent",
   "crew.softHours",
   "crew.maxHours",
+  "crew.archiveDays",
   "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -11831,6 +11835,7 @@ function resolveWorkflow(paths, projectConfig) {
       handoffPercent: of("crew.handoffPercent", crew.handoffPercent ?? workflowDefaults.crew.handoffPercent),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag)
     },
     switches: {
@@ -16840,6 +16845,12 @@ var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_M
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
+// src/crew/transcript.ts
+var TAIL_BYTES = 256 * 1024;
+
+// src/crew/archive.ts
+var DAY_MS = 24 * 60 * 60 * 1000;
+
 // src/worktrees/command.ts
 function crewRecordsOf(paths, repo) {
   try {
@@ -16884,9 +16895,6 @@ var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${C
 
 // src/crew/start.ts
 var CLASH_STATES = [...RUNNING_STATES, "queued"];
-
-// src/crew/transcript.ts
-var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;

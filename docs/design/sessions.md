@@ -45,6 +45,20 @@ project's finished-worktree clean removes it first. One refusal does not block l
 the final exit is nonzero if any failed. The portal child runs from the existing home folder, not
 from a possibly removed session folder. Nothing runs this removal by itself.
 
+The same command sweeps what removed **crew** sessions left in `/resume` (AR1,
+`readCrewLeftovers` in `finished.ts`): the conversations of crew records the store marks
+`removed` or `discarded` that are still under Claude Code's projects folder, the empty project
+folders of their worktrees, and the crew archives past `workflow.crew.archiveDays`. `--remove`
+asks once more (or takes `--yes`), reads the lists again, then moves each conversation into the
+crew archive with the code `crew rm` uses (`archive.ts`), removes each folder that holds nothing
+and deletes each expired archive. Listing moves nothing. Never listed or taken: a lead's session,
+a session any crew record still on the board names, one a running Claude holds, one written after
+its removal event (the person resumed it; the event's time counts, not the record's last write),
+one whose archived copy has other bytes, and any file the store does not name. A crew
+store or lead record it cannot read fails closed. `--id` names finished background sessions
+only, so it leaves this part out. How the archive works: `docs/design/crew.md` § A removed crew
+session's conversation.
+
 ### Stale locks and local caches
 
 The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,

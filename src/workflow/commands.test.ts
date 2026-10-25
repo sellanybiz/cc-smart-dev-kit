@@ -92,6 +92,7 @@ describe("workflow show", () => {
       "crew.handoffPercent = 70 (default)",
       "crew.softHours = 2 (default)",
       "crew.maxHours = 4 (default)",
+      "crew.archiveDays = 7 (default)",
       "crew.tag = (the main checkout's folder name) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",

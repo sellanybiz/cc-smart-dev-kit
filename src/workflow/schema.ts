@@ -67,6 +67,7 @@ const NUMBER_RULES = {
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
+  "crew.archiveDays": AT_LEAST_ONE,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -215,6 +216,11 @@ export const workflowSchema = z.strictObject({
       softHours: numberField("crew.softHours"),
       /** Hours after which a crew session hands off. Default: 4. */
       maxHours: numberField("crew.maxHours"),
+      /**
+       * Days a removed crew session's conversation stays in the kit's archive, out of `/resume`,
+       * before it is deleted (`src/crew/archive.ts`). Default: 7.
+       */
+      archiveDays: numberField("crew.archiveDays"),
       /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
       tag: tagSchema.optional(),
     })
@@ -262,6 +268,7 @@ export const workflowDefaults = {
     handoffPercent: 70,
     softHours: 2,
     maxHours: 4,
+    archiveDays: 7,
     /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
     tag: null,
   },
@@ -310,6 +317,7 @@ export type WorkflowKey =
   | "crew.handoffPercent"
   | "crew.softHours"
   | "crew.maxHours"
+  | "crew.archiveDays"
   | "crew.tag"
   | `switches.${SwitchName}`;
 
@@ -343,6 +351,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.handoffPercent",
   "crew.softHours",
   "crew.maxHours",
+  "crew.archiveDays",
   "crew.tag",
 ];
 

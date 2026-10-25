@@ -33,8 +33,13 @@
  * and the report says so.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
+import {
+  type TranscriptRef,
+  transcriptChangedAt,
+  transcriptText,
+  transcriptTree,
+} from "../crew/archive-read";
 import {
   type CheckTokens,
   localDay,
@@ -66,6 +71,8 @@ export interface UsageOptions {
 
 /** One session: its own replies and its subagents'. */
 export interface SessionUsage {
+  /** Read from the kit's crew archive: a removed crew session's conversation. */
+  archived: boolean;
   cwd: null | string;
   /** How each subagent was launched: `opus`, `sonnet`, `haiku`, or `inherited`. */
   launched: Record<string, number>;
@@ -83,39 +90,9 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The entries of a folder, by kind; empty when it is not there or not readable. */
-export function entries(path: string): { dirs: string[]; files: string[] } {
+function readJson(ref: TranscriptRef): unknown {
   try {
-    const all = readdirSync(path, { withFileTypes: true });
-    return {
-      dirs: all
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort(),
-      files: all
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name)
-        .sort(),
-    };
-  } catch {
-    // Not there, or not readable: nothing to count.
-    return { dirs: [], files: [] };
-  }
-}
-
-/** A file's last change, in ms; -Infinity when it is gone. */
-function changedAt(path: string): number {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    // Gone since the listing.
-    return Number.NEGATIVE_INFINITY;
-  }
-}
-
-function readJson(path: string): unknown {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(transcriptText(ref) ?? "");
   } catch {
     // A file being written, or not JSON: skipped.
     return null;
@@ -128,19 +105,15 @@ function readJson(path: string): unknown {
  * for a main session, whose file may hold a subagent's lines in older Claude Code versions.
  */
 function readTranscript(
-  path: string,
+  ref: null | TranscriptRef | undefined,
   sinceMs: number,
   sidechains: boolean,
 ): { cwd: null | string; replies: Map<string, string> } {
   const replies = new Map<string, string>();
   let cwd: null | string = null;
-  if (changedAt(path) < sinceMs) return { cwd, replies };
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return { cwd, replies };
-  }
+  if (ref == null || transcriptChangedAt(ref) < sinceMs) return { cwd, replies };
+  const text = transcriptText(ref);
+  if (text === null) return { cwd, replies };
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let entry: unknown;
@@ -183,18 +156,22 @@ function count(into: Record<string, number>, replies: Map<string, string>): void
   for (const model of replies.values()) into[model] = (into[model] ?? 0) + 1;
 }
 
-/** Every session with a reply, or a subagent, in the window, read from `projectsDir`. */
-export function collectUsage(projectsDir: string, options: UsageOptions): SessionUsage[] {
+/**
+ * Every session with a reply, or a subagent, in the window, read from `projectsDir` — and, with
+ * `stateDir`, from the kit's crew archive too (`archive-read.ts`): a removed crew session's
+ * conversation moves there, and its replies still count. An archived session says so
+ * (`archived`).
+ */
+export function collectUsage(
+  projectsDir: string,
+  options: UsageOptions,
+  stateDir: null | string = null,
+): SessionUsage[] {
   const out: SessionUsage[] = [];
-  for (const project of entries(projectsDir).dirs) {
-    const folder = join(projectsDir, project);
-    const listed = entries(folder);
-    const sessions = new Set([
-      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
-      ...listed.dirs,
-    ]);
-    for (const session of [...sessions].sort()) {
+  for (const [project, sessions] of transcriptTree(projectsDir, stateDir)) {
+    for (const [session, files] of sessions) {
       const usage: SessionUsage = {
+        archived: files.main?.gz === true || [...files.subagents.values()].some((file) => file.gz),
         cwd: null,
         launched: {},
         main: {},
@@ -203,19 +180,18 @@ export function collectUsage(projectsDir: string, options: UsageOptions): Sessio
         session,
         subagents: 0,
       };
-      const own = readTranscript(join(folder, `${session}.jsonl`), options.sinceMs, false);
+      const own = readTranscript(files.main, options.sinceMs, false);
       usage.cwd = own.cwd;
       count(usage.main, own.replies);
-      const subagents = join(folder, session, "subagents");
-      const metas = existsSync(subagents)
-        ? entries(subagents).files.filter((name) => name.endsWith(".meta.json"))
-        : [];
-      for (const name of metas) {
-        const transcript = join(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
-        const started = changedAt(join(subagents, name));
+      const metas = [...files.subagents.keys()].filter((name) => name.endsWith(".meta.json"));
+      for (const name of metas.sort()) {
+        const metaRef = files.subagents.get(name);
+        if (metaRef === undefined) continue;
+        const transcript = files.subagents.get(name.replace(/\.meta\.json$/, ".jsonl"));
+        const started = transcriptChangedAt(metaRef);
         const { cwd, replies } = readTranscript(transcript, options.sinceMs, true);
         if (replies.size === 0 && started < options.sinceMs) continue;
-        const meta = readJson(join(subagents, name));
+        const meta = readJson(metaRef);
         usage.cwd ??= cwd;
         usage.subagents += 1;
         const launched =
@@ -506,7 +482,7 @@ export function formatUsage(
   for (const session of sessions) {
     lines.push(
       "",
-      `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}`,
+      `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}${session.archived ? " (a removed crew session, from the kit's crew archive)" : ""}`,
     );
     lines.push(`  main session, replies by model: ${counts(session.main) || "none in the window"}`);
     if (session.subagents === 0) {
@@ -582,7 +558,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
   }
   const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3_600_000;
-  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
+  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs }, paths.stateDir);
   const recorded = readAgentUsage(agentUsageFile(paths.stateDir), sinceMs);
   // `--project` filters the sessions the transcripts give. The record holds a session id and
   // no folder, so under a project filter it counts only the sessions that survived: an agent

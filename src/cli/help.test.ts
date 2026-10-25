@@ -73,6 +73,15 @@ describe("the command table", () => {
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
   });
 
+  test("AR1: the help of `sessions` and `crew rm` say what happens to a removed crew session's conversation, with the setting's default", () => {
+    // Written by hand: the default comes from the schema, and 7 is today's.
+    expect(helpTextFor(["sessions"])).toContain("past crew.archiveDays (7 by default).");
+    expect(helpTextFor(["crew", "rm"])).toContain("workflow.crew.archiveDays, 7 by default).");
+    expect(helpTextFor(["crew", "rm"])).toContain(
+      "the session's conversation, which claude rm leaves in /resume, moves out of Claude",
+    );
+  });
+
   test("CM-12: `crew --help` lists every crew session command with a short line, the board's own rows from their table", () => {
     const usage = helpTextFor(["crew"]) ?? "";
     // The names of the plan's phases: the launcher, the watch and the reports, the board.
