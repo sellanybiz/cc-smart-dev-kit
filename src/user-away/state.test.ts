@@ -167,6 +167,28 @@ describe("parking", () => {
     expect(readAway(stateDir).items).toHaveLength(1);
   });
 
+  test("the same command from another folder is another item: a yes runs it in its own cwd", async () => {
+    const stateDir = tempDir("away");
+    const action = { kind: "action", text: "ask", command: "git push -u origin HEAD" } as const;
+    const first = await parkItem(stateDir, draft({ ...action, cwd: "/work/app-wt-a" }), T0);
+    const second = await parkItem(stateDir, draft({ ...action, cwd: "/work/app-wt-b" }), T0 + 5);
+    expect(second.added).toBe(true);
+    expect(second.item.id).not.toBe(first.item.id);
+    expect(readAway(stateDir).items.map((item) => item.cwd)).toEqual([
+      "/work/app-wt-a",
+      "/work/app-wt-b",
+    ]);
+  });
+
+  test("the same words from two crew sessions are two items, each for its own crew", async () => {
+    const stateDir = tempDir("away");
+    await parkItem(stateDir, draft({ text: "Which name?", crew: "RX1" }), T0);
+    await parkItem(stateDir, draft({ text: "Which name?", crew: "RX2" }), T0 + 5);
+    const again = await parkItem(stateDir, draft({ text: "Which name?", crew: "RX2" }), T0 + 9);
+    expect(again.added).toBe(false);
+    expect(readAway(stateDir).items.map((item) => item.crew)).toEqual(["RX1", "RX2"]);
+  });
+
   test("a decision with the same words as an action is another item", async () => {
     const stateDir = tempDir("away");
     await parkItem(stateDir, draft({ kind: "action", text: "same", command: "x" }), T0);

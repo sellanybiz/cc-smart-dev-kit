@@ -49208,7 +49208,7 @@ function readAway(stateDir) {
 `)[0]}). Fix it or remove it.`);
   }
 }
-async function change(stateDir, apply) {
+async function change(stateDir, apply, waitMs = AWAY_LOCK_WAIT_MS) {
   const folder = awayDir(stateDir);
   mkdirSync29(folder, { mode: 448, recursive: true });
   return await withLock(folder, () => {
@@ -49217,7 +49217,7 @@ async function change(stateDir, apply) {
     atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}
 `, 384);
     return { result, state };
-  }, { waitMs: AWAY_LOCK_WAIT_MS });
+  }, { waitMs });
 }
 async function setUnavailable(stateDir, nowMs, until) {
   const { state } = await change(stateDir, (current) => {
@@ -49238,9 +49238,9 @@ async function setAvailable(stateDir) {
 }
 function sameItem(items, draft) {
   const what = (item) => item.command ?? item.text;
-  return items.find((item) => item.kind === draft.kind && what(item) === what(draft));
+  return items.find((item) => item.kind === draft.kind && what(item) === what(draft) && item.cwd === draft.cwd && item.crew === draft.crew);
 }
-async function parkItem(stateDir, draft, nowMs) {
+async function parkItem(stateDir, draft, nowMs, waitMs = AWAY_LOCK_WAIT_MS) {
   const { result } = await change(stateDir, (state) => {
     const same = sameItem(state.items, draft);
     if (same !== undefined)
@@ -49252,7 +49252,7 @@ async function parkItem(stateDir, draft, nowMs) {
     state.nextId += 1;
     state.items.push(item);
     return { added: true, item };
-  });
+  }, waitMs);
   return result;
 }
 async function clearItems(stateDir, ids) {
@@ -49292,6 +49292,20 @@ async function forgetSaid(stateDir, session) {
   return result;
 }
 
+// src/hooks/budget.ts
+var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
+}
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
+  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
+}
+
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
@@ -49304,8 +49318,16 @@ function hasNotPersonWrapper(prompt2) {
 }
 
 // src/hooks/user-away.ts
+var PARK_WAIT_MS = BUDGET_MARGIN_MS / 2;
 var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var SHELL_TOOLS = ["Bash", "PowerShell"];
+var STATE_COMMANDS = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"]
+];
 function inAwayDomain(input) {
   const tool = stringField(input.tool_name);
   return tool !== null && AWAY_ASK_TOOLS.includes(tool);
@@ -49377,11 +49399,32 @@ async function parkCall(input, env, paths, nowMs, words) {
       session: stringField(input.session_id) ?? "",
       text: text.slice(0, TEXT_MAX),
       tool: stringField(input.tool_name)
-    }, nowMs);
+    }, nowMs, PARK_WAIT_MS);
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+}
+function isStateCommand(input) {
+  const command = callCommand(input);
+  if (command === null)
+    return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0)
+    return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    if (invocation.program !== COMMAND)
+      return false;
+    const operands = invocation.args;
+    if (withoutRedirections(operands).length !== operands.length)
+      return false;
+    return STATE_COMMANDS.some((known) => known.length === operands.length && known.every((word, at) => word === operands[at]));
+  });
 }
 function permissionDeny(message) {
   return {
@@ -49396,6 +49439,8 @@ function permissionDeny(message) {
 async function permissionAnswer(input, env, paths, nowMs, options) {
   const state = readAway(paths.stateDir);
   if (!state.unavailable)
+    return SILENT;
+  if (crewIdOf(env) === null && isStateCommand(input))
     return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
@@ -49620,20 +49665,6 @@ import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync74, mkdirSync as mkdirSync31, writeFileSync as writeFileSync13 } from "fs";
 import { tmpdir as tmpdir10 } from "os";
 import { join as join84 } from "path";
-
-// src/hooks/budget.ts
-var GUARD_BUDGET_MS = 25000;
-var SHORT_GUARD_BUDGET_MS = 8000;
-var BUDGET_MARGIN_MS = 2000;
-var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
-  const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
-}
-function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
-  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
-  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
-}
 
 // src/hooks/git-guard.ts
 import { isAbsolute as isAbsolute5, resolve as resolve16 } from "path";

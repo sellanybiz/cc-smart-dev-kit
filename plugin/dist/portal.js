@@ -18310,6 +18310,1071 @@ function addContextAndMessage(event, text, message) {
   };
 }
 
+// src/shell/command.ts
+function dialectOfTool(tool) {
+  if (tool === "Bash")
+    return "bash";
+  if (tool === "PowerShell")
+    return "powershell";
+  return;
+}
+var DIALECTS = ["bash", "powershell"];
+var MAX_NESTING = 3;
+var ESCAPE = { bash: "\\", powershell: "`" };
+var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
+var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
+var oneOf = (chars, char) => char !== "" && chars.includes(char);
+var CONTINUATION = {
+  bash: /\\[ \t]*\r?\n/y,
+  powershell: /`[ \t]*\r?\n/y
+};
+var SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "|"]);
+var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
+function readingsOf(command, dialect) {
+  const readings = [];
+  for (const one of dialect === undefined ? DIALECTS : [dialect]) {
+    readings.push({ dialect: one, joinLines: false });
+    if (new RegExp(CONTINUATION[one].source).test(command)) {
+      readings.push({ dialect: one, joinLines: true });
+    }
+  }
+  return readings;
+}
+var MAX_INNER = 8;
+var isBlank = (char) => char === " " || char === "\t";
+function lex(text, options) {
+  const { blind, dialect, join } = options;
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const segments = [];
+  const piped = [];
+  const owed = [];
+  let open = false;
+  let unparsable = false;
+  let at = 0;
+  let afterPipe = false;
+  let matching = null;
+  let semicolons = null;
+  const push = (piece, from) => {
+    segments.push(piece);
+    piped.push(from);
+  };
+  function addInner(inner, body) {
+    const depth = (options.depth ?? 0) + 1;
+    if (depth > MAX_INNER) {
+      open = true;
+      return;
+    }
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
+    if (read.open)
+      open = true;
+    if (read.unparsable)
+      unparsable = true;
+    for (let i = 0;i < read.segments.length; i++) {
+      push(read.segments[i] ?? "", read.piped[i] ?? null);
+    }
+  }
+  function skipBodies() {
+    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
+      let line = at;
+      let closedAt = -1;
+      let bodyEnd = text.length;
+      while (line < text.length) {
+        const end = text.indexOf(`
+`, line);
+        const stop = end === -1 ? text.length : end;
+        const content = text.slice(line, stop).replace(/\r$/, "");
+        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
+          closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
+          break;
+        }
+        line = stop + 1;
+      }
+      if (closedAt === -1 && blind)
+        continue;
+      if (script)
+        addInner(text.slice(at, bodyEnd), false);
+      else if (!quoted)
+        addInner(text.slice(at, bodyEnd), true);
+      if (closedAt === -1) {
+        open = true;
+        at = text.length;
+      } else {
+        at = closedAt;
+      }
+    }
+  }
+  function arithmeticEnd(from) {
+    if (text.charAt(from + 1) !== "(")
+      return -1;
+    if (matching === null || semicolons === null) {
+      matching = new Int32Array(text.length).fill(-1);
+      semicolons = new Int32Array(text.length + 1);
+      const stack = [];
+      for (let i = 0;i < text.length; i++) {
+        const char = text.charAt(i);
+        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
+        if (char === "(")
+          stack.push(i);
+        else if (char === ")") {
+          const opened = stack.pop();
+          if (opened !== undefined)
+            matching[opened] = i;
+        }
+      }
+    }
+    const close = matching[from] ?? -1;
+    if (close === -1)
+      return -1;
+    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
+    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
+    return closes && plain ? close + 1 : -1;
+  }
+  function readArithmetic(end) {
+    addInner(text.slice(at + 3, end - 2), true);
+    const piece = text.slice(at, end);
+    at = end;
+    return piece;
+  }
+  function readSingle(ansi) {
+    let end = at + 1;
+    while (end < text.length) {
+      const char = text.charAt(end);
+      if (ansi && char === "\\") {
+        end += 2;
+        continue;
+      }
+      if (oneOf(single, char)) {
+        if (!bash && oneOf(single, text.charAt(end + 1))) {
+          end += 2;
+          continue;
+        }
+        break;
+      }
+      end++;
+    }
+    if (end >= text.length)
+      open = true;
+    const piece = text.slice(at, end + 1);
+    at = Math.min(end + 1, text.length);
+    return piece;
+  }
+  function readBacktick() {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "`") {
+      end += text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length) {
+      open = true;
+      const piece = text.slice(at);
+      at = text.length;
+      return piece;
+    }
+    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
+    const piece = text.slice(at, end + 1);
+    at = end + 1;
+    return piece;
+  }
+  function readDouble(closes) {
+    const mark = segments.length;
+    let raw = "";
+    if (closes) {
+      raw = text.charAt(at);
+      at++;
+    }
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (closes && oneOf(double, char)) {
+        if (!bash && oneOf(double, next)) {
+          raw += char + next;
+          at += 2;
+          continue;
+        }
+        at++;
+        return raw + char;
+      }
+      if (char === escaper && next !== "") {
+        raw += char + next;
+        at += 2;
+      } else if (char === "$" && next === "(") {
+        const end = bash ? arithmeticEnd(at + 1) : -1;
+        if (end === -1) {
+          at += 2;
+          raw += `$(${read(true).raw}`;
+        } else {
+          raw += readArithmetic(end);
+        }
+      } else if (bash && char === "`") {
+        raw += readBacktick();
+      } else {
+        raw += char;
+        at++;
+      }
+    }
+    if (!closes)
+      return raw;
+    open = true;
+    segments.length = mark;
+    piped.length = mark;
+    return raw;
+  }
+  function hereDocOpener() {
+    let pos = at + 2;
+    const stripTabs = text.charAt(pos) === "-";
+    if (stripTabs)
+      pos++;
+    while (isBlank(text.charAt(pos)))
+      pos++;
+    let word = "";
+    let quoted = false;
+    while (pos < text.length) {
+      const char = text.charAt(pos);
+      if (/\s/.test(char) || "<>;&|()".includes(char))
+        break;
+      if (char === "'" || char === '"') {
+        const close = text.indexOf(char, pos + 1);
+        if (close === -1)
+          return null;
+        word += text.slice(pos + 1, close);
+        quoted = true;
+        pos = close + 1;
+      } else if (char === "\\") {
+        word += text.charAt(pos + 1);
+        quoted = true;
+        pos += 2;
+      } else {
+        word += char;
+        pos++;
+      }
+    }
+    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+  function isGroupBrace(char, wordStart) {
+    if (char !== "{" && char !== "}")
+      return false;
+    if (!bash)
+      return true;
+    const after = text.charAt(at + 1);
+    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
+  }
+  function read(nested, substitutions = 0) {
+    let raw = "";
+    let current = "";
+    let depth = 0;
+    let wordStart = true;
+    let afterClose = false;
+    let stdinShell = null;
+    const take = (piece, blank = false) => {
+      current += piece;
+      raw += piece;
+      wordStart = blank;
+      afterClose = false;
+    };
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (join && char === escaper) {
+        const continuation = CONTINUATION[dialect];
+        continuation.lastIndex = at;
+        if (continuation.test(text)) {
+          take(" ", true);
+          at = continuation.lastIndex;
+          continue;
+        }
+      }
+      if (!blind) {
+        if (char === escaper && next !== "" && next !== `
+` && next !== "\r") {
+          take(char + next);
+          at += 2;
+          continue;
+        }
+        if (oneOf(single, char)) {
+          take(readSingle(false));
+          continue;
+        }
+        if (oneOf(double, char)) {
+          take(readDouble(true));
+          continue;
+        }
+        if (bash && char === "$" && next === "'") {
+          at++;
+          take(`$${readSingle(true)}`);
+          continue;
+        }
+        if (bash && char === "`") {
+          take(readBacktick());
+          continue;
+        }
+        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(readArithmetic(arithmetic));
+          continue;
+        }
+        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+          at += 2;
+          const substitution = read(true, substitutions + 1);
+          if (!substitution.closed)
+            open = true;
+          take(`$(${substitution.raw}`);
+          continue;
+        }
+        if (char === "#" && wordStart && !afterClose) {
+          const end = text.indexOf(`
+`, at);
+          at = end === -1 ? text.length : end;
+          continue;
+        }
+        if (!bash && char === "<" && next !== "#")
+          unparsable = true;
+        if (!bash && char === "<" && next === "#" && wordStart) {
+          const end = text.indexOf("#>", at + 2);
+          if (end === -1)
+            open = true;
+          at = end === -1 ? text.length : end + 2;
+          take(" ", true);
+          continue;
+        }
+        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
+          let end = at;
+          while (end < text.length && text.charAt(end) !== `
+` && text.charAt(end) !== "|")
+            end++;
+          take(text.slice(at, end));
+          at = end;
+          continue;
+        }
+      }
+      if (bash && char === "<" && next === "<") {
+        if (text.charAt(at + 2) === "<") {
+          take("<<<");
+          at += 3;
+          continue;
+        }
+        const opener = hereDocOpener();
+        if (opener === null) {
+          take("<<");
+          at += 2;
+          continue;
+        }
+        stdinShell ??= readsStdinShell(current);
+        owed.push({ ...opener, script: stdinShell });
+        take(text.slice(at, opener.end));
+        at = opener.end;
+        continue;
+      }
+      if (!bash && char === "@" && (next === '"' || next === "'")) {
+        HERE_STRING.lastIndex = at;
+        const quoted = HERE_STRING.exec(text);
+        if (quoted !== null) {
+          if (next === '"' || blind)
+            addInner(quoted[2] ?? "", true);
+          take(`${next}${next}`);
+          at = HERE_STRING.lastIndex;
+          continue;
+        }
+      }
+      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
+        push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+        afterPipe = char === "|";
+        if (nested && char === ")" && depth === 0) {
+          at++;
+          return { closed: true, raw: `${raw})` };
+        }
+        if (nested && char === "(")
+          depth++;
+        if (nested && char === ")")
+          depth--;
+        current = "";
+        stdinShell = null;
+        raw += char;
+        at++;
+        wordStart = true;
+        afterClose = char === ")";
+        if (char === `
+`)
+          skipBodies();
+        continue;
+      }
+      take(char, isBlank(char));
+      at++;
+    }
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+    return { closed: false, raw };
+  }
+  if (options.body === true)
+    readDouble(false);
+  else
+    read(false);
+  return { open, piped, segments, unparsable };
+}
+function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
+  const read = lex(command, { blind: false, dialect, join: joinLines });
+  if (read.unparsable)
+    return [];
+  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+}
+function shellSegments(command, options = {}) {
+  return shellSteps(command, options).map((step) => step.text);
+}
+var ANSI_ESCAPES = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  E: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function ansiText(body) {
+  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
+    const kind = code.charAt(0);
+    if (kind === "x" || kind === "u" || kind === "U") {
+      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+    }
+    if (/[0-7]/.test(kind))
+      return String.fromCharCode(Number.parseInt(code, 8) & 255);
+    if (kind === "c")
+      return String.fromCharCode(code.charCodeAt(1) & 31);
+    return ANSI_ESCAPES[code] ?? code;
+  });
+}
+var POWERSHELL_ESCAPES = {
+  "0": "\x00",
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function wordsOf(segment, dialect = "bash") {
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const words = [];
+  let word = "";
+  let inWord = false;
+  let quoted = false;
+  const end = () => {
+    if (inWord)
+      words.push(word);
+    word = "";
+    inWord = false;
+    quoted = false;
+  };
+  const add = (piece) => {
+    word += piece;
+    inWord = true;
+  };
+  let i = 0;
+  while (i < segment.length) {
+    const char = segment.charAt(i);
+    const next = segment.charAt(i + 1);
+    if (/\s/.test(char)) {
+      end();
+      i++;
+    } else if (char === escaper && next === `
+`) {
+      i += 2;
+    } else if (char === escaper) {
+      quoted = true;
+      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
+      i += 2;
+    } else if (char === "<" || char === ">") {
+      if (quoted || !/^\d+$/.test(word))
+        end();
+      while (oneOf("<>", segment.charAt(i)))
+        add(segment.charAt(i++));
+      if (oneOf("&|", segment.charAt(i)))
+        add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "'") {
+      let close = i + 2;
+      while (close < segment.length && segment.charAt(close) !== "'") {
+        close += segment.charAt(close) === "\\" ? 2 : 1;
+      }
+      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
+      quoted = true;
+      i = close + 1;
+    } else if (bash && char === "$" && next === '"') {
+      i++;
+    } else if (oneOf(single, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        if (oneOf(single, inside)) {
+          if (bash || !oneOf(single, segment.charAt(i + 1)))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else if (oneOf(double, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        const after = segment.charAt(i + 1);
+        if (oneOf(double, inside)) {
+          if (bash || !oneOf(double, after))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        if (inside === escaper && after !== "") {
+          if (!bash)
+            add(POWERSHELL_ESCAPES[after] ?? after);
+          else if ('$`"\\'.includes(after))
+            add(after);
+          else if (after !== `
+`)
+            add(inside + after);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else {
+      add(char);
+      i++;
+    }
+  }
+  end();
+  return words;
+}
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+var ASSIGNMENT = /^[A-Za-z_]\w*=/;
+function isAssignmentOnly(words) {
+  return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
+}
+var CHANGE_DIR = new Set([
+  "cd",
+  "chdir",
+  "popd",
+  "pushd",
+  "set-location",
+  "sl"
+]);
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
+var WRAPPERS = {
+  builtin: { long: [], short: "" },
+  busybox: { long: [], short: "" },
+  chrt: {
+    long: [
+      "--sched-runtime",
+      "--sched-period",
+      "--sched-deadline",
+      "--sched-priority",
+      "--reset-on-fork"
+    ],
+    short: "PT",
+    skip: (word) => /^-?\d+$/.test(word)
+  },
+  command: { inert: ["-v", "-V"], long: [], short: "" },
+  doas: { long: [], short: "uC" },
+  env: {
+    long: ["--unset", "--chdir", "--split-string"],
+    short: "uCS",
+    split: { long: "--split-string", short: "S" }
+  },
+  exec: { long: [], short: "a" },
+  flock: {
+    long: ["--timeout", "--conflict-exit-code", "--command"],
+    short: "wEc",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
+  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+  nice: { long: ["--adjustment"], short: "n" },
+  nohup: { long: [], short: "" },
+  nsenter: {
+    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
+    short: "tSG"
+  },
+  script: {
+    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
+    short: "cEOI",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
+  setsid: { long: [], short: "" },
+  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+  sudo: {
+    long: [
+      "--user",
+      "--group",
+      "--host",
+      "--prompt",
+      "--close-from",
+      "--chdir",
+      "--chroot",
+      "--command-timeout",
+      "--other-user"
+    ],
+    short: "ughpCDRTU"
+  },
+  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
+  time: { long: [], short: "" },
+  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  unbuffer: { long: [], short: "" },
+  xargs: {
+    long: [
+      "--arg-file",
+      "--delimiter",
+      "--eof",
+      "--max-args",
+      "--max-chars",
+      "--max-lines",
+      "--max-procs",
+      "--replace",
+      "--process-slot-var"
+    ],
+    short: "adEILnPs"
+  }
+};
+var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+function isWrapper(word) {
+  return WRAPPERS[programName(word)] !== undefined;
+}
+var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
+var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
+function packageCommand(program, args) {
+  let rest;
+  if (PACKAGE_RUNNERS.has(program))
+    rest = args;
+  else if (program === "pnpm" && args[0] === "dlx")
+    rest = args.slice(1);
+  else
+    return null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      const pkg = rest[index + 1];
+      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (name === "-p" || name === "--package") {
+      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
+      const pkg = inline ?? rest[index + 1];
+      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
+        return null;
+      const after = rest.slice(index + (inline === undefined ? 2 : 1));
+      const command = after[0] === "claude" ? after.slice(1) : after;
+      return { args: [...command], program: "claude" };
+    }
+    if (word.startsWith("-")) {
+      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
+      continue;
+    }
+    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
+  }
+  return null;
+}
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter))
+      return { flags, wantsNext: i === arg.length - 1 };
+  }
+  return { flags, wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
+  let skipped = false;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return { index: index + 1 };
+    if (!isShort(word) && !word.startsWith("--")) {
+      if (!skipped && spec.skip?.(word) === true) {
+        skipped = true;
+        index++;
+        continue;
+      }
+      break;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      const valued = spec.long.includes(name) && !word.includes("=");
+      if (spec.split !== undefined && name === spec.split.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        const to = index + (valued ? 2 : 1);
+        return { index, split: { from: index, to, value, keep: null } };
+      }
+      if (spec.runs !== undefined && name === spec.runs.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
+      }
+      index += valued ? 2 : 1;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, spec.short);
+    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      const before = flags.slice(0, -1);
+      const to = index + (wantsNext ? 2 : 1);
+      return {
+        index,
+        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
+      };
+    }
+    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
+    }
+    index += wantsNext ? 2 : 1;
+  }
+  return { index };
+}
+function invocationOf(words) {
+  let list = [...words];
+  let splits = 0;
+  let index = 0;
+  while (index < list.length) {
+    const word = list[index] ?? "";
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const redirection = REDIRECTION.exec(word);
+    if (redirection !== null) {
+      index += (redirection[2] ?? "") === "" ? 2 : 1;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
+      break;
+    const after = afterWrapper(list, index + 1, spec);
+    if (after === undefined)
+      return;
+    if (after.split !== undefined && splits < MAX_NESTING) {
+      const { from, keep, to, value } = after.split;
+      const kept = keep === null ? [] : [keep];
+      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
+      splits++;
+      continue;
+    }
+    if (after.runs !== undefined && splits < MAX_NESTING) {
+      const { from, to, value } = after.runs;
+      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      index = from;
+      splits++;
+      continue;
+    }
+    index = after.split === undefined ? after.index : after.split.to;
+  }
+  const first = list[index];
+  if (first === undefined)
+    return;
+  const program = programName(first);
+  const ran = packageCommand(program, list.slice(index + 1));
+  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
+  const command = started ?? ran;
+  return {
+    args: command?.args ?? list.slice(index + 1),
+    computed: isComputedWord(first),
+    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
+    program: command?.program ?? program
+  };
+}
+function isComputedWord(word) {
+  if (!word.startsWith("$") && !word.startsWith("`"))
+    return false;
+  return /[$`(){}[\]\s]/.test(programName(word));
+}
+var START_PROCESS_PARAMETERS = new Map([
+  ["argumentlist", true],
+  ["credential", true],
+  ["erroraction", true],
+  ["errorvariable", true],
+  ["filepath", true],
+  ["informationaction", true],
+  ["informationvariable", true],
+  ["loaduserprofile", false],
+  ["nonewwindow", false],
+  ["outbuffer", true],
+  ["outvariable", true],
+  ["passthru", false],
+  ["pipelinevariable", true],
+  ["redirectstandarderror", true],
+  ["redirectstandardinput", true],
+  ["redirectstandardoutput", true],
+  ["usenewenvironment", false],
+  ["verb", true],
+  ["wait", false],
+  ["warningaction", true],
+  ["warningvariable", true],
+  ["windowstyle", true],
+  ["workingdirectory", true]
+]);
+function startProcessParameter(word) {
+  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
+  const given = match?.[1]?.toLowerCase() ?? "";
+  if (given === "")
+    return null;
+  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
+  const [name] = names;
+  if (names.length !== 1 || name === undefined)
+    return null;
+  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
+}
+function startProcess(args) {
+  let file = null;
+  let list = null;
+  let fresh = null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(index + 1));
+      break;
+    }
+    const parameter = startProcessParameter(arg);
+    if (parameter === null) {
+      if (!arg.startsWith("-"))
+        positional.push(arg);
+      continue;
+    }
+    const { name, takesValue } = parameter;
+    let value = parameter.value;
+    if (takesValue && value === undefined) {
+      value = args[index + 1];
+      index++;
+    }
+    if (name === "filepath" && value !== undefined)
+      file = value;
+    else if (name === "argumentlist" && value !== undefined) {
+      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+    } else if (name === "usenewenvironment")
+      fresh = arg;
+  }
+  file ??= positional[0] ?? null;
+  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  if (file === null)
+    return null;
+  return {
+    args: list,
+    prefix: fresh === null ? [] : [START_PROCESS, fresh],
+    program: programName(file)
+  };
+}
+var START_PROCESS = "start-process";
+function withoutRedirections(args) {
+  const kept = [];
+  for (let index = 0;index < args.length; index++) {
+    const redirection = REDIRECTION.exec(args[index] ?? "");
+    if (redirection === null)
+      kept.push(args[index] ?? "");
+    else if ((redirection[2] ?? "") === "")
+      index++;
+  }
+  return kept;
+}
+var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+function redirectionTargets(words) {
+  const targets = [];
+  for (let index = 0;index < words.length; index++) {
+    const redirection = REDIRECTION.exec(words[index] ?? "");
+    if (redirection === null)
+      continue;
+    let target = redirection[2] ?? "";
+    if (target === "")
+      target = words[++index] ?? "";
+    const operator = redirection[1] ?? "";
+    if (operator === ">&")
+      continue;
+    if (operator === "&>" && target.startsWith(">"))
+      target = target.slice(1);
+    if (operator === ">" && target.startsWith("&")) {
+      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
+    }
+    if (WRITING_REDIRECTIONS.has(operator) && target !== "")
+      targets.push(target);
+  }
+  return targets;
+}
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function shellCommandString(args) {
+  let commandMode = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--")
+      return commandMode ? args[index + 1] : undefined;
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (/^[-+][A-Za-z]+$/.test(arg)) {
+      const letters = arg.slice(1);
+      if (arg.startsWith("-") && letters.includes("c"))
+        commandMode = true;
+      if (/[oO]$/.test(letters))
+        index++;
+      continue;
+    }
+    return commandMode ? arg : undefined;
+  }
+  return;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function nestedCommand(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const script = shellCommandString(args);
+    if (script !== undefined)
+      return script;
+    if (!shellTakesStdin(args))
+      return;
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  }
+  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
+    const dashes = args.indexOf("--");
+    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
+  }
+  if (program === "cmd") {
+    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "powershell" || program === "pwsh") {
+    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "eval" || program === "iex" || program === "invoke-expression") {
+    return args.join(" ");
+  }
+  return;
+}
+function nestedDialect(program) {
+  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
+}
+function programsOf(command, dialect) {
+  if (dialect !== undefined)
+    return programsIn(command, dialect);
+  const found = programsIn(command, "bash");
+  const left = [...found];
+  for (const program of programsIn(command, "powershell")) {
+    const at = left.indexOf(program);
+    if (at === -1)
+      found.push(program);
+    else
+      left.splice(at, 1);
+  }
+  return found;
+}
+function programsIn(command, dialect) {
+  const found = [];
+  const walk = (line, one, depth) => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const invocation = invocationOf(wordsOf(step.text, one));
+      if (invocation === undefined)
+        continue;
+      found.push(invocation.program);
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1);
+      }
+    }
+  };
+  walk(command, dialect, 0);
+  return found;
+}
+
 // src/user-away/state.ts
 import { mkdirSync as mkdirSync15, readFileSync as readFileSync31 } from "fs";
 import { join as join31 } from "path";
@@ -18368,7 +19433,7 @@ function readAway(stateDir) {
 `)[0]}). Fix it or remove it.`);
   }
 }
-async function change(stateDir, apply) {
+async function change(stateDir, apply, waitMs = AWAY_LOCK_WAIT_MS) {
   const folder = awayDir(stateDir);
   mkdirSync15(folder, { mode: 448, recursive: true });
   return await withLock(folder, () => {
@@ -18377,13 +19442,13 @@ async function change(stateDir, apply) {
     atomicWrite(awayStateFile(stateDir), `${JSON.stringify(state, null, 2)}
 `, 384);
     return { result, state };
-  }, { waitMs: AWAY_LOCK_WAIT_MS });
+  }, { waitMs });
 }
 function sameItem(items, draft) {
   const what = (item) => item.command ?? item.text;
-  return items.find((item) => item.kind === draft.kind && what(item) === what(draft));
+  return items.find((item) => item.kind === draft.kind && what(item) === what(draft) && item.cwd === draft.cwd && item.crew === draft.crew);
 }
-async function parkItem(stateDir, draft, nowMs) {
+async function parkItem(stateDir, draft, nowMs, waitMs = AWAY_LOCK_WAIT_MS) {
   const { result } = await change(stateDir, (state) => {
     const same = sameItem(state.items, draft);
     if (same !== undefined)
@@ -18395,7 +19460,7 @@ async function parkItem(stateDir, draft, nowMs) {
     state.nextId += 1;
     state.items.push(item);
     return { added: true, item };
-  });
+  }, waitMs);
   return result;
 }
 async function sayOnce(stateDir, session, key) {
@@ -18452,6 +19517,20 @@ Commands:
 
 Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
 
+// src/hooks/budget.ts
+var GUARD_BUDGET_MS = 25000;
+var SHORT_GUARD_BUDGET_MS = 8000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
+}
+function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
+  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
+  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
+}
+
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
@@ -18464,8 +19543,16 @@ function hasNotPersonWrapper(prompt2) {
 }
 
 // src/hooks/user-away.ts
+var PARK_WAIT_MS = BUDGET_MARGIN_MS / 2;
 var AWAY_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var SHELL_TOOLS = ["Bash", "PowerShell"];
+var STATE_COMMANDS = [
+  ["user", "available"],
+  ["user", "status"],
+  ["user", "status", "--json"],
+  ["user", "list"],
+  ["user", "list", "--json"]
+];
 function inAwayDomain(input) {
   const tool = stringField(input.tool_name);
   return tool !== null && AWAY_ASK_TOOLS.includes(tool);
@@ -18537,11 +19624,32 @@ async function parkCall(input, env, paths, nowMs, words) {
       session: stringField(input.session_id) ?? "",
       text: text.slice(0, TEXT_MAX),
       tool: stringField(input.tool_name)
-    }, nowMs);
+    }, nowMs, PARK_WAIT_MS);
     return { item, ok: true };
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+}
+function isStateCommand(input) {
+  const command = callCommand(input);
+  if (command === null)
+    return false;
+  const dialect = dialectOfTool(input.tool_name) ?? "bash";
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (steps.length === 0)
+    return false;
+  return steps.every((step) => {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined || invocation.computed || invocation.prefix.length > 0) {
+      return false;
+    }
+    if (invocation.program !== COMMAND)
+      return false;
+    const operands = invocation.args;
+    if (withoutRedirections(operands).length !== operands.length)
+      return false;
+    return STATE_COMMANDS.some((known) => known.length === operands.length && known.every((word, at) => word === operands[at]));
+  });
 }
 function permissionDeny(message) {
   return {
@@ -18556,6 +19664,8 @@ function permissionDeny(message) {
 async function permissionAnswer(input, env, paths, nowMs, options) {
   const state = readAway(paths.stateDir);
   if (!state.unavailable)
+    return SILENT;
+  if (crewIdOf(env) === null && isStateCommand(input))
     return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
@@ -27321,7 +28431,7 @@ function claiming(files, name) {
   }
   return found;
 }
-function oneOf(found, name) {
+function oneOf2(found, name) {
   const [first] = found;
   if (first === undefined)
     return null;
@@ -27399,12 +28509,12 @@ function scriptByName(name, place) {
         unreadable: `The workflow \`${name}\` belongs to the plugin \`${plugin}\`, and Claude Code's installed_plugins.json names no installed folder for it.`
       };
     }
-    return oneOf(claiming(pluginWorkflowFiles(root), own), name) ?? {
+    return oneOf2(claiming(pluginWorkflowFiles(root), own), name) ?? {
       unreadable: `The workflow \`${name}\`: the plugin's folder \`${root}\` holds no workflow named \`${own}\`.`
     };
   }
   for (const folder of savedFolders(place)) {
-    const found = oneOf(claiming(workflowFiles(folder), name), name);
+    const found = oneOf2(claiming(workflowFiles(folder), name), name);
     if (found !== null)
       return found;
   }
@@ -30812,1090 +31922,11 @@ function checkGitBash(platform, env, facts) {
 import { existsSync as existsSync52, readFileSync as readFileSync67 } from "fs";
 import { join as join66 } from "path";
 
-// src/shell/command.ts
-function dialectOfTool(tool) {
-  if (tool === "Bash")
-    return "bash";
-  if (tool === "PowerShell")
-    return "powershell";
-  return;
-}
-var DIALECTS = ["bash", "powershell"];
-var MAX_NESTING = 3;
-var ESCAPE = { bash: "\\", powershell: "`" };
-var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
-var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
-var oneOf2 = (chars, char) => char !== "" && chars.includes(char);
-var CONTINUATION = {
-  bash: /\\[ \t]*\r?\n/y,
-  powershell: /`[ \t]*\r?\n/y
-};
-var SEPARATORS = new Set([`
-`, "\r", "&", "(", ")", ";", "|"]);
-var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
-function readingsOf(command, dialect) {
-  const readings = [];
-  for (const one of dialect === undefined ? DIALECTS : [dialect]) {
-    readings.push({ dialect: one, joinLines: false });
-    if (new RegExp(CONTINUATION[one].source).test(command)) {
-      readings.push({ dialect: one, joinLines: true });
-    }
-  }
-  return readings;
-}
-var MAX_INNER = 8;
-var isBlank = (char) => char === " " || char === "\t";
-function lex(text, options) {
-  const { blind, dialect, join } = options;
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const segments = [];
-  const piped = [];
-  const owed = [];
-  let open = false;
-  let unparsable = false;
-  let at = 0;
-  let afterPipe = false;
-  let matching = null;
-  let semicolons = null;
-  const push = (piece, from) => {
-    segments.push(piece);
-    piped.push(from);
-  };
-  function addInner(inner, body) {
-    const depth = (options.depth ?? 0) + 1;
-    if (depth > MAX_INNER) {
-      open = true;
-      return;
-    }
-    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
-    if (read.open)
-      open = true;
-    if (read.unparsable)
-      unparsable = true;
-    for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null);
-    }
-  }
-  function skipBodies() {
-    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
-      let line = at;
-      let closedAt = -1;
-      let bodyEnd = text.length;
-      while (line < text.length) {
-        const end = text.indexOf(`
-`, line);
-        const stop = end === -1 ? text.length : end;
-        const content = text.slice(line, stop).replace(/\r$/, "");
-        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
-          closedAt = Math.min(stop + 1, text.length);
-          bodyEnd = line;
-          break;
-        }
-        line = stop + 1;
-      }
-      if (closedAt === -1 && blind)
-        continue;
-      if (script)
-        addInner(text.slice(at, bodyEnd), false);
-      else if (!quoted)
-        addInner(text.slice(at, bodyEnd), true);
-      if (closedAt === -1) {
-        open = true;
-        at = text.length;
-      } else {
-        at = closedAt;
-      }
-    }
-  }
-  function arithmeticEnd(from) {
-    if (text.charAt(from + 1) !== "(")
-      return -1;
-    if (matching === null || semicolons === null) {
-      matching = new Int32Array(text.length).fill(-1);
-      semicolons = new Int32Array(text.length + 1);
-      const stack = [];
-      for (let i = 0;i < text.length; i++) {
-        const char = text.charAt(i);
-        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
-        if (char === "(")
-          stack.push(i);
-        else if (char === ")") {
-          const opened = stack.pop();
-          if (opened !== undefined)
-            matching[opened] = i;
-        }
-      }
-    }
-    const close = matching[from] ?? -1;
-    if (close === -1)
-      return -1;
-    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
-    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
-    return closes && plain ? close + 1 : -1;
-  }
-  function readArithmetic(end) {
-    addInner(text.slice(at + 3, end - 2), true);
-    const piece = text.slice(at, end);
-    at = end;
-    return piece;
-  }
-  function readSingle(ansi) {
-    let end = at + 1;
-    while (end < text.length) {
-      const char = text.charAt(end);
-      if (ansi && char === "\\") {
-        end += 2;
-        continue;
-      }
-      if (oneOf2(single, char)) {
-        if (!bash && oneOf2(single, text.charAt(end + 1))) {
-          end += 2;
-          continue;
-        }
-        break;
-      }
-      end++;
-    }
-    if (end >= text.length)
-      open = true;
-    const piece = text.slice(at, end + 1);
-    at = Math.min(end + 1, text.length);
-    return piece;
-  }
-  function readBacktick() {
-    let end = at + 1;
-    while (end < text.length && text.charAt(end) !== "`") {
-      end += text.charAt(end) === "\\" ? 2 : 1;
-    }
-    if (end >= text.length) {
-      open = true;
-      const piece = text.slice(at);
-      at = text.length;
-      return piece;
-    }
-    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
-    const piece = text.slice(at, end + 1);
-    at = end + 1;
-    return piece;
-  }
-  function readDouble(closes) {
-    const mark = segments.length;
-    let raw = "";
-    if (closes) {
-      raw = text.charAt(at);
-      at++;
-    }
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (closes && oneOf2(double, char)) {
-        if (!bash && oneOf2(double, next)) {
-          raw += char + next;
-          at += 2;
-          continue;
-        }
-        at++;
-        return raw + char;
-      }
-      if (char === escaper && next !== "") {
-        raw += char + next;
-        at += 2;
-      } else if (char === "$" && next === "(") {
-        const end = bash ? arithmeticEnd(at + 1) : -1;
-        if (end === -1) {
-          at += 2;
-          raw += `$(${read(true).raw}`;
-        } else {
-          raw += readArithmetic(end);
-        }
-      } else if (bash && char === "`") {
-        raw += readBacktick();
-      } else {
-        raw += char;
-        at++;
-      }
-    }
-    if (!closes)
-      return raw;
-    open = true;
-    segments.length = mark;
-    piped.length = mark;
-    return raw;
-  }
-  function hereDocOpener() {
-    let pos = at + 2;
-    const stripTabs = text.charAt(pos) === "-";
-    if (stripTabs)
-      pos++;
-    while (isBlank(text.charAt(pos)))
-      pos++;
-    let word = "";
-    let quoted = false;
-    while (pos < text.length) {
-      const char = text.charAt(pos);
-      if (/\s/.test(char) || "<>;&|()".includes(char))
-        break;
-      if (char === "'" || char === '"') {
-        const close = text.indexOf(char, pos + 1);
-        if (close === -1)
-          return null;
-        word += text.slice(pos + 1, close);
-        quoted = true;
-        pos = close + 1;
-      } else if (char === "\\") {
-        word += text.charAt(pos + 1);
-        quoted = true;
-        pos += 2;
-      } else {
-        word += char;
-        pos++;
-      }
-    }
-    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
-  }
-  function isGroupBrace(char, wordStart) {
-    if (char !== "{" && char !== "}")
-      return false;
-    if (!bash)
-      return true;
-    const after = text.charAt(at + 1);
-    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
-  }
-  function read(nested, substitutions = 0) {
-    let raw = "";
-    let current = "";
-    let depth = 0;
-    let wordStart = true;
-    let afterClose = false;
-    let stdinShell = null;
-    const take = (piece, blank = false) => {
-      current += piece;
-      raw += piece;
-      wordStart = blank;
-      afterClose = false;
-    };
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (join && char === escaper) {
-        const continuation = CONTINUATION[dialect];
-        continuation.lastIndex = at;
-        if (continuation.test(text)) {
-          take(" ", true);
-          at = continuation.lastIndex;
-          continue;
-        }
-      }
-      if (!blind) {
-        if (char === escaper && next !== "" && next !== `
-` && next !== "\r") {
-          take(char + next);
-          at += 2;
-          continue;
-        }
-        if (oneOf2(single, char)) {
-          take(readSingle(false));
-          continue;
-        }
-        if (oneOf2(double, char)) {
-          take(readDouble(true));
-          continue;
-        }
-        if (bash && char === "$" && next === "'") {
-          at++;
-          take(`$${readSingle(true)}`);
-          continue;
-        }
-        if (bash && char === "`") {
-          take(readBacktick());
-          continue;
-        }
-        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
-        if (arithmetic !== -1) {
-          take(readArithmetic(arithmetic));
-          continue;
-        }
-        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
-          at += 2;
-          const substitution = read(true, substitutions + 1);
-          if (!substitution.closed)
-            open = true;
-          take(`$(${substitution.raw}`);
-          continue;
-        }
-        if (char === "#" && wordStart && !afterClose) {
-          const end = text.indexOf(`
-`, at);
-          at = end === -1 ? text.length : end;
-          continue;
-        }
-        if (!bash && char === "<" && next !== "#")
-          unparsable = true;
-        if (!bash && char === "<" && next === "#" && wordStart) {
-          const end = text.indexOf("#>", at + 2);
-          if (end === -1)
-            open = true;
-          at = end === -1 ? text.length : end + 2;
-          take(" ", true);
-          continue;
-        }
-        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
-          let end = at;
-          while (end < text.length && text.charAt(end) !== `
-` && text.charAt(end) !== "|")
-            end++;
-          take(text.slice(at, end));
-          at = end;
-          continue;
-        }
-      }
-      if (bash && char === "<" && next === "<") {
-        if (text.charAt(at + 2) === "<") {
-          take("<<<");
-          at += 3;
-          continue;
-        }
-        const opener = hereDocOpener();
-        if (opener === null) {
-          take("<<");
-          at += 2;
-          continue;
-        }
-        stdinShell ??= readsStdinShell(current);
-        owed.push({ ...opener, script: stdinShell });
-        take(text.slice(at, opener.end));
-        at = opener.end;
-        continue;
-      }
-      if (!bash && char === "@" && (next === '"' || next === "'")) {
-        HERE_STRING.lastIndex = at;
-        const quoted = HERE_STRING.exec(text);
-        if (quoted !== null) {
-          if (next === '"' || blind)
-            addInner(quoted[2] ?? "", true);
-          take(`${next}${next}`);
-          at = HERE_STRING.lastIndex;
-          continue;
-        }
-      }
-      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
-        take(char);
-        at++;
-        continue;
-      }
-      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
-        push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
-        afterPipe = char === "|";
-        if (nested && char === ")" && depth === 0) {
-          at++;
-          return { closed: true, raw: `${raw})` };
-        }
-        if (nested && char === "(")
-          depth++;
-        if (nested && char === ")")
-          depth--;
-        current = "";
-        stdinShell = null;
-        raw += char;
-        at++;
-        wordStart = true;
-        afterClose = char === ")";
-        if (char === `
-`)
-          skipBodies();
-        continue;
-      }
-      take(char, isBlank(char));
-      at++;
-    }
-    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
-    return { closed: false, raw };
-  }
-  if (options.body === true)
-    readDouble(false);
-  else
-    read(false);
-  return { open, piped, segments, unparsable };
-}
-function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
-  const read = lex(command, { blind: false, dialect, join: joinLines });
-  if (read.unparsable)
-    return [];
-  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
-}
-function shellSegments(command, options = {}) {
-  return shellSteps(command, options).map((step) => step.text);
-}
-var ANSI_ESCAPES = {
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  E: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function ansiText(body) {
-  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
-    const kind = code.charAt(0);
-    if (kind === "x" || kind === "u" || kind === "U") {
-      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
-    }
-    if (/[0-7]/.test(kind))
-      return String.fromCharCode(Number.parseInt(code, 8) & 255);
-    if (kind === "c")
-      return String.fromCharCode(code.charCodeAt(1) & 31);
-    return ANSI_ESCAPES[code] ?? code;
-  });
-}
-var POWERSHELL_ESCAPES = {
-  "0": "\x00",
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function wordsOf(segment, dialect = "bash") {
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const words = [];
-  let word = "";
-  let inWord = false;
-  let quoted = false;
-  const end = () => {
-    if (inWord)
-      words.push(word);
-    word = "";
-    inWord = false;
-    quoted = false;
-  };
-  const add = (piece) => {
-    word += piece;
-    inWord = true;
-  };
-  let i = 0;
-  while (i < segment.length) {
-    const char = segment.charAt(i);
-    const next = segment.charAt(i + 1);
-    if (/\s/.test(char)) {
-      end();
-      i++;
-    } else if (char === escaper && next === `
-`) {
-      i += 2;
-    } else if (char === escaper) {
-      quoted = true;
-      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
-      i += 2;
-    } else if (char === "<" || char === ">") {
-      if (quoted || !/^\d+$/.test(word))
-        end();
-      while (oneOf2("<>", segment.charAt(i)))
-        add(segment.charAt(i++));
-      if (oneOf2("&|", segment.charAt(i)))
-        add(segment.charAt(i++));
-    } else if (bash && char === "$" && next === "'") {
-      let close = i + 2;
-      while (close < segment.length && segment.charAt(close) !== "'") {
-        close += segment.charAt(close) === "\\" ? 2 : 1;
-      }
-      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
-      quoted = true;
-      i = close + 1;
-    } else if (bash && char === "$" && next === '"') {
-      i++;
-    } else if (oneOf2(single, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        if (oneOf2(single, inside)) {
-          if (bash || !oneOf2(single, segment.charAt(i + 1)))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        add(inside);
-        i++;
-      }
-      i++;
-    } else if (oneOf2(double, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        const after = segment.charAt(i + 1);
-        if (oneOf2(double, inside)) {
-          if (bash || !oneOf2(double, after))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        if (inside === escaper && after !== "") {
-          if (!bash)
-            add(POWERSHELL_ESCAPES[after] ?? after);
-          else if ('$`"\\'.includes(after))
-            add(after);
-          else if (after !== `
-`)
-            add(inside + after);
-          i += 2;
-          continue;
-        }
-        add(inside);
-        i++;
-      }
-      i++;
-    } else {
-      add(char);
-      i++;
-    }
-  }
-  end();
-  return words;
-}
-var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-var ASSIGNMENT = /^[A-Za-z_]\w*=/;
-function isAssignmentOnly(words) {
-  return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
-}
-var CHANGE_DIR = new Set([
-  "cd",
-  "chdir",
-  "popd",
-  "pushd",
-  "set-location",
-  "sl"
-]);
-var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
-var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
-var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
-var WRAPPERS = {
-  builtin: { long: [], short: "" },
-  busybox: { long: [], short: "" },
-  chrt: {
-    long: [
-      "--sched-runtime",
-      "--sched-period",
-      "--sched-deadline",
-      "--sched-priority",
-      "--reset-on-fork"
-    ],
-    short: "PT",
-    skip: (word) => /^-?\d+$/.test(word)
-  },
-  command: { inert: ["-v", "-V"], long: [], short: "" },
-  doas: { long: [], short: "uC" },
-  env: {
-    long: ["--unset", "--chdir", "--split-string"],
-    short: "uCS",
-    split: { long: "--split-string", short: "S" }
-  },
-  exec: { long: [], short: "a" },
-  flock: {
-    long: ["--timeout", "--conflict-exit-code", "--command"],
-    short: "wEc",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
-  nice: { long: ["--adjustment"], short: "n" },
-  nohup: { long: [], short: "" },
-  nsenter: {
-    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
-    short: "tSG"
-  },
-  script: {
-    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
-    short: "cEOI",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  setsid: { long: [], short: "" },
-  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
-  sudo: {
-    long: [
-      "--user",
-      "--group",
-      "--host",
-      "--prompt",
-      "--close-from",
-      "--chdir",
-      "--chroot",
-      "--command-timeout",
-      "--other-user"
-    ],
-    short: "ughpCDRTU"
-  },
-  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
-  time: { long: [], short: "" },
-  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
-  unbuffer: { long: [], short: "" },
-  xargs: {
-    long: [
-      "--arg-file",
-      "--delimiter",
-      "--eof",
-      "--max-args",
-      "--max-chars",
-      "--max-lines",
-      "--max-procs",
-      "--replace",
-      "--process-slot-var"
-    ],
-    short: "adEILnPs"
-  }
-};
-var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
-function isWrapper(word) {
-  return WRAPPERS[programName2(word)] !== undefined;
-}
-var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
-var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
-function packageCommand(program, args) {
-  let rest;
-  if (PACKAGE_RUNNERS.has(program))
-    rest = args;
-  else if (program === "pnpm" && args[0] === "dlx")
-    rest = args.slice(1);
-  else
-    return null;
-  for (let index = 0;index < rest.length; index++) {
-    const word = rest[index] ?? "";
-    if (word === "--") {
-      const pkg = rest[index + 1];
-      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (name === "-p" || name === "--package") {
-      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
-      const pkg = inline ?? rest[index + 1];
-      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
-        return null;
-      const after = rest.slice(index + (inline === undefined ? 2 : 1));
-      const command = after[0] === "claude" ? after.slice(1) : after;
-      return { args: [...command], program: "claude" };
-    }
-    if (word.startsWith("-")) {
-      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
-      continue;
-    }
-    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
-  }
-  return null;
-}
-function programName2(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
-function shortFlags(arg, valued) {
-  let flags = "";
-  for (let i = 1;i < arg.length; i++) {
-    const letter = arg.charAt(i);
-    flags += letter;
-    if (valued.includes(letter))
-      return { flags, wantsNext: i === arg.length - 1 };
-  }
-  return { flags, wantsNext: false };
-}
-function isShort(arg) {
-  return /^-[^-]/.test(arg);
-}
-function afterWrapper(words, from, spec) {
-  let index = from;
-  let skipped = false;
-  while (index < words.length) {
-    const word = words[index] ?? "";
-    if (word === "--")
-      return { index: index + 1 };
-    if (!isShort(word) && !word.startsWith("--")) {
-      if (!skipped && spec.skip?.(word) === true) {
-        skipped = true;
-        index++;
-        continue;
-      }
-      break;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
-      return;
-    if (word.startsWith("--")) {
-      const valued = spec.long.includes(name) && !word.includes("=");
-      if (spec.split !== undefined && name === spec.split.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        const to = index + (valued ? 2 : 1);
-        return { index, split: { from: index, to, value, keep: null } };
-      }
-      if (spec.runs !== undefined && name === spec.runs.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
-      }
-      index += valued ? 2 : 1;
-      continue;
-    }
-    const { flags, wantsNext } = shortFlags(word, spec.short);
-    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      const before = flags.slice(0, -1);
-      const to = index + (wantsNext ? 2 : 1);
-      return {
-        index,
-        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
-      };
-    }
-    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
-    }
-    index += wantsNext ? 2 : 1;
-  }
-  return { index };
-}
-function invocationOf(words) {
-  let list = [...words];
-  let splits = 0;
-  let index = 0;
-  while (index < list.length) {
-    const word = list[index] ?? "";
-    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
-      index++;
-      continue;
-    }
-    const redirection = REDIRECTION.exec(word);
-    if (redirection !== null) {
-      index += (redirection[2] ?? "") === "" ? 2 : 1;
-      continue;
-    }
-    const spec = WRAPPERS[programName2(word)];
-    if (spec === undefined)
-      break;
-    const after = afterWrapper(list, index + 1, spec);
-    if (after === undefined)
-      return;
-    if (after.split !== undefined && splits < MAX_NESTING) {
-      const { from, keep, to, value } = after.split;
-      const kept = keep === null ? [] : [keep];
-      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
-      splits++;
-      continue;
-    }
-    if (after.runs !== undefined && splits < MAX_NESTING) {
-      const { from, to, value } = after.runs;
-      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
-      index = from;
-      splits++;
-      continue;
-    }
-    index = after.split === undefined ? after.index : after.split.to;
-  }
-  const first = list[index];
-  if (first === undefined)
-    return;
-  const program = programName2(first);
-  const ran = packageCommand(program, list.slice(index + 1));
-  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
-  const command = started ?? ran;
-  return {
-    args: command?.args ?? list.slice(index + 1),
-    computed: isComputedWord(first),
-    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
-    program: command?.program ?? program
-  };
-}
-function isComputedWord(word) {
-  if (!word.startsWith("$") && !word.startsWith("`"))
-    return false;
-  return /[$`(){}[\]\s]/.test(programName2(word));
-}
-var START_PROCESS_PARAMETERS = new Map([
-  ["argumentlist", true],
-  ["credential", true],
-  ["erroraction", true],
-  ["errorvariable", true],
-  ["filepath", true],
-  ["informationaction", true],
-  ["informationvariable", true],
-  ["loaduserprofile", false],
-  ["nonewwindow", false],
-  ["outbuffer", true],
-  ["outvariable", true],
-  ["passthru", false],
-  ["pipelinevariable", true],
-  ["redirectstandarderror", true],
-  ["redirectstandardinput", true],
-  ["redirectstandardoutput", true],
-  ["usenewenvironment", false],
-  ["verb", true],
-  ["wait", false],
-  ["warningaction", true],
-  ["warningvariable", true],
-  ["windowstyle", true],
-  ["workingdirectory", true]
-]);
-function startProcessParameter(word) {
-  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
-  const given = match?.[1]?.toLowerCase() ?? "";
-  if (given === "")
-    return null;
-  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
-  const [name] = names;
-  if (names.length !== 1 || name === undefined)
-    return null;
-  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
-}
-function startProcess(args) {
-  let file = null;
-  let list = null;
-  let fresh = null;
-  const positional = [];
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--") {
-      positional.push(...args.slice(index + 1));
-      break;
-    }
-    const parameter = startProcessParameter(arg);
-    if (parameter === null) {
-      if (!arg.startsWith("-"))
-        positional.push(arg);
-      continue;
-    }
-    const { name, takesValue } = parameter;
-    let value = parameter.value;
-    if (takesValue && value === undefined) {
-      value = args[index + 1];
-      index++;
-    }
-    if (name === "filepath" && value !== undefined)
-      file = value;
-    else if (name === "argumentlist" && value !== undefined) {
-      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
-    } else if (name === "usenewenvironment")
-      fresh = arg;
-  }
-  file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
-  if (file === null)
-    return null;
-  return {
-    args: list,
-    prefix: fresh === null ? [] : [START_PROCESS, fresh],
-    program: programName2(file)
-  };
-}
-var START_PROCESS = "start-process";
-function withoutRedirections(args) {
-  const kept = [];
-  for (let index = 0;index < args.length; index++) {
-    const redirection = REDIRECTION.exec(args[index] ?? "");
-    if (redirection === null)
-      kept.push(args[index] ?? "");
-    else if ((redirection[2] ?? "") === "")
-      index++;
-  }
-  return kept;
-}
-var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
-function redirectionTargets(words) {
-  const targets = [];
-  for (let index = 0;index < words.length; index++) {
-    const redirection = REDIRECTION.exec(words[index] ?? "");
-    if (redirection === null)
-      continue;
-    let target = redirection[2] ?? "";
-    if (target === "")
-      target = words[++index] ?? "";
-    const operator = redirection[1] ?? "";
-    if (operator === ">&")
-      continue;
-    if (operator === "&>" && target.startsWith(">"))
-      target = target.slice(1);
-    if (operator === ">" && target.startsWith("&")) {
-      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
-    }
-    if (WRITING_REDIRECTIONS.has(operator) && target !== "")
-      targets.push(target);
-  }
-  return targets;
-}
-function shellTakesStdin(args) {
-  let stdin = false;
-  let scriptFile = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      if ((redirection[1] ?? "").startsWith("<<"))
-        stdin = true;
-      continue;
-    }
-    if (arg === "-") {
-      stdin = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
-    }
-    if (isShort(arg) || arg.startsWith("+")) {
-      const letters = arg.replace(/^[-+]+/, "");
-      if (letters.includes("c"))
-        return false;
-      if (letters.includes("s"))
-        stdin = true;
-      if (letters === "o")
-        index++;
-      continue;
-    }
-    scriptFile = true;
-  }
-  return stdin || !scriptFile;
-}
-function shellCommandString(args) {
-  let commandMode = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--")
-      return commandMode ? args[index + 1] : undefined;
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
-    }
-    if (/^[-+][A-Za-z]+$/.test(arg)) {
-      const letters = arg.slice(1);
-      if (arg.startsWith("-") && letters.includes("c"))
-        commandMode = true;
-      if (/[oO]$/.test(letters))
-        index++;
-      continue;
-    }
-    return commandMode ? arg : undefined;
-  }
-  return;
-}
-function readsStdinShell(segment) {
-  const invocation = invocationOf(wordsOf(segment));
-  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
-}
-function writtenText(segment) {
-  const invocation = invocationOf(wordsOf(segment));
-  if (invocation === undefined || invocation.args.length === 0)
-    return null;
-  const text = invocation.args.join(" ");
-  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
-}
-function nestedCommand(program, args, pipedFrom = null) {
-  if (SHELLS.has(program)) {
-    const script = shellCommandString(args);
-    if (script !== undefined)
-      return script;
-    if (!shellTakesStdin(args))
-      return;
-    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
-    if (here !== -1) {
-      const word = args[here] ?? "";
-      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
-    }
-    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
-  }
-  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
-    const dashes = args.indexOf("--");
-    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
-  }
-  if (program === "cmd") {
-    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
-  }
-  if (program === "powershell" || program === "pwsh") {
-    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
-  }
-  if (program === "eval" || program === "iex" || program === "invoke-expression") {
-    return args.join(" ");
-  }
-  return;
-}
-function nestedDialect(program) {
-  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
-}
-function programsOf(command, dialect) {
-  if (dialect !== undefined)
-    return programsIn(command, dialect);
-  const found = programsIn(command, "bash");
-  const left = [...found];
-  for (const program of programsIn(command, "powershell")) {
-    const at = left.indexOf(program);
-    if (at === -1)
-      found.push(program);
-    else
-      left.splice(at, 1);
-  }
-  return found;
-}
-function programsIn(command, dialect) {
-  const found = [];
-  const walk = (line, one, depth) => {
-    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
-      const invocation = invocationOf(wordsOf(step.text, one));
-      if (invocation === undefined)
-        continue;
-      found.push(invocation.program);
-      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
-      if (inner !== undefined && depth < MAX_NESTING) {
-        walk(inner, nestedDialect(invocation.program), depth + 1);
-      }
-    }
-  };
-  walk(command, dialect, 0);
-  return found;
-}
-
 // src/hooks/after-merge.ts
 import { createHash as createHash8 } from "crypto";
 import { existsSync as existsSync49, mkdirSync as mkdirSync22, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join60 } from "path";
-
-// src/hooks/budget.ts
-var GUARD_BUDGET_MS = 25000;
-var SHORT_GUARD_BUDGET_MS = 8000;
-var BUDGET_MARGIN_MS = 2000;
-var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
-  const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? Math.min(given, ceilingMs) : ceilingMs;
-}
-function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
-  const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
-  return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
-}
 
 // src/hooks/git-guard.ts
 import { isAbsolute as isAbsolute4, resolve as resolve10 } from "path";
@@ -32476,7 +32507,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
       moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
     const invocation = invocationOf(words);
-    const runnerWord = RUNNERS[programName2(words[0] ?? "")];
+    const runnerWord = RUNNERS[programName(words[0] ?? "")];
     if (invocation === undefined) {
       if (runnerWord !== undefined)
         moved ??= runnerWord.moved;
@@ -32564,7 +32595,7 @@ var SU_RUNNER = {
 };
 function runnerOf2(program, before) {
   for (const word of [program, ...before]) {
-    const name = programName2(word);
+    const name = programName(word);
     const spec = RUNNERS[name];
     if (spec !== undefined)
       return { feeds: spec.feeds, name, via: spec.via };
@@ -32572,7 +32603,7 @@ function runnerOf2(program, before) {
   return null;
 }
 function runnerCalls(words, runner, aliases, depth, dialect) {
-  const at = words.findIndex((word) => programName2(word) === "gh");
+  const at = words.findIndex((word) => programName(word) === "gh");
   if (at !== -1) {
     const ghWords = withoutRedirections(words.slice(at + 1));
     return refuseRunner(dispatch(ghWords, null, aliases, depth), runner);
@@ -34277,10 +34308,10 @@ function namesKit(text) {
   return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
 }
 function isKitWord(word) {
-  return programName2(word) === COMMAND || KIT_BUNDLE.test(word);
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
 }
 function kitArguments(program, args) {
-  if (programName2(program) === COMMAND)
+  if (programName(program) === COMMAND)
     return [...args];
   if (INERT.has(program))
     return null;
@@ -35577,16 +35608,16 @@ var RESETTERS = new Set([
 var ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");
 var ENV_VALUED_LONG = ["--chdir", "--split-string"];
 function prefixDrop(prefix, program) {
-  if (program === "-" && programName2(prefix.at(-1) ?? "") === "env")
+  if (program === "-" && programName(prefix.at(-1) ?? "") === "env")
     return CLEARED;
   if (prefix.some((word) => ASSIGNS_CLAUDECODE.test(word)))
     return OVERWRITTEN;
-  if (prefix.some((word) => RESETTERS.has(programName2(word))))
+  if (prefix.some((word) => RESETTERS.has(programName(word))))
     return RESET;
   if (prefix.some((word, at) => isFreshEnvironment(prefix[at - 1] ?? "", word)))
     return RESET;
   for (let at = 0;at < prefix.length; at++) {
-    if (programName2(prefix[at] ?? "") !== "env")
+    if (programName(prefix[at] ?? "") !== "env")
       continue;
     for (let index = at + 1;index < prefix.length; index++) {
       const word = prefix[index] ?? "";
@@ -35624,7 +35655,7 @@ function prefixDrop(prefix, program) {
   return null;
 }
 function isFreshEnvironment(before, parameter) {
-  if (programName2(before) !== "start-process")
+  if (programName(before) !== "start-process")
     return false;
   const given = /^-([a-z]+)$/i.exec(parameter)?.[1]?.toLowerCase() ?? "";
   return given !== "" && "usenewenvironment".startsWith(given);

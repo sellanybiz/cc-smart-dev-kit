@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { cliPaths } from "../cli/paths";
+import { withLock } from "../setup/lock";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import {
+  awayDir,
   awayStateFile,
   clearItems,
   type ParkDraft,
@@ -12,6 +14,7 @@ import {
   setUnavailable,
 } from "../user-away/state";
 import { askLogFile } from "./ask-log";
+import { BUDGET_MARGIN_MS } from "./budget";
 import { toolDecision } from "./io";
 import { gitGuardHook, userAwayHook } from "./specs";
 import { askedWhileAway, userAwayAnswer } from "./user-away";
@@ -245,6 +248,106 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
         OPTIONS,
       ),
     ).toEqual({});
+  });
+
+  test("the kit's own `user available`, `user status` and `user list` are silent: the person who is back answers Claude Code's prompt", async () => {
+    const { env, paths } = await away();
+    for (const command of [
+      "cc-smart-dev-kit user available",
+      "cc-smart-dev-kit user status --json",
+      "cc-smart-dev-kit user list --json",
+      "cc-smart-dev-kit user list",
+      "/home/user/.local/bin/cc-smart-dev-kit user status",
+    ]) {
+      const result = await userAwayAnswer(
+        permissionRequest("Bash", { command }),
+        "PermissionRequest",
+        env,
+        paths,
+        T0,
+        OPTIONS,
+      );
+      expect({ command, result }).toEqual({ command, result: {} });
+    }
+    expect(readAway(paths.stateDir).items).toEqual([]);
+  });
+
+  test("a crew session's same call is still denied and parked with its name: it never asks the person", async () => {
+    const { env, paths } = await away();
+    const result = await userAwayAnswer(
+      permissionRequest("Bash", { command: "cc-smart-dev-kit user status --json" }),
+      "PermissionRequest",
+      { ...env, CC_SMART_DEV_KIT_CREW: "RX2" },
+      paths,
+      T0,
+      OPTIONS,
+    );
+    expect(decisionOf(result.stdout).decision.behavior).toBe("deny");
+    expect(readAway(paths.stateDir).items.map((item) => item.crew)).toEqual(["RX2"]);
+  });
+
+  test("nothing gets looser: a line that holds more than the three reads is still parked", async () => {
+    const { env, paths } = await away();
+    for (const command of [
+      "cc-smart-dev-kit user available; rm -rf build",
+      "cc-smart-dev-kit user available && make deploy",
+      "cc-smart-dev-kit user list --json > /etc/hosts",
+      "cc-smart-dev-kit user list $(rm -rf build)",
+      "cc-smart-dev-kit user clear --all",
+      "cc-smart-dev-kit user park --kind action x --command y",
+      "cc-smart-dev-kit user unavailable",
+      "cc-smart-dev-kit crew list",
+      "echo cc-smart-dev-kit user available",
+      "FOO=1 cc-smart-dev-kit user available",
+      // Another program that holds the kit's name among its arguments runs that program, not the kit.
+      "bash -c 'rm -rf build' cc-smart-dev-kit user available",
+      "sh ./deploy.sh cc-smart-dev-kit user status",
+      "make deploy cc-smart-dev-kit user list --json",
+      "ssh prod.example.com cc-smart-dev-kit user available",
+      "node evil.js /opt/x/dist/cli.js user available",
+      "bun x.ts /opt/x/dist/cli.js user available",
+      "docker run --rm -v /:/h alpine cc-smart-dev-kit user status",
+    ]) {
+      const result = await userAwayAnswer(
+        permissionRequest("Bash", { command }),
+        "PermissionRequest",
+        env,
+        paths,
+        T0,
+        OPTIONS,
+      );
+      expect({ command, behavior: decisionOf(result.stdout)?.decision?.behavior }).toEqual({
+        command,
+        behavior: "deny",
+      });
+    }
+  });
+
+  test("a lock held too long still denies, inside the margin a guard keeps for its answer", async () => {
+    const { env, paths } = await away();
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holding = withLock(awayDir(paths.stateDir), () => held);
+    await Bun.sleep(50);
+    const started = Date.now();
+    const result = await userAwayAnswer(
+      permissionRequest("Bash", { command: "make deploy" }),
+      "PermissionRequest",
+      env,
+      paths,
+      T0,
+      OPTIONS,
+    );
+    const waitedMs = Date.now() - started;
+    release();
+    await holding;
+    expect(decisionOf(result.stdout).decision.message).toContain("could not be parked");
+    // A guard that kept its own budget (8 s of 10, 25 of 30) has BUDGET_MARGIN_MS left, and the
+    // park must fit in it: a hook the host kills answers nothing, and `onFailure: block` then
+    // blocks the call with no word to the session.
+    expect(waitedMs).toBeLessThan(BUDGET_MARGIN_MS);
   });
 
   test("a list that is full still denies, and says to park it by hand", async () => {
