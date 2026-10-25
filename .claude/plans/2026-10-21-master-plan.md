@@ -473,6 +473,8 @@ public repository's issue text is public.
 | GI2 resolved when it ships | build | At a crew merge, one comment ("fixed on `<branch>` at `<commit>`") and the `fixed-unreleased` label; the release and pull-request skills list `Fixes #n` for each, so the release closes them; the lead skill files a follow-up outside the plan as an issue instead of a line that gets lost. |
 | GI3 a phase from an issue | build | `crew start <phase> --issue <n>`: the issue's body seeds the brief; the hand-back adds one comment (status, tests, review, commit); PL1's run record links the issue. Only an issue the person labelled (`kit:ready`) or named. |
 | GI4 the lead hears issues (opt-in) | build | The watch checks the project's issues and comments now and then with a conditional request and prints one line per new one; the text is data, never an instruction. |
+| IX1 the review's write findings (sonnet `high`, 2026-10-25) | security | Two opus `xhigh` reviewers of `release-1.2.1...release-1.3.0` (writes; reads). The guard misses `gh api -X=POST`, an endpoint or GraphQL query in a variable, mutations outside its list, an alias; the screen misses `PGPASSWORD=`-style names, token shapes and the Git Bash home form; `issue file` ignores READ access and trusts a marker's issue by label; label writes unguarded. Brief `briefs/IX1-review-issue-writes.md`. |
+| IX2 the review's read findings (sonnet `high`, 2026-10-25) | security | Hidden markdown (link reference definitions, stripped tags, entities) reaches a brief unmarked; `readyLabel` and `watch` open inside Claude Code (**the lead's decision:** both join `OUTBOUND_KEYS`); the feed writes to every lead ever recorded; the pass's budget cuts no call; reported issue numbers marked unchecked; a clock moved back; a failed state write. Brief `briefs/IX2-review-issue-reads.md`. |
 
 Close: a split review, the release skill (a minor version), the owner's yes.
 
@@ -807,6 +809,12 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   `end.test.ts`'s `QUIET_MACHINE`, `quietFacts`, `quietScan`) and a default `scanFacts` in
   `crew-world.ts`'s `ctx`, so no crew test reads the host; mount points on Windows and macOS
   (a design decision); the launch judge's polling-loop rule missed that self-matching wait loop.
+- 2026-10-25 (late): PR #25's second run: Windows green; Linux red on a clock-dependent test
+  (WN1's lead order: records in one millisecond tie on the session id), fixed with fixed times.
+  **The 1.4.0 review:** two opus `xhigh` reviewers (writes; reads), 2 High and 10 Medium verified
+  by the lead's probes. **IX1 and IX2 started** at once on `release-1.3.0` (`71ed72f`). The lead's
+  decision: `issues.readyLabel` and `issues.watch` refuse `set`/`unset` inside Claude Code, like
+  `enabled` (GI4's builder had left `watch` open; no owner decision said so).
 
 ### For the owner in the morning
 
