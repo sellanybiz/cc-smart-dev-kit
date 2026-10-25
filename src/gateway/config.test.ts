@@ -11,6 +11,7 @@ import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  aliasesAtClaudeSlots,
   BREAKER_HOLD_CEILING_MS,
   BREAKER_HOLD_NON_STREAMING_MS,
   breakerHoldMs,
@@ -101,6 +102,31 @@ describe("D64: effort pins", () => {
     );
     saveConfig(file, cfg);
     expect(loadConfigFile(file)).toEqual(cfg);
+  });
+});
+
+describe("aliasesAtClaudeSlots (RV3: what a 1.1.x router would refuse)", () => {
+  it("lists the aliases whose slot is not in use, sorted by alias", () => {
+    const config = parsed(
+      raw({
+        aliases: { "old-worker": WORKER, "a-judge": JUDGE, "old-scout": SCOUT },
+        slots: { [SCOUT]: ["omniroute:m1"] },
+      }),
+    );
+    expect(aliasesAtClaudeSlots(config)).toEqual([
+      ["a-judge", JUDGE],
+      ["old-worker", WORKER],
+    ]);
+  });
+
+  it("lists nothing when every aliased slot is in use, or the alias names a model", () => {
+    const config = parsed(
+      raw({
+        aliases: { "old-scout": SCOUT, "to-model": "omniroute:m1" },
+        slots: { [SCOUT]: ["omniroute:m1"] },
+      }),
+    );
+    expect(aliasesAtClaudeSlots(config)).toEqual([]);
   });
 });
 

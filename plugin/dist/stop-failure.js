@@ -7623,7 +7623,8 @@ var waitingForSchema = discriminatedUnion("kind", [
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text
+    since: text,
+    slot: text.exactOptional()
   })
 ]);
 var crewFields = object({
@@ -7751,14 +7752,6 @@ var storedSchema = looseObject({
   readAt: string2()
 });
 
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-// src/worktrees/machine-facts.ts
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
-
 // src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
@@ -7809,6 +7802,14 @@ function urlMeaning(url, routerUrl) {
   }
   return { profile: null, state: "other" };
 }
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+// src/worktrees/machine-facts.ts
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/models/launch-policy.ts
 var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];

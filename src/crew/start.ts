@@ -42,7 +42,7 @@ import { basename, join, resolve } from "node:path";
 import { DEPENDENCIES } from "../build-info";
 import { COMMAND, MARKETPLACE } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
-import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
+import { judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
 import type { McpContext } from "../mcp/servers";
 import { readTavilyKey } from "../mcp/tavily";
@@ -128,7 +128,7 @@ import {
   writeJsonFile,
   writeStoreFile,
 } from "./store";
-import { usageFacts, usageUnreadLine } from "./usage-guard";
+import { crewGatewayOf, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
@@ -215,8 +215,10 @@ export function chooseLaunch(
   kind: CrewKind,
   override: { effort: null | string; model: null | string },
   ctx: Pick<CrewContext, "env" | "paths">,
+  /** The project the session starts in: its gateway is the project's own (`crewGatewayOf`). */
+  folder: string,
 ): Chosen | { refusal: string } {
-  const gateway = gatewayFactsOf(ctx.paths);
+  const gateway = crewGatewayOf(ctx.paths, folder);
   const own = crewLaunch(kind, gateway, ctx.env);
   const model = override.model ?? own.model;
   const real = override.model === null ? own.real : resolveLaunchModel(model, gateway, ctx.env);
@@ -439,7 +441,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     return await planContinuation(args, ctx, caller, lead, claude);
   }
   const briefGiven = await readBrief(args, ctx);
-  const chosen = chooseLaunch(args.kind, args, ctx);
+  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
@@ -534,7 +536,12 @@ async function planContinuation(
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
-  const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
+  const chosen = chooseLaunch(
+    old.kind,
+    { effort: old.effort, model: old.model.named },
+    ctx,
+    caller.repo,
+  );
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -1133,7 +1140,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const crew = caller.resolved.crew;
   // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
   // nothing about who takes which place.
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
   let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -1294,7 +1301,7 @@ export async function startQueued(
 ): Promise<void> {
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);

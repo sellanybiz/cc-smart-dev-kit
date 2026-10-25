@@ -9019,6 +9019,11 @@ function effortPin(config, slot, target) {
   const own = pins[slot];
   return own !== undefined && Object.hasOwn(own, target) ? own[target] : undefined;
 }
+function profileNamesSlot(config, profile, slot) {
+  const named = config.profiles !== undefined && Object.hasOwn(config.profiles, profile);
+  const slots = named ? config.profiles?.[profile]?.slots : undefined;
+  return slots !== undefined && Object.hasOwn(slots, slot);
+}
 function profileSlotChain(config, profile, slot) {
   const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
   if (own === "claude")
@@ -9095,6 +9100,9 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+function aliasesAtClaudeSlots(config) {
+  return Object.entries(config.aliases).filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 function slotMode(config, slot) {
   return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
@@ -9776,6 +9784,29 @@ function chainToCheck(config, slotArg, text) {
     return [];
   }
   return splitChain(word);
+}
+function untestedWorkerTargets(config) {
+  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text);
+  });
+}
+var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+function standInTradeOff(config) {
+  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
+}
+function judgeSwitchWords(now) {
+  return now ? "The worker's tested targets answer when Claude is limited or down." : "Only Claude judges; when it is limited or down, its error goes back to Claude Code.";
+}
+function judgeDefaultWords(config) {
+  if (!fallbackOn(config, JUDGE_SLOT))
+    return "Claude judges every check, alone (fallback off)";
+  const standIns = workerJudgeTargets(config).map(formatTarget);
+  const untested = untestedWorkerTargets(config);
+  if (standIns.length === 0) {
+    return untested.length > 0 ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)` : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
+  }
+  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
 }
 
 // src/machine/claude-mem.ts
@@ -15133,7 +15164,8 @@ var waitingForSchema = discriminatedUnion("kind", [
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text
+    since: text,
+    slot: text.exactOptional()
   })
 ]);
 var crewFields = object({
@@ -15716,14 +15748,288 @@ function readUsageWindow(paths, nowMs) {
   return Number.isFinite(readAt) && nowMs - readAt > WINDOW_SPAN_MS ? null : stored.fiveHour;
 }
 
+// src/gateway/project-state.ts
+import { existsSync as existsSync23, realpathSync as realpathSync4, statSync as statSync12 } from "fs";
+import { join as join24, resolve as resolve2 } from "path";
+function trackedArgv() {
+  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
+}
+function trackedFromExit(code) {
+  return code === 0 ? true : code === 1 ? false : null;
+}
+function personalTracked(mainCheckout) {
+  try {
+    const result = Bun.spawnSync(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    return trackedFromExit(result.exitCode);
+  } catch {
+    return null;
+  }
+}
+async function personalTrackedAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(trackedArgv(), {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "ignore",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const code = await child.exited;
+    return child.signalCode === null ? trackedFromExit(code) : null;
+  } catch {
+    return null;
+  }
+}
+var PERSONAL_FILE = "settings.local.json";
+var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
+function personalFileOf(checkout) {
+  return join24(checkout.mainCheckout, ".claude", PERSONAL_FILE);
+}
+function ownPersonalFileOf(folder) {
+  return join24(folder, ".claude", PERSONAL_FILE);
+}
+function linkedWorktreePaths(listing, mainCheckout) {
+  const main = realFolder(mainCheckout);
+  const paths = [];
+  for (const block of listing.split(`
+
+`)) {
+    const lines = block.split(`
+`);
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare") || realFolder(path) === main)
+      continue;
+    paths.push(path);
+  }
+  return paths;
+}
+function ownFilesOf(paths) {
+  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync23(file)).map((file) => settingsFileState(file, "personal"));
+}
+function linkedWorktreeFilesOf(mainCheckout) {
+  try {
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    return result.exitCode === 0 ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+async function linkedWorktreeFilesOfAsync(mainCheckout) {
+  try {
+    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
+    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return code === 0 && child.signalCode === null ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout)) : [];
+  } catch {
+    return [];
+  }
+}
+function gatewayCopiesAmong(files) {
+  return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
+}
+function teamFileOf(folder) {
+  return join24(folder, ".claude", "settings.json");
+}
+function excludeFileOf(checkout) {
+  return join24(checkout.commonDir, "info", "exclude");
+}
+function profileUrlOf(routerUrl, name) {
+  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
+}
+function urlMeaning(url, routerUrl) {
+  if (url === null)
+    return { profile: null, state: "default" };
+  if (!baseUrlPointsAtGateway(url))
+    return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
+  if (clean === routerUrl)
+    return { profile: null, state: "on" };
+  const prefix = profileUrlOf(routerUrl, "");
+  if (clean.startsWith(prefix)) {
+    const name = clean.slice(prefix.length);
+    if (isProfileName(name))
+      return { profile: name, state: "on" };
+  }
+  return { profile: null, state: "other" };
+}
+function settingsFileState(path, kind) {
+  if (!existsSync23(path)) {
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: null,
+      subagentOverrides: [],
+      url: null
+    };
+  }
+  try {
+    const facts = readGatewaySettings(path);
+    return {
+      kind,
+      loginOverrides: facts.loginOverrides,
+      modelKeys: facts.modelKeys,
+      path,
+      problem: facts.baseUrlProblem,
+      subagentOverrides: facts.subagentOverrides,
+      url: facts.baseUrl
+    };
+  } catch (error) {
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: messageOf(error),
+      subagentOverrides: [],
+      url: null
+    };
+  }
+}
+function readGatewayConfig(path) {
+  if (!existsSync23(path))
+    return { config: null, problem: null };
+  try {
+    return { config: loadConfigFile(path), problem: null };
+  } catch (error) {
+    return { config: null, problem: messageOf(error) };
+  }
+}
+function decide2(files, routerUrl) {
+  for (const file of files) {
+    if (file.problem !== null) {
+      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
+    }
+    if (file.url !== null) {
+      return {
+        ...urlMeaning(file.url, routerUrl),
+        path: file.path,
+        source: file.kind,
+        url: file.url
+      };
+    }
+  }
+  return { path: null, profile: null, source: "none", state: "default", url: null };
+}
+function projectGatewayState(folder, options) {
+  const asked = resolve2(folder);
+  let found;
+  try {
+    const located = locateCheckout(asked);
+    found = checkoutFound(located, located?.mainCheckout ? personalTracked(located.mainCheckout) : null);
+  } catch (error) {
+    found = { checkout: null, checkoutProblem: messageOf(error) };
+  }
+  return stateFrom(asked, options, found, found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout));
+}
+async function projectGatewayStateAsync(folder, options) {
+  const asked = resolve2(folder);
+  let found;
+  try {
+    const located = await locateCheckoutAsync(asked);
+    found = checkoutFound(located, located?.mainCheckout ? await personalTrackedAsync(located.mainCheckout) : null);
+  } catch (error) {
+    found = { checkout: null, checkoutProblem: messageOf(error) };
+  }
+  return stateFrom(asked, options, found, found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout));
+}
+function checkoutFound(located, tracked) {
+  if (located === null || located.mainCheckout === null) {
+    return { checkout: null, checkoutProblem: null };
+  }
+  return {
+    checkout: {
+      commonDir: located.commonDir,
+      isWorktree: located.isWorktree,
+      mainCheckout: located.mainCheckout,
+      personalTracked: tracked,
+      root: located.root
+    },
+    checkoutProblem: null
+  };
+}
+function stateFrom(asked, options, { checkout, checkoutProblem }, linkedFiles) {
+  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
+  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
+  const project = [];
+  if (checkout !== null)
+    project.push(settingsFileState(personalFileOf(checkout), "personal"));
+  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
+    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
+  }
+  project.push(settingsFileState(teamFileOf(asked), "team"));
+  const files = [...project, settingsFileState(options.settingsFile, "machine")];
+  return {
+    checkout,
+    checkoutProblem,
+    choice: decide2(project, routerUrl),
+    configProblem,
+    effective: decide2(files, routerUrl),
+    files,
+    folder: realFolder(asked),
+    profiles: config === null ? [] : profileNames(config),
+    routerUrl,
+    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path))
+  };
+}
+function decisionWords(decision) {
+  const profile = decision.profile === null ? "" : `  (profile ${decision.profile})`;
+  switch (decision.state) {
+    case "on":
+      return `on \u2192 ${decision.url ?? ""}${profile}`;
+    case "off":
+      return `off \u2192 ${DEFAULT_ANTHROPIC_BASE_URL}`;
+    case "other":
+      return `another address: ${shownValue(decision.url ?? "")}`;
+    case "unknown":
+      return "unknown: a settings file in the way cannot be read";
+    default:
+      return "default: no file of this project sets a gateway address, so the machine's settings decide";
+  }
+}
+function realFolder(path) {
+  try {
+    return realpathSync4(path);
+  } catch {
+    return path;
+  }
+}
+function isFolder(path) {
+  try {
+    return statSync12(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // src/crew/session.ts
 import { readFileSync as readFileSync28 } from "fs";
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync23, readdirSync as readdirSync10, readFileSync as readFileSync26, statSync as statSync12 } from "fs";
+import { existsSync as existsSync24, readdirSync as readdirSync10, readFileSync as readFileSync26, statSync as statSync13 } from "fs";
 import { uptime } from "os";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -15748,8 +16054,8 @@ function isRunning2(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join24(claudeConfigDir, "sessions");
-  if (!existsSync23(dir))
+  const dir = join25(claudeConfigDir, "sessions");
+  if (!existsSync24(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -15759,9 +16065,9 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync12(join24(dir, file)).mtimeMs < bootedAt)
+      if (statSync13(join25(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync26(join24(dir, file), "utf8");
+      text = readFileSync26(join25(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -15827,11 +16133,11 @@ import { readdirSync as readdirSync11, readlinkSync as readlinkSync4 } from "fs"
 import { platform } from "os";
 
 // src/hooks/git.ts
-import { realpathSync as realpathSync4 } from "fs";
-import { basename as basename4, dirname as dirname7, join as join25, resolve as resolve3 } from "path";
+import { realpathSync as realpathSync5 } from "fs";
+import { basename as basename4, dirname as dirname7, join as join26, resolve as resolve4 } from "path";
 
 // src/path-compare.ts
-import { resolve as resolve2 } from "path";
+import { resolve as resolve3 } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -15839,7 +16145,7 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   return child === parent || child.startsWith(`${parent}/`);
 }
 function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  const forward = resolve3(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
   return ignoreCase ? forward.toLowerCase() : forward;
 }
 function samePath2(a, b, ignoreCase = IGNORE_CASE) {
@@ -15900,14 +16206,14 @@ async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
 }
 function realPath(path) {
   const rest = [];
-  let at = resolve3(path);
+  let at = resolve4(path);
   for (;; ) {
     try {
-      return join25(realpathSync4(at), ...rest);
+      return join26(realpathSync5(at), ...rest);
     } catch {
       const parent = dirname7(at);
       if (parent === at)
-        return resolve3(path);
+        return resolve4(path);
       rest.unshift(basename4(at));
       at = parent;
     }
@@ -16194,7 +16500,7 @@ function crewIdOf(env) {
 }
 var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 function sessionRecordFile(claudeConfigDir, pid) {
-  return join26(claudeConfigDir, "sessions", `${pid}.json`);
+  return join27(claudeConfigDir, "sessions", `${pid}.json`);
 }
 
 class SessionRecordError extends Error {
@@ -16252,280 +16558,6 @@ function realProcessFacts(platform) {
     commandLineOf: (pid) => platform === "win32" ? null : program(pid)?.path ?? null,
     parentOf: (pid) => program(pid)?.parentPid ?? null
   };
-}
-
-// src/gateway/project-state.ts
-import { existsSync as existsSync24, realpathSync as realpathSync5, statSync as statSync13 } from "fs";
-import { join as join27, resolve as resolve4 } from "path";
-function trackedArgv() {
-  return ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`];
-}
-function trackedFromExit(code) {
-  return code === 0 ? true : code === 1 ? false : null;
-}
-function personalTracked(mainCheckout) {
-  try {
-    const result = Bun.spawnSync(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return trackedFromExit(result.exitCode);
-  } catch {
-    return null;
-  }
-}
-async function personalTrackedAsync(mainCheckout) {
-  try {
-    const child = Bun.spawn(trackedArgv(), {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "ignore",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    const code = await child.exited;
-    return child.signalCode === null ? trackedFromExit(code) : null;
-  } catch {
-    return null;
-  }
-}
-var PERSONAL_FILE = "settings.local.json";
-var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
-function personalFileOf(checkout) {
-  return join27(checkout.mainCheckout, ".claude", PERSONAL_FILE);
-}
-function ownPersonalFileOf(folder) {
-  return join27(folder, ".claude", PERSONAL_FILE);
-}
-function linkedWorktreePaths(listing, mainCheckout) {
-  const main = realFolder(mainCheckout);
-  const paths = [];
-  for (const block of listing.split(`
-
-`)) {
-    const lines = block.split(`
-`);
-    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === undefined || lines.includes("bare") || realFolder(path) === main)
-      continue;
-    paths.push(path);
-  }
-  return paths;
-}
-function ownFilesOf(paths) {
-  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync24(file)).map((file) => settingsFileState(file, "personal"));
-}
-function linkedWorktreeFilesOf(mainCheckout) {
-  try {
-    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return result.exitCode === 0 ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout)) : [];
-  } catch {
-    return [];
-  }
-}
-async function linkedWorktreeFilesOfAsync(mainCheckout) {
-  try {
-    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    return code === 0 && child.signalCode === null ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout)) : [];
-  } catch {
-    return [];
-  }
-}
-function gatewayCopiesAmong(files) {
-  return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
-}
-function teamFileOf(folder) {
-  return join27(folder, ".claude", "settings.json");
-}
-function excludeFileOf(checkout) {
-  return join27(checkout.commonDir, "info", "exclude");
-}
-function profileUrlOf(routerUrl, name) {
-  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
-}
-function urlMeaning(url, routerUrl) {
-  if (url === null)
-    return { profile: null, state: "default" };
-  if (!baseUrlPointsAtGateway(url))
-    return { profile: null, state: "off" };
-  const clean = normalizedBaseUrl(url);
-  if (clean === routerUrl)
-    return { profile: null, state: "on" };
-  const prefix = profileUrlOf(routerUrl, "");
-  if (clean.startsWith(prefix)) {
-    const name = clean.slice(prefix.length);
-    if (isProfileName(name))
-      return { profile: name, state: "on" };
-  }
-  return { profile: null, state: "other" };
-}
-function settingsFileState(path, kind) {
-  if (!existsSync24(path)) {
-    return {
-      kind,
-      loginOverrides: [],
-      modelKeys: [],
-      path,
-      problem: null,
-      subagentOverrides: [],
-      url: null
-    };
-  }
-  try {
-    const facts = readGatewaySettings(path);
-    return {
-      kind,
-      loginOverrides: facts.loginOverrides,
-      modelKeys: facts.modelKeys,
-      path,
-      problem: facts.baseUrlProblem,
-      subagentOverrides: facts.subagentOverrides,
-      url: facts.baseUrl
-    };
-  } catch (error) {
-    return {
-      kind,
-      loginOverrides: [],
-      modelKeys: [],
-      path,
-      problem: messageOf(error),
-      subagentOverrides: [],
-      url: null
-    };
-  }
-}
-function readGatewayConfig(path) {
-  if (!existsSync24(path))
-    return { config: null, problem: null };
-  try {
-    return { config: loadConfigFile(path), problem: null };
-  } catch (error) {
-    return { config: null, problem: messageOf(error) };
-  }
-}
-function decide2(files, routerUrl) {
-  for (const file of files) {
-    if (file.problem !== null) {
-      return { path: file.path, profile: null, source: file.kind, state: "unknown", url: null };
-    }
-    if (file.url !== null) {
-      return {
-        ...urlMeaning(file.url, routerUrl),
-        path: file.path,
-        source: file.kind,
-        url: file.url
-      };
-    }
-  }
-  return { path: null, profile: null, source: "none", state: "default", url: null };
-}
-function projectGatewayState(folder, options) {
-  const asked = resolve4(folder);
-  let found;
-  try {
-    const located = locateCheckout(asked);
-    found = checkoutFound(located, located?.mainCheckout ? personalTracked(located.mainCheckout) : null);
-  } catch (error) {
-    found = { checkout: null, checkoutProblem: messageOf(error) };
-  }
-  return stateFrom(asked, options, found, found.checkout === null ? [] : linkedWorktreeFilesOf(found.checkout.mainCheckout));
-}
-async function projectGatewayStateAsync(folder, options) {
-  const asked = resolve4(folder);
-  let found;
-  try {
-    const located = await locateCheckoutAsync(asked);
-    found = checkoutFound(located, located?.mainCheckout ? await personalTrackedAsync(located.mainCheckout) : null);
-  } catch (error) {
-    found = { checkout: null, checkoutProblem: messageOf(error) };
-  }
-  return stateFrom(asked, options, found, found.checkout === null ? [] : await linkedWorktreeFilesOfAsync(found.checkout.mainCheckout));
-}
-function checkoutFound(located, tracked) {
-  if (located === null || located.mainCheckout === null) {
-    return { checkout: null, checkoutProblem: null };
-  }
-  return {
-    checkout: {
-      commonDir: located.commonDir,
-      isWorktree: located.isWorktree,
-      mainCheckout: located.mainCheckout,
-      personalTracked: tracked,
-      root: located.root
-    },
-    checkoutProblem: null
-  };
-}
-function stateFrom(asked, options, { checkout, checkoutProblem }, linkedFiles) {
-  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
-  const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
-  const project = [];
-  if (checkout !== null)
-    project.push(settingsFileState(personalFileOf(checkout), "personal"));
-  if (checkout === null || realFolder(asked) !== realFolder(checkout.mainCheckout)) {
-    project.push(settingsFileState(ownPersonalFileOf(asked), "personal"));
-  }
-  project.push(settingsFileState(teamFileOf(asked), "team"));
-  const files = [...project, settingsFileState(options.settingsFile, "machine")];
-  return {
-    checkout,
-    checkoutProblem,
-    choice: decide2(project, routerUrl),
-    configProblem,
-    effective: decide2(files, routerUrl),
-    files,
-    folder: realFolder(asked),
-    profiles: config === null ? [] : profileNames(config),
-    routerUrl,
-    worktreeFiles: linkedFiles.filter((one) => !files.some((file) => file.path === one.path))
-  };
-}
-function decisionWords(decision) {
-  const profile = decision.profile === null ? "" : `  (profile ${decision.profile})`;
-  switch (decision.state) {
-    case "on":
-      return `on \u2192 ${decision.url ?? ""}${profile}`;
-    case "off":
-      return `off \u2192 ${DEFAULT_ANTHROPIC_BASE_URL}`;
-    case "other":
-      return `another address: ${shownValue(decision.url ?? "")}`;
-    case "unknown":
-      return "unknown: a settings file in the way cannot be read";
-    default:
-      return "default: no file of this project sets a gateway address, so the machine's settings decide";
-  }
-}
-function realFolder(path) {
-  try {
-    return realpathSync5(path);
-  } catch {
-    return path;
-  }
-}
-function isFolder(path) {
-  try {
-    return statSync13(path).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // src/hooks/agent-guard-workflows.ts
@@ -17951,16 +17983,6 @@ function sessionModelOf(input, env) {
   const answered = transcript === null ? null : lastClaudeModel(transcript);
   return answered ?? stringField(env.ANTHROPIC_MODEL);
 }
-function gatewayOnOf(paths) {
-  try {
-    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
-  } catch {
-    return false;
-  }
-}
-function gatewayFactsOf(paths) {
-  return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
-}
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
   const url = raw === undefined || raw === "" ? null : raw;
@@ -18185,9 +18207,19 @@ function opusFallbackOf(facts) {
     return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
-function usageFacts(paths, nowMs) {
+function crewGatewayOf(paths, folder) {
+  const { effective } = projectGatewayState(folder, {
+    configPath: paths.gatewayConfigFile,
+    settingsFile: paths.settingsFile
+  });
+  const { config, gatewayOn } = sessionGatewayOf(paths, {
+    ANTHROPIC_BASE_URL: effective.url ?? undefined
+  });
+  return { config, gatewayOn };
+}
+function usageFacts(paths, nowMs, folder) {
   return {
-    opusFallback: opusFallbackOf(gatewayFactsOf(paths)),
+    opusFallback: opusFallbackOf(crewGatewayOf(paths, folder)),
     percent: readUsageWindow(paths, nowMs)?.percent ?? null
   };
 }
@@ -18314,7 +18346,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs);
+    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
   } catch {
     return null;
   }
@@ -18462,7 +18494,7 @@ async function capsOf(ctx, checkout) {
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now());
+    const usage = usageFacts(ctx.paths, ctx.now(), checkout === null ? ctx.cwd : checkout.mainCheckout ?? checkout.root);
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,
@@ -19238,20 +19270,27 @@ function earliestRestSeconds(failures, nowMs) {
 function describeFailures(failures, nowMs) {
   return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
 }
-function breakerChangeHint(slot, profile = null) {
-  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
+function breakerChangeCommand(slot, profile) {
+  const short = slotShortName(slot);
+  return profile === null ? `gateway slot ${short} <targets>` : `gateway profile ${profile} slot ${short} <targets>`;
 }
-function breakerMessage(slot, sinceMs, failures, nowMs, profile = null) {
+function breakerChangeHint(slot, profile = null, inherited = false) {
+  const own = `${COMMAND} ${breakerChangeCommand(slot, profile)}`;
+  if (profile === null || !inherited)
+    return own;
+  return `${own} (a chain of its own for this profile), or ${COMMAND} ${breakerChangeCommand(slot, null)} (the machine's chain, which this profile uses)`;
+}
+function breakerMessage(slot, sinceMs, failures, nowMs, profile = null, inherited = false) {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
   const where = profile === null ? slot : `${slot} in profile ${profile}`;
-  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile)}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile, inherited)}`;
 }
 function breakerAnswer(answer) {
   const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
   return Response.json({
     error: {
-      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null),
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null, answer.inherited ?? false),
       type: "rate_limit_error"
     },
     type: "error"
@@ -20131,7 +20170,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
-var ROUTER_FEATURES = ["profiles"];
+var ROUTER_FEATURES = ["profiles", "claude-slot-aliases"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -21446,6 +21485,7 @@ function createRouter(deps) {
     let targets = targets0;
     let outcome = first;
     let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
+    const inherited = () => profile !== null && !profileNamesSlot(deps.getConfig(), profile, slot);
     let counted = null;
     const stopping = () => deps.shutdown?.aborted === true;
     const answer = (response) => ({
@@ -21462,7 +21502,7 @@ function createRouter(deps) {
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
         return;
       open.reminderAt = nowMs;
-      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`);
+      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile, inherited())}`);
     };
     try {
       for (;; ) {
@@ -21472,6 +21512,7 @@ function createRouter(deps) {
         const endsAt = startMs + holdLimitMs(config, body);
         const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
           failures,
+          inherited: inherited(),
           nowMs,
           profile,
           sinceMs: open.since,
@@ -22071,9 +22112,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
+var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -22084,7 +22126,7 @@ function isJsonObject10(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
+async function routerHealth(port, fetchImpl = routerFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -22105,6 +22147,9 @@ async function routerFeature(port, feature, fetchImpl) {
 }
 function routerLacksProfiles(port) {
   return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
+function routerLacksClaudeSlotAliases(port, alias) {
+  return `the router running on 127.0.0.1:${port} is an older copy that refuses an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}), so it would keep its old config and ignore this change`;
 }
 function isConnectionRefused(error) {
   if (typeof error !== "object" || error === null || !("code" in error))
@@ -22192,10 +22237,17 @@ function readWaitFacts(paths, nowMs) {
   };
 }
 function targetsNow(config) {
-  return Object.fromEntries(Object.entries(config.slots).map(([slot, chain]) => [
-    slot,
-    targetsInUse(chain, fallbackOn(config, slot))
-  ]));
+  const inUse = (view, profile) => Object.entries(view.slots).map(([slot, chain]) => [
+    stateKeyFor(slot, profile),
+    targetsInUse(chain, fallbackOn(view, slot))
+  ]);
+  return Object.fromEntries([
+    ...inUse(config, null),
+    ...profileNames(config).flatMap((name) => {
+      const view = profileView(config, name);
+      return view === null ? [] : inUse(view, name);
+    })
+  ]);
 }
 function healthNow(body, nowMs) {
   if (typeof body !== "object" || body === null)
@@ -22280,8 +22332,8 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
-function waitFor(record, facts, nowMs) {
-  const slot = record.model.slot;
+function waitFor(record, facts, nowMs, profile = null) {
+  const slot = record.model.slot === null ? null : stateKeyFor(record.model.slot, profile);
   const breaker = slot === null ? undefined : facts.breakers[slot];
   if (slot !== null && breaker !== undefined) {
     return { kind: "slot", since: iso2(breaker.since), slot };
@@ -22294,7 +22346,7 @@ function waitFor(record, facts, nowMs) {
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
-  return { kind: "unknown", since: iso2(nowMs) };
+  return { kind: "unknown", since: iso2(nowMs), ...slot === null ? {} : { slot } };
 }
 function pauseBackoff(previous, nowMs) {
   if (previous === undefined)
@@ -22312,8 +22364,11 @@ function lastPauseOf(previous, nowMs) {
 function pauseText(waiting, error, nowMs, timeZone) {
   const goesOn = "goes on by itself when it answers";
   switch (waiting.kind) {
-    case "slot":
-      return `${slotShortName(waiting.slot)} slot limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    case "slot": {
+      const { profile, slot } = scopeOfStateKey(waiting.slot);
+      const where = profile === null ? "slot" : `slot in profile ${profile}`;
+      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    }
     case "claude-limit": {
       const reset = waiting.resetsAt === null ? "at its limit, no reset time named" : `at its limit, resets ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
       return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts`;
@@ -22354,7 +22409,8 @@ function waitOver(record, facts, nowMs) {
     }
     default: {
       const limited = [record.model.resolved, record.model.named].some((name) => facts.limits[withoutContextSuffix(name)] !== undefined);
-      return (record.model.slot === null || facts.breakers[record.model.slot] === undefined) && !limited;
+      const key = waiting.slot ?? record.model.slot;
+      return (key === null || facts.breakers[key] === undefined) && !limited;
     }
   }
 }
@@ -23719,8 +23775,8 @@ function oneLine3(text) {
 function uiRefusal() {
   return `UI/UX work runs only on ${uiRuleText()} (D50): pick one of those for a \`ui\` session.`;
 }
-function chooseLaunch(kind, override, ctx) {
-  const gateway = gatewayFactsOf(ctx.paths);
+function chooseLaunch(kind, override, ctx, folder) {
+  const gateway = crewGatewayOf(ctx.paths, folder);
   const own = crewLaunch(kind, gateway, ctx.env);
   const model = override.model ?? own.model;
   const real = override.model === null ? own.real : resolveLaunchModel(model, gateway, ctx.env);
@@ -23842,7 +23898,7 @@ async function plan(args, ctx) {
     return await planContinuation(args, ctx, caller, lead, claude);
   }
   const briefGiven = await readBrief(args, ctx);
-  const chosen = chooseLaunch(args.kind, args, ctx);
+  const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -23902,7 +23958,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
-  const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
+  const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx, caller.repo);
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -24255,7 +24311,7 @@ function phaseLine(record) {
 async function startPlanned(planned, ctx) {
   const { caller, chosen, lead } = planned;
   const crew = caller.resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), caller.repo);
   let decided;
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -24383,7 +24439,7 @@ async function startQueued(record, ctx, resolved) {
     return;
   } };
   const crew = resolved.crew;
-  const usage = usageFacts(ctx.paths, ctx.now());
+  const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
   const sha = await withPlacesLock(ctx.paths.stateDir, async () => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
@@ -27732,7 +27788,11 @@ function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
     was
   };
 }
-function planProfileFallbackChange(current, name, slotArg, value) {
+var PROFILE_SWITCHES = {
+  breaker: { isOn: breakerOn, noChain: "there is no request for the breaker to hold" },
+  fallback: { isOn: fallbackOn, noChain: "there is nothing to fall back to" }
+};
+function planProfileSwitch(field, current, name, slotArg, value) {
   if (!isProfileName(name))
     return { error: PROFILE_NAME_RULE };
   const profile = Object.hasOwn(current.profiles ?? {}, name) ? current.profiles?.[name] : undefined;
@@ -27741,36 +27801,44 @@ function planProfileFallbackChange(current, name, slotArg, value) {
   const key = slotKeyFromArg(slotArg);
   if (key === null)
     return { error: notSlotName(slotArg) };
+  if (field === "breaker" && key === JUDGE_SLOT)
+    return { error: `${key}: ${JUDGE_NEVER_HOLDS}` };
   if (value !== "on" && value !== "off")
     return { error: `say on or off, not "${value}"` };
+  const { isOn, noChain } = PROFILE_SWITCHES[field];
   if (key !== JUDGE_SLOT && profileSlotChain(current, profile, key) === null) {
     return {
-      error: `profile ${name} has no chain for ${key}, so there is nothing to fall back to. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`
+      error: `profile ${name} has no chain for ${key}, so ${noChain}. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`
     };
   }
   const view = profileView(current, name);
   if (view === null)
     return { error: missingProfile(current, name) };
   const now = value === "on";
-  const was = fallbackOn(view, key);
-  const without = withoutSwitch(profile, "fallback", key);
-  const plain = profileView(withProfile(current, name, without), name);
+  const was = isOn(view, key);
+  const plain = profileView(withProfile(current, name, withoutSwitch(profile, field, key)), name);
   if (plain === null)
     return { error: missingProfile(current, name) };
-  const fallback = { ...profile.fallback ?? {} };
-  if (fallbackOn(plain, key) === now)
-    delete fallback[key];
+  const held = { ...profile[field] ?? {} };
+  if (isOn(plain, key) === now)
+    delete held[key];
   else
-    fallback[key] = now;
+    held[key] = now;
   const next = { ...profile };
-  if (Object.keys(fallback).length > 0)
-    next.fallback = fallback;
+  if (Object.keys(held).length > 0)
+    next[field] = held;
   else
-    delete next.fallback;
+    delete next[field];
   const checked = parseConfig(withProfile(current, name, next));
   if ("error" in checked)
     return { error: checked.error };
   return { config: checked.config, key, name, now, was };
+}
+function planProfileFallbackChange(current, name, slotArg, value) {
+  return planProfileSwitch("fallback", current, name, slotArg, value);
+}
+function planProfileBreakerChange(current, name, slotArg, value) {
+  return planProfileSwitch("breaker", current, name, slotArg, value);
 }
 function planProfileRemove(current, name) {
   if (!isProfileName(name))
@@ -27787,7 +27855,24 @@ function planProfileRemove(current, name) {
     slots: Object.keys(profile.slots ?? {}).length
   };
 }
+var SWITCH_WORDS = {
+  breaker: {
+    on: "In this profile, when every target is limited or down the request waits a little and then Claude Code is asked to retry.",
+    off: "In this profile, when every target is limited or down the last answer goes back at once; the router holds no request."
+  },
+  fallback: {
+    on: "In this profile, the next target answers when the one before it fails or rests.",
+    off: "In this profile, only the first target answers; when it fails, its error goes back to Claude Code."
+  }
+};
+function judgeOtherThanClaude(view) {
+  return Object.hasOwn(view.slots, JUDGE_SLOT) || standInTradeOff(view);
+}
 function slotNowWords(plan, current) {
+  if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
+    const view = profileView(plan.config, plan.name);
+    return `Claude: ${view === null ? "Claude judges every check, alone" : judgeDefaultWords(view)}`;
+  }
   if (plan.next === "claude")
     return "Claude (plain Claude in this profile)";
   if (plan.next === null) {
@@ -27811,7 +27896,7 @@ function profileArgs(args) {
     return null;
   if (action === "remove")
     return rest.length === 0 ? { action, name } : null;
-  if (action !== "slot" && action !== "fallback")
+  if (action !== "slot" && action !== "fallback" && action !== "breaker")
     return null;
   const [slot, text] = rest;
   if (slot === undefined || text === undefined || rest.length !== 2)
@@ -27847,16 +27932,26 @@ async function commandProfile(ctx, args, usage) {
     out.verdict("ok", "Done. The router reads the config again within about a second.");
     return 0;
   }
-  if (parsed.action === "fallback") {
+  if (parsed.action === "fallback" || parsed.action === "breaker") {
+    const { action } = parsed;
     const plan = await withLock(ctx.paths.stateDir, () => {
-      const planned = planProfileFallbackChange(loadConfigFile(configPath), name, parsed.slot, parsed.text);
+      const change = action === "fallback" ? planProfileFallbackChange : planProfileBreakerChange;
+      const planned = change(loadConfigFile(configPath), name, parsed.slot, parsed.text);
       if ("error" in planned)
         throw new Error(planned.error);
       saveConfig(configPath, planned.config);
       return planned;
     }, { waitMs: 1e4 });
-    out.line("changed", `${plan.name}: ${plan.key}: fallback ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`);
-    out.say(plan.now ? "In this profile, the next target answers when the one before it fails or rests." : "In this profile, only the first target answers; when it fails, its error goes back to Claude Code.", 2);
+    out.line("changed", `${plan.name}: ${plan.key}: ${action} ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`);
+    const view = plan.key === JUDGE_SLOT ? profileView(plan.config, name) : null;
+    if (view !== null && !Object.hasOwn(view.slots, JUDGE_SLOT)) {
+      out.say(judgeDefaultWords(view), 2);
+      out.say(judgeSwitchWords(plan.now), 2);
+    } else {
+      out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    }
+    if (view !== null && judgeOtherThanClaude(view))
+      out.line("warn", JUDGE_WARNING);
     out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
     return 0;
   }
@@ -27880,6 +27975,15 @@ async function commandProfile(ctx, args, usage) {
   }, { waitMs: 1e4 });
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
+  const judgeView = plan.key === JUDGE_SLOT || plan.key === WORKER_SLOT ? profileView(plan.config, plan.name) : null;
+  if (judgeView !== null && plan.key === JUDGE_SLOT) {
+    if (judgeOtherThanClaude(judgeView))
+      out.line("warn", JUDGE_WARNING);
+  } else if (judgeView !== null && !Object.hasOwn(judgeView.slots, JUDGE_SLOT)) {
+    out.say(`Auto mode's checks in this profile: ${judgeDefaultWords(judgeView)}`, 2);
+    if (standInTradeOff(judgeView))
+      out.line("warn", JUDGE_WARNING);
+  }
   out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
   return 0;
 }
@@ -27893,6 +27997,8 @@ var PROFILE_HELP = `  profile <name> <command>
                            slot <slot> off        Plain Claude for that slot in this profile.
                            slot <slot> clear      Forget it here: the machine's chain applies.
                            fallback <slot> on|off May the next target answer in this profile?
+                           breaker <slot> on|off  May the router hold a request while every
+                                                  target is limited or down? (not the judge)
                            remove                 Delete the profile. A project whose URL
                                                   still names it answers as plain Claude.`;
 
@@ -30063,23 +30169,6 @@ function keptWords(key, kept) {
   const fallback = kept.fallback ?? fallbackOn({}, key);
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
-var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
-function untestedWorkerTargets(config) {
-  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
-    const parsed = parseTarget(text);
-    return "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text);
-  });
-}
-function judgeDefaultWords(config) {
-  if (!fallbackOn(config, JUDGE_SLOT))
-    return "Claude judges every check, alone (fallback off)";
-  const standIns = workerJudgeTargets(config).map(formatTarget);
-  const untested = untestedWorkerTargets(config);
-  if (standIns.length === 0) {
-    return untested.length > 0 ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)` : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
-  }
-  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
-}
 function fallbackWords(config, key) {
   const targets = config.slots[key] ?? [];
   if (fallbackOn(config, key))
@@ -30192,9 +30281,6 @@ async function testWorkerTargets(ctx, config) {
   }
   return { lines, passed };
 }
-function standInTradeOff(config) {
-  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
-}
 function dropFallbackRecord(statePath, slot) {
   let state;
   try {
@@ -30221,6 +30307,21 @@ function slotChangeLines(plan) {
   return lines;
 }
 var ROUTER_TAKES_IT = "The router uses it from its next request.";
+var SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+async function routerReadsAliases(ctx, out, config) {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined)
+    return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line("warn", `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`);
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(`${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`);
+  }
+  return { unproved: false };
+}
 function printSlotChange(out, lines) {
   const [first, ...rest] = lines;
   if (first !== undefined)
@@ -30252,6 +30353,7 @@ async function commandSlot(ctx, args) {
   if ("error" in first)
     throw new Error(first.error);
   const out = gatewayOut(ctx);
+  const router = await routerReadsAliases(ctx, out, first.config);
   const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
@@ -30308,7 +30410,7 @@ async function commandSlot(ctx, args) {
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {
@@ -30352,7 +30454,7 @@ async function commandFallback(ctx, args) {
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now ? "  The worker's tested targets answer when Claude is limited or down." : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code."
+      `  ${judgeSwitchWords(plan.now)}`
     ]);
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
@@ -37543,14 +37645,34 @@ function parseLaunchArgs(args) {
     return { error };
   return { claudeArgs, mode: mode ?? { kind: "default" } };
 }
+function launcherSignals(platform) {
+  if (platform === "win32") {
+    return ["SIGHUP", "SIGINT", "SIGBREAK"].map((signal) => ({
+      forward: false,
+      signal
+    }));
+  }
+  return ["SIGHUP", "SIGINT", "SIGTERM"].map((signal) => ({ forward: true, signal }));
+}
 var realRunSession = async (argv, options) => {
-  const child = Bun.spawn(argv, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["inherit", "inherit", "inherit"],
-    windowsVerbatimArguments: options.verbatim
-  });
-  return await child.exited ?? 1;
+  let child = null;
+  const handlers = launcherSignals(options.platform).map(({ forward, signal }) => [signal, forward ? () => child?.kill(signal) : () => {
+    return;
+  }]);
+  for (const [signal, handler] of handlers)
+    process.on(signal, handler);
+  try {
+    child = Bun.spawn(argv, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["inherit", "inherit", "inherit"],
+      windowsVerbatimArguments: options.verbatim
+    });
+    return await child.exited;
+  } finally {
+    for (const [signal, handler] of handlers)
+      process.off(signal, handler);
+  }
 };
 function launchSettingsFile(stateDir, mode, pid = process.pid) {
   if (mode.kind === "default")
@@ -37566,6 +37688,14 @@ function removeSettingsFile(file, ctx) {
   } catch (error) {
     ctx.error(`launch: its settings file could not be removed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+function routerSilent(port, error, why) {
+  return {
+    lines: [
+      `launch: the router does not answer on 127.0.0.1:${port} (${error}), ${why}.`,
+      `Fix: ${COMMAND} gateway setup`
+    ]
+  };
 }
 async function launchTarget(mode, ctx) {
   if (mode.kind === "default") {
@@ -37598,6 +37728,10 @@ async function launchTarget(mode, ctx) {
   }
   const routerUrl = routerBaseUrl(config.port);
   if (mode.kind === "gateway") {
+    const health = await routerHealth(config.port, ctx.fetch);
+    if ("error" in health) {
+      return routerSilent(config.port, health.error, "so every request of the session would fail");
+    }
     return { line: `launch: the gateway \xB7 ${routerUrl}`, url: routerUrl };
   }
   if (!isProfileName(mode.name))
@@ -37614,12 +37748,7 @@ async function launchTarget(mode, ctx) {
   }
   const known = await routerFeature(config.port, "profiles", ctx.fetch);
   if ("error" in known) {
-    return {
-      lines: [
-        `launch: the router does not answer on 127.0.0.1:${config.port} (${known.error}), so it cannot say it knows profiles.`,
-        `Fix: ${COMMAND} gateway setup`
-      ]
-    };
+    return routerSilent(config.port, known.error, "so it cannot say it knows profiles");
   }
   if (!known.has) {
     return {
@@ -37631,6 +37760,33 @@ async function launchTarget(mode, ctx) {
   }
   const url = profileUrlOf(routerUrl, mode.name);
   return { line: `launch: the gateway, profile "${mode.name}" \xB7 ${url}`, url };
+}
+function settingsNotes(mode, ctx) {
+  if (mode.kind === "default")
+    return [];
+  const state = projectGatewayState(ctx.cwd, {
+    configPath: ctx.configPath,
+    settingsFile: ctx.settingsFile
+  });
+  const lines = [];
+  const decided = new Set;
+  for (const file of state.files) {
+    const where = tildify(file.path, ctx.home);
+    for (const key of file.loginOverrides) {
+      lines.push(`launch: ${key} is set in ${where}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`);
+    }
+    if (mode.kind !== "no-gateway")
+      continue;
+    for (const fact of file.modelKeys) {
+      if (decided.has(fact.key))
+        continue;
+      decided.add(fact.key);
+      if (!isSlotKey(fact.value.trim()))
+        continue;
+      lines.push(`launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`);
+    }
+  }
+  return lines;
 }
 async function runLaunch(args, ctx) {
   const parsed = parseLaunchArgs(args);
@@ -37677,10 +37833,13 @@ See: ${COMMAND} launch --help`);
     }
   }
   ctx.print(target.line);
+  for (const line of settingsNotes(parsed.mode, ctx))
+    ctx.error(line);
   try {
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
       env: ctx.env,
+      platform: ctx.platform,
       verbatim: command.verbatim
     });
   } catch (error) {
@@ -45740,10 +45899,10 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
-    return await stopFailureAnswer(input, id, repo, paths, options);
+    return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
-async function stopFailureAnswer(input, id, repo, paths, options) {
+async function stopFailureAnswer(input, id, repo, paths, env, options) {
   const error = stringField(input.error);
   if (!pausesCrew(error))
     return SILENT;
@@ -45754,7 +45913,8 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   if (!RUNNING_STATES.includes(record.state))
     return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
@@ -51240,17 +51400,18 @@ import { readFileSync as readFileSync79 } from "fs";
 function isJsonObject20(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent) {
+function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent, session = null) {
   const parts = [];
   const data = isJsonObject20(input) ? input : {};
   const model = isJsonObject20(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "")
     parts.push(model);
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
+  const aboutThisSession = (key) => session === null || session.gatewayOn && scopeOfStateKey(key).profile === session.profile;
   const covered = new Set;
   if (state !== null) {
-    for (const [slot, record] of currentFallbacks(state, nowMs)) {
-      if (slot === JUDGE_SLOT)
+    for (const [key, record] of currentFallbacks(state, nowMs)) {
+      if (scopeOfStateKey(key).slot === JUDGE_SLOT || !aboutThisSession(key))
         continue;
       covered.add(record.model);
       parts.push(`\u26A0 ${record.model} at its limit \u2192 ${record.target}${until(record.resetsAt)}`);
@@ -51260,11 +51421,12 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
         parts.push(`\u26D4 ${limited} at its plan limit${until(record.resetsAt)}`);
     }
     for (const [key, record] of currentBreakers(state, nowMs)) {
+      if (!aboutThisSession(key))
+        continue;
       const { profile, slot } = scopeOfStateKey(key);
       const short = slotShortName(slot);
       const where = profile === null ? `${short} slot` : `${short} slot in profile ${profile}`;
-      const change = profile === null ? `gateway slot ${short} <targets>` : `profiles.${profile} in gateway.json`;
-      parts.push(`${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} \u2192 ${change}`);
+      parts.push(`${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} \u2192 ${breakerChangeCommand(slot, profile)}`);
     }
   }
   for (const [name, label] of [
@@ -51279,7 +51441,12 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
   }
   return parts.join(" \xB7 ");
 }
-async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: defaultAlerts(), problem: null }) {
+function sessionOf(paths, env) {
+  if (env.ANTHROPIC_BASE_URL === undefined)
+    return { gatewayOn: true, profile: null };
+  return sessionGatewayOf(paths, env);
+}
+async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: defaultAlerts(), problem: null }, env = {}) {
   if (alerts.problem !== null)
     console.error(alerts.problem);
   let input = null;
@@ -51304,7 +51471,8 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   } catch {
     state = null;
   }
-  console.log(statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value));
+  const session = isJsonObject20(input) ? sessionOf(paths, env) : null;
+  console.log(statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value, session));
   return 0;
 }
 
@@ -52722,11 +52890,12 @@ function launchContext(paths) {
     cwd: process.cwd(),
     env: process.env,
     error: (line) => console.error(line),
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     home: paths.home,
     platform: process.platform,
     print: (line) => console.log(line),
     runSession: realRunSession,
+    settingsFile: paths.settingsFile,
     stateDir: paths.stateDir,
     which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" })
   };
@@ -52860,7 +53029,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
       });
     }
     case "statusline":
-      return runStatusline(paths, () => process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text(), Date.now(), alertsAt(paths, process.cwd(), process.env));
+      return runStatusline(paths, () => process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text(), Date.now(), alertsAt(paths, process.cwd(), process.env), process.env);
     case "usage":
       return runUsage(paths, rest, Date.now());
     case "subagent-statusline":

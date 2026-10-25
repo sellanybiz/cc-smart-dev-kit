@@ -3085,6 +3085,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "projects", "--folder", project]));
     record(await m.run(["gateway", "profile", "team", "slot", "worker", "omniroute:m1"]));
     record(await m.run(["gateway", "profile", "team", "fallback", "worker", "off"]));
+    record(await m.run(["gateway", "profile", "team", "breaker", "worker", "off"]));
     record(await m.run(["gateway", "profile", "team", "remove"]));
     // A key planted in a project file's own URL: the status, the list and the refusal mask it.
     const personal = join(project, ".claude", "settings.local.json");

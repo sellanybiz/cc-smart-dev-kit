@@ -785,6 +785,60 @@ describe("the refusals before anything is recorded", () => {
   });
 });
 
+describe("RV3: a crew session runs on the PROJECT's gateway, not the user's file alone", () => {
+  const ROUTER = "http://127.0.0.1:20199";
+  const CHAINS = {
+    backends: { omniroute: { apiKey: "test-key", baseUrl: ROUTER } },
+    port: 20199,
+    slots: {
+      "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
+    },
+    version: 1,
+  };
+
+  /** A led world whose gateway config has affordable chains; `machine`/`project` are the addresses. */
+  async function gatewayWorld(machine: null | string, project: null | string) {
+    const world = await ledWorld();
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(CHAINS)}\n`, { mode: 0o600 });
+    const write = (file: string, url: string) => {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_BASE_URL: url } }));
+    };
+    if (machine !== null) write(world.paths.settingsFile, machine);
+    // The project's personal file, at the main checkout's root (P6).
+    if (project !== null) write(join(world.repo, ".claude", "settings.local.json"), project);
+    return world;
+  }
+
+  test("the machine is off and the project is on: the project's chain answers, at the affordable effort", async () => {
+    const world = await gatewayWorld(null, ROUTER);
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+  });
+
+  test("D50: a ui session under the project's gateway stays on the opus tier at high: the name is the tier, whatever answers it", async () => {
+    const world = await gatewayWorld(null, ROUTER);
+    const argv = startArgs(world.brief);
+    argv[argv.indexOf("build")] = "ui";
+    expect(await runCrew(argv, world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· opus → omniroute:glm-5.3-flash high ·");
+  });
+
+  test("the machine is on and the project is off: Claude answers, so no affordable effort is chosen", async () => {
+    const world = await gatewayWorld(ROUTER, "https://api.anthropic.com");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet high ·");
+  });
+
+  test("the machine is on and the project says nothing: the machine's gateway answers, at the affordable effort", async () => {
+    const world = await gatewayWorld(ROUTER, null);
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+  });
+});
+
 describe("D25: the queue — still one line, at once", () => {
   test("D54: the machine's ceiling reached across repositories: queued, no worktree, no session", async () => {
     const world = await ledWorld();

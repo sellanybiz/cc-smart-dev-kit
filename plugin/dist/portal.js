@@ -7610,6 +7610,11 @@ function effortPin(config, slot, target) {
   const own = pins[slot];
   return own !== undefined && Object.hasOwn(own, target) ? own[target] : undefined;
 }
+function profileNamesSlot(config, profile, slot) {
+  const named = config.profiles !== undefined && Object.hasOwn(config.profiles, profile);
+  const slots = named ? config.profiles?.[profile]?.slots : undefined;
+  return slots !== undefined && Object.hasOwn(slots, slot);
+}
 function profileSlotChain(config, profile, slot) {
   const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
   if (own === "claude")
@@ -7686,6 +7691,9 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+function aliasesAtClaudeSlots(config) {
+  return Object.entries(config.aliases).filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 function slotMode(config, slot) {
   return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
@@ -7881,10 +7889,6 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
-// src/gateway/router.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname5 } from "path";
-
 // src/gateway/hosts.ts
 function ipv4Parts(host) {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
@@ -7951,6 +7955,10 @@ function directIfLoopback(url) {
 function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
   return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
+
+// src/gateway/router.ts
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
 
 // src/gateway/plain-text.ts
 var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
@@ -8458,20 +8466,27 @@ function earliestRestSeconds(failures, nowMs) {
 function describeFailures(failures, nowMs) {
   return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
 }
-function breakerChangeHint(slot, profile = null) {
-  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
+function breakerChangeCommand(slot, profile) {
+  const short = slotShortName(slot);
+  return profile === null ? `gateway slot ${short} <targets>` : `gateway profile ${profile} slot ${short} <targets>`;
 }
-function breakerMessage(slot, sinceMs, failures, nowMs, profile = null) {
+function breakerChangeHint(slot, profile = null, inherited = false) {
+  const own = `${COMMAND} ${breakerChangeCommand(slot, profile)}`;
+  if (profile === null || !inherited)
+    return own;
+  return `${own} (a chain of its own for this profile), or ${COMMAND} ${breakerChangeCommand(slot, null)} (the machine's chain, which this profile uses)`;
+}
+function breakerMessage(slot, sinceMs, failures, nowMs, profile = null, inherited = false) {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
   const where = profile === null ? slot : `${slot} in profile ${profile}`;
-  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile)}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile, inherited)}`;
 }
 function breakerAnswer(answer) {
   const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
   return Response.json({
     error: {
-      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null),
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null, answer.inherited ?? false),
       type: "rate_limit_error"
     },
     type: "error"
@@ -9351,7 +9366,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
-var ROUTER_FEATURES = ["profiles"];
+var ROUTER_FEATURES = ["profiles", "claude-slot-aliases"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -10666,6 +10681,7 @@ function createRouter(deps) {
     let targets = targets0;
     let outcome = first;
     let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
+    const inherited = () => profile !== null && !profileNamesSlot(deps.getConfig(), profile, slot);
     let counted = null;
     const stopping = () => deps.shutdown?.aborted === true;
     const answer = (response) => ({
@@ -10682,7 +10698,7 @@ function createRouter(deps) {
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
         return;
       open.reminderAt = nowMs;
-      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`);
+      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile, inherited())}`);
     };
     try {
       for (;; ) {
@@ -10692,6 +10708,7 @@ function createRouter(deps) {
         const endsAt = startMs + holdLimitMs(config, body);
         const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
           failures,
+          inherited: inherited(),
           nowMs,
           profile,
           sinceMs: open.since,
@@ -11291,9 +11308,10 @@ function exitWhenDone(done, log, cleanup) {
 }
 
 // src/gateway/health.ts
+var routerFetch = (url, init) => fetch(url, { ...init, ...directIfLoopback(url) });
 function realProbe() {
   return {
-    fetch: (url, init) => fetch(url, init),
+    fetch: routerFetch,
     now: () => Date.now(),
     sleep: (ms) => Bun.sleep(ms)
   };
@@ -11304,7 +11322,7 @@ function isJsonObject6(value) {
 function healthUrl(port, path = HEALTH_PATH) {
   return `http://127.0.0.1:${port}${path}`;
 }
-async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
+async function routerHealth(port, fetchImpl = routerFetch) {
   try {
     const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -11325,6 +11343,9 @@ async function routerFeature(port, feature, fetchImpl) {
 }
 function routerLacksProfiles(port) {
   return `the router running on 127.0.0.1:${port} is an older copy that does not know profiles, so every request through a profile's address would fail`;
+}
+function routerLacksClaudeSlotAliases(port, alias) {
+  return `the router running on 127.0.0.1:${port} is an older copy that refuses an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}), so it would keep its old config and ignore this change`;
 }
 function isConnectionRefused(error) {
   if (typeof error !== "object" || error === null || !("code" in error))
@@ -13289,7 +13310,8 @@ var waitingForSchema = discriminatedUnion("kind", [
   }),
   looseObject({
     kind: literal("unknown"),
-    since: text
+    since: text,
+    slot: text.exactOptional()
   })
 ]);
 var crewFields = object({
@@ -17486,6 +17508,29 @@ function chainToCheck(config, slotArg, text) {
   }
   return splitChain(word);
 }
+function untestedWorkerTargets(config) {
+  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text);
+  });
+}
+var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+function standInTradeOff(config) {
+  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
+}
+function judgeSwitchWords(now) {
+  return now ? "The worker's tested targets answer when Claude is limited or down." : "Only Claude judges; when it is limited or down, its error goes back to Claude Code.";
+}
+function judgeDefaultWords(config) {
+  if (!fallbackOn(config, JUDGE_SLOT))
+    return "Claude judges every check, alone (fallback off)";
+  const standIns = workerJudgeTargets(config).map(formatTarget);
+  const untested = untestedWorkerTargets(config);
+  if (standIns.length === 0) {
+    return untested.length > 0 ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)` : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
+  }
+  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
+}
 
 // src/cli/ui/terminal.ts
 var MAX_WIDTH = 100;
@@ -17645,7 +17690,11 @@ function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
     was
   };
 }
-function planProfileFallbackChange(current, name, slotArg, value) {
+var PROFILE_SWITCHES = {
+  breaker: { isOn: breakerOn, noChain: "there is no request for the breaker to hold" },
+  fallback: { isOn: fallbackOn, noChain: "there is nothing to fall back to" }
+};
+function planProfileSwitch(field, current, name, slotArg, value) {
   if (!isProfileName(name))
     return { error: PROFILE_NAME_RULE };
   const profile = Object.hasOwn(current.profiles ?? {}, name) ? current.profiles?.[name] : undefined;
@@ -17654,36 +17703,44 @@ function planProfileFallbackChange(current, name, slotArg, value) {
   const key = slotKeyFromArg(slotArg);
   if (key === null)
     return { error: notSlotName(slotArg) };
+  if (field === "breaker" && key === JUDGE_SLOT)
+    return { error: `${key}: ${JUDGE_NEVER_HOLDS}` };
   if (value !== "on" && value !== "off")
     return { error: `say on or off, not "${value}"` };
+  const { isOn, noChain } = PROFILE_SWITCHES[field];
   if (key !== JUDGE_SLOT && profileSlotChain(current, profile, key) === null) {
     return {
-      error: `profile ${name} has no chain for ${key}, so there is nothing to fall back to. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`
+      error: `profile ${name} has no chain for ${key}, so ${noChain}. Give it one first: ${COMMAND} gateway profile ${name} slot <slot> <targets>`
     };
   }
   const view = profileView(current, name);
   if (view === null)
     return { error: missingProfile(current, name) };
   const now = value === "on";
-  const was = fallbackOn(view, key);
-  const without = withoutSwitch(profile, "fallback", key);
-  const plain = profileView(withProfile(current, name, without), name);
+  const was = isOn(view, key);
+  const plain = profileView(withProfile(current, name, withoutSwitch(profile, field, key)), name);
   if (plain === null)
     return { error: missingProfile(current, name) };
-  const fallback = { ...profile.fallback ?? {} };
-  if (fallbackOn(plain, key) === now)
-    delete fallback[key];
+  const held = { ...profile[field] ?? {} };
+  if (isOn(plain, key) === now)
+    delete held[key];
   else
-    fallback[key] = now;
+    held[key] = now;
   const next = { ...profile };
-  if (Object.keys(fallback).length > 0)
-    next.fallback = fallback;
+  if (Object.keys(held).length > 0)
+    next[field] = held;
   else
-    delete next.fallback;
+    delete next[field];
   const checked = parseConfig(withProfile(current, name, next));
   if ("error" in checked)
     return { error: checked.error };
   return { config: checked.config, key, name, now, was };
+}
+function planProfileFallbackChange(current, name, slotArg, value) {
+  return planProfileSwitch("fallback", current, name, slotArg, value);
+}
+function planProfileBreakerChange(current, name, slotArg, value) {
+  return planProfileSwitch("breaker", current, name, slotArg, value);
 }
 function planProfileRemove(current, name) {
   if (!isProfileName(name))
@@ -17700,7 +17757,24 @@ function planProfileRemove(current, name) {
     slots: Object.keys(profile.slots ?? {}).length
   };
 }
+var SWITCH_WORDS = {
+  breaker: {
+    on: "In this profile, when every target is limited or down the request waits a little and then Claude Code is asked to retry.",
+    off: "In this profile, when every target is limited or down the last answer goes back at once; the router holds no request."
+  },
+  fallback: {
+    on: "In this profile, the next target answers when the one before it fails or rests.",
+    off: "In this profile, only the first target answers; when it fails, its error goes back to Claude Code."
+  }
+};
+function judgeOtherThanClaude(view) {
+  return Object.hasOwn(view.slots, JUDGE_SLOT) || standInTradeOff(view);
+}
 function slotNowWords(plan, current) {
+  if (plan.next === "claude" && plan.key === JUDGE_SLOT) {
+    const view = profileView(plan.config, plan.name);
+    return `Claude: ${view === null ? "Claude judges every check, alone" : judgeDefaultWords(view)}`;
+  }
   if (plan.next === "claude")
     return "Claude (plain Claude in this profile)";
   if (plan.next === null) {
@@ -17724,7 +17798,7 @@ function profileArgs(args) {
     return null;
   if (action === "remove")
     return rest.length === 0 ? { action, name } : null;
-  if (action !== "slot" && action !== "fallback")
+  if (action !== "slot" && action !== "fallback" && action !== "breaker")
     return null;
   const [slot, text] = rest;
   if (slot === undefined || text === undefined || rest.length !== 2)
@@ -17760,16 +17834,26 @@ async function commandProfile(ctx, args, usage) {
     out.verdict("ok", "Done. The router reads the config again within about a second.");
     return 0;
   }
-  if (parsed.action === "fallback") {
+  if (parsed.action === "fallback" || parsed.action === "breaker") {
+    const { action } = parsed;
     const plan = await withLock(ctx.paths.stateDir, () => {
-      const planned = planProfileFallbackChange(loadConfigFile(configPath), name, parsed.slot, parsed.text);
+      const change = action === "fallback" ? planProfileFallbackChange : planProfileBreakerChange;
+      const planned = change(loadConfigFile(configPath), name, parsed.slot, parsed.text);
       if ("error" in planned)
         throw new Error(planned.error);
       saveConfig(configPath, planned.config);
       return planned;
     }, { waitMs: 1e4 });
-    out.line("changed", `${plan.name}: ${plan.key}: fallback ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`);
-    out.say(plan.now ? "In this profile, the next target answers when the one before it fails or rests." : "In this profile, only the first target answers; when it fails, its error goes back to Claude Code.", 2);
+    out.line("changed", `${plan.name}: ${plan.key}: ${action} ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`);
+    const view = plan.key === JUDGE_SLOT ? profileView(plan.config, name) : null;
+    if (view !== null && !Object.hasOwn(view.slots, JUDGE_SLOT)) {
+      out.say(judgeDefaultWords(view), 2);
+      out.say(judgeSwitchWords(plan.now), 2);
+    } else {
+      out.say(SWITCH_WORDS[action][plan.now ? "on" : "off"], 2);
+    }
+    if (view !== null && judgeOtherThanClaude(view))
+      out.line("warn", JUDGE_WARNING);
     out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
     return 0;
   }
@@ -17793,6 +17877,15 @@ async function commandProfile(ctx, args, usage) {
   }, { waitMs: 1e4 });
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
   out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
+  const judgeView = plan.key === JUDGE_SLOT || plan.key === WORKER_SLOT ? profileView(plan.config, plan.name) : null;
+  if (judgeView !== null && plan.key === JUDGE_SLOT) {
+    if (judgeOtherThanClaude(judgeView))
+      out.line("warn", JUDGE_WARNING);
+  } else if (judgeView !== null && !Object.hasOwn(judgeView.slots, JUDGE_SLOT)) {
+    out.say(`Auto mode's checks in this profile: ${judgeDefaultWords(judgeView)}`, 2);
+    if (standInTradeOff(judgeView))
+      out.line("warn", JUDGE_WARNING);
+  }
   out.verdict("ok", "The router uses it from its next request: it reads the config again within about a second.");
   return 0;
 }
@@ -17806,6 +17899,8 @@ var PROFILE_HELP = `  profile <name> <command>
                            slot <slot> off        Plain Claude for that slot in this profile.
                            slot <slot> clear      Forget it here: the machine's chain applies.
                            fallback <slot> on|off May the next target answer in this profile?
+                           breaker <slot> on|off  May the router hold a request while every
+                                                  target is limited or down? (not the judge)
                            remove                 Delete the profile. A project whose URL
                                                   still names it answers as plain Claude.`;
 
@@ -20580,23 +20675,6 @@ function keptWords(key, kept) {
   const fallback = kept.fallback ?? fallbackOn({}, key);
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
-var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
-function untestedWorkerTargets(config) {
-  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
-    const parsed = parseTarget(text);
-    return "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text);
-  });
-}
-function judgeDefaultWords(config) {
-  if (!fallbackOn(config, JUDGE_SLOT))
-    return "Claude judges every check, alone (fallback off)";
-  const standIns = workerJudgeTargets(config).map(formatTarget);
-  const untested = untestedWorkerTargets(config);
-  if (standIns.length === 0) {
-    return untested.length > 0 ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)` : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
-  }
-  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
-}
 function fallbackWords(config, key) {
   const targets = config.slots[key] ?? [];
   if (fallbackOn(config, key))
@@ -20709,9 +20787,6 @@ async function testWorkerTargets(ctx, config) {
   }
   return { lines, passed };
 }
-function standInTradeOff(config) {
-  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
-}
 function dropFallbackRecord(statePath, slot) {
   let state;
   try {
@@ -20738,6 +20813,21 @@ function slotChangeLines(plan) {
   return lines;
 }
 var ROUTER_TAKES_IT = "The router uses it from its next request.";
+var SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+async function routerReadsAliases(ctx, out, config) {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined)
+    return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line("warn", `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" \u2192 ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`);
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(`${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`);
+  }
+  return { unproved: false };
+}
 function printSlotChange(out, lines) {
   const [first, ...rest] = lines;
   if (first !== undefined)
@@ -20769,6 +20859,7 @@ async function commandSlot(ctx, args) {
   if ("error" in first)
     throw new Error(first.error);
   const out = gatewayOut(ctx);
+  const router = await routerReadsAliases(ctx, out, first.config);
   const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
@@ -20825,7 +20916,7 @@ async function commandSlot(ctx, args) {
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {
@@ -20869,7 +20960,7 @@ async function commandFallback(ctx, args) {
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now ? "  The worker's tested targets answer when Claude is limited or down." : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code."
+      `  ${judgeSwitchWords(plan.now)}`
     ]);
     if (standInTradeOff(plan.config))
       out.line("warn", JUDGE_WARNING);
@@ -26766,16 +26857,6 @@ function sessionModelOf(input, env) {
   const answered = transcript === null ? null : lastClaudeModel(transcript);
   return answered ?? stringField(env.ANTHROPIC_MODEL);
 }
-function gatewayOnOf(paths) {
-  try {
-    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
-  } catch {
-    return false;
-  }
-}
-function gatewayFactsOf(paths) {
-  return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
-}
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
   const url = raw === undefined || raw === "" ? null : raw;
@@ -27000,9 +27081,19 @@ function opusFallbackOf(facts) {
     return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
-function usageFacts(paths, nowMs) {
+function crewGatewayOf(paths, folder) {
+  const { effective } = projectGatewayState(folder, {
+    configPath: paths.gatewayConfigFile,
+    settingsFile: paths.settingsFile
+  });
+  const { config, gatewayOn } = sessionGatewayOf(paths, {
+    ANTHROPIC_BASE_URL: effective.url ?? undefined
+  });
+  return { config, gatewayOn };
+}
+function usageFacts(paths, nowMs, folder) {
   return {
-    opusFallback: opusFallbackOf(gatewayFactsOf(paths)),
+    opusFallback: opusFallbackOf(crewGatewayOf(paths, folder)),
     percent: readUsageWindow(paths, nowMs)?.percent ?? null
   };
 }
@@ -27099,7 +27190,7 @@ async function placeForLeadStart(input) {
   try {
     records = listAllCrew(input.paths.stateDir).records;
     crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
-    usage = usageFacts(input.paths, input.nowMs);
+    usage = usageFacts(input.paths, input.nowMs, input.checkout.mainCheckout ?? input.checkout.root);
   } catch {
     return null;
   }
@@ -31618,8 +31709,8 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
-function waitFor(record, facts, nowMs) {
-  const slot = record.model.slot;
+function waitFor(record, facts, nowMs, profile = null) {
+  const slot = record.model.slot === null ? null : stateKeyFor(record.model.slot, profile);
   const breaker = slot === null ? undefined : facts.breakers[slot];
   if (slot !== null && breaker !== undefined) {
     return { kind: "slot", since: iso2(breaker.since), slot };
@@ -31632,7 +31723,7 @@ function waitFor(record, facts, nowMs) {
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
-  return { kind: "unknown", since: iso2(nowMs) };
+  return { kind: "unknown", since: iso2(nowMs), ...slot === null ? {} : { slot } };
 }
 function pauseBackoff(previous, nowMs) {
   if (previous === undefined)
@@ -31650,8 +31741,11 @@ function lastPauseOf(previous, nowMs) {
 function pauseText(waiting, error, nowMs, timeZone) {
   const goesOn = "goes on by itself when it answers";
   switch (waiting.kind) {
-    case "slot":
-      return `${slotShortName(waiting.slot)} slot limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    case "slot": {
+      const { profile, slot } = scopeOfStateKey(waiting.slot);
+      const where = profile === null ? "slot" : `slot in profile ${profile}`;
+      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    }
     case "claude-limit": {
       const reset = waiting.resetsAt === null ? "at its limit, no reset time named" : `at its limit, resets ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
       return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts`;
@@ -31937,10 +32031,10 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
-    return await stopFailureAnswer(input, id, repo, paths, options);
+    return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
-async function stopFailureAnswer(input, id, repo, paths, options) {
+async function stopFailureAnswer(input, id, repo, paths, env, options) {
   const error = stringField(input.error);
   if (!pausesCrew(error))
     return SILENT;
@@ -31951,7 +32045,8 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   if (!RUNNING_STATES.includes(record.state))
     return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
@@ -37120,9 +37215,11 @@ function worktreesOf(output) {
 
 // src/portal/actions.ts
 function portalOmnirouteContext(ctx) {
+  const env = { ...ctx.env };
+  delete env.CLAUDECODE;
   return {
     confirm: null,
-    env: ctx.env,
+    env,
     health: (url, init) => ctx.fetch(url, init),
     now: ctx.now,
     paths: ctx.paths,

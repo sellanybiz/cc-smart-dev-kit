@@ -38,7 +38,14 @@ blocked one is stopped (D35: a crew session never outlives its work) — and the
 `CREW_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
 `sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
-Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). So does code that
+Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
+is the project's: the address its own settings choose over the machine's — its personal file, its
+team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
+`src/crew/usage-guard.ts`). It reads the settings files at the repository's main checkout, the
+same folder for `crew start`, for the Agent guard's question "would a start queue now?" and for
+`crew list`; the user's file alone would miss a project turned on or off with `gateway project`.
+It reads no environment: an address exported only in the shell that runs `crew start`, with no
+settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
 Work that needs judgment — `architecture` — runs on `opus` at `xhigh`, whatever answers the
 tier. `ui` is the exception (`UI_POLICY`, D50): it runs on `opus` at `high`, never on an
@@ -119,7 +126,9 @@ repository, under the state folder:
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
-  open, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
+  open — the slot's key, or `<profile>/<slot>` for a crew session in a project on a profile, whose
+  breaker is the profile's —, Claude's own plan limit, or `unknown` when the router's state explains nothing (it keeps
+  the same key, so the watch asks that session's own breaker before it resumes it); with the
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
   § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
@@ -245,7 +254,8 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    ceiling no lead reaches alone, and `workflow.crew.maxOpus` an optional machine-wide opus
    ceiling, unset by default (a person who sets one keeps it); **the 5-hour usage window**
    (D54) — past `workflow.crew.usagePercent` (85) a new opus-tier crew session waits, unless
-   the gateway's opus slot has a chain in use with its fallback on (`src/crew/usage-guard.ts`);
+   the project's gateway has an opus slot with a chain in use and its fallback on
+   (`src/crew/usage-guard.ts`, the same `crewGatewayOf`);
    the window is the one Claude Code's status line reads, recorded by
    `cc-smart-dev-kit statusline` in `<stateDir>/usage-window.json` (the reader's one home,
    `src/cli/usage-window.ts`), and with no reading — or one whose window has reset — the guard

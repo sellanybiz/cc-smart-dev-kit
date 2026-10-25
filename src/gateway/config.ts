@@ -406,6 +406,20 @@ export function effortPin(
 export type ProfileConfig = z.output<typeof profileSchema>;
 
 /**
+ * True when `profile` names the slot itself (a chain, or `"claude"`); false when it does not
+ * name it, or does not exist, and so uses the machine's chain there (`profileSlotChain`).
+ */
+export function profileNamesSlot(
+  config: Pick<GatewayConfig, "profiles">,
+  profile: string,
+  slot: string,
+): boolean {
+  const named = config.profiles !== undefined && Object.hasOwn(config.profiles, profile);
+  const slots = named ? config.profiles?.[profile]?.slots : undefined;
+  return slots !== undefined && Object.hasOwn(slots, slot);
+}
+
+/**
  * The chain a slot has in a profile: the profile's own chain, null when the profile says
  * `"claude"`, and the machine's chain when the profile does not name the slot. Null too when
  * neither has one (the slot is off there).
@@ -556,6 +570,20 @@ function aliasError(
 }
 
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
+
+/**
+ * The aliases that point at a slot in Claude mode (the slot is not in `slots`), as
+ * `[alias, slot]`, sorted by alias. 1.2.0's `aliasError` accepts them; a 1.1.x router refuses
+ * the whole file for one, so a command that would save one asks the running router for the
+ * `claude-slot-aliases` feature first (`routerFeature`).
+ */
+export function aliasesAtClaudeSlots(
+  config: Pick<GatewayConfig, "aliases" | "slots">,
+): [string, string][] {
+  return Object.entries(config.aliases)
+    .filter(([, to]) => isSlotKey(to) && !Object.hasOwn(config.slots, to))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
 
 /** A chain saved, not in use, and the slot's fallback switch with it (`kept`). */
 export type KeptChain = z.output<typeof keptChainSchema>;

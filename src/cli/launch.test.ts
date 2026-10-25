@@ -7,17 +7,28 @@
  * uses (never 20100), and nothing here reaches the network.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
+import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   type LaunchContext,
+  launcherSignals,
   launchSettingsFile,
   parseLaunchArgs,
   realRunSession,
   runLaunch,
+  type SignalPlan,
 } from "./launch";
 
 /** A port no router uses: the config only names it, nothing connects. */
@@ -124,6 +135,7 @@ function context(
     print: (line) => printed.push(line),
     printed,
     runSession: realRunSession,
+    settingsFile: join(world.home, ".claude", "settings.json"),
     stateDir: world.stateDir,
     which: (command) => (command === "claude" ? world.claude : null),
     ...overrides,
@@ -308,15 +320,52 @@ describe("launch", () => {
     expect(runLog(home)).toEqual([]);
   });
 
-  test("--gateway asks no router: a plain gateway URL needs no feature", async () => {
+  test("--gateway asks the router's health page once, and needs no feature from it", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const asked: string[] = [];
+    // A 1.1.x router lists no features: a plain gateway URL works there, so it still launches.
+    const old = healthOf("old");
+    const ctx = context(home, {
+      fetch: (url, init) => {
+        asked.push(url);
+        return old(url, init);
+      },
+    });
+    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(asked).toEqual([`${ROUTER_URL}/__cc-smart-dev-kit/health`]);
+    expect(ctx.printed).toEqual([`launch: the gateway · ${ROUTER_URL}`]);
+  });
+
+  test("--gateway on a router that does not answer runs nothing, and names gateway setup", async () => {
+    // The config is there but nothing listens: after a full `restore` (it keeps gateway.json),
+    // or a stopped service. A session would retry its connection for minutes, saying nothing.
     const home = world();
     gatewayConfig(home, []);
     const ctx = context(home, {
       fetch: async () => {
-        throw new Error("launch --gateway must not ask the router");
+        throw new TypeError("Unable to connect");
       },
     });
-    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(await runLaunch(["--gateway"], ctx)).toBe(1);
+    expect(ctx.errors).toEqual([
+      `launch: the router does not answer on 127.0.0.1:${TEST_PORT} (Unable to connect), so every request of the session would fail.`,
+      "Fix: cc-smart-dev-kit gateway setup",
+    ]);
+    expect(ctx.printed).toEqual([]);
+    expect(runLog(home)).toEqual([]);
+    expect(existsSync(join(home.stateDir, "launch"))).toBe(false);
+  });
+
+  test("--gateway on a router that answers an error page is refused the same way", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const ctx = context(home, { fetch: async () => new Response("down", { status: 503 }) });
+    expect(await runLaunch(["--gateway"], ctx)).toBe(1);
+    expect(ctx.errors[0]).toBe(
+      `launch: the router does not answer on 127.0.0.1:${TEST_PORT} (HTTP 503), so every request of the session would fail.`,
+    );
+    expect(runLog(home)).toEqual([]);
   });
 
   test("the settings file's name carries the process and the mode: two launches never clash", () => {
@@ -436,5 +485,275 @@ describe("launch", () => {
     expect(argv[5]).toContain("claude.cmd");
     expect(argv[5]).toContain("--settings");
     expect(argv[5]).toContain(`no-gateway-${process.pid}.json`);
+  });
+});
+
+describe("RV3: the launcher hands a signal sent to it on to the session it runs", () => {
+  /**
+   * Runs `realRunSession` in a bun process of its own around a fake `claude` that says "ready",
+   * then ends with its own code for the signal it gets (TERM 7, HUP 8, INT 9), and writes the
+   * signal it got to a file. Sends `signal` to the launcher alone, as `kill <pid>` does; with
+   * `consoleToo`, it then sends the same signal to the session, as a Windows console does with
+   * a Ctrl+C (every process on it gets the event). `platform` is what the launcher is told it
+   * runs on.
+   */
+  async function signalLauncher(
+    signal: "SIGHUP" | "SIGINT" | "SIGTERM",
+    platform: NodeJS.Platform = process.platform,
+    consoleToo = false,
+  ): Promise<{ code: null | number; got: string }> {
+    const dir = tempDir("launch-signal");
+    const got = join(dir, "got.txt");
+    const pidFile = join(dir, "claude.pid");
+    const claude = join(dir, "claude");
+    writeFileSync(
+      claude,
+      [
+        "#!/bin/sh",
+        `echo $$ > "${pidFile}"`,
+        `trap 'echo TERM > "${got}"; exit 7' TERM`,
+        `trap 'echo HUP > "${got}"; exit 8' HUP`,
+        `trap 'echo INT > "${got}"; exit 9' INT`,
+        "echo ready",
+        "while true; do sleep 0.05; done",
+      ].join("\n"),
+    );
+    chmodSync(claude, 0o755);
+    const runner = join(dir, "runner.ts");
+    writeFileSync(
+      runner,
+      [
+        `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, platform: ${JSON.stringify(platform)}, verbatim: false });`,
+      ].join("\n"),
+    );
+    const guard = subprocessGuard();
+    const launcher = Bun.spawn([process.execPath, ...guard.args, runner], {
+      env: { ...process.env, ...guard.env },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    try {
+      // The session is up when it has said so: no guessing at a delay.
+      const reader = launcher.stdout.getReader();
+      let said = "";
+      while (!said.includes("ready")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        said += new TextDecoder().decode(chunk.value);
+      }
+      expect(said).toContain("ready");
+      launcher.kill(signal);
+      if (consoleToo) process.kill(Number(readFileSync(pidFile, "utf8").trim()), signal);
+      const code = await launcher.exited;
+      return { code, got: existsSync(got) ? readFileSync(got, "utf8").trim() : "" };
+    } finally {
+      // A session the launcher left behind must not outlive the test.
+      launcher.kill("SIGKILL");
+      if (existsSync(pidFile)) {
+        try {
+          process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");
+        } catch {
+          // Already gone: the launcher stopped it.
+        }
+      }
+    }
+  }
+
+  test("a session ended by a signal gives the shell's code for it, 128 plus the number", async () => {
+    const dir = tempDir("launch-killed");
+    const claude = join(dir, "claude");
+    writeFileSync(claude, ["#!/bin/sh", "kill -KILL $$"].join("\n"));
+    chmodSync(claude, 0o755);
+    const runner = join(dir, "runner.ts");
+    writeFileSync(
+      runner,
+      [
+        `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, platform: ${JSON.stringify(process.platform)}, verbatim: false });`,
+      ].join("\n"),
+    );
+    const guard = subprocessGuard();
+    const launcher = Bun.spawn([process.execPath, ...guard.args, runner], {
+      env: { ...process.env, ...guard.env },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(await launcher.exited).toBe(137);
+  });
+
+  test("on Windows a console signal does not end the launcher before the session: it waits and returns the session's code", async () => {
+    // The console gives a Ctrl+C to every process on it: the launcher and the session each get
+    // the signal by themselves, and the launcher forwards nothing. With no listener Bun's default
+    // action would end the launcher at once, skipping its cleanup and the session's exit code.
+    expect(await signalLauncher("SIGINT", "win32", true)).toEqual({ code: 9, got: "INT" });
+    expect(await signalLauncher("SIGHUP", "win32", true)).toEqual({ code: 8, got: "HUP" });
+  });
+
+  test("the signals the launcher listens for: handed on off Windows; on Windows taken, handed on to no one", () => {
+    const handedOn: SignalPlan[] = [
+      { forward: true, signal: "SIGHUP" },
+      { forward: true, signal: "SIGINT" },
+      { forward: true, signal: "SIGTERM" },
+    ];
+    expect(launcherSignals("linux")).toEqual(handedOn);
+    expect(launcherSignals("darwin")).toEqual(handedOn);
+    // The console gives a Ctrl+C, a Ctrl+Break and a close to the session itself, and kill ends
+    // a process outright there: nothing is forwarded, but the launcher still listens.
+    expect(launcherSignals("win32")).toEqual([
+      { forward: false, signal: "SIGHUP" },
+      { forward: false, signal: "SIGINT" },
+      { forward: false, signal: "SIGBREAK" },
+    ]);
+  });
+
+  test.each([
+    ["SIGTERM", "TERM", 7],
+    ["SIGHUP", "HUP", 8],
+    ["SIGINT", "INT", 9],
+  ] as const)(
+    "%s sent to the launcher reaches the session, and its exit code is the launcher's",
+    async (signal, word, code) => {
+      expect(await signalLauncher(signal)).toEqual({ code, got: word });
+    },
+  );
+});
+
+describe("RV3: launch says what its settings file leaves in place (the lead's choice: warn, still start)", () => {
+  /** Writes a settings file holding `body`, making its folder. */
+  function settingsAt(file: string, body: unknown): void {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+  }
+  const userFile = (home: World) => join(home.home, ".claude", "settings.json");
+
+  test("--no-gateway: a login key in the user's file is named with its file and the fix; the session still starts", async () => {
+    const home = world();
+    settingsAt(userFile(home), { env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      "launch: ANTHROPIC_API_KEY is set in ~/.claude/settings.json: this session bills through it, not through your plan's login. Remove it from that file to use the login.",
+    ]);
+    expect(runLog(home)).toContain(`arg=${settingsFileOf(home, "no-gateway")}`);
+  });
+
+  test("a helper and a token in the project's own file are named too, one line each, with that file", async () => {
+    const home = world();
+    const team = join(realpathSync(home.cwd), ".claude", "settings.json");
+    settingsAt(team, { apiKeyHelper: "/bin/true", env: { ANTHROPIC_AUTH_TOKEN: "token-value" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      `launch: ANTHROPIC_AUTH_TOKEN is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+      `launch: apiKeyHelper is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+    ]);
+  });
+
+  test("a login key is named in the gateway modes too: the gateway sends your own login", async () => {
+    const home = world();
+    gatewayConfig(home, ["cheap"]);
+    settingsAt(userFile(home), { env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789" } });
+    const ctx = context(home);
+    expect(await runLaunch(["--gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toHaveLength(1);
+    expect(ctx.errors[0]).toStartWith(
+      "launch: ANTHROPIC_API_KEY is set in ~/.claude/settings.json",
+    );
+    const profile = context(home);
+    expect(await runLaunch(["--profile", "cheap"], profile)).toBe(7);
+    expect(profile.errors).toHaveLength(1);
+  });
+
+  test("--no-gateway: a retired model key that names a slot is named; a model name Anthropic knows is not", async () => {
+    const home = world();
+    settingsAt(userFile(home), {
+      env: {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker",
+      },
+    });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      'launch: env.ANTHROPIC_DEFAULT_SONNET_MODEL is "cc-smart-dev-kit-worker" in ~/.claude/settings.json: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (cc-smart-dev-kit gateway setup removes the ones 0.4.3 wrote).',
+    ]);
+  });
+
+  test("--no-gateway: a model key another file overrides is not named; the file that wins is (chain order)", async () => {
+    const team = (home: World) => join(realpathSync(home.cwd), ".claude", "settings.json");
+    // The project's file comes before the user's file: its real model wins over the user's slot name.
+    const shadowed = world();
+    settingsAt(userFile(shadowed), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+    });
+    settingsAt(team(shadowed), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    const quiet = context(shadowed);
+    expect(await runLaunch(["--no-gateway"], quiet)).toBe(7);
+    expect(quiet.errors).toEqual([]);
+    // The reverse: the project's slot name wins over the user's real model, and its file is named.
+    const winning = world();
+    settingsAt(userFile(winning), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    settingsAt(team(winning), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+    });
+    const named = context(winning);
+    expect(await runLaunch(["--no-gateway"], named)).toBe(7);
+    expect(named.errors).toHaveLength(1);
+    expect(named.errors[0]).toStartWith(
+      `launch: env.ANTHROPIC_DEFAULT_SONNET_MODEL is "cc-smart-dev-kit-worker" in ${team(winning)}:`,
+    );
+    // Another key is its own: the user's slot name for Haiku stands though the project set Sonnet.
+    const apart = world();
+    settingsAt(userFile(apart), {
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout" },
+    });
+    settingsAt(team(apart), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    const one = context(apart);
+    expect(await runLaunch(["--no-gateway"], one)).toBe(7);
+    expect(one.errors).toHaveLength(1);
+    expect(one.errors[0]).toStartWith(
+      'launch: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is "cc-smart-dev-kit-scout" in ~/.claude/settings.json:',
+    );
+  });
+
+  test("a file whose address is malformed still tells what else it sets: its login key is named", async () => {
+    const home = world();
+    const team = join(realpathSync(home.cwd), ".claude", "settings.json");
+    settingsAt(team, {
+      env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789", ANTHROPIC_BASE_URL: 42 },
+    });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      `launch: ANTHROPIC_API_KEY is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+    ]);
+  });
+
+  test("a slot name is fine on the gateway, and a launch with no mode is the settings' own: no note", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    settingsAt(userFile(home), {
+      env: {
+        ANTHROPIC_API_KEY: "sk-ant-test-0123456789",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker",
+      },
+    });
+    const gateway = context(home);
+    expect(await runLaunch(["--gateway"], gateway)).toBe(7);
+    expect(gateway.errors.map((line) => line.split(" is ")[0])).toEqual([
+      "launch: ANTHROPIC_API_KEY",
+    ]);
+    const plain = context(home);
+    expect(await runLaunch([], plain)).toBe(7);
+    expect(plain.errors).toEqual([]);
+  });
+
+  test("a settings file that cannot be read says nothing here, and the session still starts", async () => {
+    const home = world();
+    settingsAt(userFile(home), "{not json");
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([]);
   });
 });

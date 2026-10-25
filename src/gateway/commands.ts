@@ -29,7 +29,17 @@ import { withLock } from "../setup/lock";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
-import { chainProblem, chainToCheck, notSlotName, SLOT_WORDS, slotName } from "./commands-chains";
+import {
+  chainProblem,
+  chainToCheck,
+  JUDGE_WARNING,
+  judgeDefaultWords,
+  judgeSwitchWords,
+  notSlotName,
+  SLOT_WORDS,
+  slotName,
+  standInTradeOff,
+} from "./commands-chains";
 import { changeLines, gatewayOut, printChanges } from "./commands-out";
 import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./commands-profile";
 import {
@@ -43,6 +53,7 @@ import {
   projectStateOf,
 } from "./commands-project";
 import {
+  aliasesAtClaudeSlots,
   breakerOn,
   breakerWords,
   ConfigError,
@@ -65,7 +76,13 @@ import {
   saveConfig,
   workerJudgeTargets,
 } from "./config";
-import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
+import {
+  type HealthFetch,
+  type HealthProbe,
+  routerFeature,
+  routerHealth,
+  routerLacksClaudeSlotAliases,
+} from "./health";
 import { HISTORY_RETENTION_DAYS, historyDbBytes, historyDbExists } from "./history";
 import {
   bucketWords,
@@ -119,7 +136,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   FAMILY_SLOTS,
-  formatTarget,
   isModelSlot,
   JUDGE_SLOT,
   parseTarget,
@@ -1250,39 +1266,10 @@ function keptWords(key: string, kept: KeptChain): string {
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
-/** The trade-off of a judge other than Claude, said wherever one is set or shown. */
-export const JUDGE_WARNING =
-  "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
-
-/** The worker chain's backend targets that have not passed the judge test, in its order. */
-function untestedWorkerTargets(config: GatewayConfig): string[] {
-  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
-    const parsed = parseTarget(text);
-    return (
-      "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text)
-    );
-  });
-}
-
-/**
- * What the judge is, in words, while the person set no judge chain (owner D44): Claude
- * judges every check first, as it always did; while it is limited or down, the worker
- * chain's targets that passed the judge test judge in its place, but only once the person
- * turned the judge's fallback switch on (off by default, D66). One home for the words that
- * `gateway status`,
- * `slot judge off`, `fallback judge` and `doctor` say.
- */
-export function judgeDefaultWords(config: GatewayConfig): string {
-  if (!fallbackOn(config, JUDGE_SLOT)) return "Claude judges every check, alone (fallback off)";
-  const standIns = workerJudgeTargets(config).map(formatTarget);
-  const untested = untestedWorkerTargets(config);
-  if (standIns.length === 0) {
-    return untested.length > 0
-      ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)`
-      : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
-  }
-  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
-}
+// What the judge is while no judge chain is set, and the trade-off of a judge other than
+// Claude, moved to `commands-chains.ts` (the profile commands say them too); every caller of
+// this module still imports them from here.
+export { JUDGE_WARNING, judgeDefaultWords };
 
 /** What a slot's fallback switch means for its chain, in words. */
 function fallbackWords(config: GatewayConfig, key: string): string {
@@ -1447,19 +1434,6 @@ async function testWorkerTargets(
 }
 
 /**
- * Whether the worker's tested targets stand in for Claude as the judge, after the worker chain
- * or the judge's default changed: then the caller says `JUDGE_WARNING` (D44: said wherever it
- * is set).
- */
-function standInTradeOff(config: GatewayConfig): boolean {
-  return (
-    !Object.hasOwn(config.slots, JUDGE_SLOT) &&
-    fallbackOn(config, JUDGE_SLOT) &&
-    workerJudgeTargets(config).length > 0
-  );
-}
-
-/**
  * A slot turned off, or whose fallback switch went off, loses its fallback record in the
  * router's state file at once, so the status line stops showing it even before the router's
  * next request (the router drops it too, when it reads the changed config). A file that is
@@ -1502,6 +1476,41 @@ function slotChangeLines(plan: SlotPlan): string[] {
 /** The verdict of every command that changes a slot: the config is read at each request. */
 const ROUTER_TAKES_IT = "The router uses it from its next request.";
 
+/** The verdict when no running router could be asked: saved, and read by the one that runs next. */
+const SAVED_FOR_THE_NEXT_ROUTER = "Saved. A router that runs reads it from its first request.";
+
+/**
+ * Before `gateway slot` saves: will the router that runs read this config? 1.2.0 accepts an
+ * alias that points at a slot in Claude mode; a 1.1.x router (the one still running until
+ * `gateway setup` replaces it) refuses the whole file, keeps its last good config and ignores
+ * every later change. The router carries no version, so its health page's features say
+ * (`routerFeature`). An older router refuses the change before anything is written; one that
+ * does not answer cannot say, so the change is saved with a warning (`unproved`). A config with
+ * no such alias asks no router.
+ */
+async function routerReadsAliases(
+  ctx: GatewayContext,
+  out: Out,
+  config: GatewayConfig,
+): Promise<{ unproved: boolean }> {
+  const [alias] = aliasesAtClaudeSlots(config);
+  if (alias === undefined) return { unproved: false };
+  const health = await routerFeature(config.port, "claude-slot-aliases", ctx.probe.fetch);
+  if ("error" in health) {
+    out.line(
+      "warn",
+      `the router does not answer on 127.0.0.1:${config.port} (${health.error}), so it cannot say it reads an alias to a slot that is Claude (alias "${alias[0]}" → ${alias[1]}); if an older copy starts, it will ignore this file. Run ${COMMAND} gateway setup so the copy that runs is this version's.`,
+    );
+    return { unproved: true };
+  }
+  if (!health.has) {
+    throw new Error(
+      `${routerLacksClaudeSlotAliases(config.port, alias)}. Run ${COMMAND} gateway setup first: it puts this version's router in place.`,
+    );
+  }
+  return { unproved: false };
+}
+
 /** A slot's change: its first line marked `~`, the lines under it as they are (indented). */
 function printSlotChange(out: Out, lines: readonly string[]): void {
   const [first, ...rest] = lines;
@@ -1532,6 +1541,8 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
   const out = gatewayOut(ctx);
+  // The router is asked outside the lock, like the model lists: it is the network.
+  const router = await routerReadsAliases(ctx, out, first.config);
   /** Each target that passed the test, and the backend URL it passed on. */
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
@@ -1618,7 +1629,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     }
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   }
-  out.verdict("ok", ROUTER_TAKES_IT);
+  out.verdict("ok", router.unproved ? SAVED_FOR_THE_NEXT_ROUTER : ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     out.next([
       {
@@ -1671,9 +1682,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     printSlotChange(out, [
       change,
       `  ${judgeDefaultWords(plan.config)}`,
-      plan.now
-        ? "  The worker's tested targets answer when Claude is limited or down."
-        : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+      `  ${judgeSwitchWords(plan.now)}`,
     ]);
     if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   } else {

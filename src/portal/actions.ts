@@ -122,9 +122,14 @@ import { forgetWorktrees } from "./worktrees-read";
  * clock. One home, so a test can build the same context the server builds.
  */
 export function portalOmnirouteContext(ctx: PortalContext): OmnirouteContext {
+  // The portal usually starts from a SessionStart hook, so its environment holds `CLAUDECODE=1`;
+  // an OmniRoute update refuses inside a Claude Code session, and a click is the person's, not
+  // a session's. The CLI children drop it the same way (`cliChildEnv`).
+  const env = { ...ctx.env };
+  delete env.CLAUDECODE;
   return {
     confirm: null,
-    env: ctx.env,
+    env,
     health: (url, init) => ctx.fetch(url, init),
     now: ctx.now,
     paths: ctx.paths,

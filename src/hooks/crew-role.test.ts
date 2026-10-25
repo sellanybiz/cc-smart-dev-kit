@@ -26,6 +26,7 @@ import {
 } from "../crew/store";
 import { readTaskGate, taskGateFile, writeTaskGate } from "../crew/tasks";
 import { resumeText } from "../crew/wait";
+import { emptyConfig, saveConfig } from "../gateway/config";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -957,6 +958,39 @@ describe("D42: a model limit pauses the crew session", () => {
     ]);
   });
 
+  test("a session in a profile pauses on its profile's breaker, kept under <profile>/<slot> (RV3)", async () => {
+    const world = await workerWorld();
+    // The router's address and the profile are the config's; the session's own URL names them.
+    saveConfig(cliPaths(world.env).gatewayConfigFile, {
+      ...emptyConfig(),
+      port: 20997,
+      profiles: { "my-project": {} },
+      slots: { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] },
+    });
+    const own = breaker().breakers?.["cc-smart-dev-kit-worker"];
+    if (own === undefined) throw new Error("the fixture has a worker breaker");
+    writeState(world.env, {
+      ...breaker(),
+      breakers: { "my-project/cc-smart-dev-kit-worker": own },
+    });
+    await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      { ...world.env, ANTHROPIC_BASE_URL: "http://127.0.0.1:20997/p/my-project" },
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW, timeZone: "UTC" },
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
+      kind: "slot",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "my-project/cc-smart-dev-kit-worker",
+    });
+    expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
+      "worker slot in profile my-project limited since 21:05; goes on by itself when it answers",
+    );
+  });
+
   test("Claude's own limit next: its model and reset time", async () => {
     const world = await workerWorld();
     writeState(world.env, limit());
@@ -991,9 +1025,11 @@ describe("D42: a model limit pauses the crew session", () => {
       world.repo,
       { nowMs: NOW, timeZone: "UTC" },
     );
+    // The wait keeps the state key of the session's own slot, so the watch asks its breaker.
     expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
       kind: "unknown",
       since: "2026-10-21T22:00:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
     });
     expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
       "it stopped on server_error; the watch goes on with it once a model answers",

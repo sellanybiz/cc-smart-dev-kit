@@ -268,11 +268,20 @@ export interface Caps {
 }
 
 /** The caps of this project: `workflow.crew`, over the person's own and the defaults. */
-export async function capsOf(ctx: CrewContext, checkout: Checkout | null): Promise<Caps | null> {
+export async function capsOf(
+  ctx: Pick<CrewContext, "cwd" | "freeMemoryGb" | "now" | "paths">,
+  checkout: Checkout | null,
+): Promise<Caps | null> {
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now());
+    // The project's gateway is read at the main checkout, the folder `crew start` reads it at
+    // (`caller.repo`): the board then shows the reason `crew start` would act on.
+    const usage = usageFacts(
+      ctx.paths,
+      ctx.now(),
+      checkout === null ? ctx.cwd : (checkout.mainCheckout ?? checkout.root),
+    );
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,

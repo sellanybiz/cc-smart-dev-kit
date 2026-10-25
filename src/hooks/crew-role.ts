@@ -94,6 +94,7 @@ import {
 } from "../crew/tasks";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
+import { sessionGatewayOf } from "./agent-guard";
 import { isInside, realPath } from "./git";
 import {
   addContext,
@@ -653,7 +654,7 @@ export async function crewRoleAnswer(
   if (event === "UserPromptSubmit")
     return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
-  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
+  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
 
@@ -676,6 +677,7 @@ async function stopFailureAnswer(
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
   options: CrewRoleOptions,
 ): Promise<HookResult> {
   const error = stringField(input.error);
@@ -687,7 +689,9 @@ async function stopFailureAnswer(
   // stopped, or still waits in the queue has no turn to pause.
   if (!(RUNNING_STATES as readonly string[]).includes(record.state)) return SILENT;
   const nowMs = options.nowMs ?? Date.now();
-  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  // The profile the session's own URL names: the router keeps its breaker under `<profile>/<slot>`.
+  const { profile } = sessionGatewayOf(paths, env);
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
   const text = pauseText(waitingFor, error, nowMs, options.timeZone);
   try {
     await updateCrew(
