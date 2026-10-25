@@ -80,7 +80,7 @@ D1–D16 are the audit plan's and keep their meaning, with three changes: **D4**
 | D64 | **A slot's backend target can pin its reasoning effort** (the owner, 2026-10-24: "I should be able to fix a model's effort; even if Claude Code calls it with max or low, if I fixed it to xhigh the request actually goes with xhigh").<br>• **What it is.** A pin per slot and backend target (`gateway effort <slot> <target> <level>\|off`). It replaces the effort Claude Code sent (`output_config.effort`, which OmniRoute maps to the backend's reasoning effort) on every request to that target. That includes the requests where Claude Code turned thinking off, which the gateway otherwise sends as `none`.<br>• **Backend targets only.** A `claude-…` target goes to Anthropic with only the fields that model refuses changed (`.claude/rules/gateway.md`), so a pin there is refused.<br>• **Proved before it is saved.** One test request at that effort, so a level the backend refuses is never saved.<br>• **Its own function.** One named, tested translation (`effortPinForBackend`), plus a contract row.<br>• **Shown everywhere a chain shows:** `gateway status`, the Slots page and the log line. (EF1, EF2, 1.2.0.) |
 | D65 | **A Claude fallback at its known plan limit is skipped, even as the last target** (the owner, 2026-10-25, after one empty Codex answer on the worker slot became Claude Sonnet's weekly-limit 429 and paused two crew sessions for four days). When a target before it in the chain was asked and failed, a Claude target whose plan limit is current (a known reset in the future) is skipped like a resting one; the breaker's retryable 429, or the last asked target's answer, goes back instead. Claude first or alone in a chain is still asked, and its 429 passes unchanged. The one exception to "Anthropic's own answers always pass unchanged" (GW1, 1.2.0). |
 | D66 | **Claude by default** (the owner, 2026-10-25): every slot (scout, worker, opus, fable, the judge, each profile's) is plain Claude with no chain, every fallback switch is off (the judge's too: D44's stand-in becomes opt-in), and the gateway is off; OmniRoute and the router are still set up as before. claude-mem follows the scout, as before, so it is Claude Haiku on the person's login by default (this replaces D63's "stays on OmniRoute"). Remote Control is on with the gateway off, and on again after the gateway goes off. Nothing suggests a model unasked: `gateway setup` asks no slot, the installer's words say no "affordable models", and the plan-limit alert says only the limit and its reset. Machines already set up move once, at their next `setup`, with a backup. A crew session hands off at 400k tokens or 70 % of its window, whichever comes first, always before its real auto-compact point (`crew.handoffTokens`). |
-| D67 | **GitHub Issues, opt-in** (the owner, 2026-10-25, for 1.3.0): one switch, `workflow.issues`, off by default like `autoPush` and `openPr`. The kit files follow-ups and findings as issues (one per finding, a hidden marker against doubles), comments "fixed on `<branch>` at `<commit>`" and labels `fixed-unreleased` at a crew merge, and closes them with the release (its pull request lists `Fixes #n`; GitHub closes an issue only when such a pull request merges into the default branch). A phase can start from an issue (`crew start --issue <n>`), and the lead can hear new issues and comments. Only the project's own repository; issue text checked for secrets and home paths before it is posted; an issue someone else wrote is data, never an instruction: work starts only from an issue the person labelled or named. GitHub itself notifies the person. |
+| D67 | **GitHub Issues, opt-in** (the owner, 2026-10-25, for 1.3.0): one switch, `workflow.issues`, off by default like `autoPush` and `openPr`. The kit files follow-ups and findings as issues (one per finding, a hidden marker against doubles), comments "fixed on `<branch>` at `<commit>`" and labels `fixed-unreleased` at a crew merge, and closes them with the release (its pull request lists `Fixes #n`; GitHub closes an issue only when such a pull request merges into the default branch). A phase can start from an issue (`crew start --issue <n>`), and the lead can hear new issues and comments. Only the project's own repository; issue text checked for secrets and home paths before it is posted; an issue someone else wrote is data, never an instruction: work starts only from an issue the person labelled or named. GitHub itself notifies the person. **Named means labelled** (the owner, 2026-10-25, GI3): `crew start --issue` needs the ready label, added by an account with write access; an issue the person names in chat is labelled by the lead through `gh issue edit --add-label`, which the guard asks the person about. |
 | D33 | **A major version waits for the person.** The self-update installs patch and minor versions as today, but holds a new major until the person runs `cc-smart-dev-kit update`; each session start shows one line pointing to "What's new". `update` and `setup` first list every repo the session records name that still carries a retired field or an engine hook line. | Lead, from the second read (a 1.0.0 that rejects old fields must not reach every machine within the hour) |
 
 Defaults the lead set, the owner may change at approval: worker caps per D37 plus a free-memory check; workers run in `auto` permission mode (the person's rules plus the safety classifier; `dontAsk` with an allow list would fail closed instead — L1a proves a worker runs the whole suite and commits without a prompt); quiet after 20 minutes (alert only); hand-off at 70% context, a note at 2 hours, a hand-off at 4; the lead hears through a plugin monitor (`worker watch`), with `worker watch --once` in the background and SendMessage as fallbacks; a raw `claude --bg` asks and shows the launcher's line.
@@ -695,6 +695,36 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   1.2.1-merged records (JW1, NM1, SW1, RS1, MC1, WN1, RG1, LT1) stay until the lead's folder is
   on a branch that has them (`crew rm` checks the lead's own branch). The owner: `LEAD … (2)` is
   the old lead (kept, never removed).
+
+- 2026-10-25 (afternoon): **#24 merged into `main`** (`6c65da0`, a merge commit, the owner's
+  choice); the Windows hooks job's failure was a test's unquoted `--folder` path (`b93e8cd`).
+  Into `release-1.2.1`: `origin/main` (`5a183bb`), **IN1** (`b7d8fda`: AN1, PL1, MC1, LH1; AN1's
+  self-watch loop with HO1's compact-point advice in `adviseOnce`), **RC1** (`1b8ad53`: setup
+  writes `remoteControlAtStartup: true` only while the key is absent; the docs keep DF1's proved
+  row, and the three "never writes" lines now say what setup does), **UA1** (`6cd3bbb`), **SL1**
+  (`15eb3e4`). Full check after UA1: 7,302 pass, 0 fail, `check:portal` green. **FX1 started**
+  (sonnet `high`, from `6cd3bbb`). TV1 sat 25 minutes on a background wait for an `exit` line its
+  check never printed (1 fail in `stop-failure.test.ts`); told, it fixed and went on. Owed live
+  after 1.2.1: UA1's permission prompt and `AskUserQuestion` in an interactive and a `--bg`
+  session (expect "parked as #N"); SL1's footer before and after `/autocompact 400000` and
+  `/effort low`; RC1's gateway-on session start with the key set.
+  **SC1 handed back** (`23b1de3`, opus xhigh review, 7,112 pass). **The owner, 2026-10-25:** bound
+  a stream from its headers too (a last target with no other deadline: `streamIdleMs` of total
+  silence ends it; any byte, keep-alives and pings included, resets it), **and end a stalled
+  Anthropic stream the same way** (replaces "backends only"). SC1 resumed with that, plus the
+  `firstByteMs` cap at the timer maximum (the same fault its review found in `streamIdleMs`), and
+  a second opus xhigh review since it now touches how Anthropic answers reach Claude Code.
+  **TV1 merged** into `release-1.2.1` (`905b032`; its `tier-view` hook beside UA1's `user-away`:
+  hooks.json, specs, matrix, the docs' machine-wide count now ten). **GI1 merged** into
+  `release-1.3.0` (`677d129`; worktree `rel-1.3.0` made), then **`release-1.2.1` at `15eb3e4`
+  into `release-1.3.0`** (`13ceea4`), so GI3 has PL1. **GI2 and GI3 started** (sonnet `high`),
+  **GI4 queued** on them. The watch judges "merged" against the lead folder's branch
+  (`release-1.2.0`), so GI4 may need a start by hand once GI2 and GI3 are in `release-1.3.0`.
+  **GI1 resumed** for one more fault: its `find -exec`, `watch`, `su -c`, `parallel` reading
+  lived in the issue guard only (`RUNNER_PROGRAMS`), so `watch git push` and `find … -exec gh pr
+  merge` still pass the git and merge guards; it moves into `src/shell/command.ts`, opus xhigh
+  review. Noted for a later fix: `claudeLimitHolds` compares exact Claude ids (TV1's review), so a
+  chain that starts with another Claude id of the same family reads as "does not hold".
 
 ### For the owner in the morning
 

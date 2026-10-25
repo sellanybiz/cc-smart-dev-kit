@@ -2,7 +2,7 @@
 
 ## Goal, and why
 
-Your branch starts from `release-1.2.1` with 1.2.0's phases and IN1 merged. The plan:
+Your branch starts from `release-1.2.1` with 1.2.0 (merged into main as #24), IN1 (AN1, PL1, MC1, LH1), RC1 (Remote Control at startup) and UA1 (`user-unavailable`) merged. SC1, TV1 and SL1 build beside you; a conflict with them is the lead's. The plan:
 `.claude/plans/2026-10-21-master-plan.md` § Release 1.2.1, row FX1.
 
 Each phase that finished on 2026-10-25 named small faults outside its own files: a stale comment,

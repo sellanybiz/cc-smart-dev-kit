@@ -3,7 +3,7 @@
 ## Goal, and why
 
 Your branch starts from `release-1.3.0` with GI1 merged (the switch, `issue file`, the labels, the
-one `gh` runner, the redaction). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release
+one `gh` runner, the redaction) and `release-1.2.1` merged at `15eb3e4` (IN1, RC1, UA1, SL1). The plan: `.claude/plans/2026-10-21-master-plan.md` § Release
 1.3.0, row GI2, and decision D67. GI3 runs beside you; keep to your files.
 
 **The owner's decision (D67):** "comments 'fixed on `<branch>` at `<commit>`' and labels

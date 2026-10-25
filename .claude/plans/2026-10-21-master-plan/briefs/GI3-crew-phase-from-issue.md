@@ -4,7 +4,7 @@
 
 Your branch starts from `release-1.3.0` with GI1 merged (the switch, `issue file`, the labels, the
 one `gh` runner, the redaction). 1.2.1's PL1 (the plan folder and its run records,
-`src/crew/runs.ts`) is on that branch too. The plan: `.claude/plans/2026-10-21-master-plan.md` §
+`src/crew/runs.ts`) is on that branch too: `release-1.2.1` was merged in at `15eb3e4` (IN1, RC1, UA1, SL1). The plan: `.claude/plans/2026-10-21-master-plan.md` §
 Release 1.3.0, row GI3, and decision D67. GI2 runs beside you; keep to your files.
 
 **The owner's decision (D67):** "A phase can start from an issue (`crew start --issue <n>`) … an
