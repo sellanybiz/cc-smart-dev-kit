@@ -4,12 +4,12 @@
  * against a temp checkout and the fake feed (`fake-feed.ts`); nothing reaches GitHub.
  */
 import { describe, expect, test } from "bun:test";
-import { readIssueFeed } from "../crew/store";
+import { readIssueFeed, writeIssueFeed } from "../crew/store";
 import { FAKE_LOGIN } from "../testing/fake-gh";
 import { commitConfig } from "../testing/hooks";
 import { issuesWorld } from "../testing/issues-world";
 import { type FakeFeed, FEED_REPO, fakeFeed } from "./fake-feed";
-import { type FeedResult, pollIssueFeed } from "./feed";
+import { type FeedResult, newFeedMemory, pollIssueFeed } from "./feed";
 import { passBudget } from "./pending";
 
 const T0 = Date.parse("2026-10-25T10:00:00Z");
@@ -553,6 +553,81 @@ describe("the interval", () => {
     });
     expect(later).toEqual({ news: [], notices: [] });
     expect(feed.requests).toEqual([]);
+  });
+
+  test("IX2-6: a clock moved back an hour or more does not silence the feed; a small step back does not make it look early", async () => {
+    const { feed, poll } = feedWorld();
+    history(feed);
+    await poll(T0);
+    // nextAt is T0 + 5 minutes. Half an hour back it is still within the hour's tolerance: not due.
+    feed.requests.length = 0;
+    await poll(T0 - 30 * MINUTE);
+    expect(feed.requests).toEqual([]);
+    // Three hours back, the stored time is further ahead than any interval could put it: due.
+    await poll(T0 - 3 * 60 * MINUTE);
+    expect(feed.requests).toHaveLength(2);
+  });
+
+  test("IX2-6: a rate limit's reset further ahead than an hour (GitHub's clock) is looked at again", async () => {
+    const { feed, poll, state } = feedWorld();
+    history(feed);
+    await poll(T0);
+    feed.limitedUntil = Math.floor((T0 + 3 * 60 * MINUTE) / 1000);
+    await poll(T0 + 5 * MINUTE);
+    expect(state()?.problem).toBe("rate-limit");
+    expect(state()?.nextAt).toBe(T0 + 3 * 60 * MINUTE);
+    feed.limitedUntil = null;
+    feed.requests.length = 0;
+    // Our clock is now far behind the one that wrote nextAt: due, not silent for three hours.
+    await poll(T0 + 6 * MINUTE);
+    expect(feed.requests.length).toBeGreaterThan(0);
+  });
+
+  test("IX2-7: a state that cannot be written is kept in the watch's memory: the same news is not told again, and a rate-limited look is not retried at once", async () => {
+    const { feed, made, world } = feedWorld();
+    history(feed);
+    const memory = newFeedMemory();
+    const told: string[][] = [];
+    let failing = false;
+    const poll = (now: number) =>
+      pollIssueFeed({
+        budget: passBudget(() => now),
+        deliver: async (found) => {
+          told.push([...found.news, ...found.notices]);
+        },
+        memory,
+        now,
+        repo: made.repo,
+        stateDir: made.paths.stateDir,
+        world,
+        write: (state) => {
+          if (failing) throw new Error("disk full");
+          writeIssueFeed(made.paths.stateDir, made.repo, state);
+        },
+      });
+    await poll(T0);
+    failing = true;
+    feed.issues.push({ author: "a", createdAt: "2026-10-25T10:01:00Z", number: 2, title: "New" });
+    await poll(T0 + 5 * MINUTE);
+    expect(told.at(-1)).toEqual(['issue #2 opened by a: "New"']);
+    expect(memory.unwritten).toBe("disk full");
+    // The next due look finds nothing new: the cursor the delivery used is in memory.
+    await poll(T0 + 10 * MINUTE);
+    expect(told.at(-1)).toEqual([]);
+    expect(told.flat().filter((line) => line.includes("#2"))).toHaveLength(1);
+    // A rate limit: the look is not retried at once, though the file still says the old time.
+    feed.limitedUntil = Math.floor((T0 + 40 * MINUTE) / 1000);
+    await poll(T0 + 15 * MINUTE);
+    feed.limitedUntil = null;
+    feed.requests.length = 0;
+    await poll(T0 + 16 * MINUTE);
+    expect(feed.requests).toEqual([]);
+    // The disk works again: the next look writes, and the memory is let go.
+    failing = false;
+    await poll(T0 + 40 * MINUTE);
+    expect(memory.held).toBeNull();
+    expect(memory.unwritten).toBeNull();
+    expect(readIssueFeed(made.paths.stateDir, made.repo)?.issues?.top).toBe(2);
   });
 
   test("the setting is the interval, down to its floor of two minutes", async () => {

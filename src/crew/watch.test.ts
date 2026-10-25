@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { fakeFeed } from "../issues/fake-feed";
+import { type FeedMemory, newFeedMemory } from "../issues/feed";
 import { MARKS_PER_PASS, queueMarks, readPending } from "../issues/pending";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
@@ -3502,15 +3503,16 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
       { now: () => clock, scanFacts: { containers: [], programs: [], sessions: [] } },
       { FAKE_AGENTS_JSON: agentsJson([]) },
     );
-    const scopeOf = (lead: string, gh: GhExec) => ({
+    const scopeOf = (lead: string, gh: GhExec, feedMemory?: FeedMemory) => ({
       gh,
+      ...(feedMemory === undefined ? {} : { feedMemory }),
       leadSessionId: lead,
       mergeInto: world.repo,
       repo: world.repo,
       resolved: resolveWorkflow(world.paths, null),
     });
     // Each lead's watch has its own output and its own state, as two watch processes have.
-    const watchOf = (lead: string, gh: GhExec = feed.exec) => {
+    const watchOf = (lead: string, gh: GhExec = feed.exec, memory?: FeedMemory) => {
       const out: string[] = [];
       let state: WatchState = { noted: true, offset: 0, said: {}, parkedAt: T0 };
       return {
@@ -3519,7 +3521,7 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
           const pass = await watchPass(
             state,
             { ...ctx, print: (line: string) => out.push(line) },
-            scopeOf(lead, gh),
+            scopeOf(lead, gh, memory),
           );
           state = pass.state;
         },
@@ -3651,6 +3653,29 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     const late = watchOf("late-lead");
     await late.pass();
     expect(late.out).toEqual([]);
+  });
+
+  test("IX2-7: a state the feed could not write is one line, once per change, and the watch goes on", async () => {
+    const { advance, feed, watchOf } = await feedWorld();
+    const memory = newFeedMemory();
+    const a = watchOf(LEAD_SESSION, feed.exec, memory);
+    await a.pass();
+    memory.unwritten = "disk full";
+    advance(MINUTE);
+    await a.pass();
+    const line =
+      "issues: the feed's state could not be written (disk full); the watch keeps it in memory and goes on";
+    expect(a.out).toEqual([line]);
+    // The same reason on the next passes: silent.
+    advance(MINUTE);
+    await a.pass();
+    expect(a.out).toEqual([line]);
+    // A different reason is a change: said again.
+    memory.unwritten = "no space left";
+    advance(MINUTE);
+    await a.pass();
+    expect(a.out.at(-1)).toContain("(no space left)");
+    expect(a.out).toHaveLength(2);
   });
 
   test("a 304 is silent: nothing printed, the log unchanged", async () => {

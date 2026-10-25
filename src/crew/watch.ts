@@ -53,7 +53,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
-import { pollIssueFeed } from "../issues/feed";
+import { type FeedMemory, newFeedMemory, pollIssueFeed } from "../issues/feed";
 import { type PassBudget, passBudget, queueMarks, settleMarks } from "../issues/pending";
 import { phaseIssues } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
@@ -474,6 +474,11 @@ export interface WatchScope {
    */
   mayStart?: boolean;
   /**
+   * What this watch keeps of the issue feed's state when it cannot write it (`FeedMemory`), made
+   * once for the watch's life by `watchLoop`. Left out, the feed has no memory, as in a test.
+   */
+  feedMemory?: FeedMemory;
+  /**
    * What the gateway says at a moment (D42), for the paused crew sessions. Left out, one pass
    * reads the state file, the config and the router's health page. A test hands in its own: no
    * test reaches a real router's port.
@@ -524,6 +529,7 @@ async function lookAtGitHub(
   say: (line: string) => void,
 ): Promise<void> {
   const key = "issues:feed";
+  const unwrittenKey = "issues:feed-state";
   try {
     await pollIssueFeed({
       budget,
@@ -564,6 +570,7 @@ async function lookAtGitHub(
           }
         }
       },
+      ...(scope.feedMemory === undefined ? {} : { memory: scope.feedMemory }),
       now: ctx.now(),
       repo: scope.repo,
       stateDir: ctx.paths.stateDir,
@@ -576,6 +583,17 @@ async function lookAtGitHub(
       },
     });
     delete said[key];
+    // A state the look could not write is kept in memory (`FeedMemory`): one line, once per change.
+    const unwritten = scope.feedMemory?.unwritten ?? null;
+    if (unwritten === null) {
+      delete said[unwrittenKey];
+    } else {
+      const line = `issues: the feed's state could not be written (${unwritten}); the watch keeps it in memory and goes on`;
+      if (said[unwrittenKey] !== line) {
+        say(line);
+        said[unwrittenKey] = line;
+      }
+    }
   } catch (error) {
     const line = `issues: the watch could not look at GitHub (${reasonOf(error)})`;
     if (said[key] !== line) {
@@ -1475,6 +1493,8 @@ async function watchLoop(
   // the last good value for that pass's read-only decisions, and starts nothing (see below).
   let caps = resolved;
   let capsSaid = false;
+  // The issue feed's state, when this watch cannot write it: kept for as long as the watch runs.
+  const feedMemory = newFeedMemory();
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
@@ -1501,7 +1521,7 @@ async function watchLoop(
         capsSaid = true;
       }
     }
-    const scope: WatchScope = { ...start, mayStart, resolved: caps };
+    const scope: WatchScope = { ...start, feedMemory, mayStart, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
