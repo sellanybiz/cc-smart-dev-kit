@@ -13,6 +13,7 @@ paths:
   - "src/entries/stop-failure.ts"
   - "src/entries/subagent-background.ts"
   - "src/entries/update-check.ts"
+  - "src/entries/user-away.ts"
   - "src/entries/verify-gate.ts"
   - "src/entries/worktree-leftovers.ts"
   - "src/entries/worktrees-clean.ts"
@@ -134,7 +135,10 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 3. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
 4. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
 5. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
-6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
+6. **While the person is away**: an answer that asks them becomes a deny, with the call
+   parked on their list (`hooks-guards.md` § While the person is away). One step for every
+   hook; never an allow.
+7. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
 
 The frame stays general: later hooks (notifications, the routing of heavy jobs) are new

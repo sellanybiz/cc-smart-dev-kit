@@ -4,7 +4,7 @@
  *
  *   bun probe.ts <worktree> <label>
  *
- * Labels: bash-away, bash-available, git-away, git-available, ask-away, ask-available.
+ * Labels: bash-away, bash-available, push-away, push-available, ask-away, ask-available.
  * Prints one JSON object: what the model saw as the tool result, the state's items, the stderr.
  */
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -28,7 +28,7 @@ writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "{}\n");
 
 const CALLS: Record<string, { name: string; input: unknown }> = {
   bash: { name: "Bash", input: { command: "echo ua1-probe > probe-output.txt", description: "x" } },
-  git: { name: "Bash", input: { command: "git push --force origin main", description: "x" } },
+  push: { name: "Bash", input: { command: "git push --force origin main", description: "x" } },
   ask: {
     name: "AskUserQuestion",
     input: {
@@ -167,7 +167,7 @@ const pluginCopy = join(world.root, "plugin");
 cpSync(join(worktree, "plugin"), pluginCopy, { recursive: true });
 const manifestFile = join(pluginCopy, ".claude-plugin", "plugin.json");
 const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
-delete manifest.dependencies;
+if (process.env.UA1_KEEP_DEPENDENCIES === undefined) delete manifest.dependencies;
 writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
 const hookLog = join(world.root, "hooks.log");
 const env = {

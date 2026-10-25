@@ -1,7 +1,7 @@
 # Instructions, skills and agents
 
 
-The plugin carries general working instructions for Claude, 19 skills, 5 agents and two
+The plugin carries general working instructions for Claude, 21 skills, 5 agents and two
 Workflows, all written for any project (`README.md` § Instructions, skills and agents lists
 them).
 
@@ -76,6 +76,20 @@ every turn and points to the skill that holds each procedure: the research steps
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
 owner's D12).
+
+**The skill pair for the person's availability.** `user-unavailable` and `user-available` are the
+two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
+asleep, or just away). `user-unavailable` is the rules while the person cannot answer: never stop
+to ask; an easy-to-undo choice with a recommended option is taken and parked as a `decision`; the
+person's own choice is parked as a `question` with its options; an action that needs their yes is
+parked as an `action` with its exact command and never tried; a lead keeps its crew going; each
+stretch ends with a `Summary:` decision. `user-available` switches the state back, shows what
+was done, then goes through the list: decisions to keep or undo, the questions in one call, each
+action run on the person's yes. Neither skill duplicates the hooks (`hooks.md` § While the person
+is away): the hooks deny and park, the skills say how to work in that state. The pointer to them
+is in the hooks' notes, not in `core.md`, which stays inside its line budget. A skill's name and
+description are carried by every session, used or not, so both descriptions stay to one short
+sentence or two (`check:context-budget`).
 
 **The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
 one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to

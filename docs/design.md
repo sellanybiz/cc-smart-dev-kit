@@ -15,7 +15,7 @@ parts, then the part you are changing.
 | [The three parts](design/parts.md) | The launcher, why long-running parts run from copies, the Bun it needs, and the two flags on every bun run inside a person's folder. |
 | [How the command prints](design/command.md) | One way to print: headings, marked lines, `Fix:` lines, a verdict, and the same words rich or plain. |
 | [The installer](design/installer.md) | The one command that does the whole install, and what its first real run taught it. |
-| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the 19 skills, the 5 agents, and the output style. |
+| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the 21 skills, the 5 agents, and the output style. |
 | [Per-project opt-in](design/project-json.md) | `.claude/cc-smart-dev-kit.json`: every field, and how a project adds its own part to a general skill. |
 | [Updates](design/updates.md) | The hourly background check, the major-version hold, and `cc-smart-dev-kit update`'s steps. |
 | [Companion plugins](design/companions.md) | claude-mem and frontend-design: why the plugin does not load without them. |
