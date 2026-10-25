@@ -443,6 +443,26 @@ const crewFields = z.object({
    */
   resumeClaim: z.looseObject({ at: text, token: text }).optional(),
   /**
+   * A model or effort change the lead asked for (`crew model`) that a cap holds back (MC1): the
+   * model, the effort, the reason it waits and when it was asked. The session runs on its own
+   * values meanwhile; the lead's watch applies this once the caps allow (`applyPendingModels`),
+   * and any `crew model` that lands on a value clears or replaces it. Absent on a record an
+   * older kit wrote, and on every record with no change waiting.
+   */
+  pendingLaunch: z
+    .looseObject({
+      at: text,
+      effort: text,
+      model: z.looseObject({
+        named: text,
+        slot: text.nullable(),
+        resolved: text,
+        tier: text.nullable(),
+      }),
+      why: text,
+    })
+    .optional(),
+  /**
    * The last pause of the crew session (D42), kept when it goes on: when the wait began, and
    * how long the watch had to hold off before resuming it (`backoffMs`, 0 on a first pause).
    * A pause within 15 minutes of this one doubles that hold-off (`src/crew/wait.ts`).

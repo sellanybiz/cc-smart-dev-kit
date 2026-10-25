@@ -8955,6 +8955,17 @@ var crewFields = object({
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
   resumeClaim: looseObject({ at: text, token: text }).optional(),
+  pendingLaunch: looseObject({
+    at: text,
+    effort: text,
+    model: looseObject({
+      named: text,
+      slot: text.nullable(),
+      resolved: text,
+      tier: text.nullable()
+    }),
+    why: text
+  }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -12391,6 +12402,27 @@ function placeFor(input) {
   }
   return { start: true };
 }
+function placeInputOf(records, leadSessionId, crew, usage, more) {
+  const running = runningCrew(records);
+  const mine = runningForLead(records, leadSessionId);
+  return {
+    freeGb: null,
+    leadRunning: mine.length,
+    leadRunningOpus: onOpusTier(mine).length,
+    max: crew.max.value,
+    maxOpus: crew.maxOpus.value,
+    needGb: crew.memoryGb.value,
+    opus: more.opus,
+    opusFallback: usage.opusFallback,
+    perLead: crew.perLead.value,
+    perLeadOpus: crew.perLeadOpus.value,
+    running: running.length,
+    runningOpus: onOpusTier(running).length,
+    unmet: more.unmet,
+    usageHoldPercent: crew.usagePercent.value,
+    usagePercent: usage.percent
+  };
+}
 async function freeForCrewGb(home, memory) {
   const reading = machineMemory(memory);
   if (reading.availableBytes === null)
@@ -12426,25 +12458,10 @@ async function placeForLeadStart(input) {
   }
   if (!crew.enabled.value)
     return null;
-  const running = runningCrew(records);
-  const mine = runningForLead(records, input.leadSessionId);
-  const held = {
-    freeGb: null,
-    leadRunning: mine.length,
-    leadRunningOpus: onOpusTier(mine).length,
-    max: crew.max.value,
-    maxOpus: crew.maxOpus.value,
-    needGb: crew.memoryGb.value,
+  const held = placeInputOf(records, input.leadSessionId, crew, usage, {
     opus: input.opus,
-    opusFallback: usage.opusFallback,
-    perLead: crew.perLead.value,
-    perLeadOpus: crew.perLeadOpus.value,
-    running: running.length,
-    runningOpus: onOpusTier(running).length,
-    unmet: [],
-    usageHoldPercent: crew.usagePercent.value,
-    usagePercent: usage.percent
-  };
+    unmet: []
+  });
   const first = placeFor(held);
   if (!first.start)
     return first;
@@ -14557,6 +14574,7 @@ var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
   "lead tell": "tells another lead",
+  model: "changes a crew session's model or effort",
   resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions"
@@ -14565,6 +14583,7 @@ var CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
+  model: CREW_NEVER_DOES.model,
   resume: CREW_NEVER_DOES.resume,
   rm: CREW_NEVER_DOES.resume,
   start: CREW_NEVER_DOES.start,

@@ -200,6 +200,46 @@ describe("crew start --continue", () => {
     expect(code).toBe(0);
   });
 
+  test("MC1: a continuation takes --model and --effort, and keeps the old ones without them", async () => {
+    const asked = await handoffWorld();
+    expect(
+      await runCrew(
+        ["start", "B6b", "--continue", NAME, "--model", "opus", "--effort", "xhigh"],
+        asked.ctx(NEXT),
+      ),
+    ).toBe(0);
+    const next = crewNamed(
+      listCrew(asked.paths.stateDir, asked.repo).records,
+      "C my-app master-plan B6b portal-live 2",
+    );
+    expect(next).toMatchObject({
+      effort: "xhigh",
+      model: { named: "opus", resolved: "opus", slot: null, tier: "opus" },
+    });
+    // An effort alone keeps the old model; neither keeps both (the old crew session: sonnet, high).
+    const effortOnly = await handoffWorld();
+    expect(
+      await runCrew(
+        ["start", "B6b", "--continue", NAME, "--effort", "medium"],
+        effortOnly.ctx(NEXT),
+      ),
+    ).toBe(0);
+    expect(
+      crewNamed(
+        listCrew(effortOnly.paths.stateDir, effortOnly.repo).records,
+        "C my-app master-plan B6b portal-live 2",
+      ),
+    ).toMatchObject({ effort: "medium", model: { named: "sonnet" } });
+    const neither = await handoffWorld();
+    expect(await runCrew(["start", "B6b", "--continue", NAME], neither.ctx(NEXT))).toBe(0);
+    expect(
+      crewNamed(
+        listCrew(neither.paths.stateDir, neither.repo).records,
+        "C my-app master-plan B6b portal-live 2",
+      ),
+    ).toMatchObject({ effort: "high", model: { named: "sonnet" } });
+  });
+
   test("D25: the next crew session's id keeps the one scheme: phase, slug, six hex", async () => {
     const world = await handoffWorld();
     await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));

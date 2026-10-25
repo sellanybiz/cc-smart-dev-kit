@@ -7130,6 +7130,17 @@ var crewFields = object({
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
   resumeClaim: looseObject({ at: text, token: text }).optional(),
+  pendingLaunch: looseObject({
+    at: text,
+    effort: text,
+    model: looseObject({
+      named: text,
+      slot: text.nullable(),
+      resolved: text,
+      tier: text.nullable()
+    }),
+    why: text
+  }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -11258,6 +11269,7 @@ var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
   "lead tell": "tells another lead",
+  model: "changes a crew session's model or effort",
   resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions"
@@ -11266,6 +11278,7 @@ var CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
+  model: CREW_NEVER_DOES.model,
   resume: CREW_NEVER_DOES.resume,
   rm: CREW_NEVER_DOES.resume,
   start: CREW_NEVER_DOES.start,

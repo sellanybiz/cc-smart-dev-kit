@@ -70,6 +70,7 @@ import type { CrewContext } from "./context";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
 import { mergeProof, observeLeadPresence, STOPPED_REMINDER_MS, stoppedCrewNeed } from "./lifecycle";
 import { memoryMbOf } from "./memory";
+import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { startQueued } from "./start";
@@ -1056,6 +1057,17 @@ export async function watchPass(
     } else if (stuck === null) {
       delete said[waitKey];
     }
+  }
+
+  // Model or effort changes the lead asked for that a cap held back (`crew model`, MC1): applied
+  // once the caps allow, by the watch that holds its lead's lease like any start.
+  if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
+    await applyPendingModels(
+      here.filter((one) => one.leadSessionId === scope.leadSessionId && one.pendingLaunch),
+      ctx,
+      resolved,
+      say,
+    );
   }
 
   // Crew sessions that wait out a limit: resume them once the gateway answers again (D42), one

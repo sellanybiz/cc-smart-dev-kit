@@ -115,6 +115,7 @@ describe("the command table", () => {
       "stop",
       "rm",
       "resume",
+      "model",
       "attach",
       "kinds",
     ]);

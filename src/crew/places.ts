@@ -248,6 +248,40 @@ export function placeFor(input: PlaceInput): Place {
 }
 
 /**
+ * The input `placeFor` reads, built from the machine's crew sessions, the caps and the usage
+ * window: the one home of the shape, for `crew start`, the queued start, a lead's guard and a
+ * model change (`crew model`). `opus` is true when the crew session asking runs on the opus tier;
+ * the memory is read last and only when nothing else holds, so it starts null.
+ */
+export function placeInputOf(
+  records: readonly CrewRecord[],
+  leadSessionId: string,
+  crew: ResolvedWorkflow["crew"],
+  usage: ReturnType<typeof usageFacts>,
+  more: { opus: boolean; unmet: readonly Wait[] },
+): PlaceInput {
+  const running = runningCrew(records);
+  const mine = runningForLead(records, leadSessionId);
+  return {
+    freeGb: null,
+    leadRunning: mine.length,
+    leadRunningOpus: onOpusTier(mine).length,
+    max: crew.max.value,
+    maxOpus: crew.maxOpus.value,
+    needGb: crew.memoryGb.value,
+    opus: more.opus,
+    opusFallback: usage.opusFallback,
+    perLead: crew.perLead.value,
+    perLeadOpus: crew.perLeadOpus.value,
+    running: running.length,
+    runningOpus: onOpusTier(running).length,
+    unmet: more.unmet,
+    usageHoldPercent: crew.usagePercent.value,
+    usagePercent: usage.percent,
+  };
+}
+
+/**
  * Runs `decide` holding the machine-wide places lock, `<stateDir>/crew/lock` (the stores'
  * root, `crewRootDir`; each repository's own store lock sits one folder down).
  */
@@ -333,25 +367,10 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
     return null;
   }
   if (!crew.enabled.value) return null;
-  const running = runningCrew(records);
-  const mine = runningForLead(records, input.leadSessionId);
-  const held: PlaceInput = {
-    freeGb: null,
-    leadRunning: mine.length,
-    leadRunningOpus: onOpusTier(mine).length,
-    max: crew.max.value,
-    maxOpus: crew.maxOpus.value,
-    needGb: crew.memoryGb.value,
+  const held = placeInputOf(records, input.leadSessionId, crew, usage, {
     opus: input.opus,
-    opusFallback: usage.opusFallback,
-    perLead: crew.perLead.value,
-    perLeadOpus: crew.perLeadOpus.value,
-    running: running.length,
-    runningOpus: onOpusTier(running).length,
     unmet: [],
-    usageHoldPercent: crew.usagePercent.value,
-    usagePercent: usage.percent,
-  };
+  });
   const first = placeFor(held);
   if (!first.start) return first;
   let freeGb: null | number;
