@@ -14,7 +14,7 @@
  * - **Running** (`working`, `blocked`, `quiet`): stopped (`stopSession`) when its process lives,
  *   then resumed with the new flags through the one resume path (`resumeSession`, `answer.ts`),
  *   with a prompt that says what changed and to go on. Claude Code's `--resume` takes `--model`
- *   and `--effort` for the next turn (proved live, `docs/claude-code-contract.md`), and the
+ *   and `--effort` for the next turn (proved live for `claude -p`; the `--bg` form is still owed, `docs/claude-code-contract.md`), and the
  *   crew session's own `--settings` file pins neither.
  * - **Stopped or paused**: keeps its state and takes the values at its next resume — every
  *   resume reads the record (`resumeArgs`).
@@ -57,8 +57,11 @@ type RecordedModel = CrewRecord["model"];
 /** The states in which a change cannot be made: the crew session ended its phase or is gone. */
 const ENDED_STATES = ["done", "failed", "handoff", "merged"] as const;
 
-/** The sessions whose process a change stops and resumes. */
-const LIVE_STATES = ["working", "blocked", "quiet"] as const;
+/**
+ * The sessions whose process a change stops and resumes. A `blocked` one is not: it waits for the
+ * lead's answer, and a resume that says "go on" would tell it to continue without it.
+ */
+const LIVE_STATES = ["working", "quiet"] as const;
 
 /** What a change came to: the line to print, and whether it worked. */
 interface Changed {
@@ -131,9 +134,18 @@ async function changeModel(
   // A running session is read before anything is written: a view that cannot be read says
   // nothing about its process, and the record must not name values the session does not run on.
   const running = (LIVE_STATES as readonly string[]).includes(record.state);
+  // The watch's retry asks the caps first: a change that is still held costs no read of agent view.
+  if (
+    retry &&
+    (record.state === "blocked" ||
+      opusHold(listAllCrew(ctx.paths.stateDir).records, record, to, crew, ctx) !== null)
+  ) {
+    return null;
+  }
   const liveness = running ? sessionLiveness(ctx, record) : "dead";
   if (liveness === "unknown") {
-    return { line: `${head} · ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
+    // The watch tries again on its next pass; the lead is told now.
+    return retry ? null : { line: `${head} · ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
   }
   const decided = await withPlacesLock(ctx.paths.stateDir, async () => {
     // The watch's retry acts on a record it read a pass ago: a change asked for or dropped since
@@ -193,14 +205,18 @@ async function moveSession(
   if (live) {
     const stopped = await stopSession(record, ctx);
     if (!stopped.ok) {
-      // Its process runs on as it was, so the record goes back to what it runs on.
-      await updateCrew(
-        ctx.paths.stateDir,
-        record.repo,
-        record.id,
-        { effort: record.effort, model: record.model },
-        ctx.now(),
-      );
+      // Its process runs on as it was, so the record goes back to what it runs on — unless a
+      // newer change has replaced the values written here.
+      const now = readCrew(ctx.paths.stateDir, record.repo, record.id);
+      if (now?.model.named === to.named && now.effort === effort) {
+        await updateCrew(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          { effort: record.effort, model: record.model },
+          ctx.now(),
+        );
+      }
       return { line: `${head} · ${stopped.why}; nothing changed`, ok: false };
     }
     state = stopped.state;
@@ -276,6 +292,12 @@ export async function runCrewModel(args: ModelArgs, ctx: CrewContext): Promise<n
     ctx.error(`crew model: ${record.name} is starting; try again when it is working`);
     return 1;
   }
+  if (record.state === "blocked") {
+    ctx.error(
+      `crew model: ${record.name} is blocked, waiting for your answer; answer its question first (${COMMAND} crew answer), then change its model`,
+    );
+    return 1;
+  }
   if (!isCrewKind(record.kind)) {
     ctx.error(`crew model: ${record.name} has a kind this kit does not know (${record.kind})`);
     return 1;
@@ -341,7 +363,23 @@ export async function applyPendingModels(
     const wanted = record.pendingLaunch;
     const open =
       (RUNNING_STATES as readonly string[]).includes(record.state) || record.state === "stopped";
-    if (wanted === undefined || !open || record.state === "starting") continue;
+    if (wanted === undefined) continue;
+    if (!open && record.state !== "queued" && record.state !== "starting") {
+      // The crew session ended (or is gone): a change that waited for a cap is moot.
+      try {
+        await updateCrew(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          { pendingLaunch: undefined },
+          ctx.now(),
+        );
+      } catch (error) {
+        say(`${record.name}: its queued model change could not be dropped: ${reasonOf(error)}`);
+      }
+      continue;
+    }
+    if (!open) continue;
     try {
       const changed = await changeModel(
         record,

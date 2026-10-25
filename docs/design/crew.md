@@ -549,8 +549,11 @@ and the record kept naming the old model, so the caps and `crew list` were wrong
   resume path, so the session Claude Code opens is followed — with a prompt that says what
   changed and to go on from where it stopped. A **stopped** or **paused** one keeps its state
   and its wait: the record holds the values, and its next resume reads them (`resumeArgs`, from
-  the record). A **queued** one starts on them. A session that ended its phase, a removed or
-  discarded one, and one still `starting` take no change.
+  the record) — the opus caps are judged once, when the values are stored, and `crew resume`
+  judges none. A **queued** one starts on them (`startQueued` re-reads the record, so a change
+  made after the watch listed it is used). A session that ended its phase, a removed or
+  discarded one, one still `starting` and a `blocked` one (it waits for the lead's answer, and a
+  resume that says "go on" would tell it to continue without it) take no change.
 - **The record is the truth.** The model, the tier and the effort are written under the places
   lock *before* the session is touched, so the caps and `crew list` count the new tier at once
   and a resume that fails leaves the values stored for the next one. The resumed session's id

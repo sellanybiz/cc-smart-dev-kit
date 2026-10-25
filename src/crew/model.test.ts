@@ -298,6 +298,69 @@ describe("crew model: the caps", () => {
     expect(after?.pendingLaunch).toBeUndefined();
   });
 
+  test("workflow.crew.maxOpus holds a move onto opus across leads", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ maxOpus: 1, perLeadOpus: 3 });
+    await world.addCrew({
+      leadSessionId: "other-lead-session",
+      model: OPUS,
+      phase: "B2",
+      slug: "other",
+      suffix: "2b2b2b",
+    });
+    await world.addCrew();
+    expect(await runCrew(["model", NAME, "--model", "opus"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `${NAME}: sonnet high → opus high · queued (1 of 1 opus crew sessions running on this machine; it starts when one of them finishes)`,
+    ]);
+  });
+
+  test("a queued change that was replaced or dropped since the watch read it is not applied", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ perLeadOpus: 1 });
+    const other = await world.addCrew({
+      model: OPUS,
+      phase: "B2",
+      slug: "other",
+      suffix: "2b2b2b",
+    });
+    const record = await world.addCrew();
+    await runCrew(["model", NAME, "--model", "opus"], world.ctx());
+    const stale = await readCrew(world.paths.stateDir, world.repo, record.id);
+    if (stale === null) throw new Error("no record");
+    // The lead asks for what it runs on: the queued change is dropped. A place is free now.
+    await runCrew(["model", NAME, "--model", "sonnet"], world.ctx());
+    await updateCrew(world.paths.stateDir, world.repo, other.id, { state: "done" }, NOW);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("no checkout");
+    const resolved = resolveWorkflow(world.paths, loadProjectConfig(checkout).config);
+    const lines: string[] = [];
+    await applyPendingModels([stale], world.ctx(), resolved, (line) => lines.push(line));
+    expect(lines).toEqual([]);
+    expect((await readCrew(world.paths.stateDir, world.repo, record.id))?.model).toEqual(SONNET);
+  });
+
+  test("a queued change of a crew session that ended is dropped", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ perLeadOpus: 1 });
+    await world.addCrew({ model: OPUS, phase: "B2", slug: "other", suffix: "2b2b2b" });
+    const record = await world.addCrew();
+    await runCrew(["model", NAME, "--model", "opus"], world.ctx());
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { state: "done" }, NOW);
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("no checkout");
+    const resolved = resolveWorkflow(world.paths, loadProjectConfig(checkout).config);
+    await applyPendingModels(
+      listCrew(world.paths.stateDir, world.repo).records,
+      world.ctx(),
+      resolved,
+      () => undefined,
+    );
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.pendingLaunch).toBeUndefined();
+    expect(after?.model).toEqual(SONNET);
+  });
+
   test("a change that moves off opus is never held by a cap", async () => {
     const world = await boardWorld();
     world.writeConfig({ perLeadOpus: 1 });
@@ -328,6 +391,28 @@ describe("crew model: the refusals", () => {
     await world.addCrew({ kind: "ui", model: OPUS, effort: "high" });
     expect(await runCrew(["model", NAME, "--effort", "medium"], world.ctx())).toBe(2);
     expect(world.err[0]).toStartWith("crew model: UI/UX work runs only on");
+  });
+
+  test("a blocked session waits for its answer first, and nothing is touched", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "blocked" });
+    expect(await runCrew(["model", NAME, "--effort", "xhigh"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew model: ${NAME} is blocked, waiting for your answer; answer its question first (${COMMAND} crew answer), then change its model`,
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    expect((await readCrew(world.paths.stateDir, world.repo, record.id))?.effort).toBe("high");
+  });
+
+  test("a quiet session is moved like a working one", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "quiet" });
+    expect(await runCrew(["model", NAME, "--effort", "xhigh"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([`${NAME}: sonnet high → sonnet xhigh · resumed (a1b2c3d4)`]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      effort: "xhigh",
+      state: "working",
+    });
   });
 
   test("a name nobody has", async () => {

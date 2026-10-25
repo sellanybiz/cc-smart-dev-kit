@@ -23613,7 +23613,10 @@ function specOf(planned) {
     worktree: planned.worktree
   };
 }
-async function startQueued(record, ctx, resolved) {
+async function startQueued(listed, ctx, resolved) {
+  const record = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
+  if (record === null || record.state !== "queued")
+    return;
   const quiet = { ...ctx, print: () => {
     return;
   } };
@@ -23668,7 +23671,7 @@ async function startQueued(record, ctx, resolved) {
 
 // src/crew/model.ts
 var ENDED_STATES = ["done", "failed", "handoff", "merged"];
-var LIVE_STATES = ["working", "blocked", "quiet"];
+var LIVE_STATES = ["working", "quiet"];
 function runsOn(model, effort) {
   return `${model} ${effort}`;
 }
@@ -23695,9 +23698,12 @@ async function changeModel(record, to, effort, ctx, crew, retry) {
   const from = runsOn(record.model.named, record.effort);
   const head = `${record.name}: ${from} \u2192 ${runsOn(to.named, effort)}`;
   const running = LIVE_STATES.includes(record.state);
+  if (retry && (record.state === "blocked" || opusHold(listAllCrew(ctx.paths.stateDir).records, record, to, crew, ctx) !== null)) {
+    return null;
+  }
   const liveness = running ? sessionLiveness(ctx, record) : "dead";
   if (liveness === "unknown") {
-    return { line: `${head} \xB7 ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
+    return retry ? null : { line: `${head} \xB7 ${UNREADABLE_VIEW_WHY}; nothing changed`, ok: false };
   }
   const decided = await withPlacesLock(ctx.paths.stateDir, async () => {
     if (retry) {
@@ -23734,7 +23740,10 @@ async function moveSession(record, to, effort, head, live, ctx) {
   if (live) {
     const stopped = await stopSession(record, ctx);
     if (!stopped.ok) {
-      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort: record.effort, model: record.model }, ctx.now());
+      const now = readCrew(ctx.paths.stateDir, record.repo, record.id);
+      if (now?.model.named === to.named && now.effort === effort) {
+        await updateCrew(ctx.paths.stateDir, record.repo, record.id, { effort: record.effort, model: record.model }, ctx.now());
+      }
       return { line: `${head} \xB7 ${stopped.why}; nothing changed`, ok: false };
     }
     state = stopped.state;
@@ -23797,6 +23806,10 @@ async function runCrewModel(args, ctx) {
     ctx.error(`crew model: ${record.name} is starting; try again when it is working`);
     return 1;
   }
+  if (record.state === "blocked") {
+    ctx.error(`crew model: ${record.name} is blocked, waiting for your answer; answer its question first (${COMMAND} crew answer), then change its model`);
+    return 1;
+  }
   if (!isCrewKind(record.kind)) {
     ctx.error(`crew model: ${record.name} has a kind this kit does not know (${record.kind})`);
     return 1;
@@ -23839,7 +23852,17 @@ async function applyPendingModels(records, ctx, resolved, say) {
   for (const record of records) {
     const wanted = record.pendingLaunch;
     const open = RUNNING_STATES.includes(record.state) || record.state === "stopped";
-    if (wanted === undefined || !open || record.state === "starting")
+    if (wanted === undefined)
+      continue;
+    if (!open && record.state !== "queued" && record.state !== "starting") {
+      try {
+        await updateCrew(ctx.paths.stateDir, record.repo, record.id, { pendingLaunch: undefined }, ctx.now());
+      } catch (error) {
+        say(`${record.name}: its queued model change could not be dropped: ${reasonOf2(error)}`);
+      }
+      continue;
+    }
+    if (!open)
       continue;
     try {
       const changed = await changeModel(record, wanted.model, wanted.effort, ctx, resolved.crew, true);
@@ -29837,8 +29860,9 @@ What happens depends on the crew session:
   queued    the record takes the values; its start uses them
 A change to the opus tier that a cap holds back (crew.perLeadOpus, crew.maxOpus, the usage
 window) is queued with its reason: the crew session runs on, and the lead's watch applies the
-change once the caps allow. A crew session that ended its phase takes no change, and a crew
-session never runs this command.
+change once the caps allow. A crew session that ended its phase takes no change, a blocked one
+is refused until its question is answered, and a crew session never runs this command. The
+resume form with changed flags (claude --bg --resume) is not yet proved live; see the contract.
 
 ${NAMED}`,
     name: "model",

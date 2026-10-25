@@ -27,6 +27,7 @@ import {
   crewSettingsFile,
   listCrew,
   readCrewEvents,
+  updateCrew,
   writeLead,
 } from "./store";
 
@@ -569,6 +570,40 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
       Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
     ).toEqual(["tavily-websearch"]);
     expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("MC1: it starts on the model and effort the record has now, not the ones the watch listed", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    // `crew model` changed the record after the watch listed it.
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      listed.id,
+      { effort: "xhigh", model: { named: "opus", resolved: "opus", slot: null, tier: "opus" } },
+      T0,
+    );
+    await startQueued(listed, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    const launch = world.claudeCalls().find((call) => call[0] === "--bg") ?? [];
+    expect(launch.slice(launch.indexOf("--model"), launch.indexOf("--model") + 4)).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "xhigh",
+    ]);
+    expect(onlyCrew(world.paths.stateDir, world.repo)).toMatchObject({
+      effort: "xhigh",
+      model: { named: "opus" },
+    });
+  });
+
+  test("MC1: a crew session that left the queue since the watch listed it is not started", async () => {
+    const world = await ledWorld();
+    const listed = await queuedHere(world);
+    await updateCrew(world.paths.stateDir, world.repo, listed.id, { state: "failed" }, T0);
+    await startQueued(listed, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), defaultResolved());
+    expect(world.claudeCalls()).toEqual([]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("failed");
   });
 
   test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {

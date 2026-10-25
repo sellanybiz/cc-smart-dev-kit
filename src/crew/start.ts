@@ -121,6 +121,7 @@ import {
   type LeadRecord,
   listAllCrew,
   listCrew,
+  readCrew,
   readCrewEvents,
   readLead,
   readReport,
@@ -1348,10 +1349,14 @@ function specOf(planned: Plan): LaunchSpec {
  * the crew session (the caps, the free memory, or a phase it waits for).
  */
 export async function startQueued(
-  record: CrewRecord,
+  listed: CrewRecord,
   ctx: CrewContext,
   resolved: ResolvedWorkflow,
 ): Promise<void> {
+  // The record as it is now, not as the watch listed it a moment ago: the lead may have changed
+  // its model or effort since (`crew model`), or the crew session may have left the queue.
+  const record = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
+  if (record === null || record.state !== "queued") return;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
   const usage = usageFacts(ctx.paths, ctx.now());

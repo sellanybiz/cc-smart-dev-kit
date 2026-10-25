@@ -152,8 +152,9 @@ What happens depends on the crew session:
   queued    the record takes the values; its start uses them
 A change to the opus tier that a cap holds back (crew.perLeadOpus, crew.maxOpus, the usage
 window) is queued with its reason: the crew session runs on, and the lead's watch applies the
-change once the caps allow. A crew session that ended its phase takes no change, and a crew
-session never runs this command.
+change once the caps allow. A crew session that ended its phase takes no change, a blocked one
+is refused until its question is answered, and a crew session never runs this command. The
+resume form with changed flags (claude --bg --resume) is not yet proved live; see the contract.
 
 ${NAMED}`,
     name: "model",
