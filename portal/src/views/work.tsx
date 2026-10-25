@@ -58,6 +58,11 @@ function waitingWords(record: CrewRecord, now: number): string | null {
   const waiting = record.waitingFor;
   if (record.state !== "paused" || waiting === undefined) return null;
   if (waiting.kind === "slot") return `Waits for the ${slotName(waiting.slot)} slot`;
+  if (waiting.kind === "unknown") {
+    return waiting.slot === undefined
+      ? "Waits for an answer it could not name"
+      : `Waits for an answer it could not name, on the ${slotName(waiting.slot)} slot`;
+  }
   return waiting.resetsAt === null
     ? `Waits for ${waiting.model}'s limit`
     : `Waits for ${waiting.model}'s limit, resets ${until(waiting.resetsAt, now)}`;

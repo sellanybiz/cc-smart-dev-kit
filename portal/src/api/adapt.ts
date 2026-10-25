@@ -317,6 +317,28 @@ export function workflowValueText(value: unknown, unsetWords?: string): string {
   return String(value);
 }
 
+/**
+ * What a paused crew session waits for, as the record names it. The three kinds stay three: a
+ * wait the watch could not name (`unknown`) is shown as unknown, with the slot of its session
+ * when the record has one, never as a Claude limit on no model.
+ */
+function waitingOf(waiting: CrewSummary["waitingFor"]): CrewRecord["waitingFor"] {
+  if (waiting === null) return undefined;
+  if (waiting.kind === "slot") {
+    return { kind: "slot", since: waiting.since ?? "", slot: waiting.slot ?? "" };
+  }
+  if (waiting.kind === "unknown") {
+    return waiting.slot === undefined
+      ? { kind: "unknown", since: waiting.since ?? "" }
+      : { kind: "unknown", since: waiting.since ?? "", slot: waiting.slot };
+  }
+  return {
+    kind: "claude-limit",
+    model: waiting.model ?? "",
+    resetsAt: waiting.resetsAt ?? null,
+  };
+}
+
 /** A crew session's record, from its summary: the fields the summary does not hold are empty. */
 function crewRecordOf(crew: CrewSummary): CrewRecord {
   return {
@@ -344,16 +366,7 @@ function crewRecordOf(crew: CrewSummary): CrewRecord {
     state: crew.state,
     stateSince: crew.stateSince,
     updatedAt: crew.updatedAt,
-    waitingFor:
-      crew.waitingFor === null
-        ? undefined
-        : crew.waitingFor.kind === "slot"
-          ? { kind: "slot", since: crew.waitingFor.since ?? "", slot: crew.waitingFor.slot ?? "" }
-          : {
-              kind: "claude-limit",
-              model: crew.waitingFor.model ?? "",
-              resetsAt: crew.waitingFor.resetsAt ?? null,
-            },
+    waitingFor: waitingOf(crew.waitingFor),
     waitsFor: crew.waitsFor,
     worktree: crew.worktree,
   };
