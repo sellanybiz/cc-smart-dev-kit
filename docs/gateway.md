@@ -1122,6 +1122,11 @@ hook shows the platform's plain notification itself (`plainNotification`: `notif
 stays for the notifier's own alerts that wait for a click (`docs/design/hooks.md` § The
 notifier).
 
+A Claude limit that does not hold the session gets no reset date (TV1): the alert asks
+`claudeLimitHolds` (`src/crew/wait.ts`, the one reading the crew wait uses) against the chain in
+use, and when the slot's first target is another model it says the limit "does not hold this
+session" and names that target, so the date of a limit that cannot stop the session is never told.
+
 The one thing it adds is a plain fact about the slot that answers the model, when that fact
 explains a stop that should not have happened (`slotFact`): the slot's chain starts with a
 backend (Claude was not its first answer), or the chain holds two targets or more and its

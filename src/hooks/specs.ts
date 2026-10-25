@@ -11,6 +11,7 @@
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
+ * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
  * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
@@ -97,6 +98,7 @@ import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
+import { tierView } from "./tier-view";
 import { verifyGate } from "./verify-gate";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
@@ -567,6 +569,24 @@ export const fableSessionHook: HookSpec = {
 };
 
 /**
+ * The tier note (`tier-view.ts`): at every SessionStart, and at a UserPromptSubmit when it
+ * changed, one note to Claude of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`)
+ * runs now and the effort rule that follows, read the Agent guard's way. **Machine-wide**, like
+ * `agent-guard`: it runs with or without cc-smart-dev-kit.json and in a folder outside git, a
+ * crew session included, and never a question or a block. Its SessionStart entry carries **no
+ * matcher**, so a start, a resume, a clear and a compaction each say it. A project that runs its
+ * own copy silences it through `ownHooks`.
+ */
+export const tierViewHook: HookSpec = {
+  name: "tier-view",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    tierView(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
+  run: ({ input, env, paths }) => tierView(input, env, paths),
+};
+
+/**
  * The job queue's door and the kit's one Bash judge: PreToolUse on Bash, **machine-wide**, and
  * `alwaysOn` (`ownHooks` cannot switch it off). Two parts, and only one reads the project:
  *
@@ -611,6 +631,7 @@ export const HOOKS: readonly HookSpec[] = [
   agentGuardHook,
   sessionEscapeGuardHook,
   fableSessionHook,
+  tierViewHook,
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
@@ -669,6 +690,7 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
+  "tier-view",
   "session-escape-guard",
   "crew-role",
   "lead-notes",

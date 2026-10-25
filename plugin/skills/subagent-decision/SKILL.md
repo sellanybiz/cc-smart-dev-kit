@@ -74,9 +74,9 @@ work yourself. Treat it as a smart colleague who just walked in:
 
 ### Briefing an affordable model
 
-An affordable slot (one the person gave a chain of their own, so a `haiku` or `sonnet` request
-is answered by a gateway model, not by Claude) reasons less than Claude, so carry the judgment
-for it in the brief:
+An affordable tier is one the session-start note says a backend answers (a `haiku` or `sonnet`
+request goes to a gateway model, not to Claude). It reasons less than Claude, so carry the
+judgment for it in the brief; a tier the note says is Claude needs none of this:
 
 - **One job, small scope.** A big phase becomes two or three agents, each with one clear
   outcome — never "figure out the codebase".
@@ -102,9 +102,10 @@ The core instructions' model table says which model fits which job; this is the 
   may send a family to another model (`/cc-smart-dev-kit:gateway`).
 - **Effort by the job:** `medium` for searches and reads; `high` for building, UI/UX design
   included, for reviews and for a UI check; `xhigh` for the hardest judgment — a tangled bug, an
-  architecture choice, a high-stakes review, a hard design — which you may pick yourself; `max`
-  only when the person asks for it. An affordable gateway slot runs at `max`: its reasoning costs
-  cents. The session's own effort is the person's choice.
+  architecture choice, a high-stakes review, a hard design — which you may pick yourself. `max`
+  by the tier the session-start note names: a Claude `haiku` or `sonnet` may take it when the task
+  wants it, with no restriction; `opus` at `max` asks the person; an affordable backend always
+  runs at `max`, its reasoning costs cents. The session's own effort is the person's choice.
 - **Opus builds** architecture and UI/UX, at `high` or `xhigh`; every other build runs on
   `sonnet`.
 - **A fork** runs on the session's own model, at the effort you pass, or else the session's.
