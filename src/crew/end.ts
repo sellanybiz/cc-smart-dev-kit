@@ -49,6 +49,7 @@ import { agentRow, callClaude, findClaude, parseAgentPresence } from "./claude";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
+import { actorOfCaller } from "./runs-actor";
 import { callingSession, crewIdOf } from "./session";
 import {
   type CrewChange,
@@ -59,7 +60,6 @@ import {
   readLead,
   updateCrew,
 } from "./store";
-import { actorOfCaller } from "./runs-actor";
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
 

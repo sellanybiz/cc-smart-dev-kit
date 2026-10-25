@@ -15,6 +15,13 @@ build → keep it live → archive.**
 The plan is a **file**, not only chat: it survives a compaction, a restart and a hand-off.
 Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md`.
 
+**A plan has its own folder**, beside its file and named as the file without `.md`:
+`<plans dir>/<plan stem>/`. A crew phase's brief goes in it, named as its crew branch:
+`<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md` (never one flat folder of briefs, never one folder
+per lead session: the plan outlives its leads). Its `runs/` folder holds the kit's record of each
+crew run (`/cc-smart-dev-kit:lead`). The lead registers the plan with `crew lead --plan-file <the plan
+file>`.
+
 **No plan file** for a small fix (`/cc-smart-dev-kit:review` defines it) or a change of two files or
 fewer whose design is settled — the task is the plan. Its separable pieces still go to
 subagents.
@@ -169,7 +176,9 @@ and a squash merge never shows its branch as merged.
 
 A finished plan does not stay with the live ones. In the same turn: Status `Done` (or
 `Parked` with why and what would restart it, or `Superseded` naming the plan that replaced
-it), the commits that shipped it, then move it to the archive folder, and commit the move as
+it), the commits that shipped it, then move it to the archive folder **with its folder** (the briefs
+and the run records move with the plan file to `<plans dir>/archive/<plan stem>/`; the run records are
+never deleted, and `cc-smart-dev-kit crew history` reads them there), and commit the move as
 `/cc-smart-dev-kit:commit` allows. Never leave it for the person or the next session. A status
 that is never updated becomes a claim that reads as current and is false.
 

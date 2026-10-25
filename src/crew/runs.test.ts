@@ -4,14 +4,7 @@
  * a temp folder; the times are fixed by hand, so every expected value is written out.
  */
 import { describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type CrewWorld,

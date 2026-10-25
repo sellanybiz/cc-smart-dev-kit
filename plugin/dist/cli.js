@@ -29259,240 +29259,8 @@ async function runLeadTell(args, ctx) {
   }, message, { error: ctx.error, print: ctx.print });
 }
 
-// src/crew/runs-history.ts
-import { existsSync as existsSync40 } from "fs";
-import { join as join50 } from "path";
-function durationText2(ms) {
-  if (ms === null)
-    return "-";
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60)
-    return `${seconds} s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60)
-    return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
-}
-function momentText(iso) {
-  if (iso === null)
-    return "-";
-  const at = Date.parse(iso);
-  if (Number.isNaN(at))
-    return iso;
-  return new Date(at).toISOString().slice(0, 16).replace("T", " ");
-}
-function outcomeOf(run) {
-  if (run.times.mergedAt !== null) {
-    return run.times.removedAt === null ? "merged" : "merged, removed";
-  }
-  if (run.times.removedAt !== null)
-    return `removed (${run.state})`;
-  return run.state;
-}
-function historyLine(run, nowMs) {
-  const times = run.times.finishedAt === null ? deriveTimes({ ...run, startedAt: run.times.startedAt }, nowMs) : run.times;
-  const sessions = run.sessions.map((one) => one.shortId ?? one.sessionId.slice(0, 8));
-  return [
-    run.phase.padEnd(6),
-    `${run.slug}${run.continues === null ? "" : " (continued)"}`,
-    `${sessions.length} session${sessions.length === 1 ? "" : "s"}${sessions.length === 0 ? "" : ` ${sessions.join(",")}`}`,
-    `${modelText(run.model.named, run.model.resolved)} ${run.effort}`,
-    `started ${momentText(times.startedAt)}`,
-    `finished ${momentText(times.finishedAt)}`,
-    `took ${durationText2(times.workingMs)}`,
-    outcomeOf(run)
-  ].join(" \xB7 ");
-}
-function historyPlan(args, leads, repo, paths, callingId) {
-  const known = new Map;
-  for (const lead of leads) {
-    if (typeof lead.planFile === "string" && lead.planFile !== "") {
-      known.set(planStemOf(lead.planFile), lead.planFile);
-    }
-  }
-  if (args.plan !== null) {
-    const wanted = args.plan.replace(/\.md$/, "");
-    const byLead = known.get(wanted);
-    if (byLead !== undefined)
-      return { file: byLead };
-    const dirs = plansDirs(repo, paths);
-    const stem = dirs.flatMap((dir) => [join50(dir, `${wanted}.md`), join50(dir, PLAN_ARCHIVE_DIR, `${wanted}.md`)]).find((file) => existsSync40(file) || existsSync40(planFolderOf(file)));
-    if (stem !== undefined)
-      return { file: stem };
-    const found = findPlanFile(wanted, dirs);
-    if (found.ok)
-      return { file: found.file };
-    return {
-      why: `no plan "${args.plan}" is known here: ${found.reason === "several" ? `several files match (${found.matches.join(", ")})` : "no file or folder of that name in the plans folders"}`
-    };
-  }
-  const mine = leads.find((one) => one.sessionId === callingId);
-  if (typeof mine?.planFile === "string" && mine.planFile !== "")
-    return { file: mine.planFile };
-  const files = [...known.values()];
-  const [only] = files;
-  if (files.length === 1 && only !== undefined)
-    return { file: only };
-  return {
-    why: files.length === 0 ? "no lead of this repository has a plan file recorded" : `this repository has ${files.length} plans (${[...known.keys()].join(", ")})`
-  };
-}
-function belongsTo(record, planFile) {
-  const stem = planStemOf(planFile);
-  if (typeof record.planFile === "string" && record.planFile !== "") {
-    return planStemOf(record.planFile) === stem;
-  }
-  return stem === record.plan || stem.endsWith(`-${record.plan}`);
-}
-function kindOfState(state) {
-  if (state === "merged")
-    return "merged";
-  if (state === "removed")
-    return "removed";
-  return "state";
-}
-var BACKFILL_UNKNOWN = [
-  "earlier Claude session ids (the store keeps only the last one)",
-  "which lead session answered, merged or removed",
-  "why and for how long a pause lasted"
-];
-function rebuilt(record, events, planFile) {
-  const base = startOf({ ...record, planFile }, record.createdAt);
-  const runEvents = [];
-  for (const one of events) {
-    if (one.crew !== record.id)
-      continue;
-    if (!["created", "state", "report", "question"].includes(one.type))
-      continue;
-    let detail;
-    if (one.type === "report") {
-      let report = null;
-      try {
-        report = readReport(record.reportPath ?? "");
-      } catch {
-        report = null;
-      }
-      if (report !== null) {
-        detail = { sha: report.branch.sha, status: report.status };
-      }
-    }
-    runEvents.push({
-      at: one.at,
-      by: null,
-      ...detail === undefined ? {} : { detail },
-      kind: one.type === "created" ? "created" : one.type === "report" ? "report" : one.type === "question" ? "question" : kindOfState(one.state),
-      state: one.state,
-      text: one.text
-    });
-  }
-  const sessions = record.sessionId === null ? [] : [
-    {
-      at: record.startedAt ?? record.createdAt,
-      by: null,
-      sessionId: record.sessionId,
-      shortId: record.shortId
-    }
-  ];
-  return {
-    ...base,
-    backfilled: [...BACKFILL_UNKNOWN],
-    brief: { path: record.briefSource?.path ?? null, sha256: record.briefSource?.sha256 ?? null },
-    continues: record.continues ?? null,
-    events: runEvents,
-    sessions,
-    state: record.state,
-    times: deriveTimes({
-      createdAt: record.createdAt,
-      events: runEvents,
-      startedAt: record.startedAt ?? null
-    }),
-    updatedAt: record.updatedAt
-  };
-}
-function backfillRuns(planFile, repo, ctx) {
-  const { records } = listCrew(ctx.paths.stateDir, repo);
-  const events = readCrewEvents(ctx.paths.stateDir, repo).events;
-  const written = [];
-  for (const record of records) {
-    if (!belongsTo(record, planFile))
-      continue;
-    const file = runFile(planFile, record.id);
-    if (readRunFile(file) !== null)
-      continue;
-    writeRunFile(file, rebuilt(record, events, planFile));
-    written.push(record.id);
-  }
-  for (const record of records) {
-    if (!written.includes(record.id) || typeof record.continues !== "string")
-      continue;
-    const old = readRunFile(runFile(planFile, record.continues));
-    if (old !== null && old.continuedBy === null) {
-      writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
-    }
-  }
-  if (written.length === 0)
-    return [`backfill: nothing to write for ${planStemOf(planFile)}`];
-  return [
-    `backfill: wrote ${written.length} run record${written.length === 1 ? "" : "s"} for ${planStemOf(planFile)} from the store (${written.join(", ")})`,
-    `backfill: it could not know: ${BACKFILL_UNKNOWN.join("; ")}`
-  ];
-}
-async function runCrewHistory(args, ctx) {
-  let repo;
-  try {
-    const checkout = locateCheckout(ctx.cwd, { env: ctx.env });
-    if (checkout === null)
-      throw new Error("this folder is not in a git project");
-    repo = checkout.mainCheckout ?? checkout.root;
-  } catch (error) {
-    ctx.error(`crew history: ${error instanceof Error ? error.message : String(error)}`);
-    ctx.error("Fix: run it in the project's folder");
-    return 1;
-  }
-  let callingId = null;
-  try {
-    callingId = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf)?.sessionId ?? null;
-  } catch {
-    callingId = null;
-  }
-  const plan = historyPlan(args, listLeads(ctx.paths.stateDir, repo).records, repo, ctx.paths, callingId);
-  if ("why" in plan) {
-    ctx.error(`crew history: ${plan.why}`);
-    ctx.error(`Fix: ${COMMAND} crew history --plan <plan stem>`);
-    return 1;
-  }
-  if (args.backfill) {
-    try {
-      for (const line of backfillRuns(plan.file, repo, ctx))
-        ctx.print(line);
-    } catch (error) {
-      ctx.error(`crew history: ${error instanceof Error ? error.message : String(error)}`);
-      return 1;
-    }
-  }
-  const read = readRuns(plan.file);
-  for (const broken of read.broken)
-    ctx.error(`crew history: ${broken.why}`);
-  const runs = read.runs.filter((one) => args.phase === null || one.phase === args.phase);
-  const code = read.broken.length === 0 ? 0 : 1;
-  if (args.json) {
-    ctx.print(JSON.stringify(runs, null, 2));
-    return code;
-  }
-  if (runs.length === 0) {
-    ctx.print(args.phase === null ? `No crew runs are recorded for ${planStemOf(plan.file)} yet.` : `No crew run of phase ${args.phase} is recorded for ${planStemOf(plan.file)}.`);
-    return code;
-  }
-  ctx.print(`${planStemOf(plan.file)} \xB7 ${tildify(livePlanFolder(plan.file), ctx.paths.home)}`);
-  for (const run of runs)
-    ctx.print(historyLine(run, ctx.now()));
-  return code;
-}
-
 // src/crew/step.ts
-import { existsSync as existsSync41 } from "fs";
+import { existsSync as existsSync40 } from "fs";
 var CREW_STEPS = [
   "tests-red",
   "tests-green",
@@ -29509,7 +29277,7 @@ function isCrewStep(value) {
 }
 var GIT_TIMEOUT_MS5 = 15000;
 function headSha(record, ctx) {
-  const folders = existsSync41(record.worktree) ? [record.worktree, ctx.cwd] : [ctx.cwd];
+  const folders = existsSync40(record.worktree) ? [record.worktree, ctx.cwd] : [ctx.cwd];
   for (const folder of folders) {
     const run = runGit(folder, ["rev-parse", "HEAD"], ctx.env, GIT_TIMEOUT_MS5);
     if (run.ok && run.out !== "")
@@ -29551,11 +29319,11 @@ async function runCrewStep(step, note, ctx) {
 
 // src/crew/tasks.ts
 import { readdirSync as readdirSync20, readFileSync as readFileSync47 } from "fs";
-import { join as join51 } from "path";
+import { join as join50 } from "path";
 var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
 var OPEN_TASK_STATUSES = ["pending", "in_progress"];
 function sessionTasksDir(claudeConfigDir, listId) {
-  return join51(claudeConfigDir, "tasks", listId);
+  return join50(claudeConfigDir, "tasks", listId);
 }
 function taskListId(env, sessionId) {
   const named = env[TASK_LIST_ENV]?.trim() ?? "";
@@ -29601,7 +29369,7 @@ function readSessionTasks(claudeConfigDir, listId) {
   }
   const tasks = [];
   for (const name of names) {
-    const task = taskOf(join51(folder, name), name);
+    const task = taskOf(join50(folder, name), name);
     if (task !== null)
       tasks.push(task);
   }
@@ -29611,7 +29379,7 @@ function openTasks(tasks) {
   return tasks.filter((task) => OPEN_TASK_STATUSES.includes(task.status));
 }
 function taskGateFile(stateDir, repo, id) {
-  return join51(crewFilesDir(stateDir, repo, id), "task-gate.json");
+  return join50(crewFilesDir(stateDir, repo, id), "task-gate.json");
 }
 function readTaskGate(stateDir, repo, id) {
   let text;
@@ -29863,6 +29631,238 @@ async function runCrewReport(args, ctx) {
     ctx.error(`crew report: the store could not record the report: ${reasonOf2(error)}`);
     return 1;
   }
+}
+
+// src/crew/runs-history.ts
+import { existsSync as existsSync41 } from "fs";
+import { join as join51 } from "path";
+function durationText2(ms) {
+  if (ms === null)
+    return "-";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60)
+    return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60)
+    return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+function momentText(iso) {
+  if (iso === null)
+    return "-";
+  const at = Date.parse(iso);
+  if (Number.isNaN(at))
+    return iso;
+  return new Date(at).toISOString().slice(0, 16).replace("T", " ");
+}
+function outcomeOf(run) {
+  if (run.times.mergedAt !== null) {
+    return run.times.removedAt === null ? "merged" : "merged, removed";
+  }
+  if (run.times.removedAt !== null)
+    return `removed (${run.state})`;
+  return run.state;
+}
+function historyLine(run, nowMs) {
+  const times = run.times.finishedAt === null ? deriveTimes({ ...run, startedAt: run.times.startedAt }, nowMs) : run.times;
+  const sessions = run.sessions.map((one) => one.shortId ?? one.sessionId.slice(0, 8));
+  return [
+    run.phase.padEnd(6),
+    `${run.slug}${run.continues === null ? "" : " (continued)"}`,
+    `${sessions.length} session${sessions.length === 1 ? "" : "s"}${sessions.length === 0 ? "" : ` ${sessions.join(",")}`}`,
+    `${modelText(run.model.named, run.model.resolved)} ${run.effort}`,
+    `started ${momentText(times.startedAt)}`,
+    `finished ${momentText(times.finishedAt)}`,
+    `took ${durationText2(times.workingMs)}`,
+    outcomeOf(run)
+  ].join(" \xB7 ");
+}
+function historyPlan(args, leads, repo, paths, callingId) {
+  const known = new Map;
+  for (const lead of leads) {
+    if (typeof lead.planFile === "string" && lead.planFile !== "") {
+      known.set(planStemOf(lead.planFile), lead.planFile);
+    }
+  }
+  if (args.plan !== null) {
+    const wanted = args.plan.replace(/\.md$/, "");
+    const byLead = known.get(wanted);
+    if (byLead !== undefined)
+      return { file: byLead };
+    const dirs = plansDirs(repo, paths);
+    const stem = dirs.flatMap((dir) => [join51(dir, `${wanted}.md`), join51(dir, PLAN_ARCHIVE_DIR, `${wanted}.md`)]).find((file) => existsSync41(file) || existsSync41(planFolderOf(file)));
+    if (stem !== undefined)
+      return { file: stem };
+    const found = findPlanFile(wanted, dirs);
+    if (found.ok)
+      return { file: found.file };
+    return {
+      why: `no plan "${args.plan}" is known here: ${found.reason === "several" ? `several files match (${found.matches.join(", ")})` : "no file or folder of that name in the plans folders"}`
+    };
+  }
+  const mine = leads.find((one) => one.sessionId === callingId);
+  if (typeof mine?.planFile === "string" && mine.planFile !== "")
+    return { file: mine.planFile };
+  const files = [...known.values()];
+  const [only] = files;
+  if (files.length === 1 && only !== undefined)
+    return { file: only };
+  return {
+    why: files.length === 0 ? "no lead of this repository has a plan file recorded" : `this repository has ${files.length} plans (${[...known.keys()].join(", ")})`
+  };
+}
+function belongsTo(record, planFile) {
+  const stem = planStemOf(planFile);
+  if (typeof record.planFile === "string" && record.planFile !== "") {
+    return planStemOf(record.planFile) === stem;
+  }
+  return stem === record.plan || stem.endsWith(`-${record.plan}`);
+}
+function kindOfState(state) {
+  if (state === "merged")
+    return "merged";
+  if (state === "removed")
+    return "removed";
+  return "state";
+}
+var BACKFILL_UNKNOWN = [
+  "earlier Claude session ids (the store keeps only the last one)",
+  "which lead session answered, merged or removed",
+  "why and for how long a pause lasted"
+];
+function rebuilt(record, events, planFile) {
+  const base = startOf({ ...record, planFile }, record.createdAt);
+  const runEvents = [];
+  for (const one of events) {
+    if (one.crew !== record.id)
+      continue;
+    if (!["created", "state", "report", "question"].includes(one.type))
+      continue;
+    let detail;
+    if (one.type === "report") {
+      let report = null;
+      try {
+        report = readReport(record.reportPath ?? "");
+      } catch {
+        report = null;
+      }
+      if (report !== null) {
+        detail = { sha: report.branch.sha, status: report.status };
+      }
+    }
+    runEvents.push({
+      at: one.at,
+      by: null,
+      ...detail === undefined ? {} : { detail },
+      kind: one.type === "created" ? "created" : one.type === "report" ? "report" : one.type === "question" ? "question" : kindOfState(one.state),
+      state: one.state,
+      text: one.text
+    });
+  }
+  const sessions = record.sessionId === null ? [] : [
+    {
+      at: record.startedAt ?? record.createdAt,
+      by: null,
+      sessionId: record.sessionId,
+      shortId: record.shortId
+    }
+  ];
+  return {
+    ...base,
+    backfilled: [...BACKFILL_UNKNOWN],
+    brief: { path: record.briefSource?.path ?? null, sha256: record.briefSource?.sha256 ?? null },
+    continues: record.continues ?? null,
+    events: runEvents,
+    sessions,
+    state: record.state,
+    times: deriveTimes({
+      createdAt: record.createdAt,
+      events: runEvents,
+      startedAt: record.startedAt ?? null
+    }),
+    updatedAt: record.updatedAt
+  };
+}
+function backfillRuns(planFile, repo, ctx) {
+  const { records } = listCrew(ctx.paths.stateDir, repo);
+  const events = readCrewEvents(ctx.paths.stateDir, repo).events;
+  const written = [];
+  for (const record of records) {
+    if (!belongsTo(record, planFile))
+      continue;
+    const file = runFile(planFile, record.id);
+    if (readRunFile(file) !== null)
+      continue;
+    writeRunFile(file, rebuilt(record, events, planFile));
+    written.push(record.id);
+  }
+  for (const record of records) {
+    if (!written.includes(record.id) || typeof record.continues !== "string")
+      continue;
+    const old = readRunFile(runFile(planFile, record.continues));
+    if (old !== null && old.continuedBy === null) {
+      writeRunFile(runFile(planFile, record.continues), { ...old, continuedBy: record.id });
+    }
+  }
+  if (written.length === 0)
+    return [`backfill: nothing to write for ${planStemOf(planFile)}`];
+  return [
+    `backfill: wrote ${written.length} run record${written.length === 1 ? "" : "s"} for ${planStemOf(planFile)} from the store (${written.join(", ")})`,
+    `backfill: it could not know: ${BACKFILL_UNKNOWN.join("; ")}`
+  ];
+}
+async function runCrewHistory(args, ctx) {
+  let repo;
+  try {
+    const checkout = locateCheckout(ctx.cwd, { env: ctx.env });
+    if (checkout === null)
+      throw new Error("this folder is not in a git project");
+    repo = checkout.mainCheckout ?? checkout.root;
+  } catch (error) {
+    ctx.error(`crew history: ${error instanceof Error ? error.message : String(error)}`);
+    ctx.error("Fix: run it in the project's folder");
+    return 1;
+  }
+  let callingId = null;
+  try {
+    callingId = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf)?.sessionId ?? null;
+  } catch {
+    callingId = null;
+  }
+  const plan = historyPlan(args, listLeads(ctx.paths.stateDir, repo).records, repo, ctx.paths, callingId);
+  if ("why" in plan) {
+    ctx.error(`crew history: ${plan.why}`);
+    ctx.error(`Fix: ${COMMAND} crew history --plan <plan stem>`);
+    return 1;
+  }
+  if (args.backfill) {
+    try {
+      for (const line of backfillRuns(plan.file, repo, ctx))
+        ctx.print(line);
+    } catch (error) {
+      ctx.error(`crew history: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
+  const read = readRuns(plan.file);
+  for (const broken of read.broken)
+    ctx.error(`crew history: ${broken.why}`);
+  const runs = read.runs.filter((one) => args.phase === null || one.phase === args.phase);
+  const code = read.broken.length === 0 ? 0 : 1;
+  if (args.json) {
+    ctx.print(JSON.stringify(runs, null, 2));
+    return code;
+  }
+  if (runs.length === 0) {
+    ctx.print(args.phase === null ? `No crew runs are recorded for ${planStemOf(plan.file)} yet.` : `No crew run of phase ${args.phase} is recorded for ${planStemOf(plan.file)}.`);
+    return code;
+  }
+  ctx.print(`${planStemOf(plan.file)} \xB7 ${tildify(livePlanFolder(plan.file), ctx.paths.home)}`);
+  for (const run of runs)
+    ctx.print(historyLine(run, ctx.now()));
+  return code;
 }
 
 // src/crew/context-window.ts

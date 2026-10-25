@@ -212,7 +212,7 @@ repository, under the state folder:
 
 ### The lead and the launch
 
-**`crew lead [--plan <slug>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
+**`crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
 that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
 the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
 (`callingSession`, `src/crew/session.ts`; parents from `/proc` on Linux, one process listing
@@ -220,7 +220,8 @@ elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as da
 `lead-notes` hook sets it at the lead's next prompt by itself (§ The lead's name below); the
 command never renames the session, and prints one line saying so. The tag is
 `--tag`, else `workflow.crew.tag`, else the main checkout's folder name; the plan is `--plan`,
-else the plan this session already leads, else the branch.
+else the plan this session already leads, else the branch. `--plan-file` records the plan's file
+(§ A plan's own folder, and the record of each crew run).
 
 **The lead's name** (LD1) is that record's data, applied by `lead-notes` at the lead's next
 prompt: one `UserPromptSubmit` answer carries `sessionTitle` beside the note (Claude Code's own
@@ -248,10 +249,11 @@ a start, a resume, a clear and a compaction — never at a prompt, never on an e
 Why: the lead's context is re-read on the premium model every turn, so every file it reads or
 writes costs on every later turn, while the crew session that does the same work ends.
 
-**`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
+**`crew start <phase> --slug <slug> --kind <kind> [--brief <file|->] …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
 polls or retries. An opus-tier start with no 5-hour window reading adds one note line after it
-(D54). In order:
+(D54); a brief taken from the plan's folder (§ A plan's own folder, and the record of each crew
+run) adds `brief: <path> (the plan's folder)` before it. In order:
 
 1. **The refusals** (exit 1, a line and its `Fix:`), shared with `crew lead` (`caller.ts`): the
    caller is a crew session (`CC_SMART_DEV_KIT_CREW` set); the folder is not in a git project, or its
@@ -393,6 +395,88 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    branch are taken back (the branch only while it still points at its base), so a second try
    finds the name free. When a session may have started — no `backgrounded` line, or no answer in
    time — the worktree stays.
+
+### A plan's own folder, and the record of each crew run (PL1)
+
+The owner's two asks (2026-10-25): a plan's briefs live in a folder per plan, kit-wide; and
+what ran a phase must last after `crew rm`. D62 cleans finished work up and AR1 archives only the
+conversation, so before PL1 nothing said, a month later, which session built a phase, on which
+model, and how long it took. `src/crew/runs.ts` holds the layout and the record,
+`src/crew/runs-history.ts` `crew history`.
+
+```
+<plans dir>/<plan stem>.md                           the plan
+<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md     a phase's brief, named as the crew branch
+<plans dir>/<plan stem>/runs/<crew id>.json          the record of one crew run
+<plans dir>/archive/<plan stem>/…                    the folder after the plan is archived
+```
+
+**One folder per plan, never per lead.** One plan outlives its leads (the master plan had
+three), and a folder per lead would split its briefs and its history. The file name is the crew
+branch without `crew/`, so a plan row, its brief and its branch line up.
+
+**Where the plan is: the lead record's `planFile`** (decided with the lead, 2026-10-25).
+`crew lead --plan-file <path>` records it (absolute; the file must exist and end in `.md`). Without
+the flag, `crew lead` takes the file this session recorded before, else the one an earlier lead
+of the same plan recorded (a hand-over: the new lead repeats nothing), else the one file
+`<plans dir>/*-<plan slug>.md` (or `<slug>.md`) in the repository's `.claude/plans` and the
+person's plans folder (`<CLAUDE_CONFIG_DIR>/plans`, from `cliPaths()`) with the `archive/` of each.
+None or several: off, and the first line `crew lead` prints says so; a plan written later is picked
+up at the next `crew lead` or `crew start`, never guessed. Why a field and not a setting or only a
+lookup: it is explicit, it works for a plan inside the repository and for one in the person's own
+folder, and a slug alone cannot tell two plans of one slug apart. `crew start` copies it onto the
+crew record (`planFile`), so the run record of a run is written where the run began even after
+the lead changes or the plan is archived: `livePlanFolder` looks beside the old place, in
+`archive/`, when the file has moved.
+
+**Briefs.** `crew start` with no `--brief` takes `<plan folder>/briefs/<PHASE>-<slug>.md` and
+prints `brief: <path> (the plan's folder)` first. A missing file is refused with that path;
+no plan file at all is refused with `crew lead --plan-file` as the fix. `--brief <file|->` is
+unchanged. The crew record keeps `briefSource` (the path, or null for stdin, and the sha-256 of the
+brief's text), which the run record copies.
+
+**The run record: one JSON file per run, written by the store.** One file per run, so two leads
+never write the same file and a merge conflict stays impossible; JSON because the store's own
+records are JSON, the files are read by `crew history` and by tools, and pretty-printed JSON
+diffs well in git. It is written by the store's own writers in the same hold of the store's
+lock as the change and its event (`recordRunOf` in `store.ts`: `createCrew`, `changeCrew` —
+which `updateCrew`, `updateCrewIfState` and `answerCrewQuestion` use — and `recordCrewReport`),
+so there is no second log and no second code path deciding what happened; a change that makes no
+milestone writes nothing. It is an atomic write, 0644 (a plan file's mode, not the store's 0600:
+the lead commits it). A write that fails never undoes the change: one line on stderr says so, and
+the events log still holds the change. A crew session with no plan file is not recorded.
+
+What it holds: the facts of the start (id, name, phase, slug, kind, model and effort, base ref
+and commit, branch, brief path and hash, the lead's session id and name); `sessions`, every Claude
+Code session id with its time (the start, and each resume that brought a new id); `continues` and
+`continuedBy`, a hand-off linked both ways; and `events`, the milestones — `created`, `state`
+(a pause carries `waitingFor`), `session`, `question`, `answer`, `report` (status, tests,
+checks, review), `merged` (the lead commit from the merge proof), `removed`, and `note`. Each
+event has `by`: the lead session that made it, so a plan with three leads says who answered,
+merged and removed. The acting lead comes from the session above the command (`actorOfCaller`,
+`runs-actor.ts`, used by `crew answer` and by `markState`, which `stop`, `resume` and `rm` share);
+the watch and the portal have none, and the event then names the lead the crew session belongs to.
+`times` are derived from the events and written beside them: `wallMs` (recorded to the end of the
+work), `workingMs` (started to the end, without the pauses), `queuedMs`, `pausedMs` and each pause.
+
+**It is never deleted.** `crew rm` and the clean-up of finished work leave it. When the plan
+is archived, its folder moves with the plan file to `<plans dir>/archive/`, the same move
+`/cc-smart-dev-kit:plan-task` § 8 makes for the plan, and the writer and `crew history` find it
+there. The kit never commits it: the lead commits the folder with its plan. A crew session's own
+commands (`step`, `report`) reach the writer too, and write to the absolute path the record gave,
+never into their own worktree.
+
+**`crew history [<phase>] [--plan <stem>] [--json] [--backfill]`** prints one line per run: phase,
+sessions, model and effort, started, finished, took (the working time), status. `--backfill` writes
+the records of runs from before PL1 from what the store still holds — the crew records, the
+events log, the hand-back reports — once, never over a record that exists. It cannot know what the
+store never kept: the earlier session ids of a resumed run (only the last is on the record), which
+lead session answered, merged or removed, and why and how long a pause lasted; each file it writes
+says so under `backfilled`, and so does the command.
+
+**For MC1** (a running crew session's model changes): call `noteCrewRun(stateDir, repo, id, atMs,
+{ by, detail: { from, to }, text })` (`store.ts`); it adds a `note` event under the store's lock and
+changes nothing else.
 
 ### The board and the end of a crew session
 
