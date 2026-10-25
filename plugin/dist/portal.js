@@ -26554,7 +26554,11 @@ var READ_ONLY_BUILT_INS = [
 var READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"];
 var READ_ONLY_BUILT_IN_KEYS = new Set(READ_ONLY_BUILT_INS.map(agentKey));
 var READ_ONLY_KIT_KEYS = new Set(READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()));
-var READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`];
+var READ_ONLY_WORKFLOWS = [
+  `${PLUGIN}:audit-run`,
+  `${PLUGIN}:review-split`,
+  `${PLUGIN}:research-sweep`
+];
 var READ_ONLY_WORKFLOW_KEYS = new Set(READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()));
 function buildsFiles(launch) {
   if (launch.isolation?.toLowerCase() === "worktree")

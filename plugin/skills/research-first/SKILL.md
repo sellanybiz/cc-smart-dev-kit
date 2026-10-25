@@ -87,6 +87,44 @@ queries to versions, not years ("Next.js 16 server actions auth", not "best prac
 Optional: a typo, a mechanical refactor inside a pattern you verified this session, an
 internal helper with no outside API.
 
+## A research sweep, for a question with many sources
+
+A few calls answer most questions. Start the `research-sweep` Workflow when the question has
+several sources to read (the current docs, the project's code, the issue trackers, a comparison
+of alternatives), or when a decision rests on facts you cannot check in a few calls and reading
+them all would fill this session. It reads one angle per researcher in parallel, then has a
+second agent open the source of each claim the answer depends on and confirm or refute it with
+the quote.
+
+**Starting it is the person's call.** Start it only when they asked for a workflow, a sweep or
+this skill's sweep by name; when you decided on it yourself, ask once with `AskUserQuestion`,
+naming the question, the angles and the budget, with the recommended option first, and say it
+starts several agents (one `opus` refuter per claim checked). Never write an inline workflow to
+take its place; if the plugin's workflow is missing or `Workflow` refuses it, say so and go on
+by hand.
+
+```
+Workflow({
+  name: "cc-smart-dev-kit:research-sweep",
+  args: {
+    question: "How should the router cut a stalled stream?",
+    angles: ["the runtime's current docs", "the project's own router code", "open issues and changelogs", "alternatives and how they compare"],
+    budget: 12,
+    context: "Bun 1.4, the stream is server-sent events",
+  },
+})
+```
+
+- `question` and `angles` (up to 8) are required; `budget` is how many claims the refuters
+  check (12 when left out); `context` is what you already know. A string, a missing field or any
+  other field is refused before an agent starts.
+- It returns `verified` claims with their sources and quotes, `refuted` ones with why,
+  `unproven` ones no refuter could settle, `unchecked` ones past the budget (decisive claims are
+  checked first; none is dropped), the `openQuestions` and each angle's `coverage`.
+- The run goes in the background; do not poll it. When it returns, rely on `verified` only; read
+  a decisive claim's source yourself before a recommendation rests on it, and name the
+  `unchecked`, `unproven` and open items in your answer.
+
 ## From research to a recommendation
 
 Compare two or three approaches you found, pick what fits this codebase best, and offer it as

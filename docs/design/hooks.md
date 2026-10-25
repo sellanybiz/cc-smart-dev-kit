@@ -453,8 +453,8 @@ place) and `placeFor` as the one decision. Read-only launches are never held —
 (`READ_ONLY_BUILT_INS`) and, plugin-qualified as Claude Code addresses them, the kit's own
 reviewer, auditor and ui-verifier (`READ_ONLY_KIT_AGENTS`); so a project's own `reviewer.md` or
 another plugin's `probe-kit:reviewer` builds, as the brief's "any unknown or custom type" says.
-A Workflow is read-only only when it names one of the kit's own two by their plugin-qualified id
-(`READ_ONLY_WORKFLOWS`, `cc-smart-dev-kit:audit-run` and `:review-split`): a call that also gives
+A Workflow is read-only only when it names one of the kit's own three by their plugin-qualified id
+(`READ_ONLY_WORKFLOWS`, `cc-smart-dev-kit:audit-run`, `:review-split` and `:research-sweep`): a call that also gives
 an inline `script`, a `scriptPath` or a `resumeFromRunId` runs that instead (Claude Code's own
 order, `callScript`), and a bare name only ever finds a saved file. The rule holds **only while
 the queue is full**: a subagent takes no place, so with one free place a lead may run as many

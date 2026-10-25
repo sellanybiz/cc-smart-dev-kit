@@ -37,6 +37,14 @@ const scripts = shippedScripts().map((file) => ({
   script: readScript(file),
 }));
 
+/**
+ * The scripts that refuse to start without an argument object (a research question has no
+ * default), with the smallest object each accepts. Every other script has defaults for all of it.
+ */
+const NEEDS_ARGS: Record<string, unknown> = {
+  "research-sweep": { angles: ["the current docs"], question: "what does it do?" },
+};
+
 /** A PreToolUse `Workflow` input, as Claude Code builds one for an inline script. */
 function workflowInput(script: string, cwd: string): string {
   return JSON.stringify({
@@ -120,9 +128,14 @@ describe("every shipped workflow script", () => {
     expect(answer.permissionDecisionReason).toContain("opus");
   });
 
-  test("every script runs with the workflow globals, and with no args at all", async () => {
-    for (const { file } of scripts) {
-      const run = await runScript(file);
+  test("every script runs with the workflow globals, and with no args at all unless it needs them", async () => {
+    for (const { file, name } of scripts) {
+      const needs = NEEDS_ARGS[name];
+      if (needs !== undefined) {
+        // Refused at the start, before any agent: the message says what the object is.
+        await expect(runScript(file)).rejects.toThrow("needs an object");
+      }
+      const run = await runScript(file, needs === undefined ? {} : { args: needs });
       expect(run.calls.length).toBeGreaterThan(0);
       expect(run.phases.length).toBeGreaterThan(0);
     }
