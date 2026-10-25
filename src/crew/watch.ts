@@ -1051,7 +1051,7 @@ export async function watchPass(
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.
     if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
-      await startQueued(record, ctx, resolved);
+      await startQueued(record, ctx, resolved, scope.mergeInto);
     }
     // A phase that was removed before its work was merged releases nothing, so this one never
     // starts by itself: say it once, with the way to drop the wait (a phase that was merged

@@ -87,9 +87,14 @@ guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
 is the project's: the address its own settings choose over the machine's — its personal file, its
 team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
-`src/crew/usage-guard.ts`). It reads the settings files at the repository's main checkout, the
-same folder for `crew start`, for the Agent guard's question "would a start queue now?" and for
-`crew list`; the user's file alone would miss a project turned on or off with `gateway project`.
+`src/crew/usage-guard.ts`). It reads the settings files at the lead's own folder
+(`crewSettingsFolder`): a crew session's worktree is cut from the lead's branch and Claude Code
+reads the team file of the folder a session runs in, so a lead in a linked worktree whose branch
+changed `.claude/settings.json` gets the answer its crew will meet, not the main checkout's
+(proved on 2.1.310, `docs/claude-code-contract.md`). It is the same folder for `crew start`, for the
+queue's start, for the Agent guard's question "would a start queue now?" and for `crew list`; the
+user's file alone would miss a project turned on or off with `gateway project`. (`crew model`
+still asks the record's repository: it has no lead folder to hand.)
 It reads no environment: an address exported only in the shell that runs `crew start`, with no
 settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
