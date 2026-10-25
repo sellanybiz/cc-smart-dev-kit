@@ -60,8 +60,9 @@ The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   names one. When every target of a profile's slot is limited, the router's message and its
   reminder name the command that changes it (`gateway profile <name> slot <slot> <targets>`, and
   `gateway slot …` too when the profile uses the machine's chain), and the alert and the status
-  line name the profile's command, not a hand edit of `gateway.json`. `gateway profile <name> slot judge off` no longer says Claude judges alone: the
-  profile's tested worker targets still judge while Claude cannot, unless its judge fallback is off.
+  line name the profile's command, not a hand edit of `gateway.json`. `gateway profile <name> slot
+  judge off` says who judges there: Claude alone, or, once the judge's fallback is on (off by
+  default), the profile's tested worker targets while Claude cannot.
   The profile commands also say the trade-off of a judge other than Claude, and `gateway profile
   <name> fallback judge on|off` says who judges instead of a "next target".
   A crew session in a profile project now waits on its profile's breaker, not the machine's, also
