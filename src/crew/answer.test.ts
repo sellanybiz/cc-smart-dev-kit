@@ -241,6 +241,126 @@ describe("crew answer", () => {
     expect(record?.state).toBe("working");
   });
 
+  test("WF1: a resume under the same id keeps the record's session", async () => {
+    const world = await askedWorld("stopped");
+    expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
+    // The same short id and no copy note: the same session goes on, and agent view is not read again.
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["agents", "--bg"]);
+    expect(world.out).toEqual([`answered ${NAME}: resumed with your answer · which port?`]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({
+      sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      shortId: "aaaa1111",
+      state: "working",
+    });
+  });
+
+  test("WF1: a resume that starts a copy: the record takes its new id in the same write as working", async () => {
+    // The live case (2026-10-25): the record held c7186986, the resume opened d7a54fc8, and the
+    // record kept the old id — so the watch read the old session's row as stopped.
+    const world = await askedWorld("stopped");
+    const view = JSON.stringify([
+      { id: "aaaa1111", sessionId: "aaaa1111-2222-3333-4444-555555555555", state: "stopped" },
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    // Agent view before (is it gone?), the resume, and agent view again for the copy's row.
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["agents", "--bg", "agents"]);
+    expect(world.out).toEqual([
+      `answered ${NAME}: resumed with your answer as session a1b2c3d4 (a copy of aaaa1111) · which port?`,
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    expect(record?.questions[0]?.answer).toBe("the port is 3210");
+    // One state event: the ids came in the write that made it working.
+    const states = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.type === "state",
+    );
+    expect(states.map((one) => [one.state, one.text])).toEqual([
+      ["working", "an answer brought it back"],
+    ]);
+  });
+
+  test("WF1: a resume that prints no session id is said with why; the record stays as it was", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_BG: "noline" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
+  test("WF1: a copy note that names another id than the line is not guessed at", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_COPY_AS: "b2c3d4e5", FAKE_RESUME: "copy" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 said it started a copy as b2c3d4e5, but printed backgrounded · a1b2c3d4; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+  });
+
+  test("WF1: a resume that does not answer in time may have started one: said, the record as it was", async () => {
+    const world = await askedWorld("stopped");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) =>
+        argv.includes("--resume")
+          ? { error: null, exitCode: null, stderr: "", stdout: "", timedOut: true }
+          : real(argv, options),
+    });
+    expect(await runCrew(["answer", NAME, "the port is 3210"], ctx)).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: claude --bg --resume aaaa1111-2222-3333-4444-555555555555 did not answer in time; see claude agents before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+    expect(record?.questions[0]?.answer).toBeNull();
+    // It may have started a session: its claim stays until it is over, so a second resume waits.
+    expect(record?.resumeClaim).toBeDefined();
+  });
+
+  test("WF1: a copy agent view does not list is said, with the copy's id to stop", async () => {
+    const world = await askedWorld("stopped");
+    const view = JSON.stringify([
+      { id: "aaaa1111", sessionId: "aaaa1111-2222-3333-4444-555555555555", state: "stopped" },
+    ]);
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      "crew answer: session a1b2c3d4 started, but claude agents does not list it; see claude agents, and stop it (claude stop a1b2c3d4) before you resume it again",
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record).toMatchObject({ shortId: "aaaa1111", state: "stopped" });
+  });
+
   test("D35: a stopped crew session whose agent view cannot be read is not resumed: it could be running", async () => {
     const world = await askedWorld("stopped");
     const code = await runCrew(

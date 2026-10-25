@@ -41,14 +41,28 @@
  *
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
+ *
+ * **One watch acts for a lead: the newest** (WF1). A watch takes its lead's lease in the store
+ * when it starts (`takeWatchLease`), and checks it still holds it before each pass, before it
+ * starts or resumes a session, and before it writes its state (`keepWatchLease`); one that lost it
+ * says so once and ends. A watch also ends when its parent ended (a monitor's shell is gone) or
+ * nobody reads its output (EPIPE): one exit path, `WatchEnd`.
  */
+import { randomUUID } from "node:crypto";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
+import { currentHolder, LockBusyError } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
+import {
+  type ResumedSession,
+  resumedAs,
+  resumeSession,
+  sendMessageLine,
+  UNREADABLE_VIEW_WHY,
+} from "./answer";
 import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
@@ -61,13 +75,16 @@ import { startQueued } from "./start";
 import {
   type CrewEvent,
   type CrewRecord,
+  keepWatchLease,
   listCrew,
   listLeads,
   readCrewEvents,
   readReport,
   readWatchState,
   setCrewMemory,
+  takeWatchLease,
   updateCrew,
+  type WatchLease,
   type WatchState,
   writeWatchState,
 } from "./store";
@@ -86,6 +103,23 @@ import {
 
 /** How often the watch reads agent view. */
 export const WATCH_POLL_MS = 20_000;
+
+/**
+ * A watch that must stop acting (WF1): a newer watch of its lead took the lease, the process that
+ * started it ended, or nobody reads its output. Thrown by its check (`WatchScope.goesOn`) before
+ * it acts, and caught once in `runCrewWatch`, which says `line` on `stream` and ends with 0.
+ */
+export class WatchEnd extends Error {
+  override name = "WatchEnd";
+  readonly line: string;
+  readonly stream: "error" | "print";
+
+  constructor(stream: "error" | "print", line: string) {
+    super(line);
+    this.line = line;
+    this.stream = stream;
+  }
+}
 
 /**
  * How long a `starting` crew session may run before its own SessionStart hook has said it reached
@@ -366,6 +400,14 @@ export interface WatchScope {
    * test reaches a real router's port.
    */
   gateway?: (nowMs: number) => Promise<GatewayNow>;
+  /**
+   * Whether this watch may act now (WF1): true; false when the store was too busy to say (its
+   * lock), so it acts on nothing this time and asks again later; and it throws `WatchEnd` when it
+   * may never act again — it lost its lead's lease, its parent ended, or nobody reads its output.
+   * The pass asks again right before it starts queued crew sessions and before it resumes a
+   * paused one: each launches a Claude session. Left out (a test's own pass): always true.
+   */
+  goesOn?: () => Promise<boolean>;
 }
 
 /**
@@ -469,23 +511,36 @@ const RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
 type ResumeMark = Pick<WatchState, "resumedAt" | "routerRequests">;
 
 /**
+ * The `said` key that holds a paused crew session back from the watch's resumes: its last resume
+ * may have started a session the kit could not name (`ResumeResult.unnamed`), and a second try
+ * could start a second one. The lead's own `crew resume` brings it back; the key goes when the
+ * record is no longer `paused`.
+ */
+function resumeHoldKey(id: string): string {
+  return `resume-hold:${id}`;
+}
+
+/**
  * Resumes the ready paused crew sessions of one pass (D42): **one at a time**. The first of a
  * wave is the canary. Each further one waits `RESUME_SPACING_MS` after the resume before it,
  * and only goes once the router answered a request since (`routerAnsweredSince`); a pass that
- * may not resume yet says nothing, because nothing changed.
+ * may not resume yet says nothing, because nothing changed. A crew session held back
+ * (`resumeHoldKey`) is skipped.
  */
 async function resumePaused(
   paused: readonly CrewRecord[],
   state: WatchState,
+  said: Record<string, string>,
   ctx: CrewContext,
   gateway: (nowMs: number) => Promise<GatewayNow>,
+  goesOn: () => Promise<boolean>,
   agents: null | AgentRow[],
   say: (line: string) => void,
 ): Promise<null | ResumeMark> {
   const now = ctx.now();
   const facts = await gateway(now);
   const ready = paused
-    .filter((one) => waitOver(one, facts, now))
+    .filter((one) => said[resumeHoldKey(one.id)] === undefined && waitOver(one, facts, now))
     .sort(
       (a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt),
     );
@@ -496,8 +551,13 @@ async function resumePaused(
     if (now - last < RESUME_SPACING_MS) return null;
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
+  // Only the watch that holds its lead's lease resumes (WF1): two would start two sessions.
+  if (!(await goesOn())) return null;
+  const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
+  const one = await resumeOne(next, ctx, now, agents, say, held);
+  if (one.unnamed) said[resumeHoldKey(next.id)] = held;
   // A resume that failed is no resume: the next pass tries again, and the others wait for it.
-  if (!(await resumeOne(next, ctx, now, agents, say)).ok) return null;
+  if (!one.ok) return null;
   return { resumedAt: now, routerRequests: facts.requests };
 }
 
@@ -508,6 +568,10 @@ export interface OneResume {
   stored: boolean;
   /** A message to a session that still has a process, or a resume of one that has none. */
   way: "message" | "resume";
+  /** The short id of the session that runs now: the record's own, or the copy a resume started. */
+  shortId: null | string;
+  /** True when the resume may have started a session it could not name (`ResumeResult`). */
+  unnamed: boolean;
 }
 
 /**
@@ -516,9 +580,12 @@ export interface OneResume {
  * only a session holds that tool), `claude --bg --resume <id> "<text>"` in its worktree, with its
  * own settings and MCP files, for one whose session has none. **One home for bringing a paused
  * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
- * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
- * that fails is one line, and the record stays `paused`; so is an agent view that cannot be read —
- * it could be either, and a copy is worse than a second try.
+ * `working` again in the same act, so nothing resumes it twice and it holds its place — with the
+ * session the resume brought back (WF1: every crew resume is a copy with a new id), so the record
+ * never names a session that is gone. A resume that fails is one line, and the record stays
+ * `paused`; so is an agent view that cannot be read — it could be either, and a copy is worse than
+ * a second try. `unnamedNote` ends the line of a resume that may have started a session it could
+ * not name (the watch says it holds the record back).
  */
 export async function resumeOne(
   record: CrewRecord,
@@ -526,8 +593,10 @@ export async function resumeOne(
   now: number,
   agents: null | AgentRow[],
   say: (line: string) => void,
+  unnamedNote: null | string = null,
 ): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
+  const failed = { ok: false, shortId: record.shortId, stored: false, way: "resume" } as const;
   if (agents === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     const why =
@@ -535,32 +604,46 @@ export async function resumeOne(
         ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
         : UNREADABLE_VIEW_WHY;
     say(`${record.name}: not resumed — ${why}`);
-    return { ok: false, stored: false, way: "resume" };
+    return { ...failed, unnamed: false };
   }
   if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
     const stored = await sayResumed(
       record,
       "the wait is over; the message to it wakes it",
+      null,
       ctx,
       now,
       say,
     );
-    return { ok: true, stored, way: "message" };
+    return { ok: true, shortId: record.shortId, stored, unnamed: false, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
-    say(`${record.name}: not resumed — ${resumed.why}`);
-    return { ok: false, stored: false, way: "resume" };
+    const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
+    say(`${record.name}: not resumed — ${resumed.why}${note}`);
+    return { ...failed, unnamed: resumed.unnamed };
   }
-  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return { ok: true, stored, way: "resume" };
+  const { session } = resumed;
+  const stored = await sayResumed(
+    record,
+    `the wait is over; it was resumed${resumedAs(record, session.shortId)}`,
+    session,
+    ctx,
+    now,
+    say,
+  );
+  return { ok: true, shortId: session.shortId, stored, unnamed: false, way: "resume" };
 }
 
-/** Records a resumed crew session `working` with its wait cleared; false (and one line) when the store cannot. */
+/**
+ * Records a resumed crew session `working` with its wait cleared, and with the session a resume
+ * brought back (null: a message woke its own); false (and one line) when the store cannot.
+ */
 async function sayResumed(
   record: CrewRecord,
   text: string,
+  session: null | ResumedSession,
   ctx: CrewContext,
   now: number,
   say: (line: string) => void,
@@ -570,13 +653,19 @@ async function sayResumed(
       ctx.paths.stateDir,
       record.repo,
       record.id,
-      { state: "working", waitingFor: undefined },
+      {
+        state: "working",
+        waitingFor: undefined,
+        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+      },
       now,
       text,
     );
     return true;
   } catch (error) {
-    say(`${record.name}: resumed, but the store could not record it: ${reasonOf(error)}`);
+    // A copy that runs while the record still names the old session: the line names the copy.
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    say(`${record.name}: resumed${as}, but the store could not record it: ${reasonOf(error)}`);
     return false;
   }
 }
@@ -886,7 +975,11 @@ export async function watchPass(
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) {
-    if (scope.mayStart !== false) await startQueued(record, ctx, resolved);
+    // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
+    // a start launches Claude, and a newer watch may have taken over during the one before.
+    if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
+      await startQueued(record, ctx, resolved);
+    }
     // A phase that was removed before its work was merged releases nothing, so this one never
     // starts by itself: say it once, with the way to drop the wait (a phase that was merged
     // before its removal started it, and the start's own state event is its line).
@@ -905,14 +998,22 @@ export async function watchPass(
   const paused = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId && one.state === "paused",
   );
+  // A hold lasts while its record stays paused: once the lead brought it back, it goes.
+  for (const key of Object.keys(said)) {
+    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+      delete said[key];
+    }
+  }
   const marked =
     paused.length === 0
       ? null
       : await resumePaused(
           paused,
           state,
+          said,
           ctx,
           scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)),
+          scope.goesOn ?? (() => Promise.resolve(true)),
           agents,
           say,
         );
@@ -994,11 +1095,80 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   }
   // The lead merges in its own folder; where that is gone, in the main checkout.
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
+  // **One acting watch per lead: the newest wins** (WF1). A monitor the lead restarts is its
+  // intent, so this watch takes the lease whoever holds it, and the one it replaces ends at its
+  // next look. Before the state is read, so this watch goes on from where the last one wrote.
+  const lease: WatchLease = { ...currentHolder(), at: ctx.now(), token: randomUUID() };
+  try {
+    await takeWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+  } catch (error) {
+    ctx.error(`crew watch: could not take this lead's watch lease: ${reasonOf(error)}`);
+    return 1;
+  }
+  const parent = ctx.parentPid?.() ?? null;
+  const goesOn = async (): Promise<boolean> => {
+    // Claude Code ends a monitor by ending its shell, and the watch is re-parented: nobody
+    // started it any more, and nobody reads it.
+    if (parent !== null && ctx.parentPid?.() !== parent) {
+      throw new WatchEnd("error", "crew watch: the process that started it ended; this watch ends");
+    }
+    if (ctx.outputClosed?.() === true) {
+      throw new WatchEnd("error", "crew watch: nobody reads its output any more; this watch ends");
+    }
+    let kept: Awaited<ReturnType<typeof keepWatchLease>>;
+    try {
+      kept = await keepWatchLease(ctx.paths.stateDir, repo, leadSessionId, lease);
+    } catch (error) {
+      // Another writer held the store's lock past its wait: this watch cannot say whether it
+      // still holds the lease, so it acts on nothing now and asks again at its next look. A
+      // monitor that ended is not started again, so a busy moment must not end it.
+      if (error instanceof LockBusyError) return false;
+      throw error;
+    }
+    if (!kept.held) {
+      throw new WatchEnd(
+        "print",
+        `crew watch: a newer watch of this lead runs (pid ${kept.holder.pid}); this one ends`,
+      );
+    }
+    return true;
+  };
+  try {
+    return await watchLoop(args, ctx, {
+      base: watchBase(read.caller, ctx),
+      goesOn,
+      leadSessionId,
+      mergeInto,
+      repo,
+      resolved,
+    });
+  } catch (error) {
+    // The one way a watch ends by itself: it says why once, and ends well. Anything else — a
+    // store it cannot read or lock — ends it the way a failed pass does.
+    if (error instanceof WatchEnd) {
+      (error.stream === "print" ? ctx.print : ctx.error)(error.line);
+      return 0;
+    }
+    ctx.error(`crew watch: ${reasonOf(error)}`);
+    return 1;
+  }
+}
+
+/**
+ * The watch's passes, one every `WATCH_POLL_MS`, each after `scope.goesOn` said this watch may
+ * still act, and its state written only while it holds the lease. `--once` ends on the first pass
+ * with news, `--timeout` on its deadline.
+ */
+async function watchLoop(
+  args: WatchArgs,
+  ctx: CrewContext,
+  start: WatchScope & { goesOn: () => Promise<boolean> },
+): Promise<number> {
+  const { goesOn, leadSessionId, repo, resolved } = start;
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
   let state: WatchState = known ?? { noted: false, offset: 0, said: {} };
-  const parkedBase = watchBase(read.caller, ctx);
   // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
   // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
@@ -1011,6 +1181,13 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
+    // Before it acts: a watch that may not act any more ends here (`WatchEnd`), and one whose
+    // store is too busy to say acts on nothing this time.
+    if (!(await goesOn())) {
+      if (deadline !== null && ctx.now() >= deadline) return 0;
+      await ctx.sleep(WATCH_POLL_MS);
+      continue;
+    }
     const reread = readCaller("watch", ctx, { session: "optional" });
     let mayStart = true;
     if (reread.ok) {
@@ -1027,23 +1204,20 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
         capsSaid = true;
       }
     }
-    const scope: WatchScope = {
-      base: parkedBase,
-      leadSessionId,
-      mergeInto,
-      mayStart,
-      repo,
-      resolved: caps,
-    };
+    const scope: WatchScope = { ...start, mayStart, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);
     } catch (error) {
+      if (error instanceof WatchEnd) throw error;
       ctx.error(`crew watch: ${reasonOf(error)}`);
       return 1;
     }
     state = pass.state;
-    writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
+    // Only the lease holder writes the state: a watch that lost the lease while this pass ran
+    // leaves it to the newer one, which goes on from what it read. A busy store keeps it in
+    // memory for the next write.
+    if (await goesOn()) writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
     // `--once` ends on the next change: the lead runs it in the background, and its end
     // starts the lead's next turn. A pass with nothing to say waits for the next one — a
     // watch that ended at once would wake the lead with no news, over and over.

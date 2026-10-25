@@ -7852,6 +7852,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text, token: text }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -7935,6 +7936,7 @@ var handBackReportSchema = reportFields.loose().superRefine((report, context) =>
     });
   }
 });
+var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
@@ -7944,6 +7946,14 @@ var watchStateFields = object({
   resumedAt: number2().int().min(0).optional(),
   routerRequests: number2().int().min(0).nullable().optional(),
   stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
+});
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
 });
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({

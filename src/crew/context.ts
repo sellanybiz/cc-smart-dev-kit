@@ -40,23 +40,68 @@ export interface CrewContext {
    * the Docker containers. A test gives them; left out, they are read from the machine.
    */
   scanFacts?: ScanOptions["facts"];
+  /**
+   * The parent of this process now, read again on every call: a watch ends when it changes, because
+   * Claude Code ends a monitor by ending its shell and the watch is then re-parented (WF1). Left
+   * out (a test's own context): the watch does not judge its parent.
+   */
+  parentPid?: () => null | number;
+  /**
+   * True once a line `print` wrote found nobody reading (EPIPE): a watch then ends (WF1). Left
+   * out: never.
+   */
+  outputClosed?: () => boolean;
   print: (line: string) => void;
   error: (line: string) => void;
+}
+
+/** What a writer to stdout needs: a stream with Node's `write`, its callback and its error event. */
+interface Writable {
+  on: (event: "error", listener: (error: Error) => void) => unknown;
+  write: (text: string, done: (error?: Error | null) => void) => unknown;
+}
+
+/**
+ * A printer to `stream` that notices when nobody reads it any more (proved on Bun 1.4.3, a real
+ * closed pipe). Bun's `console.log` drops such a write without a word. `process.stdout.write`
+ * tells its callback (EPIPE) and emits `error` — and an `error` nobody listens to ends the
+ * process at once, with a stack trace, wherever it next prints. So the printer listens: the
+ * failure is kept, never thrown, and `closed` says it.
+ */
+export function stdoutPrinter(stream: Writable): {
+  closed: () => boolean;
+  print: (line: string) => void;
+} {
+  let failed = false;
+  stream.on("error", () => {
+    failed = true;
+  });
+  return {
+    closed: () => failed,
+    print: (line) => {
+      stream.write(`${line}\n`, (error) => {
+        if (error) failed = true;
+      });
+    },
+  };
 }
 
 /** The CLI's context: this process, this machine. */
 export function realCrewContext(paths: CliPaths): CrewContext {
   const env = process.env;
+  const stdout = stdoutPrinter(process.stdout);
   return {
     cwd: process.cwd(),
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
     now: () => Date.now(),
+    outputClosed: stdout.closed,
+    parentPid: () => process.ppid,
     paths,
     pid: process.pid,
     platform: process.platform,
-    print: (line) => console.log(line),
+    print: stdout.print,
     processes: realProcessFacts(process.platform),
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),

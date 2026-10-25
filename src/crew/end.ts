@@ -36,7 +36,13 @@ import {
 } from "../worktrees/machine-facts";
 import { type WorkOnRef, workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
+import {
+  resumedAs,
+  resumePlace,
+  resumeSession,
+  sessionLiveness,
+  UNREADABLE_VIEW_WHY,
+} from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { CREW_NEVER_RUNS, REPORT_COMMAND } from "./brief";
 import { agentRow, callClaude, findClaude, parseAgentPresence } from "./claude";
@@ -45,6 +51,7 @@ import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
 import { callingSession, crewIdOf } from "./session";
 import {
+  type CrewChange,
   type CrewRecord,
   type LeadRecord,
   listLeads,
@@ -144,15 +151,26 @@ export function sessionUnknown(ctx: CrewContext, record: CrewRecord): boolean {
   return rows !== null && agentRow(rows, record.shortId) === null;
 }
 
-/** Records `state` with `text` as the event; false (and a line on stderr) when the store cannot. */
+/**
+ * Records `state` with `text` as the event, and `change` in the same write; false (and a line on
+ * stderr) when the store cannot.
+ */
 export async function markState(
   record: CrewRecord,
   state: string,
   text: string,
   ctx: CrewContext,
+  change: CrewChange = {},
 ): Promise<boolean> {
   try {
-    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), text);
+    await updateCrew(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      { ...change, state },
+      ctx.now(),
+      text,
+    );
     return true;
   } catch (error) {
     ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf(error)}`);
@@ -397,6 +415,15 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   return stopped.stored ? 0 : 1;
 }
 
+/**
+ * The line a resume ends with: `resumed <name> (<short id>)`, or — when Claude Code started a copy
+ * (WF1) — `resumed <name> as session <new> (a copy of <old>)`.
+ */
+function resumedLine(record: CrewRecord, shortId: string): string {
+  const as = resumedAs(record, shortId);
+  return as === "" ? `resumed ${record.name} (${shortId})` : `resumed ${record.name}${as}`;
+}
+
 /** `crew resume <name|id>`; the exit code. */
 export async function runCrewResume(ref: string, ctx: CrewContext): Promise<number> {
   const found = actOn(ref, "resume", ctx);
@@ -457,11 +484,14 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
       ctx,
     );
   }
-  const stored =
-    record.state === "working"
-      ? true
-      : await markState(record, "working", "resumed by the lead", ctx);
-  ctx.print(`resumed ${record.name} (${id})`);
+  // The session the resume brought back comes in the write that makes it working (WF1): a
+  // record that kept the old id would read that session's stopped row as its own.
+  const { session } = resumed;
+  const stored = await markState(record, "working", "resumed by the lead", ctx, {
+    sessionId: session.sessionId,
+    shortId: session.shortId,
+  });
+  ctx.print(resumedLine(record, session.shortId));
   return stored ? 0 : 1;
 }
 
@@ -540,7 +570,7 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     ctx.print(
       one.way === "message"
         ? `${record.name} is running (${record.shortId}): send the message above`
-        : `resumed ${record.name} (${record.shortId})`,
+        : resumedLine(record, one.shortId ?? record.shortId),
     );
   }
   return code;

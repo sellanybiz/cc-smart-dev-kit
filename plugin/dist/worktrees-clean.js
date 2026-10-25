@@ -7088,6 +7088,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text, token: text }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -7310,6 +7311,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state !== before.state)
+      delete merged.resumeClaim;
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
@@ -7348,6 +7351,7 @@ async function appendCrewEvent(stateDir, repo, event, atMs) {
   await underStoreLock(stateDir, repo, () => appendEvent(stateDir, repo, line));
   return line;
 }
+var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
@@ -7357,6 +7361,14 @@ var watchStateFields = object({
   resumedAt: number2().int().min(0).optional(),
   routerRequests: number2().int().min(0).nullable().optional(),
   stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
+});
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
 });
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
@@ -9285,18 +9297,37 @@ async function freeForCrewGb(home, memory) {
 }
 
 // src/crew/context.ts
+function stdoutPrinter(stream) {
+  let failed = false;
+  stream.on("error", () => {
+    failed = true;
+  });
+  return {
+    closed: () => failed,
+    print: (line) => {
+      stream.write(`${line}
+`, (error) => {
+        if (error)
+          failed = true;
+      });
+    }
+  };
+}
 function realCrewContext(paths) {
   const env = process.env;
+  const stdout = stdoutPrinter(process.stdout);
   return {
     cwd: process.cwd(),
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
     now: () => Date.now(),
+    outputClosed: stdout.closed,
+    parentPid: () => process.ppid,
     paths,
     pid: process.pid,
     platform: process.platform,
-    print: (line) => console.log(line),
+    print: stdout.print,
     processes: realProcessFacts(process.platform),
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),
@@ -10785,9 +10816,9 @@ function sessionUnknown(ctx, record) {
   const rows = parseAgentPresence(listed.run.stdout);
   return rows !== null && agentRow(rows, record.shortId) === null;
 }
-async function markState(record, state, text, ctx) {
+async function markState(record, state, text, ctx, change = {}) {
   try {
-    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), text);
+    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { ...change, state }, ctx.now(), text);
     return true;
   } catch (error) {
     ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf2(error)}`);

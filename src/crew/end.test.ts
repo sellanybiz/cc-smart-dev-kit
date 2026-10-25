@@ -17,11 +17,14 @@ import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses } from "./end";
 import {
+  claimResume,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
+  RESUME_CLAIM_MS,
   readCrew,
   readCrewEvents,
+  releaseResume,
   updateCrew,
   writeLead,
 } from "./store";
@@ -1440,6 +1443,83 @@ describe("crew resume", () => {
     });
   });
 
+  test("WF1: a resume that starts a copy: the record takes its new id in the same write as working", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", state: "stopped" });
+    const view = JSON.stringify([
+      { id: "b2c3d4e5", sessionId: "b2c3d4e5-0000-1111-2222-333333333333", state: "stopped" },
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    const states = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.crew === record.id && one.type === "state",
+    );
+    expect(states.map((one) => [one.state, one.text])).toEqual([
+      ["working", "resumed by the lead"],
+    ]);
+  });
+
+  test("WF1: a working record whose session is gone takes the copy's id too", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5" });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+    // Its state did not change: no state event.
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+        (one) => one.crew === record.id && one.type === "state",
+      ),
+    ).toEqual([]);
+  });
+
+  test("WF1: a resume that prints no session id is refused with why, and changes nothing", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: "noline" }))).toBe(1);
+    expect(world.err).toEqual([
+      "crew resume: claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 printed no line backgrounded · <id>, so the session it started is not known; see claude agents before you resume it again",
+      `Fix: ${COMMAND} crew status "C my-app B1 help" shows its files; if it cannot come back, merge its branch and start the phase again`,
+    ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      shortId: "a1b2c3d4",
+      state: "stopped",
+    });
+  });
+
   test("a crew session with no worktree is refused with one line: there is nowhere to bring it back", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped", worktree: false });
@@ -1645,6 +1725,73 @@ describe("D42: crew resume --paused", () => {
     expect(world.out).toEqual(["resumed C my-app B4 y (d4e5f6a7)"]);
   });
 
+  test("WF1: a paused one another resume holds is not resumed twice: one line, no claude call", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    // The watch is inside its own `claude --bg --resume` of this record right now.
+    expect(
+      await claimResume(world.paths.stateDir, world.repo, record.id, ["paused"], "the-watch", NOW),
+    ).toBe(true);
+    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(1);
+    expect(world.out).toEqual([
+      "C my-app B1 help: not resumed — C my-app B1 help is being resumed by another command right now, or it changed since it was read; try again in a moment",
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("WF1: the claim on a resume: one holder; in the state judged; given back; ended by a change of state or by time", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    const { stateDir } = world.paths;
+    const claim = (token: string, atMs = NOW, states = ["paused"]) =>
+      claimResume(stateDir, world.repo, record.id, states, token, atMs);
+    expect(await claim("first")).toBe(true);
+    // Its own token again: still its claim. Another: refused while it holds.
+    expect(await claim("first")).toBe(true);
+    expect(await claim("second", NOW + RESUME_CLAIM_MS - 1)).toBe(false);
+    // Over by time: a resume that never came back frees the record.
+    expect(await claim("second", NOW + RESUME_CLAIM_MS)).toBe(true);
+    // Given back by its holder only.
+    await releaseResume(stateDir, world.repo, record.id, "first");
+    expect(await claim("third", NOW + RESUME_CLAIM_MS)).toBe(false);
+    await releaseResume(stateDir, world.repo, record.id, "second");
+    expect(readCrew(stateDir, world.repo, record.id)?.resumeClaim).toBeUndefined();
+    // In the state its caller judged it in, and the change of state ends it.
+    expect(await claim("third", NOW, ["stopped"])).toBe(false);
+    expect(await claim("third")).toBe(true);
+    await updateCrew(stateDir, world.repo, record.id, { state: "working" }, NOW, "resumed");
+    expect(readCrew(stateDir, world.repo, record.id)?.resumeClaim).toBeUndefined();
+    expect(await claim("fourth")).toBe(false);
+  });
+
+  test("WF1: a paused one resumed as a copy takes the copy's id, and the line names it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ shortId: "b2c3d4e5", ...pausedChange(5) });
+    const view = JSON.stringify([
+      {
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({}, { FAKE_AGENTS_JSON: view, FAKE_RESUME: "copy" }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help as session a1b2c3d4 (a copy of b2c3d4e5)",
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      state: "working",
+    });
+  });
+
   test("nothing paused: one line, nothing run", async () => {
     const world = await boardWorld();
     await world.addCrew();
@@ -1702,7 +1849,35 @@ describe("D42: crew resume --paused", () => {
   test("a resume the store could not record is named, and the exit code says so", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ ...pausedChange(5) });
-    // The store's record folder gone read-only: the session comes back, its record cannot be written.
+    // The store's record folder goes read-only while `claude --bg --resume` runs — after the
+    // resume claimed the record: the session comes back, its record cannot be written.
+    const recordsDir = join(world.paths.stateDir, "crew", repoKey(world.repo), "crew");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) => {
+        if (argv.includes("--resume")) chmodSync(recordsDir, 0o500);
+        return real(argv, options);
+      },
+    });
+    let code: number;
+    try {
+      code = await runCrew(["resume", "--paused"], ctx);
+    } finally {
+      chmodSync(recordsDir, 0o700);
+    }
+    expect(code).toBe(1);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith(
+      "C my-app B1 help: resumed, but the store could not record it:",
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("WF1: a store that cannot claim the resume launches nothing: one line, and it stays paused", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    // The store's record folder read-only before the resume: its claim cannot be written.
     const recordsDir = join(world.paths.stateDir, "crew", repoKey(world.repo), "crew");
     chmodSync(recordsDir, 0o500);
     let code: number;
@@ -1714,9 +1889,9 @@ describe("D42: crew resume --paused", () => {
     expect(code).toBe(1);
     expect(world.out).toHaveLength(1);
     expect(world.out[0]).toStartWith(
-      "C my-app B1 help: resumed, but the store could not record it:",
+      "C my-app B1 help: not resumed — the store could not claim its resume:",
     );
-    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 

@@ -14,7 +14,10 @@
  *   ("With --resume <session-id>, continues that session in the background under the same ID,
  *   or starts a copy and says so when the session is already running"). The conversation stays
  *   on disk, so the crew session picks up where it stopped. Because of that copy, agent view is read
- *   first: a stopped record whose session still has a process is sent the message instead.
+ *   first: a stopped record whose session still has a process is sent the message instead. On
+ *   2.1.310 every crew resume is a copy with a new id all the same — the flags it passes differ
+ *   from the session's saved ones — and the record takes that id with the answer (WF1,
+ *   `resumedSession`).
  *
  * **A resume runs in the crew session's own worktree, never in the main checkout** where the lead
  * happens to be: a session brought back in the main checkout is marked failed by its own
@@ -25,22 +28,34 @@
  * **A crew session the store does not know is never answered.** The store is what says a session is a
  * crew session (D35); a name alone is not enough.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
-import { callClaude, findClaude, sessionFlags } from "./claude";
+import {
+  type ClaudeDeps,
+  callClaude,
+  findClaude,
+  parseBackgrounded,
+  parseCopyNote,
+  sessionFlags,
+  startedRow,
+} from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
 import {
   answerCrewQuestion,
   type CrewRecord,
+  claimResume,
   crewMcpFile,
   crewSettingsFile,
   listCrew,
   openQuestionIndex,
   questionClosed,
+  RESUME_CLAIM_MS,
   readReport,
+  releaseResume,
 } from "./store";
 
 /** What `crew answer` was asked, already checked to be well formed. */
@@ -163,16 +178,20 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
     return 1;
   }
+  let session: null | ResumedSession = null;
   if (way === "resume") {
     const resumed = await resumeSession(ctx, record, args.text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
     }
+    session = resumed.session;
   }
   try {
     // A crew session that has its answer is working: a record that kept saying `blocked` or `stopped`
-    // would let the watch stop a crew session that is busy, and a stopped one holds no place.
+    // would let the watch stop a crew session that is busy, and a stopped one holds no place. A
+    // resume's session comes in the same write (WF1): a record that kept the old id would read
+    // that session's stopped row as its own.
     await answerCrewQuestion(
       ctx.paths.stateDir,
       repo,
@@ -181,13 +200,20 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       args.text,
       ctx.now(),
       "working",
+      session,
     );
   } catch (error) {
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf(error)}`);
+    // A copy that runs while the record still names the old session: the line names the copy.
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    ctx.error(
+      `crew answer: the store could not record the answer: ${reasonOf(error)}${as === "" ? "" : `; it was resumed${as}`}`,
+    );
     return 1;
   }
-  if (way === "resume") {
-    ctx.print(`answered ${record.name}: resumed with your answer · ${question}`);
+  if (session !== null) {
+    ctx.print(
+      `answered ${record.name}: resumed with your answer${resumedAs(record, session.shortId)} · ${question}`,
+    );
   } else {
     ctx.print(`answered ${record.name}: ${question}`);
     ctx.print(sendMessageLine(record.name, args.text));
@@ -195,8 +221,33 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   return 0;
 }
 
-/** What a resume of a stopped crew session gave back. */
-export type ResumeResult = { ok: true } | { ok: false; why: string };
+/** The session a resume brought back: the same one, or the copy Claude Code started instead. */
+export interface ResumedSession {
+  sessionId: string;
+  shortId: string;
+}
+
+/**
+ * What a resume of a crew session gave back: the session that runs now, which the record takes in
+ * the write that makes it `working` (WF1); or why not. `unnamed` is true when a session may have
+ * started that the kit cannot name — `claude` said it started one but no id could be read, or two
+ * ids disagree: a second try could start a second one, so the watch does not try again by itself.
+ */
+export type ResumeResult =
+  | { ok: true; session: ResumedSession }
+  | { ok: false; unnamed: boolean; why: string };
+
+/**
+ * The words a line adds when a resume came back as another session: ` as session <new> (a copy of
+ * <old>)`; nothing when it is the same session.
+ */
+export function resumedAs(record: CrewRecord, shortId: string): string {
+  if (shortId === record.shortId) return "";
+  return ` as session ${shortId}${record.shortId === null ? "" : ` (a copy of ${record.shortId})`}`;
+}
+
+/** What a resume says before it is tried again, when it may have started a session it cannot name. */
+const UNNAMED_FIX = "see claude agents before you resume it again";
 
 /** Where a crew session comes back: its own worktree; or why it cannot be brought back. */
 export type ResumePlace = { folder: string; ok: true } | { ok: false; why: string };
@@ -287,6 +338,12 @@ export function resumeArgs(
  * no session id, whose settings file is gone, or a `claude` that refuses is reported with the
  * reason. `crew answer`, `crew resume`, `crew resume --paused` and the lead's watch (`watch.ts`)
  * all resume this way: one home for the transport (D42).
+ *
+ * **One resume of a record at a time** (WF1): before `claude` runs, the resume claims the record
+ * in the store, in the state its caller judged it in (`claimResume`). A second resume — the
+ * person's `crew resume --paused` beside the watch, or a watch that took over the lease from one
+ * resuming now — is refused, so two copies never start. A resume that started nothing gives the
+ * claim back at once; the rest end it when the record's state changes, or in `RESUME_CLAIM_MS`.
  */
 export async function resumeSession(
   ctx: CrewContext,
@@ -294,15 +351,16 @@ export async function resumeSession(
   text: null | string,
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
-    return { ok: false, why: `${record.name} has no session to resume` };
+    return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
   }
   const place = resumePlace(record);
-  if (!place.ok) return { ok: false, why: place.why };
+  if (!place.ok) return { ok: false, unnamed: false, why: place.why };
   // Its own settings: without them the session comes back as a plain one, not as this crew session.
   const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
   if (!existsSync(settingsFile)) {
     return {
       ok: false,
+      unnamed: false,
       why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`,
     };
   }
@@ -311,32 +369,143 @@ export async function resumeSession(
   if (claude === null) {
     return {
       ok: false,
+      unnamed: false,
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed",
     };
   }
+  const { stateDir } = ctx.paths;
+  const token = randomUUID();
+  let claimed: boolean;
+  try {
+    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the store could not claim its resume: ${reasonOf(error)}`,
+    };
+  }
+  if (!claimed) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`,
+    };
+  }
+  const result = launchResume(ctx, record, text, {
+    claude,
+    folder: place.folder,
+    mcpFile: existsSync(mcpFile) ? mcpFile : null,
+    sessionId: record.sessionId,
+    settingsFile,
+  });
+  if (result.ok || result.unnamed) return result;
+  try {
+    await releaseResume(stateDir, record.repo, record.id, token);
+  } catch (error) {
+    // The claim then ends by itself: a later resume waits that long, and the line says so.
+    return {
+      ...result,
+      why: `${result.why}; its claim could not be given back (${reasonOf(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60_000} minutes`,
+    };
+  }
+  return result;
+}
+
+/** Runs `claude --bg --resume` for a claimed resume, and reads the session it brought back. */
+function launchResume(
+  ctx: CrewContext,
+  record: CrewRecord,
+  text: null | string,
+  launch: {
+    claude: string;
+    folder: string;
+    mcpFile: null | string;
+    sessionId: string;
+    settingsFile: string;
+  },
+): ResumeResult {
   const deps = claudeDeps(ctx);
   const called = callClaude(
     deps,
-    claude,
+    launch.claude,
     resumeArgs(
       {
         effort: record.effort,
         model: record.model.named,
         permissionMode: record.permissionMode,
-        sessionId: record.sessionId,
+        sessionId: launch.sessionId,
       },
-      { mcpFile: existsSync(mcpFile) ? mcpFile : null, settingsFile },
+      { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile },
       text,
     ),
-    place.folder,
+    launch.folder,
   );
-  if (!called.ok) return { ok: false, why: called.why };
-  if (called.run.exitCode !== 0) {
-    const last = `${called.run.stdout}\n${called.run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
+  if (!called.ok) return { ok: false, unnamed: false, why: called.why };
+  const { run } = called;
+  const command = `claude --bg --resume ${launch.sessionId}`;
+  if (run.timedOut) {
+    return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
+  }
+  if (run.exitCode !== 0) {
+    const last = `${run.stdout}\n${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
     return {
       ok: false,
-      why: `claude --bg --resume ${record.sessionId} failed (exit ${called.run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`,
+      unnamed: false,
+      why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`,
     };
   }
-  return { ok: true };
+  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
+}
+
+/**
+ * The session a `claude --bg --resume` that exited 0 brought back (WF1). The id is read from the
+ * `backgrounded · <short id>` line on stdout, and checked against the copy note on stderr
+ * (`parseCopyNote`): the same short id and no note is the record's own session, going on; any
+ * other id is a copy (2.1.310 starts one for every crew resume, because the flags `resumeArgs`
+ * passes differ from the session's saved ones), and agent view gives its full session id, as a
+ * start reads it (`startedRow`). No line, two ids that disagree, or a copy agent view cannot show
+ * is said with the reason — never a guess.
+ */
+function resumedSession(
+  record: CrewRecord,
+  run: { stderr: string; stdout: string },
+  deps: ClaudeDeps,
+  claude: string,
+  folder: string,
+  command: string,
+): ResumeResult {
+  const line = parseBackgrounded(run.stdout);
+  if (line === null) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} printed no line backgrounded · <id>, so the session it started is not known; ${UNNAMED_FIX}`,
+    };
+  }
+  const { shortId } = line;
+  const copy = parseCopyNote(run.stderr);
+  if (copy !== null && copy !== shortId) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} said it started a copy as ${copy}, but printed backgrounded · ${shortId}; ${UNNAMED_FIX}`,
+    };
+  }
+  if (copy === null && shortId === record.shortId && record.sessionId !== null) {
+    return { ok: true, session: { sessionId: record.sessionId, shortId } };
+  }
+  const listed = startedRow(deps, claude, shortId, folder);
+  const sessionId = listed.ok ? listed.row.sessionId : null;
+  if (sessionId !== null) return { ok: true, session: { sessionId, shortId } };
+  const what = !listed.ok
+    ? listed.why === "unreadable"
+      ? "claude agents --json could not be read"
+      : "claude agents does not list it"
+    : "claude agents lists it with no session id";
+  return {
+    ok: false,
+    unnamed: true,
+    why: `session ${shortId} started, but ${what}; see claude agents, and stop it (claude stop ${shortId}) before you resume it again`,
+  };
 }

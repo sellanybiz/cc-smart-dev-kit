@@ -7,6 +7,8 @@
  *   <stateDir>/crew/<repo key>/files/<crew id>/         its brief and its settings file
  *   <stateDir>/crew/<repo key>/notes/<lead id>.json      where that lead's notes hook is in the log
  *   <stateDir>/crew/<repo key>/stop/<crew id>.json        where that crew session's Stop hook is in the log
+ *   <stateDir>/crew/<repo key>/watch/<lead id>.json       what that lead's watch has read and said
+ *   <stateDir>/crew/<repo key>/watch-lease/<lead id>.json which one watch acts for that lead (WF1)
  *   <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/crew/<repo key>/lock                       held for a moment by each write
  *
@@ -52,7 +54,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { CrewKind } from "../models/launch-policy";
 import { samePath } from "../path-compare";
-import { withLock } from "../setup/lock";
+import { FALLBACK_STALE_MS, holderIsGone, type ProcessHolder, withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
@@ -432,6 +434,14 @@ const crewFields = z.object({
    * Absent on a record an older kit wrote.
    */
   waitingFor: waitingForSchema.optional(),
+  /**
+   * The resume running now (WF1, `claimResume`): its token and when it began. A resume launches a
+   * Claude session, and two resumes of one record — the watch and the person's `crew resume
+   * --paused`, or a watch and the newer one that took its lease — would start two copies. The
+   * write that changes the record's state drops it; one older than `RESUME_CLAIM_MS` is over.
+   * Absent on a record an older kit wrote.
+   */
+  resumeClaim: z.looseObject({ at: text, token: text }).optional(),
   /**
    * The last pause of the crew session (D42), kept when it goes on: when the wait began, and
    * how long the watch had to hold off before resuming it (`backoffMs`, 0 on a first pause).
@@ -889,6 +899,9 @@ export async function addCrewQuestion(
  * written in the same hold, so the record never says `blocked` for a crew session that has its answer
  * (the watch stops a blocked crew session that idles). A crew session in any other state keeps its own. The
  * state change is one `state` event; the answer alone is none.
+ *
+ * `session` is the session a resume with the answer brought back (WF1: a resume can start a copy
+ * with a new id): the record takes it in the same write, so it never names a session that is gone.
  */
 export async function answerCrewQuestion(
   stateDir: string,
@@ -898,6 +911,7 @@ export async function answerCrewQuestion(
   answer: string,
   atMs: number,
   resumes: null | CrewState = null,
+  session: null | { sessionId: string; shortId: string } = null,
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
@@ -911,7 +925,11 @@ export async function answerCrewQuestion(
     const waiting = before.state === "blocked" || before.state === "stopped";
     const state = resumes !== null && waiting ? resumes : null;
     return {
-      change: { questions, ...(state === null ? {} : { state }) },
+      change: {
+        questions,
+        ...(state === null ? {} : { state }),
+        ...(session === null ? {} : { sessionId: session.sessionId, shortId: session.shortId }),
+      },
       event: (after) =>
         state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
     };
@@ -985,6 +1003,9 @@ async function changeCrew(
     // goes on in clears it here, so no path — an answer, a resume, a report — can leave a wait
     // behind on a crew session that is running again (D42). `lastPause` stays: a re-pause reads it.
     if (merged.state !== "paused") delete merged.waitingFor;
+    // A resume's claim (`claimResume`) lasts while the record stays in the state it was claimed
+    // in: the write that makes the resumed session `working` ends it.
+    if (merged.state !== before.state) delete merged.resumeClaim;
     // A crew session removed after the lead merged its work keeps that fact here, and one removed
     // before the merge keeps the false: a phase that waits for it starts on the merge alone
     // (`finishesWait`, `places.ts`), never on the removal. Set from the record as it is now, under
@@ -1140,6 +1161,64 @@ export async function writeReport(
   const value = checked(handBackReportSchema, report, file);
   await underStoreLock(stateDir, repo, () => writeJsonFile(file, value));
   return file;
+}
+
+/**
+ * How long a resume's claim on a crew record holds (WF1): a resume runs `claude --bg --resume`
+ * and one read of agent view, each bounded by 30 seconds (`CLAUDE_TIMEOUT_MS`), so a claim older
+ * than this belongs to a resume that is over, whatever happened to it.
+ */
+export const RESUME_CLAIM_MS = 2 * 60_000;
+
+/**
+ * Claims the resume of crew session `id` for the resume `token` (WF1): true when the record is
+ * still in one of `states` — the state its caller judged it in — and no other resume holds an
+ * unexpired claim. Under the store's lock, so of two resumes of one record only one launches
+ * Claude. The claim lasts until the record's state changes (`changeCrew`), `releaseResume`, or
+ * `RESUME_CLAIM_MS`. Like `setCrewMemory`, it moves no `updatedAt` and writes no event.
+ */
+export async function claimResume(
+  stateDir: string,
+  repo: string,
+  id: string,
+  states: readonly string[],
+  token: string,
+  atMs: number,
+): Promise<boolean> {
+  const file = crewFile(stateDir, repo, id);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before === null) {
+      throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
+    }
+    if (!states.includes(before.state)) return false;
+    const held = before.resumeClaim;
+    if (held !== undefined && held.token !== token) {
+      const since = Date.parse(held.at);
+      if (Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS) return false;
+    }
+    writeJsonFile(
+      file,
+      checked(crewRecordSchema, { ...before, resumeClaim: { at: iso(atMs), token } }, file),
+    );
+    return true;
+  });
+}
+
+/** Ends the claim of the resume `token` on crew session `id`: a resume that started nothing. */
+export async function releaseResume(
+  stateDir: string,
+  repo: string,
+  id: string,
+  token: string,
+): Promise<void> {
+  const file = crewFile(stateDir, repo, id);
+  await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(crewRecordSchema, file);
+    if (before?.resumeClaim?.token !== token) return;
+    const { resumeClaim: _ended, ...after } = before;
+    writeJsonFile(file, checked(crewRecordSchema, after, file));
+  });
 }
 
 /**
@@ -1329,6 +1408,107 @@ export function writeWatchState(
     watchStateFile(stateDir, repo, leadSessionId),
     `${JSON.stringify(state, null, 2)}\n`,
   );
+}
+
+/**
+ * Where a lead's acting watch is named: `<store>/watch-lease/<lead session id>.json` (WF1). One
+ * file per lead, so two leads of one repository never share a lease.
+ */
+export function watchLeaseFile(stateDir: string, repo: string, leadSessionId: string): string {
+  // A folder of its own: a lead id may hold a dot, so `watch/<id>.lease.json` could be another
+  // lead's state file (`watch/<id>.json`).
+  return join(
+    crewStoreDir(stateDir, repo),
+    "watch-lease",
+    `${fileId(leadSessionId, "session id")}.json`,
+  );
+}
+
+/**
+ * The lease that names the one watch of a lead that acts (WF1): the process that holds it — its
+ * pid, start time, host and pid namespace, as the store's lock records a holder
+ * (`currentHolder`, `src/setup/lock.ts`) — its own token, so two watches in one process stay
+ * apart, and when it took the lease (ms).
+ */
+export interface WatchLease extends ProcessHolder {
+  at: number;
+  token: string;
+}
+
+const watchLeaseFields = z.object({
+  at: z.number().int().min(0),
+  host: z.string(),
+  pid: z.number().int().positive(),
+  pidns: z.string().nullable().default(null),
+  startTime: z.string().nullable(),
+  token: text,
+});
+
+/** The lead's watch lease; null when there is none, or it cannot be read (then it is free). */
+export function readWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+): null | WatchLease {
+  let raw: string;
+  try {
+    raw = readFileSync(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+  } catch (error) {
+    if (notThere(error)) return null;
+    throw error;
+  }
+  try {
+    const parsed = watchLeaseFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    // Half a file a crash left, or not JSON: no holder can be read from it, so the lease is free.
+    return null;
+  }
+}
+
+/**
+ * Takes the lead's watch lease for `lease`, whoever holds it: **the newest watch wins** — a
+ * monitor the lead restarts is its intent, and the watch it replaces ends at its next pass
+ * (`keepWatchLease`). Under the store's lock, so it never lands between another watch's look
+ * and its take.
+ */
+export async function takeWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<void> {
+  await underStoreLock(stateDir, repo, () => {
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+  });
+}
+
+/**
+ * Whether the watch `lease` may still act for its lead, judged under the store's lock: it holds
+ * the lease, or the lease is free — none, unreadable, or its holder is gone (`holderIsGone`: the
+ * pid is dead or was reused) — and it takes it back. Else `holder` is the live watch that took it.
+ */
+export async function keepWatchLease(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<{ held: true } | { held: false; holder: WatchLease }> {
+  return await underStoreLock(stateDir, repo, () => {
+    const now = readWatchLease(stateDir, repo, leadSessionId);
+    if (now !== null && now.token === lease.token) return { held: true };
+    if (now !== null && !holderIsGone(now, now.at, FALLBACK_STALE_MS)) {
+      return { held: false, holder: now };
+    }
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+    return { held: true };
+  });
 }
 
 /**

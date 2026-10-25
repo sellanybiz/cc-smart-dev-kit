@@ -9,7 +9,11 @@
  *     target limited or down, the router holding its requests (`isCapacityFailure`);
  *   - `claude-limit`: a current plan limit — the session's own model first, else the freshest
  *     limit of a model whose family has a slot (`familySlotFor`), as the StopFailure alert
- *     reads it;
+ *     reads it — **only when that Claude model answers the session first** (`claudeLimitHolds`:
+ *     a session on Claude itself, or a slot whose chain in use starts with that model). On a
+ *     slot whose chain starts with a backend, the Claude model is only a fallback — one empty
+ *     answer from the backend can fall through to Claude's 429 — so the session waits for its
+ *     slot (a `slot` wait from now), never for a Claude reset days away (the 2026-10-25 pause);
  *   - `unknown`: nothing the state file explains.
  *
  * **No time limit** (the owner): the watch never fails a paused crew session for waiting, and
@@ -22,7 +26,8 @@
  *   - a slot's breaker record closed (a target answered), or the slot's first target in use is
  *     no longer a target that rests (the chain changed);
  *   - a Claude limit's reset time passed, plus `LIMIT_RESET_JITTER_MS`, and the router dropped
- *     its record (Anthropic answered the model again);
+ *     its record (Anthropic answered the model again). A `claude-limit` wait an older kit
+ *     recorded for a slot whose chain starts elsewhere is judged as that slot's wait;
  *   - an `unknown` wait: the backoff alone, and no breaker or limit that would explain it now;
  *   - one first (the canary); the next no sooner than `RESUME_SPACING_MS` after it, and only
  *     after the router answered a request since — its health page's request count grew, and
@@ -135,15 +140,30 @@ export function limitsByModel(state: LimitState, nowMs: number): Record<string, 
   return Object.fromEntries(currentLimits(state, nowMs));
 }
 
+/** The gateway's config, or null when there is none or it cannot be read. */
+function readConfig(file: string): GatewayConfig | null {
+  try {
+    return loadConfigFile(file);
+  } catch {
+    // No gateway set up, or a config that cannot be read: no chain to judge, no port to ask.
+    return null;
+  }
+}
+
 /**
- * The pause's facts from the router's state file alone: what `crew-role` reads when a turn ends.
- * The config is not read — a pause follows a failure, and the failure is what the file records.
+ * The pause's facts: what `crew-role` reads when a turn ends. The router's state file says what
+ * failed; the config says which target each slot's chain starts with, so a Claude limit is not
+ * read as the wait of a slot whose chain starts with a backend (`claudeLimitHolds`).
  */
-export function readWaitFacts(paths: Pick<CliPaths, "gatewayStateFile">, nowMs: number): WaitFacts {
+export function readWaitFacts(
+  paths: Pick<CliPaths, "gatewayConfigFile" | "gatewayStateFile">,
+  nowMs: number,
+): WaitFacts {
   const state = readState(paths.gatewayStateFile);
+  const config = readConfig(paths.gatewayConfigFile);
   return {
     breakers: breakersBySlot(state, nowMs),
-    inUse: null,
+    inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs),
   };
 }
@@ -212,13 +232,7 @@ export async function gatewayNow(
   fetchImpl?: HealthFetch,
 ): Promise<GatewayNow> {
   const state = readState(paths.gatewayStateFile);
-  let config: GatewayConfig | null = null;
-  try {
-    config = loadConfigFile(paths.gatewayConfigFile);
-  } catch {
-    // No gateway set up, or a config that cannot be read: no chain to judge, no port to ask.
-    config = null;
-  }
+  const config = readConfig(paths.gatewayConfigFile);
   let breakers = breakersBySlot(state, nowMs);
   let requests: null | number = null;
   if (config !== null) {
@@ -272,8 +286,27 @@ export function limitForStop(
 }
 
 /**
+ * True when a plan limit of the Claude model `model` holds `record`'s session: it runs on Claude
+ * itself (no slot), its slot's chain is not known (no readable config, or the slot is not in it),
+ * or the chain in use starts with that model. A slot whose chain starts with another target
+ * answers with that target, and the Claude model is only its fallback: its limit says nothing
+ * about when the session's own model answers again (the 2026-10-25 pause).
+ */
+export function claudeLimitHolds(
+  record: CrewRecord,
+  model: string,
+  inUse: WaitFacts["inUse"],
+): boolean {
+  const slot = record.model.slot;
+  const first = slot === null ? undefined : inUse?.[slot]?.[0];
+  return first === undefined || withoutContextSuffix(first) === model;
+}
+
+/**
  * What a stop of `record` waits for, recorded on its pause: the slot's breaker first, then
- * Claude's plan limit, else `unknown`. Every wait starts now.
+ * Claude's plan limit when it holds the session (`claudeLimitHolds`), else `unknown`. A Claude
+ * limit that does not hold it — its slot's chain starts with a backend — makes it wait for its
+ * slot to answer again. Every wait starts now.
  */
 export function waitFor(record: CrewRecord, facts: WaitFacts, nowMs: number): WaitingFor {
   const slot = record.model.slot;
@@ -282,13 +315,14 @@ export function waitFor(record: CrewRecord, facts: WaitFacts, nowMs: number): Wa
     return { kind: "slot", since: iso(breaker.since), slot };
   }
   const limit = limitForStop(record, facts.limits);
-  if (limit !== undefined) {
+  if (limit !== undefined && claudeLimitHolds(record, limit[0], facts.inUse)) {
     return {
       kind: "claude-limit",
       model: limit[0],
       resetsAt: limit[1].resetsAt === null ? null : iso(limit[1].resetsAt * 1000),
     };
   }
+  if (slot !== null && limit !== undefined) return { kind: "slot", since: iso(nowMs), slot };
   return { kind: "unknown", since: iso(nowMs) };
 }
 
@@ -362,28 +396,36 @@ export function pauseStartedAt(record: CrewRecord): number {
 }
 
 /**
+ * True when `slot` answers again: it has no current breaker record (a target answered — the
+ * breaker closes only on an answer — or the slot left the config or was switched off), or its
+ * chain changed so its first target in use is not one the breaker rests.
+ */
+function slotAnswers(slot: string, facts: WaitFacts): boolean {
+  const breaker = facts.breakers[slot];
+  if (breaker === undefined) return true;
+  const first = facts.inUse?.[slot]?.[0];
+  return first !== undefined && !breaker.targets.some((one) => one.target === first);
+}
+
+/**
  * True when the watch may resume a paused crew session: the pause's hold-off is over, and the
- * gateway no longer says the wait goes on. Never true while the slot's breaker is open or the
- * model's limit is current.
+ * gateway no longer says the wait goes on. Never true while the slot's breaker is open or a
+ * Claude limit that holds it (`claudeLimitHolds`) is current.
  */
 export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): boolean {
   const waiting: WaitingFor = record.waitingFor ?? { kind: "unknown", since: record.updatedAt };
   const backoff = record.lastPause?.backoffMs ?? 0;
   if (nowMs < pauseStartedAt(record) + backoff) return false;
   switch (waiting.kind) {
-    case "slot": {
-      const breaker = facts.breakers[waiting.slot];
-      // No current record: a target answered (the breaker closes only on an answer), or the
-      // slot left the config or was switched off. Either way its requests go somewhere now.
-      if (breaker === undefined) return true;
-      const inUse = facts.inUse?.[waiting.slot];
-      if (inUse === undefined) return false;
-      // The chain changed so its first target in use is not one that rests: the next request
-      // does not meet a target the breaker recorded.
-      const first = inUse[0];
-      return first !== undefined && !breaker.targets.some((one) => one.target === first);
-    }
+    case "slot":
+      return slotAnswers(waiting.slot, facts);
     case "claude-limit": {
+      // A wait an older kit recorded for a slot whose chain starts with a backend: the limit
+      // never held it, so it is that slot's wait.
+      const slot = record.model.slot;
+      if (slot !== null && !claudeLimitHolds(record, waiting.model, facts.inUse)) {
+        return slotAnswers(slot, facts);
+      }
       if (facts.limits[waiting.model] !== undefined) return false;
       if (waiting.resetsAt === null) return true;
       const reset = Date.parse(waiting.resetsAt);

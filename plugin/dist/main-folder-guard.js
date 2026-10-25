@@ -8950,6 +8950,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text, token: text }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
@@ -9182,6 +9183,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state !== before.state)
+      delete merged.resumeClaim;
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
@@ -9248,6 +9251,7 @@ function readCrewEvents(stateDir, repo, offset = 0) {
     closeSync3(fd);
   }
 }
+var RESUME_CLAIM_MS = 2 * 60000;
 function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
@@ -9268,6 +9272,14 @@ function eventsEndOffset(stateDir, repo) {
     return 0;
   }
 }
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text
+});
 function notesStateFile(stateDir, repo, leadSessionId) {
   return join11(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
 }
@@ -11964,6 +11976,9 @@ function familySlotFor(model) {
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
+function targetsInUse(targets, fallback) {
+  return fallback ? [...targets] : targets.slice(0, 1);
+}
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/config.ts
@@ -14783,13 +14798,27 @@ function breakersBySlot(state, nowMs) {
 function limitsByModel(state, nowMs) {
   return Object.fromEntries(currentLimits(state, nowMs));
 }
+function readConfig(file) {
+  try {
+    return loadConfigFile(file);
+  } catch {
+    return null;
+  }
+}
 function readWaitFacts(paths, nowMs) {
   const state = readState(paths.gatewayStateFile);
+  const config = readConfig(paths.gatewayConfigFile);
   return {
     breakers: breakersBySlot(state, nowMs),
-    inUse: null,
+    inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs)
   };
+}
+function targetsNow(config) {
+  return Object.fromEntries(Object.entries(config.slots).map(([slot, chain]) => [
+    slot,
+    targetsInUse(chain, fallbackOn(config, slot))
+  ]));
 }
 function iso2(atMs) {
   return new Date(atMs).toISOString();
@@ -14807,6 +14836,11 @@ function limitForStop(record, limits) {
   }
   return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
 }
+function claudeLimitHolds(record, model, inUse) {
+  const slot = record.model.slot;
+  const first = slot === null ? undefined : inUse?.[slot]?.[0];
+  return first === undefined || withoutContextSuffix(first) === model;
+}
 function waitFor(record, facts, nowMs) {
   const slot = record.model.slot;
   const breaker = slot === null ? undefined : facts.breakers[slot];
@@ -14814,13 +14848,15 @@ function waitFor(record, facts, nowMs) {
     return { kind: "slot", since: iso2(breaker.since), slot };
   }
   const limit = limitForStop(record, facts.limits);
-  if (limit !== undefined) {
+  if (limit !== undefined && claudeLimitHolds(record, limit[0], facts.inUse)) {
     return {
       kind: "claude-limit",
       model: limit[0],
       resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
     };
   }
+  if (slot !== null && limit !== undefined)
+    return { kind: "slot", since: iso2(nowMs), slot };
   return { kind: "unknown", since: iso2(nowMs) };
 }
 function pauseBackoff(previous, nowMs) {

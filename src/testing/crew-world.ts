@@ -7,6 +7,10 @@
  * The fake's answers are chosen per test through its environment:
  *   FAKE_BG       `untrusted` (Workspace not trusted), `fail` (exit 4), `noline` (no
  *                 backgrounded line); unset: it starts.
+ *   FAKE_RESUME   for `--bg --resume <id>`: `copy` (the stderr note 2.1.310 prints when the
+ *                 flags we pass start a copy, and `backgrounded · <SHORT_ID>`; FAKE_COPY_AS
+ *                 names another id in the note only); unset: it continues under the same id,
+ *                 `backgrounded · <the id's first 8>` (2.1.310 drops ` · <name>` when it has none).
  *   FAKE_AGENTS   `other` (the session works in the main checkout), `missing` (no row),
  *                 `broken` (not JSON); unset: the row names the `-w` worktree.
  *   FAKE_AGENTS_JSON  the exact JSON `agents --json` prints (the watch's own view).
@@ -36,6 +40,29 @@ export const SHORT_ID = "a1b2c3d4";
 export const SESSION_PID = 300;
 export const COMMAND_PID = 500;
 
+/**
+ * How a fake `claude` answers `--bg --resume <id>`, as 2.1.310 does (`docs/claude-code-contract.md`):
+ * `backgrounded · <short id>` on stdout — no ` · <name>` when it has none — and, when it started a
+ * copy, a note on stderr naming the copy. FAKE_RESUME `copy`: the note the flags we pass cause
+ * ("keeps its own saved options"), and the copy is `SHORT_ID` (FAKE_COPY_AS names another id in
+ * the note only); unset: it continues under the same id. One home for both fakes (this one and
+ * `board-world.ts`'s); it sits in the `--bg)` branch, and lets a call without `--resume` through.
+ */
+export const FAKE_RESUME_SH = `    resumed=""; prev=""
+    for a in "$@"; do [ "$prev" = "--resume" ] && resumed="$a"; prev="$a"; done
+    if [ -n "$resumed" ]; then
+      old="$(printf '%s' "$resumed" | cut -c1-8)"
+      case "$FAKE_RESUME" in
+        copy)
+          echo "note: background session $old keeps its own saved options, so the flags you passed started a copy as \${FAKE_COPY_AS:-${SHORT_ID}}. Without flags, the same command continues $old itself." >&2
+          echo "backgrounded · ${SHORT_ID}"
+          ;;
+        *) echo "backgrounded · $old" ;;
+      esac
+      exit 0
+    fi
+`;
+
 /** The fake `claude`: logs its argv (one argument per line, `----` after each call) and its folder. */
 const FAKE_CLAUDE = `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> "$FAKE_CLAUDE_LOG"; done
@@ -48,7 +75,7 @@ case "$1" in
       fail) echo "something broke" >&2; exit 4 ;;
       noline) echo "started something"; exit 0 ;;
     esac
-    prev=""; tree=""; name=""
+${FAKE_RESUME_SH}    prev=""; tree=""; name=""
     for a in "$@"; do
       [ "$prev" = "-w" ] && tree="$a"
       [ "$prev" = "--name" ] && name="$a"
