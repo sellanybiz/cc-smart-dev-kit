@@ -73,8 +73,8 @@ interface MachineOptions {
   claudeInstallsNothing?: boolean;
   /** `claude plugin marketplace update` fails, printing this line on stderr. */
   refreshFails?: string;
-  /** Seconds the fake `claude` sleeps in `marketplace update`. */
-  claudeSleeps?: number;
+  /** The fake `claude` holds `marketplace update` until the machine's `release()` (20 s at most). */
+  claudeHeld?: boolean;
   /** More environment for the hook and the CLI (Claude Code's switches, git's variables). */
   env?: Record<string, string>;
   /** The text of the copy's major-notes file (`MAJOR_NOTES_PATH`); absent: no such file. */
@@ -168,7 +168,7 @@ function machine(options: MachineOptions = {}) {
     'case "$*" in',
     options.refreshFails !== undefined
       ? `  "plugin marketplace update cc-smart-dev-kit") echo ${q(options.refreshFails)} >&2; exit 1 ;;`
-      : `  "plugin marketplace update cc-smart-dev-kit") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
+      : `  "plugin marketplace update cc-smart-dev-kit") ${options.claudeHeld === true ? `n=0; while [ ! -e ${q(join(fake, "release"))} ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done; ` : ""}cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
     options.claudeFails === true
       ? '  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") echo "Failed to update: network" >&2; exit 1 ;;'
       : options.claudeInstallsNothing === true
@@ -232,7 +232,9 @@ function machine(options: MachineOptions = {}) {
     JSON.parse(readFileSync(join(plugins, "installed_plugins.json"), "utf8")).plugins[
       "cc-smart-dev-kit@cc-smart-dev-kit"
     ][0].version as string;
-  return { cli, env, files, home, hook, installedVersion, paths, read, settled };
+  /** Lets a held `claude` go on (`claudeHeld`). */
+  const release = () => writeFileSync(join(fake, "release"), "");
+  return { cli, env, files, home, hook, installedVersion, paths, read, release, settled };
 }
 
 describe("backgroundCommand", () => {
@@ -257,13 +259,16 @@ describe("backgroundCommand", () => {
 
 describe("the SessionStart hook and the background check, end to end", () => {
   test("a newer version: the hook returns at once with no output; the detached check refreshes, updates, logs and notifies", async () => {
-    // The refresh takes 3 s: the hook must not wait for it.
-    const m = machine({ claudeSleeps: 3, remoteHead: HEAD_B });
+    // The refresh is held until the test lets it go: the hook must not wait for it.
+    const m = machine({ claudeHeld: true, remoteHead: HEAD_B });
     const run = await m.hook();
     expect(run.stdout).toBe("");
     expect(run.stderr).toBe("");
     expect(run.exitCode).toBe(0);
-    expect(run.ms).toBeLessThan(2_000);
+    // The hook is back and the check, held, has no result yet: it was not waited for. Load
+    // changes how long the hook takes, never this order, so no wall-clock bound is needed.
+    expect(["checking", undefined]).toContain(readLastCheck(m.files)?.result);
+    m.release();
     const last = await m.settled();
     expect(last.result).toBe("updated");
     expect(last.detail).toBe(
@@ -318,11 +323,18 @@ describe("the SessionStart hook and the background check, end to end", () => {
     mkdirSync(join(folder, "dist"), { recursive: true });
     writeFileSync(join(folder, "bunfig.toml"), "");
     const marker = join(m.home, "portal-starter.txt");
+    const release = join(m.home, "portal-starter.release");
     writeFileSync(
       join(folder, "dist", "portal.js"),
       [
         'const fs = require("node:fs");',
         `const marker = ${JSON.stringify(marker)};`,
+        `const release = ${JSON.stringify(release)};`,
+        // The starter does not end until the test lets it (or after 20 s, so it never lingers):
+        // a hook that waited for it could not have returned before that. Load changes how long
+        // the hook takes, never this order, so no wall-clock bound is needed.
+        "const until = Date.now() + 20_000;",
+        "while (!fs.existsSync(release) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);",
         // A temp file beside the marker, then a rename: the marker exists only once its
         // whole text is there, so the test never reads it half-written.
         'const partial = marker + "." + process.pid + ".tmp";',
@@ -333,11 +345,12 @@ describe("the SessionStart hook and the background check, end to end", () => {
     );
     const run = await m.hook();
     expect(run.stdout).toBe("");
-    expect(run.ms).toBeLessThan(2_000);
-    const deadline = Date.now() + 5_000;
+    // The hook is back, and the starter, held until now, has not ended: it was not waited for.
+    expect(existsSync(marker)).toBe(false);
+    writeFileSync(release, "");
+    const deadline = Date.now() + 15_000;
     while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(25);
-    // The last of the argv: the bundle was run with `--ensure`, which does the work; the
-    // hook returned without waiting for it.
+    // The last of the argv: the bundle was run with `--ensure`, which does the work.
     expect(readFileSync(marker, "utf8").endsWith("--ensure")).toBe(true);
   }, 30_000);
 

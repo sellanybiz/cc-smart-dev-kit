@@ -4,15 +4,15 @@
  * refuses `rm` while the worktree is still there — as the real one does (proved live, L1a.1) —
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { repoKey } from "../workflow/reviews";
-import { holdCleanLock } from "../worktrees/clean";
 import type { RunningProgram } from "../worktrees/machine-facts";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses } from "./end";
@@ -28,6 +28,10 @@ import {
   updateCrew,
   writeLead,
 } from "./store";
+
+// Every test builds a real repo and worktrees, and runs real git in them: its own speed limit
+// (src/testing/timeouts.ts). On a loaded machine the setup alone passed the 5 s default.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** The session of another lead of the world: its paused crew sessions are not this lead's. */
 const OTHER_LEAD = OTHER_SESSION;
@@ -1028,7 +1032,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     leadMerges(world.repo, record.branch);
     const parked = `${record.worktree}-removing-${String(PARKED_AT)}`;
     git(world.repo, "worktree", "move", record.worktree, parked);
-    const lock = await holdCleanLock();
+    const lock = await world.cleanLock.hold();
     expect(lock).not.toBeNull();
     try {
       expect(await runCrew(["rm", record.id], world.ctx())).toBe(1);
@@ -1041,7 +1045,7 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
       expect(world.claudeVerbs()).not.toContain("rm");
       expect(git(world.repo, "branch", "--list", record.branch)).not.toBe("");
     } finally {
-      await new Promise<void>((resolve) => lock?.close(() => resolve()));
+      lock?.close();
     }
     expect(await runCrew(["rm", record.id], world.ctx())).toBe(0);
     expect(existsSync(parked)).toBe(false);

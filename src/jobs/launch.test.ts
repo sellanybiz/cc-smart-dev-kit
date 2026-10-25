@@ -398,12 +398,14 @@ describe("spawnAndWait: real children", () => {
     const signals = new EventEmitter();
     // The job's own process dies of the SIGTERM sent on to its group; the child that
     // ignores SIGTERM lives on, so the memory is only free once it is stopped too. A short
-    // grace: only the leftover stop can end this test in time.
+    // grace: only the leftover stop can end this test in time. The child writes its own pid
+    // only once its trap is set: a SIGTERM that came sooner (a loaded machine) would end it
+    // too, and there would be no leftover to stop.
     const running = spawnAndWait(
       [
         "sh",
         "-c",
-        `sh -c 'trap "" TERM; while :; do sleep 1; done' & echo $! > "${pidFile}"; exec sleep 30`,
+        `sh -c 'trap "" TERM; echo $$ > "${pidFile}"; while :; do sleep 1; done' & exec sleep 30`,
       ],
       signals,
       () => undefined,

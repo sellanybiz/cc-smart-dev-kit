@@ -8,7 +8,7 @@
  *
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -51,6 +51,7 @@ import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
@@ -66,6 +67,11 @@ import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
+
+// The pages and reads run real git, doctor and CLI children (the key test alone takes about
+// 1.3 s, 0.7 s of it in them): past the 5 s default on a loaded machine. Its own speed limit
+// (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** Real SHA-256 values in base64 (of "", "foo"), written by hand: `csp.json` takes only hashes. */
 const ATTR_HASH = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";

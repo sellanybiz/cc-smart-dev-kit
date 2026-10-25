@@ -720,7 +720,7 @@ export async function finishParkedWorktrees(
   say: (line: string) => void,
   facts: CrewContext["scanFacts"] = ctx.scanFacts,
 ): Promise<ParkedWorktreesPass> {
-  const lock = await holdCleanLock();
+  const lock = await (ctx.holdCleanLock ?? holdCleanLock)();
   if (lock === null)
     return { kept: [{ path: repo, why: "another worktree clean is running" }], removed: [] };
   try {

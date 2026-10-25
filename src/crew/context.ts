@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
+import type { CleanLock } from "../worktrees/clean";
 import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
 import { freeForCrewGb } from "./places";
@@ -40,6 +41,12 @@ export interface CrewContext {
    * the Docker containers. A test gives them; left out, they are read from the machine.
    */
   scanFacts?: ScanOptions["facts"];
+  /**
+   * Takes the machine-wide lock of a worktree clean (`holdCleanLock`), or null when another clean
+   * holds it. A test gives its own, so a clean running on the machine at that moment (another
+   * suite's, the person's) cannot refuse its `crew rm`; left out, the machine's real lock.
+   */
+  holdCleanLock?: () => Promise<null | CleanLock>;
   /**
    * The parent of this process now, read again on every call: a watch ends when it changes, because
    * Claude Code ends a monitor by ending its shell and the watch is then re-parented (WF1). Left

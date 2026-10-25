@@ -25,6 +25,7 @@ import { realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
 import { sessionRecordFile } from "../crew/session";
 import { locateCheckout } from "../project/resolve";
+import type { CleanLock } from "../worktrees/clean";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 /** The lead session's id in every world. */
@@ -117,6 +118,11 @@ export interface CrewWorld {
   claudeCalls: () => string[][];
   /** The folder each call ran in, in order: a resume runs in the crew session's worktree. */
   cwdCalls: () => string[];
+  /**
+   * The world's own clean lock (`CrewContext.holdCleanLock`): never the machine's, which another
+   * suite or the person's clean may hold at that moment. `held` is true while a test holds it.
+   */
+  cleanLock: { held: boolean; hold: () => Promise<null | CleanLock> };
   /** What the commands printed, and wrote to stderr. */
   out: string[];
   err: string[];
@@ -166,6 +172,18 @@ export function crewWorld(): CrewWorld {
   const gitDir = dirname(Bun.which("git") ?? "/usr/bin/git");
   const out: string[] = [];
   const err: string[] = [];
+  const cleanLock: CrewWorld["cleanLock"] = {
+    held: false,
+    hold: () => {
+      if (cleanLock.held) return Promise.resolve(null);
+      cleanLock.held = true;
+      return Promise.resolve({
+        close: () => {
+          cleanLock.held = false;
+        },
+      });
+    },
+  };
   writeSessionRecord(paths, SESSION_PID, LEAD_SESSION, repo);
   const writeConfig = (crew: Record<string, unknown>): void => {
     mkdirSync(join(repo, ".claude"), { recursive: true });
@@ -194,6 +212,7 @@ export function crewWorld(): CrewWorld {
       env: fullEnv,
       error: (line: string) => err.push(line),
       freeMemoryGb: () => Promise.resolve(64),
+      holdCleanLock: cleanLock.hold,
       now: () => Date.parse("2026-10-21T10:00:00.000Z"),
       paths,
       pid: COMMAND_PID,
@@ -221,5 +240,5 @@ export function crewWorld(): CrewWorld {
     readFileSync(cwdLog, "utf8")
       .split("\n")
       .filter((line) => line !== "");
-  return { bin, claudeCalls, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
+  return { bin, claudeCalls, cleanLock, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
 }
