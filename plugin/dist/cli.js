@@ -37653,9 +37653,8 @@ function settingsNotes(mode, ctx) {
     settingsFile: ctx.settingsFile
   });
   const lines = [];
+  const decided = new Set;
   for (const file of state.files) {
-    if (file.problem !== null)
-      continue;
     const where = tildify(file.path, ctx.home);
     for (const key of file.loginOverrides) {
       lines.push(`launch: ${key} is set in ${where}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`);
@@ -37663,6 +37662,9 @@ function settingsNotes(mode, ctx) {
     if (mode.kind !== "no-gateway")
       continue;
     for (const fact of file.modelKeys) {
+      if (decided.has(fact.key))
+        continue;
+      decided.add(fact.key);
       if (!isSlotKey(fact.value.trim()))
         continue;
       lines.push(`launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`);

@@ -322,9 +322,12 @@ async function launchTarget(
  *   the file;
  * - a model key that names a gateway slot (the retired `ANTHROPIC_DEFAULT_*_MODEL` of 0.4.3)
  *   asks Anthropic for a model that does not exist — only in `--no-gateway`, the path that
- *   reaches Anthropic; on the gateway a slot name is what the router reads.
+ *   reaches Anthropic; on the gateway a slot name is what the router reads. `state.files` is
+ *   in the order Claude Code applies them, and the first file that sets a key decides it, so a
+ *   key a file before it sets again is not named: the session never asks for that value.
  * No mode: no file, the settings decide as for `claude`, nothing to say. A file that cannot be
- * read says nothing here (`doctor` and `gateway project status` name it).
+ * read holds no facts and says nothing here (`doctor` and `gateway project status` name it); a
+ * file whose address alone is malformed still holds its other keys, and they are named.
  */
 function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
   if (mode.kind === "default") return [];
@@ -333,8 +336,8 @@ function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
     settingsFile: ctx.settingsFile,
   });
   const lines: string[] = [];
+  const decided = new Set<string>();
   for (const file of state.files) {
-    if (file.problem !== null) continue;
     const where = tildify(file.path, ctx.home);
     for (const key of file.loginOverrides) {
       lines.push(
@@ -343,6 +346,8 @@ function settingsNotes(mode: LaunchMode, ctx: LaunchContext): string[] {
     }
     if (mode.kind !== "no-gateway") continue;
     for (const fact of file.modelKeys) {
+      if (decided.has(fact.key)) continue;
+      decided.add(fact.key);
       if (!isSlotKey(fact.value.trim())) continue;
       lines.push(
         `launch: ${fact.key} is ${JSON.stringify(shownValue(fact.value))} in ${where}: Anthropic has no model of that name, so the requests that use it fail. Remove it from that file (${COMMAND} gateway setup removes the ones 0.4.3 wrote).`,

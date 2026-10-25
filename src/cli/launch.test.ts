@@ -625,6 +625,56 @@ describe("RV3: launch says what its settings file leaves in place (the lead's ch
     ]);
   });
 
+  test("--no-gateway: a model key another file overrides is not named; the file that wins is (chain order)", async () => {
+    const team = (home: World) => join(realpathSync(home.cwd), ".claude", "settings.json");
+    // The project's file comes before the user's file: its real model wins over the user's slot name.
+    const shadowed = world();
+    settingsAt(userFile(shadowed), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+    });
+    settingsAt(team(shadowed), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    const quiet = context(shadowed);
+    expect(await runLaunch(["--no-gateway"], quiet)).toBe(7);
+    expect(quiet.errors).toEqual([]);
+    // The reverse: the project's slot name wins over the user's real model, and its file is named.
+    const winning = world();
+    settingsAt(userFile(winning), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    settingsAt(team(winning), {
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker" },
+    });
+    const named = context(winning);
+    expect(await runLaunch(["--no-gateway"], named)).toBe(7);
+    expect(named.errors).toHaveLength(1);
+    expect(named.errors[0]).toStartWith(
+      `launch: env.ANTHROPIC_DEFAULT_SONNET_MODEL is "cc-smart-dev-kit-worker" in ${team(winning)}:`,
+    );
+    // Another key is its own: the user's slot name for Haiku stands though the project set Sonnet.
+    const apart = world();
+    settingsAt(userFile(apart), {
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout" },
+    });
+    settingsAt(team(apart), { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" } });
+    const one = context(apart);
+    expect(await runLaunch(["--no-gateway"], one)).toBe(7);
+    expect(one.errors).toHaveLength(1);
+    expect(one.errors[0]).toStartWith(
+      'launch: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is "cc-smart-dev-kit-scout" in ~/.claude/settings.json:',
+    );
+  });
+
+  test("a file whose address is malformed still tells what else it sets: its login key is named", async () => {
+    const home = world();
+    const team = join(realpathSync(home.cwd), ".claude", "settings.json");
+    settingsAt(team, {
+      env: { ANTHROPIC_API_KEY: "sk-ant-test-0123456789", ANTHROPIC_BASE_URL: 42 },
+    });
+    const ctx = context(home);
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
+    expect(ctx.errors).toEqual([
+      `launch: ANTHROPIC_API_KEY is set in ${team}: this session bills through it, not through your plan's login. Remove it from that file to use the login.`,
+    ]);
+  });
+
   test("a slot name is fine on the gateway, and a launch with no mode is the settings' own: no note", async () => {
     const home = world();
     gatewayConfig(home, []);
