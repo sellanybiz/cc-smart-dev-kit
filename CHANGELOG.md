@@ -10,7 +10,8 @@ kit, and the effort pin. It also carries everything 1.1.3 was to ship (below), w
 on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
 
 - **The portal's sidebar items have room between them.** A hovered item, the active item and the
-  keyboard focus ring no longer run into the item next to them.
+  keyboard focus ring no longer run into the item next to them. In the folded sidebar, the last
+  item of each group now takes the hover over its whole height.
 - **The portal's project cards are quieter and truer.** A proposal from the Workflow card is
   refused when it names no project, instead of running in the portal's own folder. The Workflow
   and Gateway cards no longer read again at every crew event. An unset crew tag or opus count
