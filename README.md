@@ -323,7 +323,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, th
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, any gateway fallback in use, and a slot whose every target is limited or down (the breaker). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the crew's opus usage guard ([`crew.usagePercent`](#the-workflow), D54). |
+| `cc-smart-dev-kit statusline` | The status line itself: the session's context use and effort, plan usage, a warning from 85 %, any gateway fallback in use, and a slot whose every target is limited or down (the breaker). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the crew's opus usage guard ([`crew.usagePercent`](#the-workflow), D54). |
 | `cc-smart-dev-kit hook <notify>` | The notifier hook (below): `setup` wires `hook notify` in your user settings for agent view; it reads the hook's input on stdin and answers as Claude Code expects. The three worktree names of the plugin's retired worktree engine (**retired in 1.0.0**) only print the fix on stderr and exit 1 — a non-blocking error, so a leftover line never blocks a subagent's stop; `cc-smart-dev-kit project init` takes such a line out of the project's settings (§ Worktrees). |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| propose <setting> <value> [--unset] [--folder <project>] [--json] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `propose` changes one of the project's own settings **through a pull request**: a branch and a worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and `gh pr create` — never a write in the main checkout, and it counts once merged. Run by a Claude Code session, the shell judge **asks you first** whenever `autoPush` is off or `openPr` is short of `ready` (the gate the git and merge guards read), naming the push and the pull request; in `claude -p` that is a refusal. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. A lead uses `--branch` as its hand-back gate (§ [The workflow](#the-workflow)). |
@@ -1007,9 +1007,25 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   by itself" while its retry watchdog is on
   ([Waiting at a limit](#waiting-at-a-limit-claude-codes-retry-watchdog)).
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
-  `cc-smart-dev-kit statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %,
-  shows any fallback in use, and, while a slot's breaker is open, `<slot> slot: every target
-  limited since 21:05 → gateway slot <slot> <targets>`.
+  `cc-smart-dev-kit statusline`. It shows the session's context use and reasoning effort
+  (below), your 5-hour and 7-day plan usage, warns from 85 %, shows any fallback in use, and,
+  while a slot's breaker is open, `<slot> slot: every target limited since 21:05 → gateway slot
+  <slot> <targets>`.
+  - **The context segment**, always there once Claude Code reports any use, for example
+    `ctx 312k · 78% of 400k · xhigh`: the tokens in the context, the share of the window they
+    fill, and the reasoning effort. Claude Code itself shows its gauge only near auto-compact and
+    has no setting to show it always. The window is the **auto-compact window** you set —
+    `/autocompact 400000` saves it as `modelSettings.<model id>.autoCompactWindow` in your
+    `settings.json`; a top-level `autoCompactWindow`, a project's `.claude/settings.json` or
+    `settings.local.json` and the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable count too, in Claude
+    Code's order — and with none, or `"auto"`, the model's own window (`1M` for a current model).
+    It starts with `⚠` from the same share as the plan usage (`alerts.usagePercent`). It reads
+    Claude Code's settings and writes nothing. A session started with `--autocompact <n>` has
+    its window on the command line, which the status line cannot see: it shows the setting's.
+  - **The effort** is the one the session runs at now (`/effort` shows at the next refresh).
+    When the session runs on the gateway and the slot's backend target keeps a pinned effort
+    (`gateway effort`), the pinned one is shown: it is what answers. When Claude Code reports no
+    effort (a model without the parameter), the line shows none.
 - **Each subagent's row in the agent panel.** The plugin's own `settings.json` sets Claude
   Code's `subagentStatusLine`, so every subagent's row reads `<label> · <slot> → <model> →
   <effort>` — the slot its requests reach (scout, worker, opus or fable, from the model's

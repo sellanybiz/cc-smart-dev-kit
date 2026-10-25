@@ -10,6 +10,9 @@
  *
  * What it shows, parts joined by ` · `:
  *   - the model's display name;
+ *   - the session's context use and reasoning effort, always (`ctx 312k · 78% of 400k · xhigh`,
+ *     `statusline-context.ts`): measured against the auto-compact window the person set, and
+ *     warning from the same share as the 5h and 7d segments;
  *   - a slot whose first target, a Claude model, is at its plan limit, answering from its
  *     next target (`⚠ claude-opus-5-5 at its limit → omniroute:… until 13:00`). A judge
  *     record an older router wrote is not shown: from 0.5.0 the judge is no fallback, it
@@ -24,8 +27,10 @@
  *     <targets>`, never the `gateway slot` command, which would change the machine's chain;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
- * It reads the router's state file and the gateway's config (the config only to tell a profile's
- * address from the machine's, `sessionGatewayOf`) and prints; no network. **A fallback or
+ * It reads the router's state file and the gateway's config (the config to tell a profile's
+ * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
+ * Claude Code's settings files (the auto-compact window, each file once, `compactWindowsOf`), and
+ * prints; no network, no git. **A fallback or
  * breaker record shows only in a session on its chain** (`sessionGatewayOf`: the
  * `ANTHROPIC_BASE_URL` the command's environment carries is the session's own,
  * `docs/claude-code-contract.md`): the machine's records on the machine's address (or when it
@@ -60,15 +65,27 @@ import {
 import { JUDGE_SLOT } from "../gateway/targets";
 import { type SessionGateway, sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
+import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
 import type { AlertsHere } from "../workflow/alerts";
 import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
 import type { CliPaths } from "./paths";
+import { contextSegment, contextUseOf, effortOf, pinnedEffortOf } from "./statusline-context";
 import { FIVE_HOUR_WINDOW, recordUsageWindow, windowOf } from "./usage-window";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/** What the context segment needs from outside the input. */
+export interface ContextFacts {
+  /** The auto-compact window the variable or the settings keys give; null for none. */
+  compactWindow: null | number;
+  /** The effort the slot's backend target pins on this session's chain; null for none. */
+  pinnedEffort: null | string;
+}
+
+const NO_CONTEXT_FACTS: ContextFacts = { compactWindow: null, pinnedEffort: null };
 
 /** The status line for this input and state, at `nowMs`. */
 export function statuslineText(
@@ -85,11 +102,23 @@ export function statuslineText(
    * hand, no input from Claude Code), every record shows.
    */
   session: Pick<SessionGateway, "gatewayOn" | "profile"> | null = null,
+  /**
+   * The context segment's two outside facts: the auto-compact window the person set (the
+   * variable, else the settings keys), and the effort the slot's backend target pins. Null: none.
+   */
+  context: ContextFacts = NO_CONTEXT_FACTS,
 ): string {
   const parts: string[] = [];
   const data = isJsonObject(input) ? input : {};
   const model = isJsonObject(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "") parts.push(model);
+  const segment = contextSegment(
+    contextUseOf(data),
+    context.compactWindow,
+    context.pinnedEffort ?? effortOf(data),
+    warnPercent,
+  );
+  if (segment !== null) parts.push(segment);
   const until = (resetsAt: null | number) =>
     resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
 
@@ -145,9 +174,54 @@ export function statuslineText(
  * guards: Anthropic's own or an empty one (off), the router's, a profile's, and any other
  * address counts as the machine's gateway.
  */
-function sessionOf(paths: CliPaths, env: Env): Pick<SessionGateway, "gatewayOn" | "profile"> {
-  if (env.ANTHROPIC_BASE_URL === undefined) return { gatewayOn: true, profile: null };
+function sessionOf(
+  paths: CliPaths,
+  env: Env,
+): Pick<SessionGateway, "config" | "gatewayOn" | "profile"> {
+  if (env.ANTHROPIC_BASE_URL === undefined) return { config: null, gatewayOn: true, profile: null };
   return sessionGatewayOf(paths, env);
+}
+
+/**
+ * The context segment's outside facts for this input. The folder is the session's project folder
+ * (`workspace.project_dir`, else `cwd`, else this process's); each settings file is read once.
+ * The pinned effort needs the session's own gateway view and answers only on the gateway.
+ */
+function contextFactsOf(
+  paths: CliPaths,
+  input: unknown,
+  env: Env,
+  state: LimitState | null,
+  session: Pick<SessionGateway, "config" | "gatewayOn" | "profile"> | null,
+  nowMs: number,
+): ContextFacts {
+  if (!isJsonObject(input)) return NO_CONTEXT_FACTS;
+  const modelId = isJsonObject(input.model) ? input.model.id : undefined;
+  const id = typeof modelId === "string" && modelId.trim() !== "" ? modelId : null;
+  let compactWindow: null | number = null;
+  if (id !== null && contextUseOf(input) !== null) {
+    const workspace = isJsonObject(input.workspace) ? input.workspace : {};
+    const folder = [workspace.project_dir, input.cwd, workspace.current_dir].find(
+      (value): value is string => typeof value === "string" && value !== "",
+    );
+    const projectFolder = folder ?? process.cwd();
+    const windows = compactWindowsOf(
+      {
+        configDir: paths.claudeConfigDir,
+        env,
+        mainCheckout: mainCheckoutOfFolder(projectFolder),
+        projectFolder,
+      },
+      id,
+    );
+    // Claude Code's order: the variable, then the keys, then the model's own window.
+    compactWindow = windows.env.window ?? windows.settings;
+  }
+  const pinnedEffort =
+    session?.gatewayOn === true
+      ? pinnedEffortOf(session.config, id, state, session.profile, nowMs)
+      : null;
+  return { compactWindow, pinnedEffort };
 }
 
 /**
@@ -196,7 +270,15 @@ export async function runStatusline(
   }
   const session = isJsonObject(input) ? sessionOf(paths, env) : null;
   console.log(
-    statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value, session),
+    statuslineText(
+      input,
+      state,
+      nowMs,
+      undefined,
+      alerts.alerts.usagePercent.value,
+      session,
+      contextFactsOf(paths, input, env, state, session, nowMs),
+    ),
   );
   return 0;
 }

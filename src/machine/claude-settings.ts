@@ -14,10 +14,13 @@
  * its `.claude/settings.json`, the user's `settings.json`, then the process environment. A file
  * that cannot be read, or holds no `env`, sets nothing.
  *
- * It does not read the `autoCompactWindow` keys: they do not apply to a crew session. A reader
- * of a normal session's window (the status line) adds them here, beside this one.
+ * `compactEnvOf` does not read the `autoCompactWindow` keys: they do not apply to a crew session.
+ * `compactWindowsOf` adds them for a normal session's window (the status line), from the same
+ * single read of each file.
  */
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { withoutContextSuffix } from "../gateway/targets";
 import { readUserJson } from "../setup/user-json";
 
 /** The environment variable that sets the auto-compact window, in tokens. */
@@ -86,37 +89,48 @@ export function parseCompactPercent(text: string): null | number {
   return value > 0 && value <= 100 ? value : null;
 }
 
-/** The `env` block of one settings file, as text values; empty when there is none or it cannot be read. */
-function settingsEnv(file: string): Record<string, string> {
+/** The JSON object in one settings file; empty when it is missing, unreadable, broken or no object. */
+function settingsObject(file: string): Record<string, unknown> {
   try {
     const parsed = readUserJson(file);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    const env = (parsed as { env?: unknown }).env;
-    if (typeof env !== "object" || env === null || Array.isArray(env)) return {};
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value === "string" || typeof value === "number") out[key] = String(value);
-    }
-    return out;
+    return isObject(parsed) ? parsed : {};
   } catch {
     // A missing, unreadable or broken file sets nothing.
     return {};
   }
 }
 
-/**
- * The auto-compact variables that apply to a session running in `projectFolder`, in the order
- * the top of this file gives. The first source that sets a variable decides it, usable or not:
- * Claude Code ignores an unusable value and does not look further.
- */
-export function compactEnvOf(sources: CompactEnvSources): CompactEnv {
-  const layers: Record<string, string | undefined>[] = [
-    settingsEnv(join(sources.mainCheckout, ".claude", "settings.local.json")),
-    settingsEnv(join(sources.projectFolder, ".claude", "settings.local.json")),
-    settingsEnv(join(sources.projectFolder, ".claude", "settings.json")),
-    settingsEnv(join(sources.configDir, "settings.json")),
-    sources.env,
-  ];
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The `env` block of one settings object, as text values; empty when there is none. */
+function envOf(settings: Record<string, unknown>): Record<string, string> {
+  const env = settings.env;
+  if (!isObject(env)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" || typeof value === "number") out[key] = String(value);
+  }
+  return out;
+}
+
+/** The settings files that apply to a folder, highest first, each read once. */
+function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] {
+  return [
+    join(sources.mainCheckout, ".claude", "settings.local.json"),
+    join(sources.projectFolder, ".claude", "settings.local.json"),
+    join(sources.projectFolder, ".claude", "settings.json"),
+    join(sources.configDir, "settings.json"),
+  ].map(settingsObject);
+}
+
+/** The variables, from the files (highest first) then the process environment. */
+function envFrom(
+  files: readonly Record<string, unknown>[],
+  processEnv: Record<string, string | undefined>,
+): CompactEnv {
+  const layers: Record<string, string | undefined>[] = [...files.map(envOf), processEnv];
   const decided = (key: string): string | undefined =>
     layers.find((layer) => layer[key] !== undefined)?.[key];
   const windowText = decided(AUTOCOMPACT_WINDOW_ENV);
@@ -125,4 +139,121 @@ export function compactEnvOf(sources: CompactEnvSources): CompactEnv {
     percent: percentText === undefined ? null : parseCompactPercent(percentText),
     window: windowText === undefined ? null : parseCompactWindow(windowText),
   };
+}
+
+/**
+ * The auto-compact variables that apply to a session running in `projectFolder`, in the order
+ * the top of this file gives. The first source that sets a variable decides it, usable or not:
+ * Claude Code ignores an unusable value and does not look further.
+ */
+export function compactEnvOf(sources: CompactEnvSources): CompactEnv {
+  return envFrom(settingsFilesOf(sources), sources.env);
+}
+
+/** A model's id as Claude Code keys `modelSettings` by it: lower case, without `[1m]`. */
+function settingsKeyOf(model: string): string {
+  return withoutContextSuffix(model.trim().toLowerCase());
+}
+
+/**
+ * A window the settings give: a whole number of tokens in Claude Code's range, or `"auto"`
+ * (`modelSettings` only: the model's own window). Anything else is no value, as Claude Code's
+ * schema drops it.
+ */
+function windowValue(value: unknown, allowAuto: boolean): "auto" | number | undefined {
+  if (allowAuto && value === "auto") return "auto";
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= AUTOCOMPACT_MIN_TOKENS &&
+    value <= AUTOCOMPACT_MAX_TOKENS
+    ? value
+    : undefined;
+}
+
+/**
+ * The window the `autoCompactWindow` keys give `model`, in tokens; null for none, or `"auto"`
+ * (the model's own window). Merged as Claude Code 2.1.310 merges them (`s0t`): from the
+ * person's file up to the project's local one, each file's `modelSettings.<id>.autoCompactWindow`
+ * adds to the per-model entries, and a file with a top-level `autoCompactWindow` makes that the
+ * default and drops the entries of the files below it. The model's own entry wins over the default
+ * (`"auto"` included: it ends the search). Keys are matched by lower-case id without `[1m]`.
+ */
+function settingsWindowFrom(
+  files: readonly Record<string, unknown>[],
+  model: string,
+): null | number {
+  let fallback: "auto" | number | undefined;
+  let byModel = new Map<string, "auto" | number>();
+  for (const file of files.toReversed()) {
+    const own = new Map<string, "auto" | number>();
+    const models = file.modelSettings;
+    if (isObject(models)) {
+      for (const [id, entry] of Object.entries(models)) {
+        const value = isObject(entry) ? windowValue(entry.autoCompactWindow, true) : undefined;
+        if (value === undefined) continue;
+        const key = settingsKeyOf(id);
+        // An id spelled exactly as its key wins over a longer spelling of it.
+        if (id === key || !own.has(key)) own.set(key, value);
+      }
+    }
+    const top = windowValue(file.autoCompactWindow, false);
+    if (top === undefined) byModel = new Map([...byModel, ...own]);
+    else {
+      fallback = top;
+      byModel = own;
+    }
+  }
+  const key = settingsKeyOf(model);
+  const decided = byModel.has(key) ? byModel.get(key) : fallback;
+  return typeof decided === "number" ? decided : null;
+}
+
+/** What applies to a session: the variables, and the window the settings keys give its model. */
+export interface CompactWindows {
+  env: CompactEnv;
+  /** Tokens; null for no key or `"auto"`. */
+  settings: null | number;
+}
+
+/**
+ * The variables (`compactEnvOf`) and the `autoCompactWindow` keys for `model`, from one read of
+ * each file: the status line runs on every refresh and reads nothing twice. Claude Code uses the
+ * variable first, then the keys, then the model's own window (the 2.1.310 binary, `TS`).
+ */
+export function compactWindowsOf(sources: CompactEnvSources, model: string): CompactWindows {
+  const files = settingsFilesOf(sources);
+  return { env: envFrom(files, sources.env), settings: settingsWindowFrom(files, model) };
+}
+
+/**
+ * The main checkout of the git checkout `folder` is in, found without running git (the status
+ * line runs on every refresh): the first folder up the tree with a `.git` entry; when that is a
+ * linked worktree's `.git` file (`gitdir: <main>/.git/worktrees/<name>`), the folder that holds
+ * the `.git` folder it names. A folder outside git, or a checkout whose `.git` file names
+ * something else (a submodule), gives its own root; no checkout at all gives `folder` itself.
+ */
+export function mainCheckoutOfFolder(folder: string): string {
+  for (let dir = resolve(folder); ; dir = dirname(dir)) {
+    const root = checkoutRootAt(dir);
+    if (root !== null) return root;
+    if (dirname(dir) === dir) return resolve(folder);
+  }
+}
+
+function checkoutRootAt(dir: string): null | string {
+  const entry = join(dir, ".git");
+  try {
+    if (statSync(entry).isDirectory()) return dir;
+    const line = readFileSync(entry, "utf8").split("\n", 1)[0] ?? "";
+    if (!line.startsWith("gitdir:")) return dir;
+    const gitdir = resolve(dir, line.slice("gitdir:".length).trim());
+    const worktrees = dirname(gitdir);
+    const common = dirname(worktrees);
+    return basename(worktrees) === "worktrees" && basename(common) === ".git"
+      ? dirname(common)
+      : dir;
+  } catch {
+    // No `.git` here (or none readable): look one folder up.
+    return null;
+  }
 }
