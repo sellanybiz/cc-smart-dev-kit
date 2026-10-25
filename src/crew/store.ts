@@ -240,7 +240,18 @@ const word = <T extends string>() => text.transform((value): KnownOr<T> => value
  * answers it, or asks the person; the crew session goes on with whatever the question does not block.
  * `recommended` is the option the crew session recommends, counted from 1; `answer` and `answeredAt`
  * stay null until the lead answers.
+ *
+ * **Recorded is not delivered** (AN1). `deliveredAt` is when the answer reached the crew session —
+ * its monitor printed it, or a resume carried it as the prompt — and stays null until then; a
+ * record from before the field has none. A correction keeps each earlier answer in `superseded`,
+ * oldest first, and never drops one.
  */
+const supersededAnswer = z.looseObject({
+  answer: text,
+  answeredAt: text,
+  deliveredAt: text.nullable().optional(),
+});
+
 const crewQuestionFields = z.looseObject({
   question: text,
   options: z.array(text).min(2),
@@ -248,6 +259,8 @@ const crewQuestionFields = z.looseObject({
   askedAt: text,
   answeredAt: text.nullable(),
   answer: text.nullable(),
+  deliveredAt: text.nullable().optional(),
+  superseded: z.array(supersededAnswer).optional(),
 });
 
 /** A question as recorded: its recommendation is one of its options, its answer has its time. */
@@ -890,9 +903,21 @@ export async function addCrewQuestion(
   return record;
 }
 
+/** How an answer is recorded (`answerCrewQuestion`). */
+export interface AnswerHow {
+  /**
+   * The answer replaces an earlier one (AN1): the question must have its answer, which is kept in
+   * `superseded`, and the new one is not delivered yet.
+   */
+  correction?: boolean;
+  /** The answer reached the crew session in this same write: a resume carried it as its prompt. */
+  delivered?: boolean;
+}
+
 /**
  * Records the lead's answer to question `index` (counted from 0, in `questions`) of crew session `id`.
- * Throws when there is no such question, or it has its answer already: an answer is given once.
+ * Throws when there is no such question, or it has its answer already and this is no correction:
+ * an answer is given once, and a second one says it is a correction (`how.correction`, AN1).
  *
  * `resumes` is the state the answer brings the crew session back to, when it was waiting for it — a
  * `blocked` crew session the answer reaches, or a `stopped` one resumed with it, is `working` again —
@@ -912,16 +937,42 @@ export async function answerCrewQuestion(
   atMs: number,
   resumes: null | CrewState = null,
   session: null | { sessionId: string; shortId: string } = null,
+  how: AnswerHow = {},
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
-    if (asked.answer !== null) {
+    if (how.correction === true) {
+      if (asked.answer === null || asked.answeredAt === null) {
+        throw new CrewStoreError(
+          `question ${index} of crew session "${id}" has no answer to correct`,
+        );
+      }
+    } else if (asked.answer !== null) {
       throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
     }
-    const questions = before.questions.map((one, which) =>
-      which === index ? { ...one, answer, answeredAt: at } : one,
-    );
+    const questions = before.questions.map((one, which) => {
+      if (which !== index) return one;
+      const { deliveredAt: _earlier, ...rest } = one;
+      const kept =
+        how.correction === true && one.answer !== null && one.answeredAt !== null
+          ? [
+              ...(one.superseded ?? []),
+              {
+                answer: one.answer,
+                answeredAt: one.answeredAt,
+                deliveredAt: one.deliveredAt ?? null,
+              },
+            ]
+          : one.superseded;
+      return {
+        ...rest,
+        answer,
+        answeredAt: at,
+        deliveredAt: how.delivered === true ? at : null,
+        ...(kept === undefined ? {} : { superseded: kept }),
+      };
+    });
     const waiting = before.state === "blocked" || before.state === "stopped";
     const state = resumes !== null && waiting ? resumes : null;
     return {
@@ -935,6 +986,48 @@ export async function answerCrewQuestion(
     };
   });
   return record;
+}
+
+/**
+ * Marks the answer of question `index` delivered (AN1), and says whether **this call** did: true
+ * when the answer was there and waiting for its delivery, false when it was delivered already (by
+ * another delivery, or by a resume), came from before the field, or the question has no answer. The check and the write are
+ * one hold of the store's lock, so two deliveries never both win: the one that wins prints the
+ * answer, the other says nothing.
+ */
+export async function markAnswerDelivered(
+  stateDir: string,
+  repo: string,
+  id: string,
+  index: number,
+  atMs: number,
+): Promise<boolean> {
+  const { changed } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const asked = before.questions[index];
+    if (asked === undefined || asked.answer === null) return null;
+    // Only a recorded-and-waiting answer (`null`) is claimed: a record from before the field has
+    // none (`undefined`), and its answer was sent by hand.
+    if (asked.deliveredAt !== null) return null;
+    const questions = before.questions.map((one, which) =>
+      which === index ? { ...one, deliveredAt: at } : one,
+    );
+    return { change: { questions }, event: () => null };
+  });
+  return changed;
+}
+
+/**
+ * The index of the answer the crew session's monitor still has to print (AN1): the newest
+ * question's, when it has an answer and its `deliveredAt` is null. Null when it is delivered, or
+ * has no answer. Only the newest question counts: an older one was answered before the newer one
+ * was asked. A record from before the field has no `deliveredAt` at all (not null): its answers
+ * were sent by hand, so none is printed again.
+ */
+export function undeliveredAnswerIndex(record: CrewRecord): null | number {
+  const index = record.questions.length - 1;
+  const asked = record.questions[index];
+  if (asked === undefined || asked.answer === null) return null;
+  return asked.deliveredAt === null ? index : null;
 }
 
 /** One line of the events log about `crew`, of `type`, with `text` as its line. */
@@ -1647,6 +1740,48 @@ export function readSelfWatchState(
     // Never said anything, or the file cannot be read: the crew session says it now.
     return null;
   }
+}
+
+/** How often the crew session's monitor looks for an answer: a lead's answer lands in seconds. */
+export const ANSWER_WATCH_POLL_MS = 3000;
+
+/** How often the monitor writes its heartbeat: a write is cheap, but not worth one a tick. */
+export const ANSWER_BEAT_EVERY_MS = 15_000;
+
+/** A heartbeat older than this says the monitor is not running (it misses four beats). */
+export const ANSWER_BEAT_STALE_MS = 60_000;
+
+/**
+ * Where a crew session's monitor says it is alive: `<store>/answer-watch/<crew id>.json`, one
+ * `{ at }` (AN1). `crew answer` reads it to know whether the monitor will deliver the answer, or the
+ * lead has to send it.
+ */
+export function answerWatchFile(stateDir: string, repo: string, id: string): string {
+  return join(crewStoreDir(stateDir, repo), "answer-watch", `${fileId(id, "crew id")}.json`);
+}
+
+const answerWatchFields = z.object({ at: z.number().int().min(0) });
+
+/** When the crew session's monitor last said it was alive, in ms; null when it never did. */
+export function readAnswerWatchBeat(stateDir: string, repo: string, id: string): null | number {
+  try {
+    const raw = readFileSync(answerWatchFile(stateDir, repo, id), "utf8");
+    const parsed = answerWatchFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data.at : null;
+  } catch {
+    // Never written, or unreadable: the monitor counts as not running, and the lead sends it.
+    return null;
+  }
+}
+
+/** The monitor's heartbeat, now. */
+export function writeAnswerWatchBeat(
+  stateDir: string,
+  repo: string,
+  id: string,
+  atMs: number,
+): void {
+  writeStoreFile(answerWatchFile(stateDir, repo, id), `${JSON.stringify({ at: atMs })}\n`);
 }
 
 /** Writes what the crew session's own watch said. */
