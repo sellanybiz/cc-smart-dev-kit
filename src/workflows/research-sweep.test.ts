@@ -202,9 +202,49 @@ describe("the research-sweep workflow", () => {
     };
     expect(result.openQuestions).toEqual([
       "does v3 change it?",
-      'The researcher for the angle "issues" returned no report.',
+      'The researcher for the angle "issues" returned no usable report.',
     ]);
     expect(result.coverage).toEqual(["angle 1 (docs): read the changelog"]);
+  });
+
+  test("the budget spreads over the angles: one angle's many decisive claims do not take it all", async () => {
+    const run = await runScript(SWEEP, {
+      answer: (call) => {
+        if (!isResearch(call)) return CONFIRMED;
+        return labelOf(call).endsWith("one")
+          ? { claims: [claim("one-1"), claim("one-2"), claim("one-3")] }
+          : { claims: [claim("two-1"), claim("two-2")] };
+      },
+      args: { angles: ["one", "two"], budget: 3, question: "q" },
+    });
+    const result = run.result as {
+      verified: Array<{ claim: string }>;
+      unchecked: Array<{ claim: string }>;
+    };
+    expect(result.verified.map((one) => one.claim)).toEqual(["one-1", "two-1", "one-2"]);
+    expect(result.unchecked.map((one) => one.claim)).toEqual(["two-2", "one-3"]);
+  });
+
+  test("a refuted claim keeps the researcher's quote when the refuter gives none", async () => {
+    const run = await runScript(SWEEP, {
+      answer: (call) =>
+        isResearch(call)
+          ? { claims: [claim("wrong")] }
+          : { reason: "removed in v3", verdict: "refuted" },
+      args: { angles: ["docs"], question: "q" },
+    });
+    const result = run.result as { refuted: Array<{ quote: string }> };
+    expect(result.refuted[0]?.quote).toBe("the docs say so");
+  });
+
+  test("a report without a claims list is named as a lost angle, not skipped", async () => {
+    const run = await runScript(SWEEP, {
+      answer: (call) => (isResearch(call) ? { coverage: "prose only" } : CONFIRMED),
+      args: { angles: ["docs"], question: "q" },
+    });
+    expect((run.result as { openQuestions: string[] }).openQuestions).toEqual([
+      'The researcher for the angle "docs" returned no usable report.',
+    ]);
   });
 
   test("the question and the optional context reach every researcher", async () => {
@@ -236,6 +276,8 @@ describe("the research-sweep workflow", () => {
         { ...good, angles: Array.from({ length: 9 }, (_, i) => `a${i}`) },
         "at most 8",
       ],
+      ["a repeated angle", { ...good, angles: ["docs", " docs"] }, "repeat"],
+      ["a budget past forty", { ...good, budget: 41 }, "from 1 to 40"],
       ["a zero budget", { ...good, budget: 0 }, "`budget`"],
       ["a string budget", { ...good, budget: "3" }, "`budget`"],
       ["a fractional budget", { ...good, budget: 1.5 }, "`budget`"],

@@ -9,6 +9,7 @@ export const meta = {
 // script does not know is refused here, before any agent starts and spends anything.
 const MAX_ANGLES = 8
 const DEFAULT_BUDGET = 12
+const MAX_BUDGET = 40
 const FIELDS = ['question', 'angles', 'budget', 'context']
 
 function refuse(why) {
@@ -29,8 +30,14 @@ if (!Array.isArray(args.angles) || args.angles.length === 0 || !args.angles.ever
   refuse('`angles` must be a non-empty list of non-empty strings.')
 }
 if (args.angles.length > MAX_ANGLES) refuse('`angles` holds at most ' + MAX_ANGLES + ' angles.')
-if (args.budget !== undefined && !(Number.isInteger(args.budget) && args.budget > 0)) {
-  refuse('`budget` must be a positive whole number.')
+if (new Set(args.angles.map((one) => one.trim())).size !== args.angles.length) {
+  refuse('`angles` must not repeat an angle.')
+}
+if (
+  args.budget !== undefined &&
+  !(Number.isInteger(args.budget) && args.budget > 0 && args.budget <= MAX_BUDGET)
+) {
+  refuse('`budget` must be a whole number from 1 to ' + MAX_BUDGET + '.')
 }
 if (args.context !== undefined && typeof args.context !== 'string') {
   refuse('`context` must be a string.')
@@ -100,15 +107,23 @@ const reports = await pipeline(angles, (angle) =>
   ),
 )
 
-const claims = reports
-  .filter((report) => report && Array.isArray(report.claims))
-  .flatMap((report) => report.claims)
-// The decisive claims are checked first, in the order the researchers gave them; the budget cuts
-// what is left. Nothing is dropped: the cut part is returned as `unchecked`.
-const ranked = [
-  ...claims.filter((one) => one.weight === 'decisive'),
-  ...claims.filter((one) => one.weight !== 'decisive'),
-]
+// Each claim keeps the angle it came from, so the budget can spread over the angles.
+const claimsByAngle = reports.map((report) =>
+  report && Array.isArray(report.claims) ? report.claims : [],
+)
+const claims = claimsByAngle.flat()
+// Round-robin over the angles, so one talkative angle cannot take the whole budget.
+function interleave(weight) {
+  const lists = claimsByAngle.map((list) => list.filter((one) => (one.weight === 'decisive') === weight))
+  const mixed = []
+  for (let round = 0; mixed.length < lists.reduce((sum, one) => sum + one.length, 0); round += 1) {
+    for (const list of lists) if (round < list.length) mixed.push(list[round])
+  }
+  return mixed
+}
+// The decisive claims are checked first; the budget cuts what is left. Nothing is dropped: the
+// cut part is returned as `unchecked`.
+const ranked = [...interleave(true), ...interleave(false)]
 const checked = ranked.slice(0, maxClaims)
 const unchecked = ranked.slice(maxClaims)
 
@@ -120,7 +135,7 @@ const verdicts = await pipeline(checked, (one) =>
   agent(
     `Check this research claim against its own source. Open the source it names: fetch the URL, or read the file at the line. Find the quote, then read around it: does the source say what the claim says, for the version or date the claim speaks for, and is a later page, release or issue stating the opposite? Answer \`confirmed\` only when the source supports the claim as written; \`refuted\` when it says something else, or something newer replaces it; \`unproven\` when you cannot open the source or it does not settle the claim. Put the lines you read in \`quote\`, and say why in \`reason\`.\n\nThe question being researched: ${question}\n\n${JSON.stringify(one, null, 2)}`,
     {
-      label: `refute: ${one.claim.slice(0, 60)}`,
+      label: `refute: ${String(one.claim).slice(0, 60)}`,
       model: 'opus',
       effort: 'high',
       agentType: 'cc-smart-dev-kit:auditor',
@@ -139,7 +154,7 @@ checked.forEach((one, index) => {
   } else if (verdict.verdict === 'confirmed') {
     verified.push({ ...one, reason: verdict.reason, quote: verdict.quote || one.quote })
   } else if (verdict.verdict === 'refuted') {
-    refuted.push({ ...one, reason: verdict.reason, quote: verdict.quote || '' })
+    refuted.push({ ...one, reason: verdict.reason, quote: verdict.quote || one.quote })
   } else {
     unproven.push({ ...one, reason: verdict.reason })
   }
@@ -147,12 +162,12 @@ checked.forEach((one, index) => {
 
 // What the researchers could not find, and how far each got. A researcher that returned no report
 // is named: a lost angle must not read as an angle with nothing to say.
+const lostAngle = (angle) =>
+  'The researcher for the angle "' + angle + '" returned no usable report.'
 const openQuestions = reports.flatMap((report, index) =>
-  report && Array.isArray(report.openQuestions)
-    ? report.openQuestions
-    : report
-      ? []
-      : ['The researcher for the angle "' + angles[index] + '" returned no report.'],
+  (report && Array.isArray(report.claims) ? [] : [lostAngle(angles[index])]).concat(
+    report && Array.isArray(report.openQuestions) ? report.openQuestions : [],
+  ),
 )
 const coverage = reports
   .map((report, index) =>

@@ -89,7 +89,7 @@ internal helper with no outside API.
 
 ## A research sweep, for a question with many sources
 
-A few calls answer most questions. Start the `research-sweep` Workflow when the question has
+A few calls answer most questions. Offer the `research-sweep` Workflow when the question has
 several sources to read (the current docs, the project's code, the issue trackers, a comparison
 of alternatives), or when a decision rests on facts you cannot check in a few calls and reading
 them all would fill this session. It reads one angle per researcher in parallel, then has a
@@ -97,7 +97,8 @@ second agent open the source of each claim the answer depends on and confirm or 
 the quote.
 
 **Starting it is the person's call.** Start it only when they asked for a workflow, a sweep or
-this skill's sweep by name; when you decided on it yourself, ask once with `AskUserQuestion`,
+this skill's sweep by name; when you decided on it yourself, ask once with `AskUserQuestion`
+(a crew session asks its lead with `crew report --question`; a subagent never starts it),
 naming the question, the angles and the budget, with the recommended option first, and say it
 starts several agents (one `opus` refuter per claim checked). Never write an inline workflow to
 take its place; if the plugin's workflow is missing or `Workflow` refuses it, say so and go on
@@ -116,11 +117,11 @@ Workflow({
 ```
 
 - `question` and `angles` (up to 8) are required; `budget` is how many claims the refuters
-  check (12 when left out); `context` is what you already know. A string, a missing field or any
+  check (1 to 40; 12 when left out); `context` is what you already know. A string, a missing field, a repeated angle or any
   other field is refused before an agent starts.
 - It returns `verified` claims with their sources and quotes, `refuted` ones with why,
   `unproven` ones no refuter could settle, `unchecked` ones past the budget (decisive claims are
-  checked first; none is dropped), the `openQuestions` and each angle's `coverage`.
+  checked first, spread over the angles; none is dropped), the `openQuestions` and each angle's `coverage`.
 - The run goes in the background; do not poll it. When it returns, rely on `verified` only; read
   a decisive claim's source yourself before a recommendation rests on it, and name the
   `unchecked`, `unproven` and open items in your answer.
