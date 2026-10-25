@@ -696,6 +696,19 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   on a branch that has them (`crew rm` checks the lead's own branch). The owner: `LEAD … (2)` is
   the old lead (kept, never removed).
 
+- 2026-10-25 (afternoon): **#24 merged into `main`** (`6c65da0`, a merge commit, the owner's
+  choice); the Windows hooks job's failure was a test's unquoted `--folder` path (`b93e8cd`).
+  Into `release-1.2.1`: `origin/main` (`5a183bb`), **IN1** (`b7d8fda`: AN1, PL1, MC1, LH1; AN1's
+  self-watch loop with HO1's compact-point advice in `adviseOnce`), **RC1** (`1b8ad53`: setup
+  writes `remoteControlAtStartup: true` only while the key is absent; the docs keep DF1's proved
+  row, and the three "never writes" lines now say what setup does), **UA1** (`6cd3bbb`), **SL1**
+  (`15eb3e4`). Full check after UA1: 7,302 pass, 0 fail, `check:portal` green. **FX1 started**
+  (sonnet `high`, from `6cd3bbb`). TV1 sat 25 minutes on a background wait for an `exit` line its
+  check never printed (1 fail in `stop-failure.test.ts`); told, it fixed and went on. Owed live
+  after 1.2.1: UA1's permission prompt and `AskUserQuestion` in an interactive and a `--bg`
+  session (expect "parked as #N"); SL1's footer before and after `/autocompact 400000` and
+  `/effort low`; RC1's gateway-on session start with the key set.
+
 ### For the owner in the morning
 
 1. **C1 first (it is not merged):** read `.claude/worktrees/crew-C1-core-trim/plugin/instructions/core.md` (128 lines) and its report's list of rules moved and **deleted** (`~/.claude/cc-smart-dev-kit/crew/<repo>/reports/C1-core-trim-*.json`). The deleted ones are yours: say which come back. Then, in a normal terminal, `cd <the repo>/.claude/worktrees/crew-C1-core-trim && bun run evals fast` (no `--save-baseline`): no case may score below today's baseline. Then the lead merges C1 and opens the PR. Read **Decided overnight** below too.
