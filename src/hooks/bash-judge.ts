@@ -327,12 +327,13 @@ function crewNeverRunOf(step: Step): CrewNeverRun | null {
  * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
  * than let through.
  *
- * **A computed program with no subcommand is the kit's only when the line names the kit**
- * (`namesKit`, the test `session-escape-guard` makes too). Its words are all the judge has, and
- * `workflow` at their end is as likely a test filter or another program's subcommand
- * (`"$PY" -m pytest -k workflow`, `$(which gh) workflow`) as the kit's: a line that does not
- * name the kit proposes nothing there. The words `workflow propose`, and a subcommand the line
- * works out, keep their reading: they are the kit's own domain words.
+ * **A computed program is the kit's only when the line names the kit** (`namesKit`, the test
+ * `session-escape-guard` makes too), unless the words say `workflow propose`. Its words are all
+ * the judge has, and `workflow` at their end, or followed by a word the line works out, is as
+ * likely a test filter or another program's subcommand and argument (`"$PY" -m pytest -k
+ * workflow $EXTRA`, `$(which gh) workflow $SUB`) as the kit's: a line that does not name the
+ * kit proposes nothing there. The words `workflow propose` are the kit's own domain words and
+ * keep their reading on any line.
  */
 function isWorkflowPropose(step: Step, lineNamesKit: boolean): boolean {
   const words = kitWordsOf(step);
@@ -340,8 +341,12 @@ function isWorkflowPropose(step: Step, lineNamesKit: boolean): boolean {
   const at = kitWordAt(words, step, "workflow");
   if (at === -1 || asksHelp(words.slice(at + 1))) return false;
   const sub = words[at + 1];
-  if (sub === undefined) return !step.computed || lineNamesKit;
-  return sub === "propose" || isComputedWord(sub);
+  if (sub === "propose") return true;
+  // Not `propose`: a word the kit would read as another subcommand is no proposal, so only a
+  // missing or a computed one is open, and a computed program's open word is the kit's only
+  // when the line names the kit.
+  if (sub !== undefined && !isComputedWord(sub)) return false;
+  return !step.computed || lineNamesKit;
 }
 
 /**

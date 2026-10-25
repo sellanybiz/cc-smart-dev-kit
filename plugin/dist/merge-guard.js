@@ -15741,9 +15741,11 @@ function isWorkflowPropose(step, lineNamesKit) {
   if (at === -1 || asksHelp(words.slice(at + 1)))
     return false;
   const sub = words[at + 1];
-  if (sub === undefined)
-    return !step.computed || lineNamesKit;
-  return sub === "propose" || isComputedWord(sub);
+  if (sub === "propose")
+    return true;
+  if (sub !== undefined && !isComputedWord(sub))
+    return false;
+  return !step.computed || lineNamesKit;
 }
 function proposalOf(step, moved) {
   if (step.computed)

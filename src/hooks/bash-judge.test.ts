@@ -462,7 +462,15 @@ describe("a crew session proposing a workflow change", () => {
     // They were read as `workflow` with no subcommand, which `xargs cc-smart-dev-kit workflow`
     // needs to be a possible proposal, and a crew session's test run was denied.
     const { env, repo } = project({ workflow: { crew: { enabled: true } } });
-    for (const command of ['"$PY" -m pytest -k workflow', "$(which gh) workflow"]) {
+    for (const command of [
+      '"$PY" -m pytest -k workflow',
+      "$(which gh) workflow",
+      // A word after `workflow` that the line works out is as likely another program's argument
+      // (`$EXTRA` a flag, `$SUB` gh's workflow id) as the kit's subcommand (RV4 finding F4).
+      '"$PY" -m pytest -k workflow $EXTRA',
+      "$(which gh) workflow $SUB",
+      '"$PY" -m pytest -k workflow "$(cat extra-args)"',
+    ]) {
       expect({ command, propose: readBash(command).workflowPropose }).toEqual({
         command,
         propose: false,
@@ -480,8 +488,10 @@ describe("a crew session proposing a workflow change", () => {
       // The words `workflow propose` are the domain words: a computed program asks without them
       // naming the kit anywhere.
       "$KIT workflow propose autoCommit true",
-      // A subcommand worked out at run time is as unreadable as a missing one.
-      "$KIT workflow $SUB autoCommit true",
+      // A subcommand worked out at run time is as unreadable as a missing one, when the line
+      // names the kit (RV4 finding F4: a line that does not name it proposes nothing there).
+      "K=cc-smart-dev-kit; $K workflow $SUB autoCommit true",
+      "$(command -v cc-smart-dev-kit) workflow $SUB autoCommit true",
     ]) {
       const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
       expect({ command, decision: answer.decision }).toEqual({ command, decision: "deny" });
