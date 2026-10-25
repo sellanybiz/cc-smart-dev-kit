@@ -7578,13 +7578,20 @@ var version2 = number2().int().min(1);
 var sha = string2().regex(COMMIT_SHA, "a full commit sha");
 var count = number2().int().min(0);
 var word = () => text.transform((value) => value);
+var supersededAnswer = looseObject({
+  answer: text,
+  answeredAt: text,
+  deliveredAt: text.nullable().optional()
+});
 var crewQuestionFields = looseObject({
   question: text,
   options: array(text).min(2),
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  deliveredAt: text.nullable().optional(),
+  superseded: array(supersededAnswer).optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -7767,6 +7774,7 @@ var stopStateFields = object({
   offset: count
 });
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
+var answerWatchFields = object({ at: number2().int().min(0) });
 
 // src/cli/usage-window.ts
 var WINDOW_SPAN_MS = 5 * 60 * 60000;

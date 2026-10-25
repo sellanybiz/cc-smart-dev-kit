@@ -989,9 +989,10 @@ export async function answerCrewQuestion(
 }
 
 /**
- * Marks the answer of question `index` delivered (AN1), and says whether **this call** did: true
- * when the answer was there and waiting for its delivery, false when it was delivered already (by
- * another delivery, or by a resume), came from before the field, or the question has no answer. The check and the write are
+ * Marks the answer of question `index` delivered (AN1), and gives back the question **this call**
+ * claimed, with the answer it claimed: the answer was there and waiting for its delivery. Null
+ * when it was delivered already (by another delivery, or by a resume), came from before the field,
+ * or the question has no answer. The check and the write are
  * one hold of the store's lock, so two deliveries never both win: the one that wins prints the
  * answer, the other says nothing.
  */
@@ -1001,8 +1002,8 @@ export async function markAnswerDelivered(
   id: string,
   index: number,
   atMs: number,
-): Promise<boolean> {
-  const { changed } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+): Promise<CrewQuestion | null> {
+  const { changed, record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined || asked.answer === null) return null;
     // Only a recorded-and-waiting answer (`null`) is claimed: a record from before the field has
@@ -1013,7 +1014,7 @@ export async function markAnswerDelivered(
     );
     return { change: { questions }, event: () => null };
   });
-  return changed;
+  return changed ? (record.questions[index] ?? null) : null;
 }
 
 /**

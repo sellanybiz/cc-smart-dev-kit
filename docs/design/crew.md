@@ -664,12 +664,30 @@ mistakes (exit 2).
 
 **The answer** — `cc-smart-dev-kit crew answer <crew session> "<the answer>"` (`src/crew/answer.ts`)
 — comes back from the lead (an answer that starts with `--` is given after a bare `--`). A
-**running** crew session gets it as a message: the CLI cannot send one itself (Claude Code's
-`SendMessage` is a tool only a session holds), so the command prints the one line the lead sends
-it with — `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a
-quote or a line break in the answer is escaped and never changed — and records the answer, so the
-question is answered once. A **stopped** crew session (D35: the watch stops a blocked crew session that
-idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
+**running** crew session gets it **from its own monitor** (AN1): the CLI cannot send a message
+itself (Claude Code has no command that sends text into a running session, and `SendMessage` is a
+tool only a session holds), so the command records the answer, and `crew self-watch` — the monitor
+every crew session runs — looks for it every 3 s (`ANSWER_WATCH_POLL_MS`; it stats the crew
+record's file and reads the record only when the file changed) and prints it into the session as
+one line. A monitor line is a notification: it reaches a busy session between its steps and **wakes
+an idle one**, a blocked crew session included (`docs/claude-code-contract.md`). The record tells
+*recorded* from *delivered*: each question carries `deliveredAt` (null until delivered), and the
+monitor claims the answer under the store's lock **before** it prints (`markAnswerDelivered`, which
+gives back the claimed question), so two monitors of one crew session — the original and a copy a
+resume started — never both print it. A record from before the field has no `deliveredAt` at all:
+its answers were sent by hand and are not printed again. The monitor writes a heartbeat every 15 s
+(`<store>/answer-watch/<id>.json`); `crew answer` reads it, waits up to 10 s for the delivery, and
+says which happened — `delivered`, or `recorded, not delivered` (no heartbeat, one older than 60 s,
+or a monitor that did not pass it on in time) with the one line the lead sends it with by hand —
+`SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a quote or a
+line break in the answer is escaped and never changed. The lead is never left without a way. **A
+second answer to the same question is a correction**: the first is kept in the question's
+`superseded` list (never deleted), the new one is delivered the same way, and its words say it
+replaces the earlier answer. A question already closed by the phase's end takes no correction
+(`questionClosed`). A **stopped** crew session (D35: the watch stops a blocked crew session that
+idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt
+(that prompt is the delivery, and the same write records it as delivered; a correction's prompt
+carries the replace words too):
 `claude --bg --resume <session id> "<text>"`, run in the crew session's own worktree — which
 starts a copy with a new id (§ The session a resume brings back). **A crew session the answer
 reaches or resumes is `working` again, in the same hold that records the answer, with the session
@@ -881,8 +899,10 @@ slug is `step-2` has a branch that ends in `-2` too.
 
 **The crew session's own line** — `cc-smart-dev-kit crew self-watch [--once]`
 (`src/crew/self-watch.ts`) — runs in the crew session's own monitor, and **keeps running**: it looks
-every minute and prints a line only when the crew session should act, so a crew session that is fine sees
-nothing. It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
+at the context and the clock every minute and prints a line only when the crew session should act, so
+a crew session that is fine sees nothing. Every 3 s it also looks for the lead's answer and writes
+its heartbeat (`crew answer`, above in this section, reaches a running crew session through this
+loop). It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
 written and its cache read) against the window of the model that wrote that reply
 (`context-window.ts`, the window's one home). **The window comes from three places, in order.**
 **Claude Code's own number**, when the status line recorded one for that model

@@ -459,8 +459,9 @@ describe("D36: a crew session's questions", () => {
     const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "b", T1);
     expect(answered.questions[0]?.deliveredAt ?? null).toBeNull();
     // The first delivery claims it; a second finds it taken.
-    expect(await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000)).toBe(true);
-    expect(await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 2000)).toBe(false);
+    const claimed = await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 1000);
+    expect(claimed).toMatchObject({ answer: "b", deliveredAt: "2026-10-21T10:05:01.000Z" });
+    expect(await markAnswerDelivered(state, REPO, "crew-K-contracts", 0, T1 + 2000)).toBeNull();
     const [record] = listCrew(state, REPO).records;
     expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:05:01.000Z");
   });

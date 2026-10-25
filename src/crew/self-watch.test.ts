@@ -4,14 +4,22 @@
  * when the time is up — and nothing else.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { runCrew } from "./command";
 import { adviceFor, hoursSince, type SelfThresholds } from "./self-watch";
-import { createCrew, writeLead } from "./store";
+import {
+  addCrewQuestion,
+  answerCrewQuestion,
+  createCrew,
+  crewFile,
+  listCrew,
+  readAnswerWatchBeat,
+  writeLead,
+} from "./store";
 import { contextPercent } from "./transcript";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
@@ -241,17 +249,17 @@ describe("crew self-watch", () => {
 
   test("D25: the watch repeats its line when it is ignored, and stops when the phase ends", async () => {
     const world = await crewWorldWith(AT_75);
-    // A clock the test drives: each round is one poll later. The crew session's phase ends at round 17.
+    // A clock the test drives: each round is one tick later (3 s). The phase ends 17 minutes in.
     let clock = T0;
-    let rounds = 0;
+    let ended = false;
     const ctx = world.ctx(
       {
         cwd: world.worktree,
         now: () => clock,
         sleep: async (ms: number) => {
-          rounds += 1;
           clock += ms;
-          if (rounds === 17) {
+          if (!ended && clock >= T0 + 17 * 60_000) {
+            ended = true;
             const { updateCrew } = await import("./store");
             await updateCrew(world.paths.stateDir, world.repo, ID, { state: "done" }, clock);
           }
@@ -261,13 +269,13 @@ describe("crew self-watch", () => {
     );
     const code = await runCrew(["self-watch"], ctx);
     expect(code).toBe(0);
-    // The line at once, and the same line again after a quarter of an hour (round 15) — not
-    // on the rounds between — and then the loop ends with the phase.
+    // The line at once, and the same line again after a quarter of an hour — not between —
+    // and then the loop ends with the phase.
     expect(world.out).toEqual([
       "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
       "context at 75%: hand off now — commit your work in progress, then run `cc-smart-dev-kit crew report --status handoff`",
     ]);
-    expect(rounds).toBe(17);
+    expect(ended).toBe(true);
   });
 
   test("D25: a crew session's own monitor finds its crew session by the worktree", async () => {
@@ -288,5 +296,134 @@ describe("crew self-watch", () => {
     const code = await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.repo }));
     expect(code).toBe(1);
     expect(world.err[0]).toContain("not a crew session");
+  });
+});
+
+/** A world whose crew session asked one question, and the lead answered it. */
+async function answeredWorld(answer = "the port is 3210") {
+  const world = await crewWorldWith(20_000);
+  await addCrewQuestion(
+    world.paths.stateDir,
+    world.repo,
+    ID,
+    { options: ["3210", "3211"], question: "which port?", recommended: 1 },
+    T0,
+  );
+  await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, answer, T0);
+  return world;
+}
+
+describe("AN1: crew self-watch delivers the lead's answer", () => {
+  const env = { CC_SMART_DEV_KIT_CREW: ID };
+
+  test("an answer on record is printed as one line, once, and marked delivered", async () => {
+    const world = await answeredWorld();
+    const ctx = world.ctx({ cwd: world.worktree }, env);
+    expect(await runCrew(["self-watch", "--once"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      'Your lead answers your question "which port?": "the port is 3210"',
+    ]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:00:00.000Z");
+    // A second pass finds it delivered.
+    world.out.length = 0;
+    await runCrew(["self-watch", "--once"], ctx);
+    expect(world.out).toEqual([]);
+  });
+
+  test("a line break or a quote in the answer stays inside the one line", async () => {
+    const world = await answeredWorld('use "3210"\nnot 3211');
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual([
+      'Your lead answers your question "which port?": "use \\"3210\\"\\nnot 3211"',
+    ]);
+  });
+
+  test("a correction says it replaces the earlier answer", async () => {
+    const world = await answeredWorld();
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    world.out.length = 0;
+    await answerCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      0,
+      "sorry, 3211",
+      T0 + 5000,
+      null,
+      null,
+      {
+        correction: true,
+      },
+    );
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual([
+      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead: "sorry, 3211"',
+    ]);
+  });
+
+  test("an answer from before the delivered field was sent by hand: never printed again", async () => {
+    const world = await answeredWorld();
+    const file = crewFile(world.paths.stateDir, world.repo, ID);
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    delete record.questions[0].deliveredAt;
+    writeFileSync(file, JSON.stringify(record));
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual([]);
+  });
+
+  test("a question with no answer prints nothing", async () => {
+    const world = await crewWorldWith(20_000);
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["a", "b"], question: "which?", recommended: null },
+      T0,
+    );
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(world.out).toEqual([]);
+  });
+
+  test("the monitor writes its heartbeat, so crew answer can tell it runs", async () => {
+    const world = await crewWorldWith(20_000);
+    expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBeNull();
+    await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
+    expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBe(T0);
+  });
+
+  test("an answer that lands while the loop runs is printed on the next tick, once; the heartbeat repeats", async () => {
+    const world = await crewWorldWith(20_000);
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port?", recommended: 1 },
+      T0,
+    );
+    let clock = T0;
+    let ticks = 0;
+    const ctx = world.ctx(
+      {
+        cwd: world.worktree,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          ticks += 1;
+          clock += ms;
+          if (ticks === 3) {
+            await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "3210", clock);
+          }
+          if (ticks === 40) {
+            const { updateCrew } = await import("./store");
+            await updateCrew(world.paths.stateDir, world.repo, ID, { state: "done" }, clock);
+          }
+        },
+      },
+      env,
+    );
+    expect(await runCrew(["self-watch"], ctx)).toBe(0);
+    expect(world.out).toEqual(['Your lead answers your question "which port?": "3210"']);
+    // 40 ticks of 3 s: the heartbeat was written again every 15 s.
+    expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBe(T0 + 105_000);
   });
 });
