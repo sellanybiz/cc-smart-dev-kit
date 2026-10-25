@@ -13,6 +13,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   `cliPaths()` no longer has `portalStateFile`. A machine that updates from 1.0.x or older
   straight to 1.4.1 keeps those chains only in `portal.json`, which nothing reads now (`migrate`
   does not move it): set each chain again with `cc-smart-dev-kit gateway slot <slot> <target>[,…]`.
+- **The tested Claude Code is now 2.1.310** (it was 2.1.308). CI's validates and the weekly job
+  run their validates on that version, and the weekly job compares the newest release with it.
+  The validates and `doctor --live` pass on 2.1.310, and the contract rows they prove show it.
+  Not yet proved: 2.1.310 says plugin monitors now run with telemetry off too; the kit still
+  assumes they do not (the lead's watch falls back to polling, so nothing breaks).
 
 ## 1.4.0
 
