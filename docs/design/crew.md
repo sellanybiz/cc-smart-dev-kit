@@ -995,11 +995,19 @@ the store records — a session the kit does not know is the person's own:
   and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy; its
   conversation leaves `/resume` for the kit's archive, § A removed crew session's conversation). A
   continuation holds the removal back until its work and every later continuation's work are
-  merged into the first record's base. The line says so once; a refusal — a program runs from its worktree, or work
+  merged into the first record's base — a continuation that failed, was removed or was discarded
+  releases it (`holdsItsPredecessor`, `lifecycle.ts`: the one rule the stopped-session reminder
+  uses too, since a successor removed before it started has no branch to merge, RX1). The line says so once; a refusal — a program runs from its worktree, or work
   nobody committed — is said once and left for the lead. A **`stopped`** record is marked merged
   too, because what waits for its phase starts on the merge, but **never removed by the watch**:
   stopping it was the lead's call, and so is its removal (the store keeps the fact from the state
-  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). The branch must hold a commit of its own (its tip is not
+  the record was in, `mergedWhileStopped`, so a later pass cannot forget it). **The watch's own idle
+  stop is not the lead's call** (RX1): it marks the record `stoppedByWatch`, kept only while the
+  record is `stopped`, and a merge of such a record removes it like any other. One removal of a
+  record runs at a time (a lock in the record's files folder, `crewRemovalLockDir`): a second one —
+  the watch's after the person's `crew rm --discard` changed the worktree — refuses at once and
+  rolls nothing back. A pass reads the events log (it only grows) only for a record that needs it,
+  a stopped-session reminder or a legacy merge. The branch must hold a commit of its own (its tip is not
   the base it was cut from — a crew session that failed before it committed is an ancestor of the
   base for that reason alone), and its work must be on the commit **the branch it was cut from**
   (`record.baseRef`) is on, else the commit **the lead's own folder** is on (the lead's record

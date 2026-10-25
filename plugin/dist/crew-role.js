@@ -9784,6 +9784,7 @@ var crewFields = object({
   name: text2,
   sessionId: text2.nullable(),
   shortId: text2.nullable(),
+  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
   leadSessionId: text2,
   leadName: text2,
   repo: text2,
@@ -9830,6 +9831,7 @@ var crewFields = object({
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
+  stoppedByWatch: boolean2().optional(),
   mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
   archive: discardArchiveSchema.optional(),
   archiveHistory: array(discardArchiveSchema).optional(),
@@ -10031,7 +10033,7 @@ async function updateCrew(stateDir, repo, id, change, atMs, text = null, memoryM
   }), by);
   return record2;
 }
-async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null) {
+async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null, by = null) {
   return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     if (!states.includes(before.state))
       return null;
@@ -10039,7 +10041,7 @@ async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text 
       change,
       event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text)
     };
-  });
+  }, by);
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -10082,8 +10084,20 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
-    if (merged.state === "merged" && before.state === "stopped")
+    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
       merged.mergedWhileStopped = true;
+    }
+    if (merged.state !== "stopped")
+      delete merged.stoppedByWatch;
+    if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
+      const kept = before.earlierSessions ?? [];
+      if (!kept.some((one) => one.sessionId === before.sessionId)) {
+        merged.earlierSessions = [
+          ...kept,
+          { sessionId: before.sessionId, shortId: before.shortId ?? before.sessionId.slice(0, 8) }
+        ];
+      }
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);

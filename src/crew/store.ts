@@ -550,6 +550,14 @@ const crewFields = z.object({
    * (`changeCrew`), from the state the record was in; absent on any other record.
    */
   mergedWhileStopped: z.boolean().optional(),
+  /**
+   * Set when the watch itself stopped the crew session, for idling blocked past `idleStopMinutes`
+   * (RX1): that stop is not the lead's call, so a merge of its branch removes it like any other
+   * (`mergedWhileStopped` is not set from it). Only a `stopped` record carries it: any write that
+   * leaves `stopped` drops it (`changeCrew`). Absent on every other record, and on one an older
+   * kit wrote.
+   */
+  stoppedByWatch: z.boolean().optional(),
   /** The watch proved this exact branch head was on this lead commit, before any rewrite. */
   mergeProof: z.looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
   /** Recovery is persisted before any removal; an unfinished active archive never expires. */
@@ -1337,7 +1345,11 @@ async function changeCrew(
     }
     // A stopped crew session the lead merged stays the lead's to remove (D62): the fact is kept
     // here, from the state the record was in, so the watch cannot forget it on a later pass.
-    if (merged.state === "merged" && before.state === "stopped") merged.mergedWhileStopped = true;
+    if (merged.state === "merged" && before.state === "stopped" && before.stoppedByWatch !== true) {
+      merged.mergedWhileStopped = true;
+    }
+    // Who stopped it is kept only while it is stopped.
+    if (merged.state !== "stopped") delete merged.stoppedByWatch;
     // A replaced session stays on the record (`earlierSessions`), whichever command replaced it.
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];

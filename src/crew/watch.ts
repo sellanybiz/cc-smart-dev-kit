@@ -521,7 +521,8 @@ async function stopCrew(
     ctx.paths.stateDir,
     record.repo,
     record.id,
-    { state },
+    // A stop the watch makes is its own, not the lead's call (`stoppedByWatch`).
+    { state, ...(state === "stopped" ? { stoppedByWatch: true } : {}) },
     ctx.now(),
     reason,
     memoryMbOf(row?.pid ?? null),
@@ -838,7 +839,13 @@ export async function watchPass(
   // Crew sessions whose work is over: the lead's merge, the end of a session, a blocked crew session that
   // idled. Only a crew session the store records is ever stopped.
   const allRecords = listCrew(ctx.paths.stateDir, repo).records;
-  const events = readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
+  // The log only grows (`events.jsonl` is never cut), and a pass runs every 20 seconds: it is read
+  // once, and only when a record needs it (a stopped-session reminder, a legacy merge).
+  let eventsRead: CrewEvent[] | undefined;
+  const events = (): readonly CrewEvent[] => {
+    eventsRead ??= readCrewEvents(ctx.paths.stateDir, repo).events.reverse();
+    return eventsRead;
+  };
   for (const record of allRecords) {
     if (record.leadSessionId !== scope.leadSessionId) continue;
     const lastReminder = stoppedRemindedAt[record.id];
@@ -862,7 +869,8 @@ export async function watchPass(
       OVER_STATES.includes(record.state) &&
       (record.state === "merged" || branchMerged(record, ctx))
     ) {
-      const wasStopped = record.state === "stopped";
+      // Stopped by the lead (D62), not by the watch's own idle stop (`stoppedByWatch`, RX1).
+      const wasStopped = record.state === "stopped" && record.stoppedByWatch !== true;
       // Marked once: a record that is merged already is not written again on every pass.
       if (record.state !== "merged") {
         const proof = mergeProof(record, ctx);
@@ -885,7 +893,7 @@ export async function watchPass(
       if (
         record.state === "merged" &&
         record.mergedWhileStopped === undefined &&
-        historicallyMergedWhileStopped(record, events)
+        historicallyMergedWhileStopped(record, events())
       ) {
         await updateCrew(
           ctx.paths.stateDir,

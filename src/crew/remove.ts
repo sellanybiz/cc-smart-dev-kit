@@ -36,10 +36,10 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { LockBusyError, withLock } from "../setup/lock";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
 import { liveSessions } from "../hooks/sessions";
+import { LockBusyError, withLock } from "../setup/lock";
 import { holdCleanLock } from "../worktrees/clean";
 import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
 import {

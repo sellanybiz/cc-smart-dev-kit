@@ -34,10 +34,14 @@ export function activeContinuationOf(
   return records.find((one) => one.continues === record.id && holdsItsPredecessor(one));
 }
 
-/** The same old, unmerged stopped-session item for the watch and the portal. Events may be in either order. */
+/**
+ * The same old, unmerged stopped-session item for the watch and the portal. Events may be in
+ * either order. `events` may be a function: the log only grows, so a caller that reads it hands in
+ * the read, and it runs only for a record the need can apply to (RX1).
+ */
 export function stoppedCrewNeed(
   record: CrewRecord,
-  events: readonly CrewEvent[],
+  events: readonly CrewEvent[] | (() => readonly CrewEvent[]),
   ctx: CrewContext,
   records: readonly CrewRecord[] = [],
 ): StoppedCrewNeed | null {
@@ -46,7 +50,7 @@ export function stoppedCrewNeed(
     activeContinuationOf(record, records) !== undefined
   )
     return null;
-  const transitions = events
+  const transitions = (typeof events === "function" ? events() : events)
     .filter(
       (event) => event.crew === record.id && ["state", "created", "report"].includes(event.type),
     )
