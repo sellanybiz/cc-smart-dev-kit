@@ -224,6 +224,11 @@ describe("D25: crew start returns at once", () => {
       base: { ref: "main", sha: head },
       baseRef: "main",
       branch: "crew/B6b-portal-live",
+      // Where the brief came from and a hash of its text, kept for the run record (PL1).
+      briefSource: {
+        path: world.brief,
+        sha256: "50dad91b5a7732afbf56f2d1892b64a824006dabc5f976511d22c61808ceb917",
+      },
       // A first crew session for its phase continues no one: only `--continue` records the old id.
       continues: null,
       createdAt: "2026-10-21T10:00:00.000Z",
@@ -240,6 +245,8 @@ describe("D25: crew start returns at once", () => {
       permissionMode: "auto",
       phase: "B6b",
       plan: "master-plan",
+      // This lead has no plan file: its run is not recorded.
+      planFile: null,
       pr: null,
       questions: [],
       reportPath: null,
@@ -692,10 +699,6 @@ describe("the refusals before anything is recorded", () => {
     [
       ["start", "B6b", "--slug", "x", "--kind", "magic", "--brief", "-"],
       "Unknown kind: magic (the kinds: build, docs, tests, security, money, permissions, schema, deploy, architecture, ui)",
-    ],
-    [
-      ["start", "B6b", "--slug", "x", "--kind", "build"],
-      "Give the crew session its brief: --brief <file>, or --brief - for stdin",
     ],
     [
       ["start", "B6b", "--slug", "x", "--kind", "build", "--brief", "-", "--effort", "low"],

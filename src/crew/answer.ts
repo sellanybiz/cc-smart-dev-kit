@@ -44,6 +44,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
+import { actorOfCaller } from "./runs-actor";
 import {
   answerCrewQuestion,
   type CrewRecord,
@@ -201,6 +202,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       ctx.now(),
       "working",
       session,
+      actorOfCaller(ctx, repo),
     );
   } catch (error) {
     // A copy that runs while the record still names the old session: the line names the copy.

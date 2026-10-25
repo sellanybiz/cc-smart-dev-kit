@@ -56,7 +56,7 @@ describe("crew through the CLI", () => {
     expect(lead.err).toBe("");
     expect(lead.code).toBe(0);
     expect(lead.out).toBe(
-      `lead LEAD my-app master-plan (e22fabc7): the crew this session starts in ${world.repo} report to it; this session takes that name at its next prompt\n`,
+      `no plan file for master-plan: its briefs and run records are off; pass --plan-file <path>\nlead LEAD my-app master-plan (e22fabc7): the crew this session starts in ${world.repo} report to it; this session takes that name at its next prompt\n`,
     );
     expect(readLead(world.paths.stateDir, world.repo, sessionId)?.name).toBe(
       "LEAD my-app master-plan",

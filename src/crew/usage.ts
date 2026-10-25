@@ -3,7 +3,8 @@
  * command's own `--help` and the help table's rows (`src/cli/help.ts`) read the same words and
  * can never drift (`dynamic.md` § One source per value).
  *
- * The commands themselves: `board.ts` (`list`, `status`, `kinds`, `attach`), `end.ts` (`stop`,
+ * The commands themselves: `board.ts` (`list`, `status`, `kinds`, `attach`), `runs-history.ts`
+ * (`history`), `end.ts` (`stop`,
  * `resume`), `remove.ts` (`rm`), `tell.ts` (`tell`, one of the crew's own commands, whose help
  * is here so `crew tell --help` and the help table read the same text) and `lead-tell.ts`
  * (`crew lead tell`, whose help is here for the same reason).
@@ -18,7 +19,7 @@ export interface BoardCommand {
   /** What `crew <name> --help` prints. */
   help: string;
   /** The word after `crew`. */
-  name: "attach" | "kinds" | "list" | "resume" | "rm" | "status" | "stop";
+  name: "attach" | "history" | "kinds" | "list" | "resume" | "rm" | "status" | "stop";
   /** One short line for the list of commands. */
   summary: string;
 }
@@ -144,6 +145,25 @@ terminal, so it is not run for you: run it yourself.
 ${NAMED}`,
     name: "attach",
     summary: "Print the command that opens its session.",
+  },
+  {
+    args: "[<phase>] [--plan <stem>] [--json] [--backfill]",
+    help: `Usage: ${COMMAND} crew history [<phase>] [--plan <stem>] [--json] [--backfill]
+
+One line per crew run of a plan: the phase, the Claude sessions it ran under, its model and effort,
+when it started and finished, how long it worked (without the queue and the pauses), and where it
+ended. It reads the run records in the plan's own folder, <plan folder>/runs/, which \`crew rm\` and
+the clean-up of finished work never delete, and which move with the plan to its archive/ folder.
+
+  <phase>       only the runs of that phase
+  --plan        the plan's file name without .md; by default the plan of this lead, or the only
+                plan this repository has a lead for
+  --json        the run records as one JSON list: every session id, pause, question, report,
+                merge and removal, with the lead session that made each
+  --backfill    first write the run records of runs from before the records existed, once, from
+                what the store still holds; it says what it could not know`,
+    name: "history",
+    summary: "One line per crew run of a plan; they last after crew rm.",
   },
   {
     args: "",

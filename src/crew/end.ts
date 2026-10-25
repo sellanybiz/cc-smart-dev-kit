@@ -59,6 +59,7 @@ import {
   readLead,
   updateCrew,
 } from "./store";
+import { actorOfCaller } from "./runs-actor";
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
 
@@ -170,6 +171,8 @@ export async function markState(
       { ...change, state },
       ctx.now(),
       text,
+      null,
+      actorOfCaller(ctx, record.repo),
     );
     return true;
   } catch (error) {
