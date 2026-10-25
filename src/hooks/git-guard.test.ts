@@ -517,6 +517,17 @@ describe("a shell keyword or a wrapper before the command is stepped over", () =
     ["parallel git push -f ::: a b"],
     ["parallel -j2 'git push -f {}' ::: a b"],
     ["sudo watch git push -f"],
+    // The review of the follow-up: the spellings that still hid the inner program.
+    ["watch -q 3 git push -f"],
+    ["watch --equexit 3 git push -f"],
+    ["watch --int 5 git push -f"],
+    ["parallel -u git push -f ::: a"],
+    ["parallel -C , 'git push -f' ::: a"],
+    ["parallel --delay 1 git push -f ::: a"],
+    ["parallel ::: 'git push -f'"],
+    ["find . -maxdepth 0 -exec flock + git push -f \\;"],
+    ["su -- me -c 'git push -f'"],
+    ["su --session-command 'git push -f' me"],
   ])("asks about %j", (command) => {
     expect(guard(command)).toContain("force-push");
   });

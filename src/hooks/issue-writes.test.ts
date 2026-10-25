@@ -46,6 +46,21 @@ describe("a raw issue write", () => {
     expect(requestsIssueWrite(command, "bash")).toBe(true);
   });
 
+  // The review of the follow-up: the private runner list is gone, and these must still be seen
+  // by the shared reader alone (the crew deny reads this detector).
+  test.each([
+    "parallel ::: 'gh issue create -t x -b y'",
+    "parallel -u gh issue create -t x -b y ::: a",
+    "parallel --delay 1 gh issue create -t x -b y ::: a",
+    "parallel --arg-sep ,, gh issue create -t x -b y ,, a",
+    "watch -q 3 gh issue create -t x -b y",
+    "find . -maxdepth 0 -exec flock + gh issue create -t x -b y \\;",
+    "su -- me -c 'gh issue create -t x -b y'",
+    "su --session-command 'gh issue create -t x -b y' me",
+  ])("review: %s is a write", (command) => {
+    expect(requestsIssueWrite(command, "bash")).toBe(true);
+  });
+
   test.each([
     "gh issue --help create",
     "gh issue create -h",

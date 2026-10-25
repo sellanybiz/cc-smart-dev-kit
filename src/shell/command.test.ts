@@ -539,9 +539,66 @@ describe("the runners: find -exec, watch, su -c and parallel run the command the
       "git push",
     );
     expect(nestedCommand("parallel", ["-j4", "--bar", "git push"])).toBe("git push");
-    // No command: parallel reads its commands from standard input, which cannot be read.
-    expect(nestedCommand("parallel", [":::", "a", "b"])).toBeUndefined();
+    // No command and no `:::` arguments: parallel reads its commands from standard input, which
+    // cannot be read. (With `:::` arguments and no command, they are the commands: see below.)
     expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
+  });
+
+  // The review of the follow-up: each spelling below hid the inner program from a guard.
+  test("review: watch's -q/--equexit take a value, and a unique long prefix is the option", () => {
+    expect(nestedCommand("watch", ["-q", "3", "git push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--equexit", "3", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--int", "5", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["--inter=5", "git", "push"])).toBe("git push");
+  });
+
+  test("review: find's `+` ends -exec only after {}; an escaped `\\;` word is an argument", () => {
+    expect(nestedCommand("find", [".", "-exec", "echo", "+", "hi", ";"])).toBe("'echo' '+' 'hi'");
+    expect(nestedCommand("find", [".", "-exec", "flock", "+", "git", "push", ";"])).toBe(
+      "'flock' '+' 'git' 'push'",
+    );
+    expect(nestedCommand("find", [".", "-exec", "echo", "\\;", "hi", ";"])).toBe(
+      "'echo' '\\;' 'hi'",
+    );
+    expect(nestedCommand("find", [".", "-exec", "a", "{}", "+", "-exec", "b", ";"])).toBe(
+      "'a' '{}' ; 'b'",
+    );
+  });
+
+  test("review: su after `--`, --session-command, and a long prefix", () => {
+    expect(nestedCommand("su", ["--", "me", "-c", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--session-command", "git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["--session-command=git push", "me"])).toBe("git push");
+    expect(nestedCommand("su", ["--comm", "git push"])).toBe("git push");
+    expect(nestedCommand("su", ["--", "me"])).toBeUndefined();
+  });
+
+  test("review: parallel's boolean -u, its valued -C -s -J, and its long options", () => {
+    expect(nestedCommand("parallel", ["-u", "git", "push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["-C", ",", "git push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["-s", "100", "git push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["-J", "prof", "git push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["--delay", "1", "git", "push", ":::", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["--tagstring", "x", "git push", ":::", "a"])).toBe(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--arg-sep", ",,", "git push", ",,", "a"])).toBe("git push");
+  });
+
+  test("review: parallel with no command runs its arguments; an unknown option is read both ways", () => {
+    expect(nestedCommand("parallel", [":::", "git push -f"])).toBe("git push -f");
+    expect(nestedCommand("parallel", [":::", "a", "b"])).toBe("a ; b");
+    expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
+    // An option this reader does not know may take the next word or not: both readings are
+    // returned, so the command is in the line either way.
+    expect(nestedCommand("parallel", ["--surprise", "git", "push", ":::", "a"])).toBe(
+      "git push ; push",
+    );
+  });
+
+  test("review: `{}` as the program is a program worked out when the line runs", () => {
+    expect(invocationOf(["{}", "push", "-f"])?.computed).toBe(true);
+    expect(invocationOf(["git", "push"])?.computed).toBe(false);
   });
 
   test("programsOf sees the inner program, behind a wrapper too", () => {
