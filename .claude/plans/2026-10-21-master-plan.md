@@ -440,7 +440,7 @@ cut and argument shape, seen 2026-10-25, are RS1.)
 
 ## Release 1.3.0 — GitHub Issues (D67)
 
-Cut from `main` after 1.2.1. Briefs are written before the cut, in `briefs/`. GI1 is the contract
+Cut from `main` after 1.2.1. The briefs are written (2026-10-25): `briefs/GI1-issues-switch-and-file.md`, `GI2-issues-resolved-when-shipped.md`, `GI3-crew-phase-from-issue.md`, `GI4-lead-hears-issues.md`. Each names the owner's choices it must ask through the lead (a public repository's own yes, an issue named without the label). GI1 is the contract
 and goes first and alone; GI2 and GI3 build on it at once; GI4 last. Research first (each brief):
 GitHub's closing keywords (only a pull request into the default branch closes an issue), `gh issue`
 and the REST API's conditional requests (a `304` does not count against the rate limit), and a
