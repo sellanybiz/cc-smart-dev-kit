@@ -11967,7 +11967,7 @@ function gitFailureCause(detail) {
   return "unknown";
 }
 function githubRepoInUrl(url) {
-  const match = /^(?:git@|ssh:\/\/|https?:\/\/)(?:git@)?github\.com[:/](.+?)\/*$/i.exec(url);
+  const match = /^(?:git@github\.com[:/]|(?:ssh|https?):\/\/(?:[^/\s]+@)?github\.com[:/])(.+?)\/*$/i.exec(url);
   if (!match?.[1])
     return null;
   const repo = match[1].replace(/\.git$/, "");
@@ -30612,6 +30612,10 @@ var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
 
 // src/issues/file.ts
 var GIT_TIMEOUT_MS2 = 5000;
+var READ_ONLY = "READ";
+function readOnlyWhy(named) {
+  return `gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`;
+}
 var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
 function parseRepoFacts(out) {
   try {
@@ -37498,9 +37502,8 @@ var MACHINE_WIDE_HOOKS = [
 
 // src/issues/doctor.ts
 var HOST = "github.com";
-var READ_ONLY = "READ";
 var TRIAGE = "TRIAGE";
-var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false for your own file, and set it false in the project's .claude/cc-smart-dev-kit.json too when that file turns it on`;
 async function issuesChecks(world) {
   const policy = resolveSwitch({ ...world, home: null });
   if ("why" in policy || !policy.resolved.issues.enabled.value)
@@ -37579,7 +37582,7 @@ async function issuesChecks(world) {
       {
         fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
         ok: false,
-        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`
+        text: `issues: ${readOnlyWhy(named)}`
       }
     ];
   }

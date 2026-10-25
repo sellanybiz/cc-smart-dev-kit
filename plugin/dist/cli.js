@@ -10224,7 +10224,7 @@ function gitFailureCause(detail) {
   return "unknown";
 }
 function githubRepoInUrl(url) {
-  const match = /^(?:git@|ssh:\/\/|https?:\/\/)(?:git@)?github\.com[:/](.+?)\/*$/i.exec(url);
+  const match = /^(?:git@github\.com[:/]|(?:ssh|https?):\/\/(?:[^/\s]+@)?github\.com[:/])(.+?)\/*$/i.exec(url);
   if (!match?.[1])
     return null;
   const repo = match[1].replace(/\.git$/, "");
@@ -14909,6 +14909,10 @@ async function kitAccount(read) {
 function sameAccount(author, login) {
   return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
 }
+var READ_ONLY = "READ";
+function readOnlyWhy(named) {
+  return `gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`;
+}
 var REPO_FIELDS = "visibility,hasIssuesEnabled,viewerPermission";
 function parseRepoFacts(out) {
   try {
@@ -14979,7 +14983,9 @@ function parseListed(out, ready) {
       if (typeof row.number !== "number" || typeof row.url !== "string") {
         return { why: "gh answered something this command cannot read" };
       }
+      const author = row.author?.login;
       issues.push({
+        author: typeof author === "string" ? author : null,
         body: typeof row.body === "string" ? row.body : "",
         closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
@@ -15048,6 +15054,9 @@ async function fileIssue(world, request) {
   if (!facts.hasIssues) {
     return refuse(`${repo} has issues turned off; turn them on in the repository's settings first`);
   }
+  if (facts.permission === READ_ONLY) {
+    return refuse(`${readOnlyWhy(repo)}; ask for write access to it first`);
+  }
   if (facts.isPublic) {
     const publicOff = publicIssuesOff(policy.resolved, policy.base);
     if (publicOff !== null)
@@ -15064,6 +15073,9 @@ async function fileIssue(world, request) {
   } catch {
     return refuse("gh answered something this command cannot read about the labels");
   }
+  const account = await kitAccount(read);
+  if ("why" in account)
+    return refuse(account.why);
   const hash = fingerprintHash(request.fingerprint);
   const listed = await write([
     "issue",
@@ -15077,14 +15089,14 @@ async function fileIssue(world, request) {
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body,state,labels"
+    "number,url,body,state,labels,author"
   ]);
   if (listed.kind !== "ok")
     return refuse(ghProblem("listed the issues", listed));
   const all = parseListed(listed.out, policy.resolved.issues.readyLabel.value);
   if ("why" in all)
     return refuse(all.why);
-  const double = all.issues.find((issue) => hasMarker(issue.body, hash));
+  const double = all.issues.find((issue) => hasMarker(issue.body, hash) && sameAccount(issue.author, account.login));
   if (double === undefined && all.issues.length >= LIST_LIMIT) {
     return refuse(`${LIST_LIMIT} issues carry the label ${found}, as many as one list returns, so the kit cannot tell whether this finding is filed; close the settled ones first`);
   }
@@ -39081,8 +39093,10 @@ created.
 
 It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
 and the project's file as committed on the base), and a public repository needs issues.allowPublic
-too. A title or body that holds a home path, a key or token, or a URL with credentials is refused
-with its line and column, and nothing is sent.
+too. A title or body that holds a home path (in any spelling of it), a key or token of a known
+shape or a value after key, token, secret or password, or a URL with credentials is refused with
+its line and column, and nothing is sent. The screen knows those shapes only: read a text before
+you file it.
 
 issue fixed prints one \`Fixes #<n>\` line for each open issue the kit marked fixed (it carries the
 label issues.fixedLabel) whose fix is in <base>..<head>: the lines a release's pull request body
@@ -56741,9 +56755,8 @@ var MACHINE_WIDE_HOOKS = [
 
 // src/issues/doctor.ts
 var HOST = "github.com";
-var READ_ONLY = "READ";
 var TRIAGE = "TRIAGE";
-var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false`;
+var SWITCH_OFF = `or turn the switch off: ${COMMAND} workflow set issues.enabled false for your own file, and set it false in the project's .claude/cc-smart-dev-kit.json too when that file turns it on`;
 async function issuesChecks(world) {
   const policy = resolveSwitch({ ...world, home: null });
   if ("why" in policy || !policy.resolved.issues.enabled.value)
@@ -56822,7 +56835,7 @@ async function issuesChecks(world) {
       {
         fix: `ask for write access to ${named}, ${SWITCH_OFF}`,
         ok: false,
-        text: `issues: gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`
+        text: `issues: ${readOnlyWhy(named)}`
       }
     ];
   }

@@ -24,6 +24,9 @@ const REQUEST = {
   title: "Hook crashes on empty input",
 };
 
+/** The calls that act on the repository: all but `gh api user`, which asks who the account is. */
+const repoCalls = (gh: FakeGh) => gh.calls.filter((call) => call.args[0] !== "api");
+
 function refusal(outcome: IssueOutcome): string {
   if (outcome.kind !== "refused") throw new Error(`expected a refusal, got ${issueLine(outcome)}`);
   return outcome.why;
@@ -97,8 +100,8 @@ describe("filing and the hidden marker", () => {
       `${REQUEST.body}\n\n<!-- cc-smart-dev-kit:issue ${fingerprintHash(REQUEST.fingerprint)} -->\n`,
     );
     expect(issue?.body).not.toContain(REQUEST.fingerprint);
-    // Every call names the repository, and nothing else.
-    for (const call of gh.calls) expect(repoOf(call.args)).toBe(OWN_REPO);
+    // Every repository call names the repository, and nothing else.
+    for (const call of repoCalls(gh)) expect(repoOf(call.args)).toBe(OWN_REPO);
   });
 
   test("the hash is fixed: the marker of a known key (written by hand)", () => {
@@ -219,7 +222,7 @@ describe("filing and the hidden marker", () => {
     expect(timeouts).toEqual([30_000]);
     expect(
       gh.calls.find((call) => call.args[1] === "list" && call.args[0] === "issue")?.args,
-    ).toContain("number,url,body,state,labels");
+    ).toContain("number,url,body,state,labels,author");
   });
 
   test("a label the schema would refuse is refused before gh is called", async () => {
@@ -312,7 +315,7 @@ describe("only the project's own repository", () => {
     git(repo, "remote", "add", "upstream", "git@github.com:upstream-org/lib.git");
     await fileIssue(w, REQUEST);
     expect(gh.calls.length).toBeGreaterThan(0);
-    for (const call of gh.calls) {
+    for (const call of repoCalls(gh)) {
       expect(repoOf(call.args)).toBe(OWN_REPO);
       expect(call.args.join(" ")).not.toContain("upstream-org");
     }
@@ -487,5 +490,97 @@ describe("the ready label is the person's, never the kit's (GI3)", () => {
     const { gh, world: w } = world({ gh: { issues: [chosen] } });
     expect((await fileIssue(w, REQUEST)).kind).toBe("updated");
     expect(callsOf(gh, "issue", "edit")).toEqual([]);
+  });
+});
+
+describe("IX1-7: an account without push access is refused before any write", () => {
+  test("READ access: refused in doctor's words, and gh is asked nothing but the repository", async () => {
+    const { gh, world: w } = world({ gh: { permission: "READ" } });
+    const why = refusal(await fileIssue(w, REQUEST));
+    expect(why).toContain("gh has READ access only to github.com/example-org/my-app");
+    expect(why).toContain("cannot apply labels");
+    expect(why).toContain("write access");
+    expect(gh.calls.map((call) => call.args.slice(0, 2).join(" "))).toEqual(["repo view"]);
+    expect(gh.issues).toEqual([]);
+    expect(gh.labels).toEqual([]);
+  });
+
+  test.each(["TRIAGE", "WRITE", "MAINTAIN", "ADMIN"] as const)(
+    "%s access files",
+    async (permission) => {
+      const { world: w } = world({ gh: { permission } });
+      expect((await fileIssue(w, REQUEST)).kind).toBe("filed");
+    },
+  );
+});
+
+describe("IX1-8: only an issue the kit's own account wrote is the kit's", () => {
+  const marked = (author: string) => ({
+    author,
+    body: `old\n\n${markerLine(fingerprintHash(REQUEST.fingerprint))}\n`,
+    labels: ["kit:found"],
+    number: 7,
+    title: "old",
+    url: "https://github.com/example-org/my-app/issues/7",
+  });
+
+  test("a copy of the marker written by another account is never edited: a new issue is filed", async () => {
+    const { gh, world: w } = world({ gh: { issues: [marked("someone-else")] } });
+    const outcome = await fileIssue(w, REQUEST);
+    expect(outcome.kind).toBe("filed");
+    expect(gh.issues).toHaveLength(2);
+    expect(gh.issues[0]?.body).toBe(marked("someone-else").body);
+  });
+
+  test("the kit's own account's issue is updated, in any letter case of the login", async () => {
+    const { gh, world: w } = world({ gh: { issues: [marked("KIT-Account")] } });
+    const outcome = await fileIssue(w, { ...REQUEST, body: "A new text." });
+    expect(outcome.kind).toBe("updated");
+    expect(gh.issues).toHaveLength(1);
+    expect(gh.issues[0]?.body).toContain("A new text.");
+  });
+
+  test("an issue with no author in gh's answer is not the kit's", async () => {
+    const { gh, world: w } = world({ gh: { issues: [{ ...marked("kit-account"), author: "" }] } });
+    expect((await fileIssue(w, REQUEST)).kind).toBe("filed");
+    expect(gh.issues).toHaveLength(2);
+  });
+
+  test("the account cannot be read: refused, nothing written", async () => {
+    const { gh, world: w } = world({ gh: { issues: [marked("kit-account")] } });
+    const inner = w.gh;
+    w.gh = async (args, call) =>
+      args[0] === "api" && args.includes("user")
+        ? { code: 1, err: "boom", kind: "failed", out: "" }
+        : inner(args, call);
+    expect(refusal(await fileIssue(w, REQUEST))).toContain("which account the kit posts as");
+    expect(gh.calls.some((call) => call.args[0] === "issue" && call.args[1] === "edit")).toBe(
+      false,
+    );
+  });
+});
+
+describe("IX1-10: an origin with user info names the same repository", () => {
+  test.each([
+    "https://alice@github.com/example-org/my-app.git",
+    "https://x-access-token:ghs_abcdef1234@github.com/example-org/my-app.git",
+    "ssh://git@github.com/example-org/my-app",
+  ])("%s files, and no call carries the user info", async (origin) => {
+    const { gh, world: w } = world({ origin });
+    expect((await fileIssue(w, REQUEST)).kind).toBe("filed");
+    for (const call of repoCalls(gh)) {
+      expect(repoOf(call.args)).toBe(OWN_REPO);
+    }
+    for (const call of gh.calls) {
+      expect(JSON.stringify(call)).not.toMatch(/alice|x-access-token|ghs_/);
+    }
+  });
+
+  test("a host that only has user info of that name is still not github.com", async () => {
+    const { gh, world: w } = world({
+      origin: "https://github.com@evil.example.com/example-org/my-app",
+    });
+    expect(refusal(await fileIssue(w, REQUEST))).toContain("not on github.com");
+    expect(gh.calls).toEqual([]);
   });
 });

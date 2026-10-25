@@ -25,8 +25,10 @@ created.
 
 It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
 and the project's file as committed on the base), and a public repository needs issues.allowPublic
-too. A title or body that holds a home path, a key or token, or a URL with credentials is refused
-with its line and column, and nothing is sent.
+too. A title or body that holds a home path (in any spelling of it), a key or token of a known
+shape or a value after key, token, secret or password, or a URL with credentials is refused with
+its line and column, and nothing is sent. The screen knows those shapes only: read a text before
+you file it.
 
 issue fixed prints one \`Fixes #<n>\` line for each open issue the kit marked fixed (it carries the
 label issues.fixedLabel) whose fix is in <base>..<head>: the lines a release's pull request body

@@ -318,3 +318,26 @@ describe("marketplaceAccessAdvice", () => {
     expect(marketplaceAccessAdvice("unknown", "example-org/cc-smart-dev-kit")).toBe("");
   });
 });
+
+describe("githubRepoInUrl with user info (IX1-10)", () => {
+  test("user info before the host is skipped, and never returned", () => {
+    expect(githubRepoInUrl("https://alice@github.com/example-org/my-app")).toBe(
+      "example-org/my-app",
+    );
+    expect(
+      githubRepoInUrl("https://x-access-token:ghs_abcdef1234@github.com/example-org/my-app.git"),
+    ).toBe("example-org/my-app");
+    expect(githubRepoInUrl("ssh://deploy@github.com/example-org/my-app.git")).toBe(
+      "example-org/my-app",
+    );
+    expect(githubRepoInUrl("https://user:p@ss@github.com/example-org/my-app.git")).toBe(
+      "example-org/my-app",
+    );
+  });
+
+  test("a different host that names github.com in its user info is null", () => {
+    expect(githubRepoInUrl("https://github.com@evil.example.com/example-org/my-app")).toBeNull();
+    expect(githubRepoInUrl("https://alice@github.example.com/o/r")).toBeNull();
+    expect(githubRepoInUrl("https://alice@github.com/org")).toBeNull();
+  });
+});

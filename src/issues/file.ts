@@ -175,6 +175,18 @@ export function sameAccount(author: unknown, login: string): boolean {
   return typeof author === "string" && author.toLowerCase() === login.toLowerCase();
 }
 
+/** The repository role that cannot apply a label (`viewerPermission`). */
+export const READ_ONLY = "READ";
+
+/**
+ * Why an account with read access only cannot use the kit's issues: GitHub drops the labels of
+ * an issue from an account without push access, so the found label — and with it the dedupe —
+ * would be lost. `named`: the repository. One sentence for `issue file` and `doctor`.
+ */
+export function readOnlyWhy(named: string): string {
+  return `gh has ${READ_ONLY} access only to ${named}, which cannot apply labels, so the kit cannot file its issues there`;
+}
+
 /** What `gh repo view --json` (`REPO_FIELDS`) says, or why it could not be read. */
 export type RepoFacts =
   | { hasIssues: boolean; isPublic: boolean; permission: string | null }
@@ -268,6 +280,8 @@ export function labelsProblem(resolved: ResolvedWorkflow): string | null {
 
 /** The issues that carry `label`, every state, once: number, url and body. */
 type ListedIssue = {
+  /** The login that wrote it, or null when gh named none. */
+  author: string | null;
   body: string;
   closed: boolean;
   number: number;
@@ -286,7 +300,9 @@ function parseListed(out: string, ready: string): Listed {
       if (typeof row.number !== "number" || typeof row.url !== "string") {
         return { why: "gh answered something this command cannot read" };
       }
+      const author = (row.author as { login?: unknown } | null | undefined)?.login;
       issues.push({
+        author: typeof author === "string" ? author : null,
         body: typeof row.body === "string" ? row.body : "",
         closed: typeof row.state === "string" && row.state.toUpperCase() === "CLOSED",
         number: row.number,
@@ -381,6 +397,11 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if (!facts.hasIssues) {
     return refuse(`${repo} has issues turned off; turn them on in the repository's settings first`);
   }
+  // Before any write: GitHub drops labels from an account without push access, and the found
+  // label is how a finding is found again.
+  if (facts.permission === READ_ONLY) {
+    return refuse(`${readOnlyWhy(repo)}; ask for write access to it first`);
+  }
   if (facts.isPublic) {
     const publicOff = publicIssuesOff(policy.resolved, policy.base);
     if (publicOff !== null) return refuse(publicOff);
@@ -397,6 +418,11 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
     return refuse("gh answered something this command cannot read about the labels");
   }
 
+  // Only an issue this account wrote is the kit's: the marker is plain text, so a copy of it
+  // under another login must never be edited (`sameAccount`, as every marker reader does).
+  const account = await kitAccount(read);
+  if ("why" in account) return refuse(account.why);
+
   const hash = fingerprintHash(request.fingerprint);
   // The one big read: up to 1000 bodies, fetched a page at a time, so it gets the write time.
   const listed = await write([
@@ -411,12 +437,14 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
     "--limit",
     String(LIST_LIMIT),
     "--json",
-    "number,url,body,state,labels",
+    "number,url,body,state,labels,author",
   ]);
   if (listed.kind !== "ok") return refuse(ghProblem("listed the issues", listed));
   const all = parseListed(listed.out, policy.resolved.issues.readyLabel.value);
   if ("why" in all) return refuse(all.why);
-  const double = all.issues.find((issue) => hasMarker(issue.body, hash));
+  const double = all.issues.find(
+    (issue) => hasMarker(issue.body, hash) && sameAccount(issue.author, account.login),
+  );
   if (double === undefined && all.issues.length >= LIST_LIMIT) {
     return refuse(
       `${LIST_LIMIT} issues carry the label ${found}, as many as one list returns, so the kit cannot tell whether this finding is filed; close the settled ones first`,

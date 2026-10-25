@@ -15,6 +15,8 @@ export type FakeComment = string | { author: string; body: string };
 /** One issue the fake holds. */
 export interface FakeIssue {
   body: string;
+  /** The login that wrote it (`author` in a list). Default: the fake's own account. */
+  author?: string;
   /** True: the issue is closed (`state: CLOSED` in a list). */
   closed?: boolean;
   /** The comments on it, oldest first. */
@@ -80,8 +82,9 @@ function values(args: readonly string[], flag: string): string[] {
 }
 
 /** One issue as `gh issue list|view --json number,url,body,state,labels,comments` prints it. */
-function listedRow(issue: FakeIssue) {
+function listedRow(issue: FakeIssue, login: string) {
   return {
+    author: { login: issue.author ?? login },
     body: issue.body,
     comments: (issue.comments ?? []).map((one) =>
       typeof one === "string"
@@ -141,8 +144,8 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
           "ok",
           JSON.stringify(
             listed.map((one) => ({
-              ...listedRow(one),
-              comments: listedRow(one).comments.slice(0, 100),
+              ...listedRow(one, options.login ?? FAKE_LOGIN),
+              comments: listedRow(one, options.login ?? FAKE_LOGIN).comments.slice(0, 100),
             })),
           ),
         );
@@ -156,7 +159,7 @@ export function fakeGh(options: FakeGhOptions = {}): FakeGh {
             `GraphQL: Could not resolve to an Issue with the number of ${args[2]}. (repository.issue)`,
           );
         }
-        return result("ok", JSON.stringify(listedRow(issue)));
+        return result("ok", JSON.stringify(listedRow(issue, options.login ?? FAKE_LOGIN)));
       }
       if (group === "issue" && action === "comment") {
         const issue = state.issues.find((one) => String(one.number) === args[2]);
