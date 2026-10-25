@@ -10,6 +10,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   release; it ran for nine. Setup now leaves the file as it is, byte for byte, and moves nothing
   from it. A machine still on 0.5.x updates with `migrate` and `setup`, which this does not
   touch. `cliPaths()` no longer has `portalStateFile`.
+- **The tested Claude Code is now 2.1.310** (it was 2.1.308). CI's validates and the weekly job
+  judge the plugin against that version. Nothing in 2.1.309 or 2.1.310 needed a plugin change:
+  the validates and `doctor --live` pass on it, and the contract rows they prove show 2.1.310.
 
 ## 1.4.0
 
