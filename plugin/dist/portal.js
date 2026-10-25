@@ -29769,6 +29769,7 @@ async function runCliChildText(ctx, args, options) {
     };
   }
 }
+var PAGE_READ_FRESH_MS = 5000;
 function shortCache(freshMs) {
   const kept = new WeakMap;
   return {
@@ -38731,6 +38732,17 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/portal/api/agents-read.ts
+var lists = shortCache(PAGE_READ_FRESH_MS);
+function forgetAgentLists(ctx) {
+  lists.forget(ctx);
+}
+async function readPortalAgentsForPage(ctx, cwd) {
+  const answer = await lists.read(ctx, cwd, async () => {
+    const read = await readPortalAgents(ctx, cwd);
+    return read.crew === null ? { error: read } : { read };
+  });
+  return "error" in answer ? answer.error : answer.read;
+}
 async function readPortalAgents(ctx, cwd) {
   const binary = findClaude({
     home: ctx.paths.home,
@@ -38794,6 +38806,17 @@ var cleanupSchema = object({
     discard: object({ facts: discardSchema.nullable(), error: string2().nullable() })
   }))
 });
+var cleanups = shortCache(PAGE_READ_FRESH_MS);
+function forgetCleanups(ctx) {
+  cleanups.forget(ctx);
+}
+async function readCleanupForPage(ctx, cwd) {
+  const read = await cleanups.read(ctx, cwd, async () => {
+    const answer = await readCleanupOffLoop(ctx, cwd);
+    return answer.error === null ? { answer } : { error: answer.error };
+  });
+  return "error" in read ? { stopped: [], error: read.error } : read.answer;
+}
 async function readCleanupOffLoop(ctx, cwd) {
   const run = await runCliChild(ctx, ["crew", "cleanup", "--json"], { cwd });
   if (run.error !== null)
@@ -39984,6 +40007,14 @@ async function removeFinishedSession(action, body) {
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
 }
 async function runAction(name, body, action) {
+  try {
+    return await runActionByName(name, body, action);
+  } finally {
+    forgetAgentLists(action.portal);
+    forgetCleanups(action.portal);
+  }
+}
+async function runActionByName(name, body, action) {
   switch (name) {
     case "slot.test":
       return testTargets(action, body);
@@ -40460,7 +40491,7 @@ async function workAnswer(deps) {
   } catch (error) {
     note = note ?? `the crew store could not be read: ${reasonOf6(error)}`;
   }
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const finished = readFinishedSessions(paths, { agents: () => agents.sessions, now });
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now, leadGone(leadRecords.find((lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId) ?? null, agents.crew, now)));
@@ -40593,7 +40624,7 @@ async function crewAnswerFor(deps, ref) {
     }
   }
   const reviews = Object.entries(readReviews(reviewsFile(paths.stateDir, repo))).filter(([, entry]) => entry.branches?.includes(record.branch) === true).map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha })).sort((a, b) => b.at.localeCompare(a.at));
-  const agents = await readPortalAgents(deps.action.portal, deps.action.cwd);
+  const agents = await readPortalAgentsForPage(deps.action.portal, deps.action.cwd);
   const lead = listAllLeads(paths.stateDir).records.find((one) => one.repo === record.repo && one.sessionId === record.leadSessionId) ?? null;
   const gone = leadGone(lead, agents.crew, deps.action.portal.now());
   const mergeCheck = await mergeCheckOf(deps, repo, record.branch, record.base?.ref ?? record.baseRef);
@@ -40701,7 +40732,7 @@ async function needsAnswer(deps) {
   }
   const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
   const permissions = "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
-  const cleanup = await readCleanupOffLoop(deps.action.portal, deps.action.cwd);
+  const cleanup = await readCleanupForPage(deps.action.portal, deps.action.cwd);
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {

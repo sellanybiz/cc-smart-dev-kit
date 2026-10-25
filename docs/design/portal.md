@@ -527,6 +527,17 @@ answers. Two trade-offs of those rules: a child that hangs is shared until its t
 alternative — a second full read of every transcript — costs more than the wait), and the flow
 reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
 the next request too.
+**The Needs and Work reads use the same cache** (RX3). The header reads `/api/needs` on every
+`crew`, `state`, `update` and `doctor` event (a 300 ms debounce), and each read ran `crew
+cleanup --json` (about ten git children per stopped record, and a whole-worktree diff for its
+discard facts); `/api/work` and a crew page each started `claude agents --json --all`. Reads
+overlap on a busy machine, so each is now a `shortCache` of 5 s (`PAGE_READ_FRESH_MS`):
+`readCleanupForPage` and `readPortalAgentsForPage`. A failed read (an error, a list that did not
+answer) is shown and not kept. **The removal paths stay uncached**: `crew.rm` and `sessions.rm`
+call `readPortalAgents` and `readCleanupOffLoop` themselves and compare the confirmation token
+with facts they have just read, so a preview kept for a few seconds can never authorize one.
+`runAction` drops both caches when any action ends, so a page that reloads after a click asks
+again.
 **The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
 (20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
 manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
@@ -663,7 +674,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
-Slots page's fallback and breaker), the router restart, `doctor`, a companion's enable, the
+Slots page's fallback and breaker), the Slots page's effort pin (`slot.effort`: asked first, it
+runs `gateway effort <slot> <target> <level>|off`, shows the test request and a refusal in
+place, and is offered only while the slot is Custom), the router restart, `doctor`, a companion's enable, the
 OmniRoute update and rollback, the browser's setup and token, the auto-mode rules' write (with
 the hash of the change shown), and the update check.
 

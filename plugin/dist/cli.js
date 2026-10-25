@@ -58085,6 +58085,7 @@ function projectFiles(root) {
 }
 
 // src/portal/cli-child.ts
+var PAGE_READ_FRESH_MS = 5000;
 function shortCache(freshMs) {
   const kept = new WeakMap;
   return {
@@ -58122,6 +58123,9 @@ function shortCache(freshMs) {
 var FLOW_FRESH_MS = 5000;
 var reports = shortCache(FLOW_FRESH_MS);
 
+// src/portal/api/agents-read.ts
+var lists = shortCache(PAGE_READ_FRESH_MS);
+
 // src/portal/api/cleanup-read.ts
 var discardSchema = object({
   head: string2(),
@@ -58150,6 +58154,7 @@ var cleanupSchema = object({
     discard: object({ facts: discardSchema.nullable(), error: string2().nullable() })
   }))
 });
+var cleanups = shortCache(PAGE_READ_FRESH_MS);
 
 // src/portal/worktrees-read.ts
 var WORKTREES_FRESH_MS = 5000;
