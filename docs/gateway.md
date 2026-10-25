@@ -520,15 +520,12 @@ The words, each one command (`gateway slot <slot> …`):
   in `slots`. Custom brings the chain back with the breaker at its default, on.
 - `gateway status` and `doctor` show each slot as Claude or Custom, and the portal's Overview
   shows a saved chain as "saved, not in use". Each names the command that uses it again.
-- **`gateway setup` moves what the old portal remembered.** Before 0.6.0 the portal kept the
-  opus and fable chains, the judge chain and their switches in its own `portal.json`. `gateway
-  setup` (which already holds the lock, backs `gateway.json` up first, and installs and
-  restarts the router, so the new router and the moved chains arrive together) saves each of
-  those chains as `kept` for a slot that has none in `slots` or `kept`; `gateway.json` wins a
-  clash. A second run moves nothing. The portal keeps no slot state now: its old file loses
-  its slot parts (a backup is made first), and it stays on disk one release so a rollback to
-  0.5.x still finds it. That is the bug B0 fixes at its root — two homes that disagreed, and a
-  slot change that sometimes did not save.
+- **The portal keeps no slot state of its own.** Up to 1.0.1 it kept the opus and fable
+  chains, the judge chain and their switches in its own `portal.json`. 1.1.0 moved them into
+  `gateway.json` at `gateway setup`, so no chain has a second home to disagree with. From 1.4.1
+  `gateway setup` no longer reads that file, or changes it. A machine that updates from 1.0.x
+  or older straight to 1.4.1 keeps those chains only in the old file: set each one again with
+  `gateway slot <slot> <targets>` (`migrate` moves only the old `anymodel` names).
 
 ## A backend target's effort pin (D64)
 
@@ -1731,10 +1728,9 @@ open), the router binds the config's port itself, as before.
    config an older version wrote, it drops 0.4.x's hidden Claude step: a scout or worker
    chain that still equals 0.4.x's exact default (`omniroute:ollama-cloud/deepseek-v4.1-flash`
    → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5`) loses its last target,
-   with one line saying so (`upgradeConfig`). A chain the person changed stays as it is;
-   and it moves what a 0.5.x `portal.json` remembered into `kept`, then takes the slot parts
-   out of that file (§ Slot modes: Claude or Custom). Both files are backed up first, under
-   the state lock, and the moved chains arrive with the new router copy that reads them;
+   with one line saying so (`upgradeConfig`). A chain the person changed stays as it is. The
+   config is backed up first, under the state lock. The old portal's `portal.json` is no longer
+   read or changed (from 1.4.1);
 6. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
 7. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket

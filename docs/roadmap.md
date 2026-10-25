@@ -434,3 +434,53 @@ shared view: [jobs.md](jobs.md).
 
 Each adopting project removes its own old copies of the pieces the plugin now ships,
 one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
+
+## Open, not yet planned
+
+- **`doctor`: a project hook that extends a kit hook.** Today `doctor`
+  (`src/cli/project-checks.ts`) warns "both answer" whenever a project wires its own hook on
+  the same event and matcher as a kit hook, and advises listing the hook in `ownHooks`. For a
+  project hook that keeps rules only that project has, and whose old copy of the kit's part
+  already goes quiet where the kit answers, that advice is wrong: it silences the kit's hook
+  and wakes the project's old copy. A project should be able to mark such a hook as an
+  extension, so `doctor` neither warns nor gives that advice.
+- **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
+  finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
+  for a removal by hand. Reading mount points there is a design decision.
+- **One quiet-facts helper for the crew tests.** Three copies give a test fixed machine facts
+  today (`QUIET_MACHINE` in `src/crew/end.test.ts`, `quietFacts`, `quietScan`); one helper in
+  `src/testing/`, and a default `scanFacts` in `crew-world.ts`'s `ctx`, would keep every crew
+  test off the host's own facts.
+- **The launch judge and a wait loop that matches itself.** It let through
+  `until ! pgrep -f "bun run check"; do sleep 3; done`, whose `pgrep -f` pattern matches the
+  loop's own command line, so it never ends.
+- **The router's stream limits (SC1).** Nothing bounds the wait before a response's headers,
+  keep-alive pings are never cut, and the 120 s allowed for Anthropic is not measured.
+- **The merge guard's shell reader.** It does not test an endpoint or a method the shell fills
+  in for a pull request, and it does not follow `cat <<EOF | sh` or `eval "$cmd"`.
+- **GitHub Issues (1.4.0) limits.** `visibleText` leaves attribute values, link titles and alt
+  text unmarked (a person sees them on hover); the feed judges a lead alive by its pid on this
+  machine; the portal's settings writer has no protected-key check of its own (it relies on the
+  portal's door); `issue file` needs `gh api user` to succeed (an App token may get 403); the
+  `GH_COMMANDS` list must follow gh's own commands, or a crew session is denied a new one; the
+  `## What <phase> left behind` heading is written in `src/crew/start.ts` and matched by a
+  pattern of its own in `src/issues/phase-issues.ts`: two homes for one shape.
+- **`resolveSwitch` and the base's name.** It takes the base branch's name from the working
+  copy, as the merge guard does.
+- **`claudeLimitHolds` (`src/crew/wait.ts`) compares exact Claude model ids.** Check whether a
+  variant of one model's id should count as the same model.
+- **A merge-guard test left its fake `gh` running.** In one full run on a loaded machine (load
+  average about 30), "a gh call that hangs" (`src/hooks/merge-guard.test.ts`) passed but left its
+  fake `gh` alive with its parent gone. The fake's `read x < /dev/zero` spins, so it ran 12
+  minutes at 75% CPU until it was stopped by hand. It did not ignore SIGTERM, so no SIGTERM
+  reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
+  stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
+  person's machine.
+- **Plugin monitors with telemetry off.** Claude Code 2.1.310's changelog says a plugin's
+  monitors now run with telemetry off too. The kit still assumes they do not:
+  `monitorsRunHere` (`src/crew/telemetry.ts`), the `crew watch --once` fallback
+  (`src/crew/watch.ts`), the lead skill, `docs/design/crew.md` and the contract's monitors row.
+  Prove it in a throwaway session, then let the kit follow (a plugin change: a version bump).
+  Until then a lead with telemetry off keeps polling with `--once`, which works either way.
+- **Windows on Claude Code 2.1.310, by a person.** `doctor --live` on a Windows machine, and a
+  `PreToolUse` hook that still blocks with Git Bash absent (`docs/windows-setup.md`).

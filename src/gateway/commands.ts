@@ -136,7 +136,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   type BackendEffort,
   FAMILY_SLOTS,
-  isModelSlot,
   JUDGE_SLOT,
   parseTarget,
   slotKeyFromArg,
@@ -832,157 +831,26 @@ export function withoutRetiredDefaultClaude(config: GatewayConfig): {
 }
 
 /**
- * What the portal of 0.5.x and before remembered in its own file (`portal.json`): the opus
- * and fable chains (`fallback`, by slot key; a version stored them by family name), the judge
- * chain, and the fallback switch each had. Read only by `gateway setup`, once per machine, to
- * move those chains into the config (`withPortalChains`); the portal keeps no slot state now.
- * The file stays on disk one release, so a rollback to 0.5.x still finds it.
- */
-const portalMemorySchema = z.looseObject({
-  fallback: z.record(z.string(), z.array(z.string())).optional(),
-  judge: z.array(z.string()).optional(),
-  switches: z.record(z.string(), z.boolean()).optional(),
-  version: z.literal(1),
-});
-
-/**
- * The chains a 0.5.x `portal.json` remembered, by slot key, each with the fallback switch it
- * had when that differs from the slot's default. A chain is left out when it is empty or a
- * target does not parse. A file that is not one the portal wrote reads as none: nothing to
- * move.
- */
-export function portalChains(text: string): Record<string, KeptChain> {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    // Not JSON: not a file the portal wrote, so there is nothing in it to move.
-    return {};
-  }
-  const parsed = portalMemorySchema.safeParse(raw);
-  if (!parsed.success) return {};
-  const memory = parsed.data;
-  const found: Record<string, string[]> = {};
-  for (const [name, targets] of Object.entries(memory.fallback ?? {})) {
-    const key = slotKeyFromArg(name);
-    if (key !== null && isModelSlot(key)) found[key] = targets;
-  }
-  if (memory.judge !== undefined) found[JUDGE_SLOT] = memory.judge;
-  const chains: Record<string, KeptChain> = {};
-  for (const [key, targets] of Object.entries(found)) {
-    // A `claude-…` target is fine anywhere now, the judge included (D44: a judge chain may
-    // hold one, used as it is). Only a target that does not parse is left out.
-    const usable =
-      targets.length > 0 &&
-      targets.every((text) => {
-        const target = parseTarget(text);
-        return "target" in target;
-      });
-    if (!usable) continue;
-    const switches = memory.switches ?? {};
-    const on = Object.hasOwn(switches, key) ? switches[key] : undefined;
-    chains[key] = {
-      targets: [...targets],
-      ...(on === undefined || on === fallbackOn({}, key) ? {} : { fallback: on }),
-    };
-  }
-  return chains;
-}
-
-/**
- * The config with each chain the portal remembered saved as `kept`, for a slot that has no
- * chain in `slots` and none in `kept`: the config wins on a clash. `moved` names each slot it
- * filled; a second run moves nothing.
- */
-export function withPortalChains(
-  config: GatewayConfig,
-  remembered: Readonly<Record<string, KeptChain>>,
-): { config: GatewayConfig; moved: string[] } {
-  let next = config;
-  const moved: string[] = [];
-  for (const [key, chain] of Object.entries(remembered).sort(([a], [b]) => (a < b ? -1 : 1))) {
-    if (Object.hasOwn(next.slots, key) || keptChain(next, key) !== null) continue;
-    next = withKept(next, key, chain);
-    moved.push(key);
-  }
-  return { config: next, moved };
-}
-
-/** The text of the portal's old memory file, or null when there is none to read. */
-function portalMemoryText(path: string | undefined): null | string {
-  if (path === undefined || !existsSync(path)) return null;
-  return readFileSync(path, "utf8");
-}
-
-/** The fields of the portal's old memory that held slot state: its one home before B0. */
-const PORTAL_SLOT_FIELDS = ["fallback", "judge", "switches"] as const;
-
-/**
- * The portal's old memory with its slot parts gone: `{"version": 1}`, and any field this
- * version does not know (kept, as everywhere). Null when the text is not a JSON object, or
- * already holds no slot part. After the migration no file holds a chain but `gateway.json`
- * (`slots` in use, `kept` saved), which is the bug this fixes at its root: two homes that
- * disagreed, and a slot change that sometimes did not save.
- */
-export function withoutPortalSlots(text: string): null | string {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
-  const body = raw as Record<string, unknown>;
-  if (!PORTAL_SLOT_FIELDS.some((field) => Object.hasOwn(body, field))) return null;
-  const rest = Object.fromEntries(
-    Object.entries(body).filter(
-      ([key]) => !(PORTAL_SLOT_FIELDS as readonly string[]).includes(key),
-    ),
-  );
-  return `${JSON.stringify(rest, null, 2)}\n`;
-}
-
-/**
  * `gateway setup`'s step for a config an older version wrote, saved only when something
  * changed, one line per slot it changed (none when nothing did):
- *   - 0.4.x's hidden Claude step goes (`withoutRetiredDefaultClaude`);
- *   - each chain 0.5.x's portal remembered in its own file (`portalStateFile`) is saved in
- *     the config as a chain not in use (`withPortalChains`), so `gateway slot <slot> custom`
- *     and the portal find it in the one place every command reads;
- *   - the portal's old file then loses its slot parts (`withoutPortalSlots`), so no chain has
- *     a second home to disagree with. The file itself stays one release, for a rollback.
+ *   - 0.4.x's hidden Claude step goes (`withoutRetiredDefaultClaude`).
+ * It reads no other file: the old portal's `portal.json` (1.0.1 and older) is no longer read, and stays as it is.
  * With `stateDir`, a file this step changes is backed up first (`backupFile`).
  */
 export function upgradeConfig(
   configPath: string,
-  options: { dryRun?: boolean; portalStateFile?: string; stateDir?: string } = {},
+  options: { dryRun?: boolean; stateDir?: string } = {},
 ): string[] {
   if (!existsSync(configPath)) return [];
-  const { config: trimmed, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
-  const memory = portalMemoryText(options.portalStateFile);
-  const { config, moved } = withPortalChains(trimmed, memory === null ? {} : portalChains(memory));
-  const stripped = memory === null ? null : withoutPortalSlots(memory);
-  if (options.dryRun !== true) {
-    if (dropped.length + moved.length > 0) {
-      if (options.stateDir !== undefined) backupFile(options.stateDir, configPath);
-      saveConfig(configPath, config);
-    }
-    if (stripped !== null && options.portalStateFile !== undefined) {
-      // Backed up too: a rollback can put the old file back by hand.
-      if (options.stateDir !== undefined) {
-        backupFile(options.stateDir, options.portalStateFile);
-      }
-      atomicWrite(options.portalStateFile, stripped, 0o600);
-    }
+  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  if (options.dryRun !== true && dropped.length > 0) {
+    if (options.stateDir !== undefined) backupFile(options.stateDir, configPath);
+    saveConfig(configPath, config);
   }
   return [
     ...dropped.map(
       (slot) =>
         `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`,
-    ),
-    ...moved.map(
-      (slot) =>
-        `~ ${slot}: the chain the portal remembered (${keptChain(config, slot)?.targets.join(" → ")}) is saved in the gateway config, not in use; to use it: ${COMMAND} gateway slot ${slotName(slot)} custom`,
     ),
   ];
 }
@@ -2271,7 +2139,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   });
   // The two steps for a machine an older version set up, read-only first: a config or a
   // settings file that cannot be read stops the setup here, before anything is written.
-  upgradeConfig(configPath, { dryRun: true, portalStateFile: paths.portalStateFile });
+  upgradeConfig(configPath, { dryRun: true });
   retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   // The port question comes before the backend is called at all: a port another program holds
   // refuses the setup, and no key is made or checked for nothing.
@@ -2309,12 +2177,8 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
         });
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
         const keyBackedUp = key !== null && backupCount(backups) > backupsBefore;
-        // Under the lock, with the backup: the chains the old portal remembered move into the
-        // config here, together with the router copy that reads them (a second run moves none).
-        const upgraded = upgradeConfig(configPath, {
-          portalStateFile: paths.portalStateFile,
-          stateDir: paths.stateDir,
-        });
+        // Under the lock, with the backup: a config an older version wrote is brought up to date.
+        const upgraded = upgradeConfig(configPath, { stateDir: paths.stateDir });
         for (const line of upgraded) ctx.print(line);
         if (upgraded.length > 0) {
           ctx.print(

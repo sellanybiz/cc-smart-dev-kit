@@ -1,5 +1,5 @@
 {
-  "requires": ">=0.5.2",
+  "requires": ">=1.0",
   "worktrees": {
     "base": "main",
     "guardMainFolder": false,

@@ -3,6 +3,22 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.4.1
+
+- **`gateway setup` no longer reads the old portal's `portal.json`.** Up to 1.0.1 the portal
+  kept the opus and fable chains, the judge chain and their fallback switches in that file.
+  1.1.0 moved them into `gateway.json`: `gateway setup` saved them in `kept` and took them out
+  of `portal.json`, and it kept that read in six releases (1.1.0, 1.1.1, 1.1.2, 1.2.0, 1.3.0
+  and 1.4.0). Setup now leaves the file as it is, byte for byte, and moves nothing from it.
+  `cliPaths()` no longer has `portalStateFile`. A machine that updates from 1.0.x or older
+  straight to 1.4.1 keeps those chains only in `portal.json`, which nothing reads now (`migrate`
+  does not move it): set each chain again with `cc-smart-dev-kit gateway slot <slot> <target>[,…]`.
+- **The tested Claude Code is now 2.1.310** (it was 2.1.308). CI's validates and the weekly job
+  run their validates on that version, and the weekly job compares the newest release with it.
+  The validates and `doctor --live` pass on 2.1.310, and the contract rows they prove show it.
+  Not yet proved: 2.1.310 says plugin monitors now run with telemetry off too; the kit still
+  assumes they do not (the lead's watch falls back to polling, so nothing breaks).
+
 ## 1.4.0
 
 GitHub Issues, opt-in: the kit can file its follow-ups and findings as issues in your project's

@@ -52,7 +52,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.4.0",
+  version: "1.4.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1376,7 +1376,6 @@ function cliPaths(env = process.env) {
     routerTaskFile: join7(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join7(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join7(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
-    portalStateFile: join7(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     portalProjectsFile: join7(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join7(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join7(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
@@ -37122,104 +37121,17 @@ function withoutRetiredDefaultClaude(config) {
     slots[slot] = RETIRED_DEFAULT_CHAIN.slice(0, -1);
   return { config: { ...config, slots }, dropped };
 }
-var portalMemorySchema = looseObject({
-  fallback: record(string2(), array(string2())).optional(),
-  judge: array(string2()).optional(),
-  switches: record(string2(), boolean2()).optional(),
-  version: literal(1)
-});
-function portalChains(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return {};
-  }
-  const parsed = portalMemorySchema.safeParse(raw);
-  if (!parsed.success)
-    return {};
-  const memory = parsed.data;
-  const found = {};
-  for (const [name, targets] of Object.entries(memory.fallback ?? {})) {
-    const key = slotKeyFromArg(name);
-    if (key !== null && isModelSlot(key))
-      found[key] = targets;
-  }
-  if (memory.judge !== undefined)
-    found[JUDGE_SLOT] = memory.judge;
-  const chains = {};
-  for (const [key, targets] of Object.entries(found)) {
-    const usable = targets.length > 0 && targets.every((text) => {
-      const target = parseTarget(text);
-      return "target" in target;
-    });
-    if (!usable)
-      continue;
-    const switches = memory.switches ?? {};
-    const on = Object.hasOwn(switches, key) ? switches[key] : undefined;
-    chains[key] = {
-      targets: [...targets],
-      ...on === undefined || on === fallbackOn({}, key) ? {} : { fallback: on }
-    };
-  }
-  return chains;
-}
-function withPortalChains(config, remembered) {
-  let next = config;
-  const moved = [];
-  for (const [key, chain] of Object.entries(remembered).sort(([a], [b]) => a < b ? -1 : 1)) {
-    if (Object.hasOwn(next.slots, key) || keptChain(next, key) !== null)
-      continue;
-    next = withKept(next, key, chain);
-    moved.push(key);
-  }
-  return { config: next, moved };
-}
-function portalMemoryText(path) {
-  if (path === undefined || !existsSync46(path))
-    return null;
-  return readFileSync54(path, "utf8");
-}
-var PORTAL_SLOT_FIELDS = ["fallback", "judge", "switches"];
-function withoutPortalSlots(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return null;
-  const body = raw;
-  if (!PORTAL_SLOT_FIELDS.some((field) => Object.hasOwn(body, field)))
-    return null;
-  const rest = Object.fromEntries(Object.entries(body).filter(([key]) => !PORTAL_SLOT_FIELDS.includes(key)));
-  return `${JSON.stringify(rest, null, 2)}
-`;
-}
 function upgradeConfig(configPath, options = {}) {
   if (!existsSync46(configPath))
     return [];
-  const { config: trimmed, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
-  const memory = portalMemoryText(options.portalStateFile);
-  const { config, moved } = withPortalChains(trimmed, memory === null ? {} : portalChains(memory));
-  const stripped = memory === null ? null : withoutPortalSlots(memory);
-  if (options.dryRun !== true) {
-    if (dropped.length + moved.length > 0) {
-      if (options.stateDir !== undefined)
-        backupFile(options.stateDir, configPath);
-      saveConfig(configPath, config);
-    }
-    if (stripped !== null && options.portalStateFile !== undefined) {
-      if (options.stateDir !== undefined) {
-        backupFile(options.stateDir, options.portalStateFile);
-      }
-      atomicWrite(options.portalStateFile, stripped, 384);
-    }
+  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  if (options.dryRun !== true && dropped.length > 0) {
+    if (options.stateDir !== undefined)
+      backupFile(options.stateDir, configPath);
+    saveConfig(configPath, config);
   }
   return [
-    ...dropped.map((slot) => `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`),
-    ...moved.map((slot) => `~ ${slot}: the chain the portal remembered (${keptChain(config, slot)?.targets.join(" \u2192 ")}) is saved in the gateway config, not in use; to use it: ${COMMAND} gateway slot ${slotName(slot)} custom`)
+    ...dropped.map((slot) => `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`)
   ];
 }
 function checkedPlan(plan, config) {
@@ -38093,7 +38005,7 @@ async function commandSetup(ctx, args) {
     allowNone: options.noKey || password !== null,
     dryRun: true
   });
-  upgradeConfig(configPath, { dryRun: true, portalStateFile: paths.portalStateFile });
+  upgradeConfig(configPath, { dryRun: true });
   retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
@@ -38117,10 +38029,7 @@ async function commandSetup(ctx, args) {
       });
       ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
       const keyBackedUp = key !== null && backupCount(backups) > backupsBefore;
-      const upgraded = upgradeConfig(configPath, {
-        portalStateFile: paths.portalStateFile,
-        stateDir: paths.stateDir
-      });
+      const upgraded = upgradeConfig(configPath, { stateDir: paths.stateDir });
       for (const line of upgraded)
         ctx.print(line);
       if (upgraded.length > 0) {

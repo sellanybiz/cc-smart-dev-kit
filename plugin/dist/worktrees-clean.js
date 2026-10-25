@@ -95,7 +95,6 @@ function cliPaths(env = process.env) {
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
-    portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
@@ -924,7 +923,7 @@ import { join as join24 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.4.0",
+  version: "1.4.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

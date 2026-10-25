@@ -38,7 +38,6 @@ import {
   type NewCrew,
   readCrew,
 } from "../crew/store";
-import { upgradeConfig } from "../gateway/commands";
 import { DEFAULT_ANTHROPIC_BASE_URL, loadConfigFile, saveConfig } from "../gateway/config";
 import { createHistoryWriter, type HistoryRow } from "../gateway/history";
 import { askLogFile } from "../hooks/ask-log";
@@ -2436,7 +2435,7 @@ describe("the actions", () => {
 
   // The owner's bug, 2026-10-22: a slot change made here sometimes did not save. A chain had
   // two homes — `portal.json`'s remembered chains and switches, and `gateway.json` — and the
-  // two could disagree. These four tests would have caught it, and hold the one home in place.
+  // two could disagree. These tests would have caught it, and hold the one home in place.
   test("owner bug: a slot saved through the portal is in gateway.json, and a fresh read shows it", async () => {
     const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
     const world = await open({ backendPort: backend.port });
@@ -2462,7 +2461,7 @@ describe("the actions", () => {
       ]);
       expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": true });
       // The portal keeps no copy of its own: no `portal.json` was made.
-      expect(existsSync(world.paths.portalStateFile)).toBe(false);
+      expect(existsSync(join(world.paths.stateDir, "portal.json"))).toBe(false);
       // And the page shows that chain next.
       const slots = await world.call("/slots");
       expect(slots.body).toContain(
@@ -2518,9 +2517,10 @@ describe("the actions", () => {
     const world = await open({ backendPort: backend.port });
     try {
       // The old portal's memory, with a stale chain for the worker: it must change nothing.
-      mkdirSync(dirname(world.paths.portalStateFile), { recursive: true });
+      const oldMemory = join(world.paths.stateDir, "portal.json");
+      mkdirSync(dirname(oldMemory), { recursive: true });
       writeFileSync(
-        world.paths.portalStateFile,
+        oldMemory,
         JSON.stringify({
           fallback: { "cc-smart-dev-kit-worker": ["omniroute:stale-model"] },
           judge: [],
@@ -2538,48 +2538,13 @@ describe("the actions", () => {
       expect(slots.body).toContain("&quot;worker&quot;:[&quot;omniroute:glm-5.3-flash&quot;]");
       expect(slots.body).not.toContain("omniroute:stale-model");
       // An action on another slot leaves it alone, and never writes the old memory.
-      const before = readFileSync(world.paths.portalStateFile, "utf8");
+      const before = readFileSync(oldMemory, "utf8");
       const switched = await world.post("switch", { name: "models", on: false }, csrf);
       expect(JSON.parse(switched.body).ok).toBe(true);
       expect(
         loadConfigFile(world.paths.gatewayConfigFile).slots["cc-smart-dev-kit-worker"],
       ).toEqual(["omniroute:glm-5.3-flash"]);
-      expect(readFileSync(world.paths.portalStateFile, "utf8")).toBe(before);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("owner bug: after the migration, portal.json holds no slot parts and nothing reads them", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
-    try {
-      // The 0.5.x portal memory, and `gateway setup`'s migration step on these paths.
-      mkdirSync(dirname(world.paths.portalStateFile), { recursive: true });
-      writeFileSync(
-        world.paths.portalStateFile,
-        JSON.stringify({
-          fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
-          judge: [],
-          switches: { "cc-smart-dev-kit-opus": true },
-          version: 1,
-        }),
-      );
-      const lines = upgradeConfig(world.paths.gatewayConfigFile, {
-        portalStateFile: world.paths.portalStateFile,
-        stateDir: world.paths.stateDir,
-      });
-      expect(lines).toHaveLength(1);
-      // The file stays, with no slot part in it.
-      expect(JSON.parse(readFileSync(world.paths.portalStateFile, "utf8"))).toEqual({ version: 1 });
-      // The chain is in gateway.json, saved and not in use.
-      expect(loadConfigFile(world.paths.gatewayConfigFile).kept).toEqual({
-        "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
-      });
-      // Nothing reads the old file: the Overview shows the chain from the config, saved.
-      const overview = await world.call("/");
-      expect(overview.body).toContain("saved, not in use: omniroute:glm-5.3-flash");
+      expect(readFileSync(oldMemory, "utf8")).toBe(before);
     } finally {
       world.portal.stop();
       backend.stop();

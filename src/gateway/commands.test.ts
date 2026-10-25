@@ -28,11 +28,8 @@ import {
   planBreakerChange,
   planFallbackChange,
   planSlotChange,
-  portalChains,
   upgradeConfig,
-  withoutPortalSlots,
   withoutRetiredDefaultClaude,
-  withPortalChains,
 } from "./commands";
 import {
   DEFAULT_ANTHROPIC_BASE_URL,
@@ -1701,109 +1698,6 @@ describe("slot modes: one home for every chain (B0)", () => {
     expect(on.config.kept).toEqual({
       [WORKER]: { fallback: true, targets: ["claude-sonnet-5-5"] },
     });
-  });
-
-  it("the migration: portal.json chains move into kept, and gateway.json wins a clash", () => {
-    const memory = JSON.stringify({
-      fallback: {
-        "cc-smart-dev-kit-fable": ["omniroute:deepseek-v4.1-flash"],
-        "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"],
-      },
-      judge: ["omniroute:deepseek-v4.1-flash"],
-      switches: { "cc-smart-dev-kit-fable": false, "cc-smart-dev-kit-opus": true },
-      version: 1,
-    });
-    expect(portalChains(memory)).toEqual({
-      "cc-smart-dev-kit-fable": { targets: ["omniroute:deepseek-v4.1-flash"] },
-      "cc-smart-dev-kit-judge": { targets: ["omniroute:deepseek-v4.1-flash"] },
-      "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
-    });
-    // A file that is not one the portal wrote reads as no chain to move.
-    expect(portalChains("{not json")).toEqual({});
-    expect(portalChains(JSON.stringify({ version: 2 }))).toEqual({});
-
-    const cfg = config();
-    const moved = withPortalChains(cfg, portalChains(memory));
-    expect(moved.moved).toEqual([
-      "cc-smart-dev-kit-fable",
-      "cc-smart-dev-kit-judge",
-      "cc-smart-dev-kit-opus",
-    ]);
-    expect(moved.config.kept).toEqual({
-      "cc-smart-dev-kit-fable": { targets: ["omniroute:deepseek-v4.1-flash"] },
-      "cc-smart-dev-kit-judge": { targets: ["omniroute:deepseek-v4.1-flash"] },
-      "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
-    });
-    // The worker has a chain in `gateway.json`: it wins over anything the portal remembered.
-    const clash: GatewayConfig = {
-      ...cfg,
-      kept: { [WORKER]: { targets: ["claude-sonnet-5-5"] } },
-    };
-    const withClash = withPortalChains(clash, {
-      [WORKER]: { targets: ["omniroute:glm-5.3-flash"] },
-      "cc-smart-dev-kit-opus": { targets: ["omniroute:glm-5.3-flash"] },
-    });
-    expect(withClash.moved).toEqual(["cc-smart-dev-kit-opus"]);
-    expect(withClash.config.kept?.[WORKER]).toEqual({ targets: ["claude-sonnet-5-5"] });
-    // Run twice: the second run moves nothing.
-    expect(withPortalChains(moved.config, portalChains(memory)).moved).toEqual([]);
-  });
-
-  it("upgradeConfig moves the chains, backs both files up, and the second run changes nothing", () => {
-    const dir = tempDir();
-    const configPath = join(dir, "gateway.json");
-    saveConfig(configPath, config());
-    const portalStateFile = join(dir, "portal.json");
-    writeFileSync(
-      portalStateFile,
-      JSON.stringify({
-        fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
-        futureField: "kept",
-        judge: [],
-        switches: {},
-        version: 1,
-      }),
-    );
-    const stateDir = join(dir, "state");
-    const lines = upgradeConfig(configPath, { portalStateFile, stateDir });
-    expect(lines).toEqual([
-      "~ cc-smart-dev-kit-opus: the chain the portal remembered (omniroute:glm-5.3-flash) is saved in the gateway config, not in use; to use it: cc-smart-dev-kit gateway slot opus custom",
-    ]);
-    expect(loadConfigFile(configPath).kept).toEqual({
-      "cc-smart-dev-kit-opus": { targets: ["omniroute:glm-5.3-flash"] },
-    });
-    // The portal's old file loses its slot parts, and keeps everything this version does not
-    // know; nothing has a second home to disagree with.
-    expect(JSON.parse(readFileSync(portalStateFile, "utf8"))).toEqual({
-      futureField: "kept",
-      version: 1,
-    });
-    // A backup of each file as it was, from the one backup helper.
-    expect(listBackups(stateDir, configPath).length).toBe(1);
-    expect(listBackups(stateDir, portalStateFile).length).toBe(1);
-    // A dry run after the move: nothing to move, nothing written.
-    expect(upgradeConfig(configPath, { dryRun: true, portalStateFile, stateDir })).toEqual([]);
-    expect(listBackups(stateDir, configPath).length).toBe(1);
-    expect(listBackups(stateDir, portalStateFile).length).toBe(1);
-  });
-
-  it("withoutPortalSlots: only a JSON object with slot parts changes, and only those parts go", () => {
-    expect(withoutPortalSlots("{not json")).toBeNull();
-    expect(withoutPortalSlots("[]")).toBeNull();
-    expect(withoutPortalSlots(JSON.stringify({ futureField: 1, version: 1 }))).toBeNull();
-    expect(
-      JSON.parse(
-        withoutPortalSlots(
-          JSON.stringify({
-            fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
-            futureField: "kept",
-            judge: ["omniroute:glm-5.3-flash"],
-            switches: { "cc-smart-dev-kit-opus": true },
-            version: 1,
-          }),
-        ) ?? "",
-      ),
-    ).toEqual({ futureField: "kept", version: 1 });
   });
 });
 

@@ -2,7 +2,7 @@
 
 **Summary.** Three releases finish everything that is open. **1.0.0** merges main into the paused audit release, deletes the old worktree engine (its fields are rejected, and a major version waits for the person), finishes the safety track, makes a review count for its fix commits, closes the agent guard's holes, switches claude-mem's start blocks off, and adds **lead + worker sessions**: a small lead that starts background workers, never waits, and hears from them as they finish. **1.1.0**, built by those workers, rebuilds the portal (live, with a Work view of every session and worker), trims the instructions, adds the auditor and builder agents and an audit workflow. **1.2.0** turns the gateway on or off, and picks its models, per project and per session.
 
-**Status:** In progress (approved by the owner 2026-10-21; wave 0 started)
+**Status:** Done on 2026-10-25 (approved by the owner 2026-10-21). 1.0.0 to 1.4.1 shipped; the open follow-ups moved to `docs/roadmap.md` § Open, not yet planned.
 
 **Briefs:** `.claude/plans/2026-10-21-master-plan/briefs/`, each named `<PHASE>-<slug>.md` after its crew branch (the owner, 2026-10-25; moved from the flat `.claude/plans/briefs/`). `briefs/<file>` below means that folder.
 
@@ -838,6 +838,26 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   PR #25, green. Both merges wait for the owner. Then the update on this machine (release skill
   § 5, plus `gateway setup` for 1.3.0's router), the live proofs in both PR bodies, and the
   plan's last stage.
+- 2026-10-25 (late night): **PR #25 and #26 merged** (the owner); this machine runs 1.4.0. All 20
+  `release-*` branches on origin deleted (the owner's yes; the last four held only plan commits).
+  **1.4.1 = the last stage:** CL9 (sonnet `high`) drops B0's `portal.json` read and raises this
+  repo's `requires`; then the lead bumps, archives this plan, checks the docs, opens the PR. **An
+  application repo's 9 doctor "both answer" warnings** are no double answer at run time: its own
+  hooks go quiet where the kit answers, and they also hold rules only it has. The owner chose: that
+  repo trims its dead copies in its own session (with `deleteBranch` and `clearWorktreeAfterMerge`
+  on), and **the kit gets a follow-up, outside 1.4.1:** a way to mark a project hook as an
+  extension of a kit hook, so doctor neither warns nor advises `ownHooks` (that advice would silence
+  the kit's hook and wake the project's old copy; `src/cli/project-checks.ts` matches event and
+  matcher only). Issues are off here, so it is kept in this line and moves to the roadmap when
+  this plan is archived.
+- 2026-10-25 (close): **1.4.1, the last stage.** CL9 merged (`1876265`): `gateway setup` no longer
+  reads the old portal's `portal.json`. The lead raised this repo's `requires` to `>=1.0` (a crew
+  session may not write the project file) and bumped to 1.4.1 (`router.js` unchanged). A builder
+  fixed the release history CL9 and its brief got wrong: 1.1.0 moved the chains, not 0.6.0, and the
+  read ran in six releases. The leftover worktree `rel-1.2.1` and four merged local release
+  branches removed. **CU1 started** (sonnet `high`): the tested Claude Code from 2.1.308 to
+  2.1.310. The open follow-ups moved to `docs/roadmap.md` § Open, not yet planned; this plan is
+  archived.
 
 ### For the owner in the morning
 
