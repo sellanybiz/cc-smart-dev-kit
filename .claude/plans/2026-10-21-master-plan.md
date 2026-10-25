@@ -748,6 +748,26 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   `cc-smart-dev-kit issue fixed --base main --head <release branch>` and paste its `Fixes #<n>`
   lines into the body (exit 1: say so under "Still owed"). After GI3: `phaseIssues` may read
   `record.issue.number` typed (GI2 reads it by shape today).
+- 2026-10-25 (late afternoon): **Numbers moved** (the owner): the planned 1.2.1 ships as **1.3.0**
+  (it adds commands, hooks and fields) and GitHub Issues as **1.4.0**; the branches keep their
+  names (`7672a7a` on `release-1.3.0`: `WORKFLOW_ISSUES_SINCE`, the CHANGELOG heading, the docs, the
+  GI3/GI4 briefs). **1.3.0 committed** on `release-1.2.1`: `0dd587c`, a gap the lead found — the
+  `requires` floor missed `crew.handoffTokens` (1.2.0), `loadPerCore`, `archiveDays` and every
+  `ownHooks` name after `ownHooks` itself (`tier-view`); a builder (sonnet `high`) completed the two
+  tables from git and added a drift test (`src/project/config.test.ts`) — and `01e1748`, the version,
+  the CHANGELOG (the EF2, CL2 and D62 lines moved out of 1.2.0, which had shipped without them) and
+  the bundles. Both validates, `check:portal` (82 portal tests) green. **The split review runs**
+  (four tracks, opus `xhigh`, the owner's choice). **GI1's follow-up merged** (`f28dac7`: the shell
+  reader knows `find -exec`, `watch`, `su -c`, `parallel`; `classify.ts` never routes a runner's line)
+  and **GI3 merged** (`884726f`, lint fix `a0913e7`); full check on `release-1.3.0` 7,814 pass, 0
+  fail. GI1's record and its two copies removed. **Cleaned at the owner's ask:** the `rel-1.1.3`
+  worktree (all of it in `release-1.3.0`; branch kept), and the three old builder worktrees
+  C2, B6a and UI-1 — a scout found each held one WIP commit nowhere else, replaced by later work
+  (B6a by the Next.js portal, D49; UI-1's unused `sonner` the only thing missing) — removed with
+  their branches, each WIP commit kept as a local tag (`wip/C2`, `wip/B6a`, `wip/UI-1`). **When
+  `release-1.2.1` merges into `release-1.3.0` next:** `config.test.ts`'s lists need `workflow.issues`
+  and its keys at 1.4.0, and the test's "not above VERSION" check needs `release-1.3.0`'s
+  `plugin.json` at 1.4.0 — bump it in that merge.
 
 ### For the owner in the morning
 
