@@ -421,3 +421,125 @@ describe("crew start --continue", () => {
     expect(third?.branch).toBe("crew/B6b-portal-live-3");
   });
 });
+
+describe("NM1: a name means the record that is live, and the number counts real hand-offs", () => {
+  /** `count` records of the handed-off one's name that were removed before they ever started. */
+  async function removedBefore(world: Awaited<ReturnType<typeof handoffWorld>>, count: number) {
+    const [old] = listCrew(world.paths.stateDir, world.repo).records;
+    for (let i = 0; i < count; i++) {
+      await createCrew(
+        world.paths.stateDir,
+        {
+          ...(old as CrewRecord),
+          base: null,
+          id: `B6b-portal-live-00000${String(i)}`,
+          sessionId: null,
+          shortId: null,
+          startedAt: null,
+          state: "removed",
+        },
+        T0 - 1000 * (count - i),
+      );
+    }
+  }
+
+  test("four removed records and one handed off: the name is the handed-off one, and the next is 2", async () => {
+    const world = await handoffWorld();
+    await removedBefore(world, 4);
+    const code = await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live 2 (");
+    expect(world.claudeCalls()).toContainEqual(["stop", "aaaa1111"]);
+  });
+
+  test("two live records of one name still ask for an id", async () => {
+    const world = await handoffWorld();
+    const [old] = listCrew(world.paths.stateDir, world.repo).records;
+    await createCrew(
+      world.paths.stateDir,
+      {
+        ...(old as CrewRecord),
+        id: "B6b-portal-live-aaaaaa",
+        sessionId: "bbbb1111-2222-3333-4444-555555555555",
+        shortId: "bbbb1111",
+      },
+      T0 + 1000,
+    );
+    const code = await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));
+    expect(code).toBe(1);
+    expect(world.err.join("\n")).toContain("Fix: name one by its id");
+    expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(2);
+  });
+
+  test("a hand-off that started and was removed still counts in the number", async () => {
+    const world = await handoffWorld();
+    const [old] = listCrew(world.paths.stateDir, world.repo).records;
+    await createCrew(
+      world.paths.stateDir,
+      {
+        ...(old as CrewRecord),
+        id: "B6b-portal-live-bbbbbb",
+        sessionId: "cccc1111-2222-3333-4444-555555555555",
+        shortId: "cccc1111",
+        state: "removed",
+      },
+      T0 - 1000,
+    );
+    expect(await runCrew(["start", "B6b", "--continue", ID], world.ctx(NEXT))).toBe(0);
+    expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live 3 (");
+  });
+});
+
+describe("NM1: a continuation keeps the commit it starts from", () => {
+  /** A queued continuation: it waits for a phase that never merges, so it keeps the base it was planned with. */
+  async function queuedContinuation() {
+    const world = await handoffWorld();
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, { waitsFor: ["Z9"] }, T0);
+    expect(await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT))).toBe(0);
+    const next = crewNamed(
+      listCrew(world.paths.stateDir, world.repo).records,
+      "C my-app master-plan B6b portal-live 2",
+    );
+    expect(next?.state).toBe("queued");
+    return { next: next as CrewRecord, world };
+  }
+
+  test("it pins the commit, so `crew rm` of the old record cannot take its base away", async () => {
+    const { next, world } = await queuedContinuation();
+    // The name stays readable (the portal and the board show it); the commit is what it starts from.
+    expect(next.baseRef).toBe("crew/B6b-portal-live");
+    expect(next.baseCommit).toBe(world.head);
+    const { updateCrew } = await import("./store");
+    expect(await runCrew(["rm", ID], world.ctx())).toBe(0);
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live").trim()).toBe("");
+    // The old branch is gone, and the continuation still starts, from the commit.
+    const { startQueued } = await import("./start");
+    const { defaultResolved } = await import("../testing/fake-workflow");
+    // The phase it waited for is merged now: only the base is left to resolve.
+    await updateCrew(world.paths.stateDir, world.repo, next.id, { waitsFor: [] }, T0);
+    await startQueued({ ...next, waitsFor: [] }, world.ctx(NEXT), defaultResolved());
+    const after = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === next.id,
+    );
+    expect(after?.state).toBe("starting");
+    expect(after?.base).toEqual({ ref: "crew/B6b-portal-live", sha: world.head });
+  });
+
+  test("a record from before the change, with only a branch name, still starts", async () => {
+    const { next, world } = await queuedContinuation();
+    const { updateCrew } = await import("./store");
+    const { startQueued } = await import("./start");
+    const { defaultResolved } = await import("../testing/fake-workflow");
+    // As an older kit wrote it: no `baseCommit`.
+    const { baseCommit: _pinned, ...legacy } = next;
+    await updateCrew(world.paths.stateDir, world.repo, next.id, { waitsFor: [] }, T0);
+    await startQueued({ ...legacy, waitsFor: [] }, world.ctx(NEXT), defaultResolved());
+    const after = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === next.id,
+    );
+    expect(after?.state).toBe("starting");
+    expect(after?.base).toEqual({ ref: "crew/B6b-portal-live", sha: world.head });
+  });
+});

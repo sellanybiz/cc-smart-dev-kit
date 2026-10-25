@@ -14735,6 +14735,7 @@ var crewFields = object({
   worktree: text,
   branch: text,
   baseRef: text,
+  baseCommit: sha.optional(),
   base: looseObject({ ref: text, sha }).nullable(),
   waitsFor: array(text),
   files: array(text),
@@ -23109,6 +23110,7 @@ async function plan(args, ctx) {
   return {
     baseRef,
     baseSha,
+    pinned: false,
     branch,
     briefGiven,
     caller,
@@ -23128,10 +23130,10 @@ async function plan(args, ctx) {
 }
 async function planContinuation(args, ctx, caller, lead, claude) {
   const records = listCrew(ctx.paths.stateDir, caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
-  if (old === undefined) {
-    throw refusal(`no crew session named "${args.continueFrom}" is recorded in this repository`, `the crew here: ${records.map((one) => one.name).join(", ")}`);
-  }
+  const found = findCrew(records, args.continueFrom, "start");
+  if ("refusal" in found)
+    throw new Refusal(found.refusal.lines, found.refusal.code);
+  const old = found.record;
   const pending = pendingDiscardWhy(old);
   if (pending !== null)
     throw refusal(pending);
@@ -23152,7 +23154,8 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   if ("refusal" in chosen)
     throw refusal(chosen.refusal, undefined, 2);
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
-  const number = records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
+  const started = records.filter((one) => one.phase === old.phase && one.slug === old.slug && one.base !== null).length;
+  const number = Math.max(started, 1) + 1;
   let name;
   try {
     name = crewName(lead.tag, lead.plan, old.phase, old.slug, number);
@@ -23170,6 +23173,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   return {
     baseRef: old.branch,
     baseSha,
+    pinned: true,
     branch,
     briefGiven: continuationBrief(ctx, caller.repo, old),
     caller,
@@ -23362,13 +23366,13 @@ async function runCrewStart(args, ctx) {
   }
   const code = await startPlanned(planned, ctx);
   if (code === 0 && args.continueFrom !== null) {
-    await stopContinued(planned, args, ctx);
+    await stopContinued(planned, ctx);
   }
   return code;
 }
-async function stopContinued(planned, args, ctx) {
+async function stopContinued(planned, ctx) {
   const records = listCrew(ctx.paths.stateDir, planned.caller.repo).records;
-  const old = records.find((one) => one.name === args.continueFrom || one.id === args.continueFrom);
+  const old = records.find((one) => one.id === planned.continues);
   if (old === undefined || old.shortId === null)
     return;
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
@@ -23544,6 +23548,7 @@ async function startPlanned(planned, ctx) {
       const record = await createCrew(ctx.paths.stateDir, {
         base: place.start ? { ref: planned.baseRef, sha: planned.baseSha } : null,
         baseRef: planned.baseRef,
+        ...planned.pinned ? { baseCommit: planned.baseSha } : {},
         branch: planned.branch,
         continues: planned.continues,
         effort: chosen.effort,
@@ -23653,7 +23658,7 @@ async function startQueued(listed, ctx, resolved) {
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
     if (!place.start)
       return null;
-    const base = commitOf(record.repo, record.baseRef, ctx.env);
+    const base = commitOf(record.repo, record.baseCommit ?? record.baseRef, ctx.env);
     if (base === null) {
       await failed(record, `the base ${record.baseRef} is no commit here`, quiet);
       return null;

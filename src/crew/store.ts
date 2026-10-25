@@ -426,6 +426,13 @@ const crewFields = z.object({
   branch: text,
   /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
   baseRef: text,
+  /**
+   * A continuation's pinned start: the old crew session's head commit (NM1). A queued crew session
+   * is cut from `baseRef` when it starts, and a continuation's `baseRef` is the old branch, which
+   * `crew rm` deletes; this commit never moves. Absent on every other record, and on a
+   * continuation an older kit wrote (it starts from `baseRef`).
+   */
+  baseCommit: sha.optional(),
   /** The branch it started from and that branch's commit then; null until it starts. */
   base: z.looseObject({ ref: text, sha }).nullable(),
   /** The phases it waits for (`--waits-for`): it stays queued until each is merged (or removed). */
