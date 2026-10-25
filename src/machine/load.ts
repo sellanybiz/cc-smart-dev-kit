@@ -44,5 +44,5 @@ export function loadLimit(reading: LoadReading, loadPerCore: number): number {
 
 /** The one line that says the load hold does not apply, said once by `crew list`. */
 export function loadUnreadLine(): string {
-  return "note: this platform gives no load average, so a crew start does not wait for the CPU (workflow.crew.loadPerCore does not apply)";
+  return "note: no load average can be read on this machine, so a crew start does not wait for the CPU (workflow.crew.loadPerCore does not apply)";
 }

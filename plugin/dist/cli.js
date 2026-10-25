@@ -13108,7 +13108,7 @@ function loadLimit(reading, loadPerCore) {
   return reading.cores * loadPerCore;
 }
 function loadUnreadLine() {
-  return "note: this platform gives no load average, so a crew start does not wait for the CPU (workflow.crew.loadPerCore does not apply)";
+  return "note: no load average can be read on this machine, so a crew start does not wait for the CPU (workflow.crew.loadPerCore does not apply)";
 }
 
 // src/project/resolve.ts
@@ -16018,8 +16018,8 @@ function briefFrame(facts) {
     `## Your frame (written by \`${COMMAND} crew start\`)`,
     "",
     `- You are the crew session \`${facts.crewName}\`, for the lead \`${facts.leadName}\`. You run in the background: nobody watches this session.`,
-    `- Your worktree is \`${facts.worktree}\`, on the branch \`${facts.branch}\`, cut from \`${facts.baseRef}\`. Work only there. Anything slow it needs first (a dependency install) is your first step.`,
-    "- Setup, your first step: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session."
+    `- Your worktree is \`${facts.worktree}\`, on the branch \`${facts.branch}\`, cut from \`${facts.baseRef}\`. Work only there.`,
+    "- Setup, your first step, before anything else slow: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session."
   ];
   if (facts.files.length > 0) {
     lines.push(`- The files this phase owns: ${facts.files.map((file) => `\`${file}\``).join(", ")}. Say in your report why you changed any other file.`);
