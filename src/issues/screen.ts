@@ -80,26 +80,34 @@ function position(text: string, index: number): { column: number; line: number }
   return { column: [...last].length + 1, line: lines.length };
 }
 
-/** Every start index of `pattern` in `text`, as a list (the pattern is global). */
-function starts(text: string, pattern: RegExp, accept?: (match: RegExpExecArray) => boolean) {
-  const found: number[] = [];
+/** A place in a text: where it starts and how long it is. */
+interface Span {
+  index: number;
+  length: number;
+}
+
+/** Every place `pattern` matches in `text`, as a list (the pattern is global). */
+function starts(
+  text: string,
+  pattern: RegExp,
+  accept?: (match: RegExpExecArray) => boolean,
+): Span[] {
+  const found: Span[] = [];
   pattern.lastIndex = 0;
   for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    if (accept === undefined || accept(match)) found.push(match.index);
+    if (accept === undefined || accept(match)) {
+      found.push({ index: match.index, length: match[0].length });
+    }
     if (match[0] === "") pattern.lastIndex += 1;
   }
   return found;
 }
 
-/**
- * Every place `text` holds a home path (`home`: the real home folder, `~` paths are fine), a key
- * or token shape, or a URL with credentials, first to last. `home` is null when the machine has
- * none to name.
- */
-export function screenText(text: string, home: string | null): Hit[] {
-  const hits: Hit[] = [];
-  const add = (kind: HitKind, indexes: number[]) => {
-    for (const index of indexes) hits.push({ ...position(text, index), kind });
+/** Every place `text` holds something the screen refuses, with its kind, in no order. */
+function findings(text: string, home: string | null): (Span & { kind: HitKind })[] {
+  const hits: (Span & { kind: HitKind })[] = [];
+  const add = (kind: HitKind, spans: Span[]) => {
+    for (const span of spans) hits.push({ ...span, kind });
   };
   const homeRule = homePattern(home);
   if (homeRule !== null) add("a home path", starts(text, homeRule));
@@ -118,5 +126,33 @@ export function screenText(text: string, home: string | null): Hit[] {
       return TOKEN_SCHEMES.has(scheme) || (match[2] ?? "").includes(":");
     }),
   );
-  return hits.sort((a, b) => a.line - b.line || a.column - b.column);
+  return hits;
+}
+
+/**
+ * Every place `text` holds a home path (`home`: the real home folder, `~` paths are fine), a key
+ * or token shape, or a URL with credentials, first to last. `home` is null when the machine has
+ * none to name.
+ */
+export function screenText(text: string, home: string | null): Hit[] {
+  return findings(text, home)
+    .map((found) => ({ ...position(text, found.index), kind: found.kind }))
+    .sort((a, b) => a.line - b.line || a.column - b.column);
+}
+
+/**
+ * `text` with every place the screen would refuse replaced by `[redacted: <kind>]`. For text
+ * that is NOT ours to refuse — an issue someone else wrote, read into a brief: a secret in a
+ * public issue is still a secret on this machine's disk (D67). Overlapping hits become one.
+ */
+export function redactText(text: string, home: string | null): string {
+  const spans = findings(text, home).sort((a, b) => a.index - b.index || b.length - a.length);
+  let out = "";
+  let at = 0;
+  for (const span of spans) {
+    if (span.index < at) continue;
+    out += `${text.slice(at, span.index)}[redacted: ${span.kind}]`;
+    at = span.index + span.length;
+  }
+  return out + text.slice(at);
 }
