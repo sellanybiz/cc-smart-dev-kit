@@ -2,7 +2,9 @@
 
 ## Goal, and why
 
-Your branch starts from `release-1.3.0` (main after 1.2.1). The plan:
+Your branch starts from `release-1.3.0`, cut from `release-1.2.1` at `4dfa940` (all of 1.2.0 and
+most of 1.2.1 in it; the owner, 2026-10-25: 1.3.0 runs beside 1.2.1). The rest of 1.2.1 merges
+into `release-1.3.0` later; that is the lead's merge, not yours. The plan:
 `.claude/plans/2026-10-21-master-plan.md` § Release 1.3.0, row GI1, and decision D67. GI1 is the
 contract: GI2, GI3 and GI4 build on what you ship, so it goes first and alone.
 

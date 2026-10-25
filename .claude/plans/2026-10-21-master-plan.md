@@ -446,7 +446,9 @@ cut and argument shape, seen 2026-10-25, are RS1.)
 
 ## Release 1.3.0 — GitHub Issues (D67)
 
-Cut from `main` after 1.2.1. The briefs are written (2026-10-25): `briefs/GI1-issues-switch-and-file.md`, `GI2-issues-resolved-when-shipped.md`, `GI3-crew-phase-from-issue.md`, `GI4-lead-hears-issues.md`. Each names the owner's choices it must ask through the lead (a public repository's own yes, an issue named without the label). GI1 is the contract
+Cut from `release-1.2.1` at `4dfa940` (all of 1.2.0 and most of 1.2.1 in it), to run beside
+1.2.1 (the owner, 2026-10-25: "start 1.3.0 in parallel"); the rest of 1.2.1 merges into
+`release-1.3.0` as it lands, and the release goes to `main` after 1.2.1. The briefs are written (2026-10-25): `briefs/GI1-issues-switch-and-file.md`, `GI2-issues-resolved-when-shipped.md`, `GI3-crew-phase-from-issue.md`, `GI4-lead-hears-issues.md`. Each names the owner's choices it must ask through the lead (a public repository's own yes, an issue named without the label). GI1 is the contract
 and goes first and alone; GI2 and GI3 build on it at once; GI4 last. Research first (each brief):
 GitHub's closing keywords (only a pull request into the default branch closes an issue), `gh issue`
 and the REST API's conditional requests (a `304` does not count against the rate limit), and a
@@ -680,6 +682,19 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   `toISOString` RangeError on a reset no date can hold (root fix: bound the reset in
   `planUsageLimit` and the limit state's schema); the `lastTimedOut` comment is stale (the
   breaker's `lastWaitMs` sets it too).
+
+- 2026-10-25 (midday): **RV3 merged** into `release-1.2.0` (`6240441`). RV3's profile tests assumed
+  the judge's and a profile's fallback on by default; under D66 they turn the switch on first, and
+  one case checks the default. Full check 6,678 pass, 0 fail; `check:portal`, the portal's 81
+  tests and both validates green. **1.2.0's pull request is open: #24** (the merge waits for the
+  owner's yes). RV3's 2nd and 1st records removed; the 3rd waits for a session still in its folder.
+  **`release-1.2.0` merged into `release-1.2.1`** (`4dfa940`): WF1's `claudeLimitHolds` now reads
+  the chain under the session's state key (RV3's `<profile>/<slot>`), with a test seen red first;
+  MC1's `crew model` passes the project folder RV3 added. **`release-1.3.0` cut** from there.
+  Started: GI1 (1.3.0, on `release-1.3.0`), SC1, TV1 and SL1 (1.2.1), each sonnet `high`. The
+  1.2.1-merged records (JW1, NM1, SW1, RS1, MC1, WN1, RG1, LT1) stay until the lead's folder is
+  on a branch that has them (`crew rm` checks the lead's own branch). The owner: `LEAD … (2)` is
+  the old lead (kept, never removed).
 
 ### For the owner in the morning
 

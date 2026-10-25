@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
+import { shellQuote } from "../setup/launcher";
 import {
   commitConfig,
   hookEnv,
@@ -562,12 +563,10 @@ describe("RF1-4: a session that is not a crew session proposing a workflow chang
   test("--folder names the project whose gate counts", async () => {
     const open = gated({ autoPush: true, openPr: "ready" });
     const closed = gated();
-    expect((await judge(open.repo, `${PROPOSE} --folder ${closed.repo}`, open.env)).decision).toBe(
-      "ask",
-    );
-    expect(
-      (await judge(closed.repo, `${PROPOSE} --folder ${open.repo}`, closed.env)).decision,
-    ).toBeUndefined();
+    // Quoted as a person would write it in Bash: unquoted, a Windows path's `\` are escapes.
+    const into = (repo: string) => `${PROPOSE} --folder ${shellQuote(repo)}`;
+    expect((await judge(open.repo, into(closed.repo), open.env)).decision).toBe("ask");
+    expect((await judge(closed.repo, into(open.repo), closed.env)).decision).toBeUndefined();
   });
 
   // job-route has 10 s in hooks.json, and a hook Claude Code kills answers nothing: the git calls
