@@ -4,12 +4,12 @@
  * is the person's: a later setup leaves it as it is.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { ownedRecords } from "../setup/managed-json";
 import { restore } from "../setup/restore";
-import { realTarget } from "../setup/write";
+import { listBackups, realTarget } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { applyClaudeMem, CHOICES_FILE, claudeMemPlan, forgetClaudeMemChoices } from "./claude-mem";
 import {
@@ -1011,7 +1011,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
         '  ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model"',
         '  ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••0002"',
         "restore puts them back.",
-        "A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once cc-smart-dev-kit replaced it, restore leaves that key and names the backup that holds yours.",
+        "A key's value is never written down: restore leaves your key as it is while it is still yours. Once cc-smart-dev-kit replaced it, restore keeps the kit's key only with the address it was written for. Where your address comes back, your key comes back with it, from the backup of your file; with no backup that holds it, the kit's key is removed.",
       ],
       ok: true,
     });
@@ -1086,6 +1086,199 @@ describe("MS1: the take-over, and what restore puts back", () => {
     expect(line).not.toContain(OWN_KEY);
     // The claim is gone: nothing of ours is left to remove.
     expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
+  });
+
+  describe("RV6: after restore, the key in the file belongs to the address in the file", () => {
+    const KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+    const ADDRESS = "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL";
+
+    /** The route moved to another backend: the kit wrote that backend's address AND its key. */
+    async function movedToOther() {
+      const w = machine({ settings: BY_HAND });
+      await takeOver(w.paths);
+      await chooseRoute(w.paths, { backend: "other", kind: "backend", model: "b" }, w.check());
+      expect(w.settings()).toMatchObject({ [KEY]: OTHER_KEY, [ADDRESS]: `${OTHER_URL}/v1` });
+      return w;
+    }
+
+    /** Takes every backup away: nothing is left to read the person's own key from. */
+    function noBackups(w: ReturnType<typeof machine>) {
+      rmSync(join(w.paths.stateDir, "backups"), { force: true, recursive: true });
+    }
+
+    test("the person's own key is put back with their address, from the kit's own backup", async () => {
+      const w = await movedToOther();
+      const back = await restoreTakenOver(w.paths);
+      // The pair is whole: their address and the key they set for it, never the other backend's.
+      expect(w.settings()).toMatchObject({ [KEY]: OWN_KEY, [ADDRESS]: `${BACKEND_URL}/v1` });
+      const line = back.lines.find((one) => one.includes(KEY));
+      expect(line).toMatch(
+        /^~ ~\/\.claude-mem\/settings\.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: yours again \(the key you set before, put back from the backup at ~\/\.claude\/cc-smart-dev-kit\/backups\//,
+      );
+      expect(line).not.toContain(OWN_KEY);
+      expect(line).not.toContain(OTHER_KEY);
+      expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
+      // Nothing of ours is left in it: the restore's own pass changes nothing more, and the
+      // file is forgotten, so a second restore has nothing to say.
+      expect(restore(w.paths.stateDir).map((one) => one.action)).toEqual(["unchanged"]);
+      expect(restore(w.paths.stateDir)).toEqual([]);
+      expect(w.settings()).toMatchObject({ [KEY]: OWN_KEY, [ADDRESS]: `${BACKEND_URL}/v1` });
+    });
+
+    test("no backup holds their key: the kit's key goes, and their address is left with none", async () => {
+      const w = await movedToOther();
+      noBackups(w);
+      const back = await restoreTakenOver(w.paths);
+      expect(w.settings()[ADDRESS]).toBe(`${BACKEND_URL}/v1`);
+      expect(w.settings()[KEY]).toBeUndefined();
+      const line = back.lines.find((one) => one.includes(KEY));
+      expect(line).toBe(
+        "! ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: removed: cc-smart-dev-kit wrote it for another address than yours, and no backup is known to hold the key you set before (earlier copies, if any, are in the backups folder).",
+      );
+      expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
+    });
+
+    test("a key the person typed in the portal for the other address goes too", async () => {
+      const w = await movedToOther();
+      // The person types a key for that backend's address: still not a key for their own address.
+      const typed = "sk-typed-PLANTED-0004";
+      expect(await chooseKey(w.paths, { key: typed, kind: "other" }, w.check())).toMatchObject({
+        ok: true,
+      });
+      expect(w.settings()[KEY]).toBe(typed);
+      noBackups(w);
+      const back = await restoreTakenOver(w.paths);
+      expect(w.settings()[ADDRESS]).toBe(`${BACKEND_URL}/v1`);
+      expect(w.settings()[KEY]).toBeUndefined();
+      expect(back.lines.join("\n")).not.toContain(typed);
+    });
+
+    test("the gateway's config unreadable changes nothing: the record says what the kit wrote", async () => {
+      const w = await movedToOther();
+      writeFileSync(w.paths.gatewayConfigFile, "{ not json");
+      await restoreTakenOver(w.paths);
+      expect(w.settings()).toMatchObject({ [KEY]: OWN_KEY, [ADDRESS]: `${BACKEND_URL}/v1` });
+    });
+
+    /** The person edits the address by hand, back to the one they had. */
+    function addressByHand(w: ReturnType<typeof machine>, address: string) {
+      writeFileSync(
+        w.paths.claudeMemSettingsFile,
+        JSON.stringify({ ...w.settings(), [ADDRESS]: address }, null, 2),
+      );
+    }
+
+    test("an address the person set back by hand does not keep the other backend's key", async () => {
+      const w = await movedToOther();
+      addressByHand(w, `${BACKEND_URL}/v1`);
+      const back = await restoreTakenOver(w.paths);
+      // The kit's key was written for the other address: their own comes back, from the backup.
+      expect(w.settings()).toMatchObject({ [KEY]: OWN_KEY, [ADDRESS]: `${BACKEND_URL}/v1` });
+      expect(back.lines.find((one) => one.includes(KEY))).toMatch(/put back from the backup at /);
+    });
+
+    test("the same with no backup: the kit's key goes, never left beside their address", async () => {
+      const w = await movedToOther();
+      addressByHand(w, `${BACKEND_URL}/v1`);
+      noBackups(w);
+      await restoreTakenOver(w.paths);
+      expect(w.settings()[ADDRESS]).toBe(`${BACKEND_URL}/v1`);
+      expect(w.settings()[KEY]).toBeUndefined();
+    });
+
+    test("an address the person set to a third one is theirs, and so is the key beside it", async () => {
+      const w = await movedToOther();
+      addressByHand(w, "https://third.example/v1");
+      await restoreTakenOver(w.paths);
+      // Restore does not touch an address the person chose; it cannot say the key is not for it.
+      expect(w.settings()).toMatchObject({
+        [KEY]: OTHER_KEY,
+        [ADDRESS]: "https://third.example/v1",
+      });
+    });
+
+    test("the OpenRouter pair is judged the same way", async () => {
+      const own = "sk-own-PLANTED-0005";
+      const w = machine({
+        settings: {
+          ...BY_HAND,
+          CLAUDE_MEM_OPENROUTER_API_KEY: own,
+          CLAUDE_MEM_OPENROUTER_BASE_URL: "https://openrouter.example/api/v1",
+          CLAUDE_MEM_OPENROUTER_MODEL: "their/model",
+          CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "openrouter",
+        },
+      });
+      await takeOver(w.paths);
+      await chooseFallback(
+        w.paths,
+        { backend: "other", kind: "backend", model: "fallback/model" },
+        w.check(),
+      );
+      expect(w.settings()).toMatchObject({
+        CLAUDE_MEM_OPENROUTER_API_KEY: OTHER_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: `${OTHER_URL}/v1`,
+      });
+      await restoreTakenOver(w.paths);
+      expect(w.settings()).toMatchObject({
+        CLAUDE_MEM_OPENROUTER_API_KEY: own,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: "https://openrouter.example/api/v1",
+      });
+    });
+
+    test("a backup that cannot be read is passed over: an older one holds their key", async () => {
+      const w = await movedToOther();
+      // A second write makes a newer backup; it is then lost to a bad write.
+      await chooseKey(w.paths, { key: "sk-typed-PLANTED-0004", kind: "other" }, w.check());
+      const backups = listBackups(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile));
+      expect(backups.length).toBeGreaterThan(1);
+      writeFileSync(backups.at(-1)?.path ?? "", "{ not json");
+      await restoreTakenOver(w.paths);
+      expect(w.settings()).toMatchObject({ [KEY]: OWN_KEY, [ADDRESS]: `${BACKEND_URL}/v1` });
+    });
+
+    test("a key that changed while restore ran is reported as it is, not as put back", async () => {
+      const w = await movedToOther();
+      const typed = "sk-typed-PLANTED-0006";
+      let played = false;
+      const back = await restoreTakenOver(w.paths, {
+        // Another program writes a key between the read and the write: the writer starts again.
+        onBeforeWrite: () => {
+          if (played) return;
+          played = true;
+          writeFileSync(
+            w.paths.claudeMemSettingsFile,
+            JSON.stringify({ ...w.settings(), [KEY]: typed }, null, 2),
+          );
+        },
+      });
+      // The claim goes, the new key is theirs and stays; the line says what really happened.
+      expect(w.settings()[KEY]).toBe(typed);
+      expect(back.lines.find((one) => one.includes(KEY))).toBe(
+        "~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: changed while restore ran; left as it is, and yours.",
+      );
+      expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.claudeMemSettingsFile))).toEqual([]);
+    });
+
+    test("the key put back keeps the file at 600", async () => {
+      const w = await movedToOther();
+      chmodSync(w.paths.claudeMemSettingsFile, 0o644);
+      await restoreTakenOver(w.paths);
+      expect(w.settings()[KEY]).toBe(OWN_KEY);
+      expect(w.mode()).toBe(0o600);
+    });
+
+    test("a key that does belong to their address stays, as the kit wrote it", async () => {
+      const w = machine({ settings: BY_HAND });
+      await takeOver(w.paths);
+      // A key typed for the address the person already had: the address never moved.
+      const typed = "sk-typed-PLANTED-0004";
+      await chooseKey(w.paths, { key: typed, kind: "other" }, w.check());
+      const back = await restoreTakenOver(w.paths);
+      expect(w.settings()).toMatchObject({ [KEY]: typed, [ADDRESS]: `${BACKEND_URL}/v1` });
+      expect(back.lines.find((one) => one.includes(KEY))).toMatch(
+        /^! ~\/\.claude-mem\/settings\.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: cc-smart-dev-kit replaced it after the take-over; the key you set before is in the backup at /,
+      );
+    });
   });
 
   test("MS1: a taken-over key stays only while its address is the backend's this write goes to", async () => {

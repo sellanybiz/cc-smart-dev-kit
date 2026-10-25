@@ -1742,6 +1742,7 @@ function readUserJson(file) {
 // src/setup/managed-json.ts
 var OWNED_FILE = "owned.json";
 var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
+var TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
 
 class ForeignKeyError extends Error {
   name = "ForeignKeyError";
@@ -2019,8 +2020,22 @@ function applyOnce(file, options, owned) {
       });
       continue;
     }
+    if (isSecret(path))
+      setsSecret = true;
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
   }
   for (const path of options.remove ?? []) {
     const current = getKey(data, path);
@@ -2041,6 +2056,10 @@ function applyOnce(file, options, owned) {
       continue;
     const held = ownedHere.find((entry) => samePath(entry.path, path));
     if (held?.was !== undefined) {
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
       setKey(data, path, held.was);
       changes.push({ path, before: current.value, after: held.was });
       continue;
@@ -11483,6 +11502,7 @@ async function chooseFallback(paths, choice, check = checkAffordableTarget) {
     return { lines: [`Nothing was saved: ${problem}.`], ok: false };
   return save(paths, read, set, `While its route's provider is limited, claude-mem sends its summaries to ${choice.model} on ${choice.backend}.`);
 }
+var TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for. Where your address comes back, your key comes back with it, from the backup of your file; with no backup that holds it, the kit's key is removed.`;
 async function takeOver(paths) {
   const ready = readReady(paths);
   if ("blocked" in ready)
@@ -11529,7 +11549,7 @@ async function takeOver(paths) {
         `The take-over recorded ${taken.length === 1 ? "one value" : `${taken.length} values`} of claude-mem's as ${COMMAND}'s: each stays exactly as it is until you pick another.`,
         ...taken.map((path) => `  ${short}: ${formatKeyPath(path)}: ${shownClaudeMemValue(path, getKey(read.data, path).value)}`),
         "restore puts them back.",
-        `A key's value is never written down: restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`,
+        TAKE_OVER_KEY_NOTE,
         ...moved.map((key) => `! claude-mem's settings changed while the take-over ran, so ${key} is left as it is: run the take-over again.`)
       ],
       ok: true
@@ -11545,29 +11565,57 @@ function backupHoldingTakenKey(paths, file, path, wasSha256) {
     try {
       const { data } = readJsonObject(backup.path);
       const current = getKey(data, path);
-      if (current.found && hashOf(current.value) === wasSha256)
-        return backup.path;
+      if (current.found && hashOf(current.value) === wasSha256) {
+        return { backup: backup.path, value: current.value };
+      }
     } catch {}
   }
   return null;
 }
-function secretRestoreLine(paths, file, short, record, data) {
-  const path = formatKeyPath(record.path);
-  const current = getKey(data, record.path);
-  if (!current.found) {
-    return `! ${short}: ${path}: not in the file any more; the take-over's claim on it is dropped.`;
+function keyKeepsItsAddress(records, data, keyPath) {
+  const addressPath = [...keyPath.slice(0, -1), pairedAddress(keyPath.at(-1) ?? "")];
+  const held = records.find((record) => samePath(record.path, addressPath));
+  if (held === undefined)
+    return true;
+  const current = getKey(data, addressPath);
+  if (ownership(records, addressPath, current) === "ours") {
+    return held.was !== undefined && Bun.deepEquals(current.value, held.was, true);
   }
-  const hash = hashOf(current.value);
-  if (hash === record.wasSha256) {
-    return `~ ${short}: ${path}: yours again (still the key you set)`;
-  }
-  if (record.sha256 !== undefined && hash === record.sha256) {
-    const backup = backupHoldingTakenKey(paths, file, record.path, record.wasSha256);
-    return backup === null ? `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over, so the key you set before is not in the file any more; earlier copies are in the backups folder.` : `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over; the key you set before is in the backup at ${tildify(backup, paths.home)}.`;
-  }
-  return `~ ${short}: ${path}: changed since the take-over; yours again.`;
+  return !(current.found && held.was !== undefined && Bun.deepEquals(current.value, held.was, true));
 }
-async function restoreTakenOver(paths) {
+function planSecret(paths, file, records, data, record) {
+  const current = getKey(data, record.path);
+  if (!current.found)
+    return { kind: "gone" };
+  const hash = hashOf(current.value);
+  if (hash === record.wasSha256)
+    return { kind: "still-yours" };
+  if (record.sha256 === undefined || hash !== record.sha256)
+    return { kind: "changed" };
+  const earlier = backupHoldingTakenKey(paths, file, record.path, record.wasSha256);
+  if (keyKeepsItsAddress(records, data, record.path)) {
+    return { kind: "kit-kept", backup: earlier?.backup ?? null };
+  }
+  return earlier === null ? { kind: "withdraw" } : { kind: "give-back", backup: earlier.backup, value: earlier.value };
+}
+function secretRestoreLine(paths, short, record, plan) {
+  const path = formatKeyPath(record.path);
+  switch (plan.kind) {
+    case "gone":
+      return `! ${short}: ${path}: not in the file any more; the take-over's claim on it is dropped.`;
+    case "still-yours":
+      return `~ ${short}: ${path}: yours again (still the key you set)`;
+    case "changed":
+      return `~ ${short}: ${path}: changed since the take-over; yours again.`;
+    case "kit-kept":
+      return plan.backup === null ? `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over, so the key you set before is not in the file any more; earlier copies are in the backups folder.` : `! ${short}: ${path}: cc-smart-dev-kit replaced it after the take-over; the key you set before is in the backup at ${tildify(plan.backup, paths.home)}.`;
+    case "give-back":
+      return `~ ${short}: ${path}: yours again (the key you set before, put back from the backup at ${tildify(plan.backup, paths.home)})`;
+    case "withdraw":
+      return `! ${short}: ${path}: removed: cc-smart-dev-kit wrote it for another address than yours, and no backup is known to hold the key you set before (earlier copies, if any, are in the backups folder).`;
+  }
+}
+async function restoreTakenOver(paths, hooks = {}) {
   const file = paths.claudeMemSettingsFile;
   const records = ownedRecords(paths.stateDir, realTarget(file));
   const plain = records.filter((record) => record.was !== undefined);
@@ -11575,23 +11623,32 @@ async function restoreTakenOver(paths) {
   if (plain.length === 0 && secret.length === 0)
     return { lines: [], ok: true };
   const short = tildify(file, paths.home);
+  let before = null;
+  try {
+    before = readJsonObject(file).data;
+  } catch {}
+  const plans = secret.map((record) => ({
+    plan: before === null ? null : planSecret(paths, file, records, before, record),
+    record
+  }));
   const result = applyManagedJson({
     file,
     release: [
       ...plain.map((record) => [record.path, record.was]),
-      ...secret.map((record) => [record.path, undefined])
+      ...plans.filter(({ plan }) => plan?.kind !== "withdraw").map(({ plan, record }) => plan?.kind === "give-back" ? [record.path, plan.value] : [record.path, undefined])
     ],
+    secret: isSecretPath,
     stateDir: paths.stateDir,
-    unchosen
+    unchosen,
+    withdraw: plans.filter(({ plan }) => plan?.kind === "withdraw").map(({ record }) => record.path),
+    ...hooks.onBeforeWrite && { onBeforeWrite: hooks.onBeforeWrite }
   });
-  const lines = result.changes.map((change) => `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`);
-  let data = null;
-  try {
-    data = readJsonObject(file).data;
-  } catch {}
-  if (data !== null) {
-    for (const record of secret)
-      lines.push(secretRestoreLine(paths, file, short, record, data));
+  const lines = result.changes.filter((change) => !isSecretPath(change.path)).map((change) => `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`);
+  for (const { plan, record } of plans) {
+    if (plan === null)
+      continue;
+    const wrote = plan.kind !== "give-back" && plan.kind !== "withdraw" ? true : result.changes.some((change) => samePath(change.path, record.path));
+    lines.push(wrote ? secretRestoreLine(paths, short, record, plan) : `~ ${short}: ${formatKeyPath(record.path)}: changed while restore ran; left as it is, and yours.`);
   }
   return { lines, ok: true };
 }
@@ -40854,9 +40911,11 @@ fallback picks what takes over while the route's provider is limited: off, claud
 take-over records the values you set by hand in claude-mem's file as ${COMMAND}'s, so the
         route, the key and the fallback may change. Nothing in that file changes: each value
         stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
-        key's value is never written down, so restore leaves your key exactly as it is while it
-        is still yours; once ${COMMAND} replaced it, restore leaves that key and names the
-        backup that holds yours. It asks first; --yes takes them over without the question.`;
+        key's value is never written down: restore leaves your key as it is while it is still
+        yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address
+        it was written for. Where your address comes back, your key comes back with it, from
+        the backup of your file; with no backup that holds it, the kit's key is removed. It
+        asks first; --yes takes them over without the question.`;
 var COMMAND_HELP = [
   {
     name: "setup",
@@ -41225,7 +41284,7 @@ async function takeOverCommand(deps, rest) {
   if (facts.handKeys.length === 0)
     return show3(deps, await takeOver(deps.paths));
   deps.out.line("info", `${facts.file} holds values of yours: ${facts.handKeys.join(", ")}. The take-over records them as ${COMMAND}'s, so the route, the key and the fallback can change.`);
-  deps.out.line("info", "Nothing in that file changes: each value stays exactly as it is until you pick another, and " + `${COMMAND} restore puts it back. A key's value is never written down, so restore leaves your key exactly as it is while it is still yours; once ${COMMAND} replaced it, restore leaves that key and names the backup that holds yours.`);
+  deps.out.line("info", "Nothing in that file changes: each value stays exactly as it is until you pick another, and " + `${COMMAND} restore puts it back. ${TAKE_OVER_KEY_NOTE}`);
   if (!yes) {
     const answer = deps.confirm?.(`Record them as ${COMMAND}'s?`) ?? null;
     if (answer !== true) {
@@ -43133,6 +43192,7 @@ function isEmpty(file) {
 function restorePartly(file, entry, stateDir, options) {
   const details = [];
   const written = [];
+  const putBack = [];
   let savedAs = null;
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
@@ -43146,10 +43206,13 @@ function restorePartly(file, entry, stateDir, options) {
         createdObject: createdObjects(stateDir, file)
       });
       for (const change of result.changes) {
+        const path = formatKeyPath(change.path);
         if (change.after === undefined)
-          details.push(formatKeyPath(change.path));
+          details.push(path);
+        else if (write.some(([key]) => samePath(key, change.path)))
+          written.push({ path, value: change.after });
         else
-          written.push({ path: formatKeyPath(change.path), value: change.after });
+          putBack.push(path);
       }
       savedAs ??= result.backup;
     }
@@ -43175,14 +43238,15 @@ function restorePartly(file, entry, stateDir, options) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
-  if (details.length === 0) {
-    return written.length === 0 ? { file, action: "unchanged", details } : { file, action: "cleaned", details, written, ...savedAs && { savedAs } };
+  if (details.length === 0 && written.length === 0 && putBack.length === 0) {
+    return { file, action: "unchanged", details };
   }
   return {
     file,
     action: "cleaned",
     details,
     ...written.length > 0 && { written },
+    ...putBack.length > 0 && { putBack },
     ...savedAs && { savedAs }
   };
 }
@@ -50024,6 +50088,7 @@ function describe2(result, short) {
     case "cleaned": {
       const parts = [
         ...(result.written ?? []).map((one) => `set ${one.path} to ${shownValue(one.value)}`),
+        ...result.putBack === undefined ? [] : [`put back ${result.putBack.join(", ")} (yours again)`],
         ...result.details.length === 0 ? [] : [`removed ${result.details.join(", ")}`]
       ];
       return `~ ${file}: ${parts.join(", ")}; everything else kept`;
@@ -50038,7 +50103,7 @@ var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 function stageOneDone(paths, cliBundle, wrote = false, bunPath = process.execPath) {
-  const switched = wrote ? "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run." : "Running Claude sessions still use the router: the settings file's address is yours, so nothing was written. Restart them to leave the router; then run restore again to stop it.";
+  const switched = wrote ? "Every running Claude session switches to Anthropic by itself, within about a second \u2014 a request one made just before it switched would be cut off by a stop in the same run." : "No settings file had an address of ours to switch (an address you set, changed or removed is yours, and restore leaves it), so nothing was written and running Claude sessions may still use the router. Restart them, and change any address of yours that still names the router, before the second run: when the router stops, a session that still uses it fails.";
   const launcher = join82(paths.binDir, LAUNCHER_NAME);
   if (existsSync74(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -50112,8 +50177,11 @@ async function takeOverBack(paths) {
   try {
     for (const line of (await restoreTakenOver(paths)).lines)
       console.log(line);
+    return [];
   } catch (error) {
     console.log(`! the values a take-over recorded could not be put back (${messageOf(error)})`);
+    console.log("! claude-mem's file is left as it is: run restore again to put them back, and take the rest out.");
+    return [realTarget(paths.claudeMemSettingsFile)];
   }
 }
 function fileUsesRouter(file, stateDir) {
@@ -50173,11 +50241,11 @@ async function runRestore(paths, options) {
   const copies = routerTracked ? copyWarnings(settingsFiles, short) : [];
   if (sessionsUseRouter && !options.now) {
     return withLock(paths.stateDir, async () => {
-      await takeOverBack(paths);
+      const heldBack = await takeOverBack(paths);
       const addresses = offWrites(settingsFiles, paths.stateDir);
       const excludeFiles = addresses.size === 0 ? [] : Object.entries(changed).filter(([, entry]) => entry.kinds.includes("file-line") && entry.lines?.includes(PERSONAL_EXCLUDE_LINE)).map(([file]) => file);
       const results = restore(paths.stateDir, {
-        except: [...routerFiles, ...excludeFiles],
+        except: [...routerFiles, ...excludeFiles, ...heldBack],
         writeInstead: (file, path) => {
           const address = addresses.get(file);
           return samePath(path, BASE_URL_PATH) && address !== undefined ? { value: address } : undefined;
@@ -50199,7 +50267,7 @@ async function runRestore(paths, options) {
       forgetInstructionChoice(paths.stateDir, short);
       forgetClaudeMemChoice(paths.stateDir, short);
       console.log(stageOneDone(paths, options.cliBundle, addresses.size > 0));
-      return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
+      return !mcp.ok || heldBack.length > 0 || results.some((r) => r.action === "no-backup") ? 1 : 0;
     }, { waitMs: 1e4 });
   }
   for (const line of copies)
@@ -50244,8 +50312,8 @@ async function runRestore(paths, options) {
           break;
       }
     }
-    await takeOverBack(paths);
-    const results = restore(paths.stateDir);
+    const heldBack = await takeOverBack(paths);
+    const results = restore(paths.stateDir, { except: heldBack });
     if (definitionTracked)
       service.forget(options.runner);
     const mcp = removeMcp(paths, options, short);
@@ -50268,9 +50336,9 @@ async function runRestore(paths, options) {
     if (results.length === 0 && !stateGone && mcp.lines.length === 0 && browser.lines.length === 0) {
       if (!forgot)
         console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
-      return 0;
+      return heldBack.length > 0 ? 1 : 0;
     }
-    return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
+    return !mcp.ok || heldBack.length > 0 || results.some((r) => r.action === "no-backup") ? 1 : 0;
   }, { waitMs: 1e4 });
 }
 

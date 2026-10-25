@@ -12,6 +12,7 @@ import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
+import { TAKE_OVER_KEY_NOTE } from "../machine/claude-mem-choices";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
@@ -212,5 +213,14 @@ describe("a help request", () => {
       `Unknown option: --x\nSee: ${COMMAND} doctor --help`,
     );
     expect(unknownCommand("nope")).toBe(`Unknown command: nope\nSee: ${COMMAND} --help`);
+  });
+});
+
+describe("the claude-mem help and the take-over's own note", () => {
+  test("the help says what the take-over prints about a key, in the same words", () => {
+    // Two copies of one sentence (the help is hand-wrapped, the note is printed in one line):
+    // they must not drift. The wrap is the only difference.
+    const help = COMMAND_HELP.find((row) => row.name === "claude-mem")?.help ?? "";
+    expect(help.replace(/\s+/g, " ")).toContain(TAKE_OVER_KEY_NOTE);
   });
 });

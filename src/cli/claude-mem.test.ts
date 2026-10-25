@@ -359,7 +359,7 @@ describe("claude-mem take-over", () => {
       "~/.claude-mem/settings.json holds values of yours: CLAUDE_MEM_PROVIDER, CLAUDE_MEM_OPENAI_COMPAT_PRESET, CLAUDE_MEM_OPENAI_COMPAT_BASE_URL, CLAUDE_MEM_OPENAI_COMPAT_MODEL.",
     );
     expect(w.printed()).toContain(
-      "Nothing in that file changes: each value stays exactly as it is until you pick another, and cc-smart-dev-kit restore puts it back. A key's value is never written down, so restore leaves your key exactly as it is while it is still yours; once cc-smart-dev-kit replaced it, restore leaves that key and names the backup that holds yours.",
+      "Nothing in that file changes: each value stays exactly as it is until you pick another, and cc-smart-dev-kit restore puts it back. A key's value is never written down: restore leaves your key as it is while it is still yours. Once cc-smart-dev-kit replaced it, restore keeps the kit's key only with the address it was written for. Where your address comes back, your key comes back with it, from the backup of your file; with no backup that holds it, the kit's key is removed.",
     );
     // A "no" at the terminal is the same: nothing changes.
     const no = world({ confirm: false, settings: BY_HAND });

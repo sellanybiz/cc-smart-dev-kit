@@ -71,8 +71,12 @@ The guarantees:
   each file before it changes it. With the gateway on, the
   router's copy and unit wait for a second restore (§ The AI gateway), and its first stage
   names the command that runs the second one — the `bun --no-env-file --config=… …/dist/cli.js
-  restore` line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. A
-  restore with nothing left changes nothing.
+  restore` line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. That
+  first stage keeps a file tracked only for a key it **wrote again** (the gateway's address, the
+  `writeInstead` list); a value a take-over recorded that comes back is the person's own, so it is
+  named as put back and the file is forgotten. When no address was written because every one is
+  the person's — set, changed or removed — the stage says the sessions keep the router until they
+  restart. A restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
 `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the lock and `backups/`. The

@@ -116,8 +116,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   **take-over** records those values as cc-smart-dev-kit's own, after asking and naming them:
   nothing in claude-mem's settings file changes, each value stays exactly as it is until you pick
   another, and `restore` puts them back — a key's value is never written down, so `restore`
-  leaves a taken-over key as you set it, or as the kit set it once it replaced yours, naming the
-  backup that holds yours. On the Machine page's claude-mem card it is **Let the kit manage
+  leaves a taken-over key as you set it, and once the kit replaced it, keeps the kit's key only
+  with the address it was written for (see the `restore` bullet below). On the Machine page's
+  claude-mem card it is **Let the kit manage
   these**: the card names each value set by hand and marks the choices it refuses, and after the
   take-over the route, the key and the fallback change in place. From your terminal it is
   `cc-smart-dev-kit claude-mem take-over`. A new **`cc-smart-dev-kit claude-mem`** command makes
@@ -129,6 +130,24 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   claude-mem's OpenRouter provider, pointed at the backend of the model you pick (the card lists
   backend models for the fallback on every route); an empty fallback provider is
   now shown as Claude with the model it really runs on.
+- **`restore` words a taken-over value coming back as what it is.** When a value a take-over
+  recorded goes back to what you had, the line says `put back <key> (yours again)` — it no longer
+  says `set <key> to …`, and the file no longer stays on the list for the second `restore`. A
+  value the file already holds is left alone: no backup, no write.
+- **`restore` never leaves a claude-mem key next to an address it was not made for.** After a
+  take-over, a route change to a gateway backend writes that backend's address and key. Before,
+  `restore` put your own address back and left the backend's key beside it, so that key would go
+  to your host. Now your own key comes back with your address, read from the kit's backup of your
+  file; with no backup that holds it, the kit's key is removed and the line says so. A key you
+  typed in the portal for another address goes the same way, and so does the kit's key beside an
+  address you set back by hand; a key written for the address that stays is kept, as before. If
+  putting a take-over back fails, `restore` leaves claude-mem's file alone, exits 1 and says to
+  run it again, instead of half-restoring it.
+- **`restore`'s first run tells the truth when it could not switch an address.** When no
+  settings file has an address of the kit's to switch — you set, changed or removed it — the line
+  says so, and names what to do before the second run (restart the sessions, and change any
+  address of yours that still names the router), where it used to say the address was "yours"
+  even for one that was not in the file at all.
 
 - **A crew session hands off at 400k tokens or 70 % of its window, whichever comes first, and
   before Claude Code would auto-compact it.** The hand-off used to be a share of the model's

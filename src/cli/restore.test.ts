@@ -3,13 +3,14 @@
  * of them when it cannot be read, or when a server cannot be taken back. Run in this process,
  * with a fake `claude` and no router (service "none"); nothing reaches a real tool.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import { setGatewayBaseUrl } from "../gateway/settings";
 import { CHOICES_FILE, TODO_TOOLS_KEY } from "../machine/claude-mem";
+import * as choices from "../machine/claude-mem-choices";
 import { takeOver } from "../machine/claude-mem-choices";
 import { mcpRecordsFile, recordMcpServer } from "../mcp/records";
 import { applyManagedJson } from "../setup/managed-json";
@@ -194,6 +195,106 @@ describe("restore: a value cc-smart-dev-kit took over (MS1)", () => {
   });
 });
 
+describe("restore: a taken-over value in a file the take-over's own pass does not read (F8)", () => {
+  test("F8: it is put back and named, not 'set to' a value, and the file is forgotten", async () => {
+    const { options, paths } = machine();
+    // `restoreTakenOver` puts back claude-mem's file alone, so a claim in any other file reaches
+    // the plain removal with its record still holding the value to put back.
+    const file = join(paths.home, "other.json");
+    writeFileSync(file, `${JSON.stringify({ a: "theirs", b: "keep" }, null, 2)}\n`);
+    applyManagedJson({ file, stateDir: paths.stateDir, claim: [[["a"], "theirs"]] });
+    // Beside it, a key the kit added: restore takes that one out, in the same file.
+    applyManagedJson({
+      file,
+      stateDir: paths.stateDir,
+      set: [
+        [["a"], "ours"],
+        [["c"], "added"],
+      ],
+    });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ a: "theirs", b: "keep" });
+    expect(printed.join("\n")).toContain(
+      "~ ~/other.json: put back a (yours again), removed c; everything else kept",
+    );
+    expect(printed.join("\n")).not.toContain("set a to");
+    // Nothing of ours is left in it: the second run has nothing to say about it.
+    printed.length = 0;
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(printed.join("\n")).not.toContain("other.json");
+  });
+});
+
+describe("restore: a take-over that could not be put back (RV6)", () => {
+  const OWN = "sk-own-PLANTED-0002";
+  const KIT = "sk-kit-PLANTED-0003";
+
+  test("claude-mem's file is left for the next restore, never put back half way", async () => {
+    const { options, paths } = machine();
+    const file = paths.claudeMemSettingsFile;
+    mkdirSync(dirname(file), { recursive: true });
+    const installPath = join(paths.home, "plugins", "claude-mem");
+    mkdirSync(installPath, { recursive: true });
+    mkdirSync(dirname(paths.installedPluginsFile), { recursive: true });
+    writeFileSync(
+      paths.installedPluginsFile,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "claude-mem@thedotmack": [{ installPath, scope: "user", version: "13.40.0" }],
+        },
+      }),
+    );
+    writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          CLAUDE_MEM_OPENAI_COMPAT_API_KEY: OWN,
+          CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "http://127.0.0.1:18434/v1",
+          CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
+          CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
+          CLAUDE_MEM_PROVIDER: "openai-compatible",
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+    expect((await takeOver(paths)).ok).toBe(true);
+    // The kit moves the route: another backend's address, and its own key beside it.
+    applyManagedJson({
+      file,
+      secret: (path) => path.at(-1) === "CLAUDE_MEM_OPENAI_COMPAT_API_KEY",
+      set: [
+        [["CLAUDE_MEM_OPENAI_COMPAT_BASE_URL"], "http://127.0.0.1:18435/v1"],
+        [["CLAUDE_MEM_OPENAI_COMPAT_API_KEY"], KIT],
+      ],
+      stateDir: paths.stateDir,
+    });
+    const before = readFileSync(file, "utf8");
+
+    // The put-back fails once (claude-mem rewrote its file while it ran, say).
+    const spy = spyOn(choices, "restoreTakenOver").mockRejectedValueOnce(new Error("boom"));
+    expect(await runRestore(paths, options(true))).toBe(1);
+    spy.mockRestore();
+    // The plain pass did not run on that file: it would have put the address back and left the
+    // kit's key beside it, and dropped the records that make the next run able to fix it.
+    expect(readFileSync(file, "utf8")).toBe(before);
+    const out = printed.join("\n");
+    expect(out).toContain("! the values a take-over recorded could not be put back (boom)");
+    expect(out).toContain("claude-mem's file is left as it is: run restore again");
+
+    // The next run puts everything back, the person's own key included.
+    printed.length = 0;
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEY: OWN,
+      CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "http://127.0.0.1:18434/v1",
+    });
+  });
+});
+
 describe("restore: claude-mem's choices from the portal (PM1)", () => {
   test("PM1: restore removes the record of the person's portal choices, and says so", async () => {
     const { options, paths } = machine();
@@ -287,6 +388,76 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     expect(await runRestore(paths, options(true))).toBe(0);
     expect(printed.join("\n")).toContain(warning);
     expect(readFileSync(copy, "utf8")).toBe(copyText);
+  });
+
+  test("stage 1 writes no address into a project's team file: `--team` holds Anthropic's own address only", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    const root = project("rv6-restore-team");
+    // The personal file points at the router, so stage 1 runs. The team file is what
+    // `gateway project off --team` wrote (`--team` refuses `on`: a teammate's 127.0.0.1 is their
+    // own machine), so its address is Anthropic's already: there is nothing to switch in a
+    // file that is committed to the team's repository.
+    const personal = join(root, ".claude", "settings.local.json");
+    const team = join(root, ".claude", "settings.json");
+    setGatewayBaseUrl({
+      file: personal,
+      stateDir: paths.stateDir,
+      value: "http://127.0.0.1:20999",
+    });
+    setGatewayBaseUrl({ file: team, stateDir: paths.stateDir, value: DEFAULT_ANTHROPIC_BASE_URL });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    const out = printed.join("\n");
+    // The personal file got Anthropic's address, as always; the team file got no "set" line.
+    expect(out).toContain("Every running Claude session switches to Anthropic");
+    expect(JSON.parse(readFileSync(personal, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL },
+    });
+    expect(out).not.toMatch(/settings\.json: set env\.ANTHROPIC_BASE_URL/);
+    // The kit created that file, and its one key is the kit's: it goes like any owned key, and
+    // at no point did the file hold any address but Anthropic's.
+    expect(out).toContain(
+      `- ${team.replace(paths.home, "~")}: removed (cc-smart-dev-kit had created it)`,
+    );
+    expect(existsSync(team)).toBe(false);
+  });
+
+  test("a file whose address the person removed still keeps the router up, and the line says what happened to the address", async () => {
+    const { options, paths } = machine();
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    // `gateway on` wrote both keys; the person then removed the address by hand. A running
+    // session keeps the address it last had (P7: a removed key reaches it only when another file
+    // sets it), so the router must stay up for it, and nothing can be written into a key that is
+    // not there.
+    applyManagedJson({
+      file: paths.settingsFile,
+      stateDir: paths.stateDir,
+      set: [
+        [["env", "ENABLE_TOOL_SEARCH"], "true"],
+        [["env", "ANTHROPIC_BASE_URL"], "http://127.0.0.1:20999"],
+      ],
+    });
+    writeFileSync(
+      paths.settingsFile,
+      `${JSON.stringify({ env: { ENABLE_TOOL_SEARCH: "true" } }, null, 2)}\n`,
+    );
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(paths.routerCopy)).toBe(true);
+    const out = printed.join("\n");
+    // The address key is not in the file, so it is not "yours" in the sense of a value you set:
+    // the line names the cause that is true, and the way out.
+    expect(out).toContain(
+      "No settings file had an address of ours to switch (an address you set, changed or removed is yours, and restore leaves it), so nothing was written and running Claude sessions may still use the router. Restart them, and change any address of yours that still names the router, before the second run: when the router stops, a session that still uses it fails.",
+    );
+    expect(out).not.toContain("the settings file's address is yours");
   });
 
   test("a project set to off does not keep the router up: one pass, and no restart line", async () => {
