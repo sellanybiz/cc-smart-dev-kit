@@ -1384,15 +1384,62 @@ function writtenText(segment: string): string | null {
  * hosts): `nestedCommand` reads the command each runs, and a caller that must not treat the
  * step as just that command (the job route) asks here. `xargs` is a wrapper, not one of these.
  */
-const RUNNER_PROGRAMS: ReadonlySet<string> = new Set(["find", "parallel", "su", "watch"]);
+export const RUNNER_PROGRAM_NAMES: readonly string[] = ["find", "parallel", "su", "watch"];
 
-/** True when `program` is a runner (`RUNNER_PROGRAMS`). */
+/** True when `program` is a runner (`RUNNER_PROGRAM_NAMES`). */
 export function isRunnerProgram(program: string): boolean {
-  return RUNNER_PROGRAMS.has(program);
+  return RUNNER_PROGRAM_NAMES.includes(program);
 }
 
-/** `find`'s actions that run a command, up to a `;` or a `+`. */
+/** `find`'s actions that run a command, up to a `;` or a `{} +`. */
 const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/**
+ * `find`'s tests and actions that take the next word as their value: `-name -exec` tests for a
+ * file called `-exec`, which starts no command. (`-newerXY` takes one too.)
+ */
+const FIND_VALUED: ReadonlySet<string> = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype",
+]);
 
 /**
  * True when `word` ends a `find -exec` command, given the word before it: a `;` (escaped or
@@ -1412,7 +1459,13 @@ function endsFindCommand(word: string, before: string): boolean {
 function findCommands(args: readonly string[]): string | undefined {
   const commands: string[] = [];
   for (let index = 0; index < args.length; index++) {
-    if (!FIND_EXEC.has(args[index] ?? "")) continue;
+    const word = args[index] ?? "";
+    // A test that takes a value: its value is not an action, whatever it looks like.
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word)) continue;
     const words: string[] = [];
     for (
       index++;
@@ -1481,10 +1534,17 @@ function watchCommand(args: readonly string[]): string | undefined {
       else if (name !== null && WATCH_VALUED.has(name) && !word.includes("=")) index++;
       continue;
     }
-    // `-n <seconds>` and `-q <cycles>` take a value; the rest are switches.
-    const { flags, wantsNext } = shortFlags(word, "nq");
-    if (flags.includes("x")) exec = true;
-    if (wantsNext) index++;
+    // `-n <seconds>` and `-q <cycles>` take a value; `-d` takes one only attached (`-dq` is `-d`
+    // with the value `q`: the next word is the command); the rest are switches.
+    for (let at = 1; at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d") break;
+      if (letter === "x") exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1) index++;
+        break;
+      }
+    }
   }
   const words = args.slice(index);
   if (words.length === 0) return undefined;
@@ -1577,6 +1637,29 @@ const PARALLEL_VALUED = new Set([
   "--tagstring",
   "--timeout",
   "--workdir",
+  // The rest of the man page's valued long options (GNU parallel 20240222), long and short forms.
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd",
 ]);
 
 /** GNU parallel's long switches, which take no value. */
@@ -1601,62 +1684,93 @@ const PARALLEL_SWITCHES = new Set([
 /** What starts the arguments of a parallel run: `:::` and friends (`::::` takes files). */
 const PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
 
+const PARALLEL_LONG: readonly string[] = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+
 /**
- * The command lines GNU parallel runs, as they can be read: the words after its options, up to
- * the first `:::`; with no command, the arguments after a `:::` are the commands themselves
- * ("If no command is given, the line of input is executed"). An option this reader does not
- * know may or may not take the next word, so it is read BOTH ways (two lines, at most two such
- * options deep): the command is in a line either way, and the other line is only noise.
+ * Where the command of a `parallel` line can start. Its options come first; one this reader does
+ * not know may or may not take the next word, so BOTH positions are possible — each index is
+ * visited once, so no number of unknown options can hide the command, and the cost is linear.
+ * A long option may be cut short to a unique prefix (Perl's Getopt::Long).
  */
-function parallelLines(args: readonly string[], from: number, unknown: number): string[] {
-  let separator: string | null = null;
-  let index = from;
-  for (; index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (word === "--") {
-      index++;
-      break;
-    }
-    if (!word.startsWith("-") || word === "-") break;
-    if (word.startsWith("--")) {
-      const name = word.split("=")[0] ?? word;
+function parallelStarts(args: readonly string[]): number[] {
+  const starts = new Set<number>();
+  const seen = new Set<number>();
+  const queue = [0];
+  for (let at = queue.pop(); at !== undefined; at = queue.pop()) {
+    if (seen.has(at)) continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
       const carried = word.includes("=");
-      if (name === "--arg-sep") {
-        separator = carried ? word.slice(word.indexOf("=") + 1) : (args[index + 1] ?? null);
-        if (!carried) index++;
-      } else if (PARALLEL_VALUED.has(name)) {
-        if (!carried) index++;
-      } else if (!PARALLEL_SWITCHES.has(name) && !carried && unknown < 2) {
-        return [
-          ...parallelLines(args, index + 1, unknown + 1),
-          ...parallelLines(args, index + 2, unknown + 1),
-        ];
-      }
-      continue;
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null) queue.push(at + 1, at + 2);
+      else queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      // A short group: `-j4` carries its value, `-j 4` takes the next word, `-k` and `-u` none.
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
     }
-    // A short group: `-j4` carries its value, `-j 4` takes the next word, `-k` and `-u` none.
-    if (shortFlags(word, "jnNPadSIELCsJ").wantsNext) index++;
   }
+  return [...starts].sort((a, b) => a - b);
+}
+
+/**
+ * The command lines GNU parallel runs, as they can be read, for each place the command may
+ * start (`parallelStarts`): its words up to the first `:::`. The `:::` arguments run too —
+ * parallel adds each to the command, quoted, or puts it where the command holds `{}` — so those
+ * readings are returned as well; and when the command is a shell, each argument is also a script
+ * of its own. With no command, the arguments are the commands ("If no command is given, the line
+ * of input is executed"). `--arg-sep <s>` replaces `:::`.
+ */
+function parallelLines(args: readonly string[]): string[] {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator =
+    sepWord === undefined
+      ? null
+      : sepWord.includes("=")
+        ? sepWord.slice(sepWord.indexOf("=") + 1)
+        : (args[sepAt + 1] ?? null);
   const isSource = (word: string) =>
     separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
-  const command: string[] = [];
-  for (; index < args.length && !isSource(args[index] ?? ""); index++)
-    command.push(args[index] ?? "");
-  if (command.length > 0) return [command.join(" ")];
-  // No command: each argument after a `:::` is a command line (those after `::::` are files).
   const lines: string[] = [];
-  let reading = false;
-  for (; index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (isSource(word)) reading = !word.startsWith("::::");
-    else if (reading) lines.push(word);
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command: string[] = [];
+    for (; index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    // The arguments after a `:::` (those after `::::` are file names).
+    const given: string[] = [];
+    let reading = false;
+    for (; index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word)) reading = !word.startsWith("::::");
+      else if (reading) given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0) lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0) continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval") lines.push(...given);
   }
-  return lines.length === 0 ? [] : [lines.join(" ; ")];
+  return lines;
 }
 
 /** The command GNU parallel runs (`parallelLines`), the readings joined by `;`; undefined for none. */
 function parallelCommand(args: readonly string[]): string | undefined {
-  const lines = [...new Set(parallelLines(args, 0, 0))];
+  const lines = [...new Set(parallelLines(args))];
   return lines.length === 0 ? undefined : lines.join(" ; ");
 }
 

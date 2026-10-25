@@ -532,10 +532,12 @@ describe("the runners: find -exec, watch, su -c and parallel run the command the
   });
 
   test("parallel: the command before its `:::` arguments, after its own options", () => {
-    expect(nestedCommand("parallel", ["git push {}", ":::", "a", "b"])).toBe("git push {}");
-    expect(nestedCommand("parallel", ["git", "push", "{}", ":::", "a"])).toBe("git push {}");
-    expect(nestedCommand("parallel", ["-j", "4", "git", "push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["--jobs=4", "-k", "git push", "::::", "list"])).toBe(
+    expect(nestedCommand("parallel", ["git push {}", ":::", "a", "b"])).toStartWith("git push {}");
+    expect(nestedCommand("parallel", ["git", "push", "{}", ":::", "a"])).toStartWith("git push {}");
+    expect(nestedCommand("parallel", ["-j", "4", "git", "push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--jobs=4", "-k", "git push", "::::", "list"])).toStartWith(
       "git push",
     );
     expect(nestedCommand("parallel", ["-j4", "--bar", "git push"])).toBe("git push");
@@ -574,15 +576,23 @@ describe("the runners: find -exec, watch, su -c and parallel run the command the
   });
 
   test("review: parallel's boolean -u, its valued -C -s -J, and its long options", () => {
-    expect(nestedCommand("parallel", ["-u", "git", "push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["-C", ",", "git push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["-s", "100", "git push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["-J", "prof", "git push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["--delay", "1", "git", "push", ":::", "a"])).toBe("git push");
-    expect(nestedCommand("parallel", ["--tagstring", "x", "git push", ":::", "a"])).toBe(
+    expect(nestedCommand("parallel", ["-u", "git", "push", ":::", "a"])).toStartWith("git push");
+    expect(nestedCommand("parallel", ["-C", ",", "git push", ":::", "a"])).toStartWith("git push");
+    expect(nestedCommand("parallel", ["-s", "100", "git push", ":::", "a"])).toStartWith(
       "git push",
     );
-    expect(nestedCommand("parallel", ["--arg-sep", ",,", "git push", ",,", "a"])).toBe("git push");
+    expect(nestedCommand("parallel", ["-J", "prof", "git push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--delay", "1", "git", "push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--tagstring", "x", "git push", ":::", "a"])).toStartWith(
+      "git push",
+    );
+    expect(nestedCommand("parallel", ["--arg-sep", ",,", "git push", ",,", "a"])).toStartWith(
+      "git push",
+    );
   });
 
   test("review: parallel with no command runs its arguments; an unknown option is read both ways", () => {
@@ -591,9 +601,59 @@ describe("the runners: find -exec, watch, su -c and parallel run the command the
     expect(nestedCommand("parallel", ["-j", "4"])).toBeUndefined();
     // An option this reader does not know may take the next word or not: both readings are
     // returned, so the command is in the line either way.
-    expect(nestedCommand("parallel", ["--surprise", "git", "push", ":::", "a"])).toBe(
-      "git push ; push",
+    const readings = (
+      nestedCommand("parallel", ["--surprise", "git", "push", ":::", "a"]) ?? ""
+    ).split(" ; ");
+    expect(readings).toContain("git push");
+    expect(readings).toContain("push");
+  });
+
+  // The second review of the follow-up.
+  test("review 2: watch's -d takes its value only attached, so the next word is the command", () => {
+    expect(nestedCommand("watch", ["-dq", "git", "push", "-f"])).toBe("git push -f");
+    expect(nestedCommand("watch", ["-dn", "git", "push", "-f"])).toBe("git push -f");
+    expect(nestedCommand("watch", ["-d", "git", "push"])).toBe("git push");
+    // -n before d still takes the next word (`-nd 1` is `-n` with the value `d`, then `1`).
+    expect(nestedCommand("watch", ["-n", "5", "-d", "git", "push"])).toBe("git push");
+    expect(nestedCommand("watch", ["-xd", "git", "push"])).toBe("'git' 'push'");
+  });
+
+  test("review 2: parallel adds its `:::` arguments to the command, quoted, or puts them at {}", () => {
+    const lines = (args: string[]) => (nestedCommand("parallel", args) ?? "").split(" ; ");
+    expect(lines(["git", "push", ":::", "-f"])).toContain("git push '-f'");
+    expect(lines(["gh", "issue", ":::", "create"])).toContain("gh issue 'create'");
+    expect(lines(["bash", "-c", ":::", "git push -f"])).toContain("bash -c 'git push -f'");
+    expect(lines(["git push {}", ":::", "a", "b"])).toContain("git push 'a' 'b'");
+    // A shell as the command runs each later argument as a script of its own.
+    expect(lines(["sh", "-c", "{}", ":::", "git push -f"])).toContain("git push -f");
+    // A command that is no shell does not turn its arguments into commands.
+    expect(lines(["echo", ":::", "git push -f"])).not.toContain("git push -f");
+  });
+
+  test("review 2: parallel's unknown valued options never hide the command, however many", () => {
+    const said = nestedCommand("parallel", [
+      "--tmpdir",
+      "/tmp",
+      "--wd",
+      ".",
+      "--ssh",
+      "ssh",
+      "--foo",
+      "x",
+      "git",
+      "push",
+      "-f",
+      ":::",
+      "a",
+    ]);
+    expect(said?.split(" ; ")).toContain("git push -f");
+  });
+
+  test("review 2: find's valued tests (-name -exec) do not start a command", () => {
+    expect(nestedCommand("find", [".", "-name", "-exec", "-exec", "git", "push", ";"])).toBe(
+      "'git' 'push'",
     );
+    expect(nestedCommand("find", [".", "-name", "-exec"])).toBeUndefined();
   });
 
   test("review: `{}` as the program is a program worked out when the line runs", () => {
@@ -613,7 +673,9 @@ describe("the runners: find -exec, watch, su -c and parallel run the command the
     expect(programsOf("watch -n 5 git push")).toEqual(["watch", "git"]);
     expect(programsOf("watch 'git push'")).toEqual(["watch", "git"]);
     expect(programsOf('su -c "git push" user')).toEqual(["su", "git"]);
-    expect(programsOf("parallel git push ::: a b")).toEqual(["parallel", "git"]);
+    // The command, and again with its `:::` arguments added to it (parallel does): `git` twice.
+    expect(programsOf("parallel git push ::: a b")).toEqual(["parallel", "git", "git"]);
+    expect(programsOf("parallel git push")).toEqual(["parallel", "git"]);
     expect(programsOf("sudo watch git push")).toEqual(["watch", "git"]);
     expect(programsOf("timeout 9 find . -exec git push {} +", "bash")).toEqual(["find", "git"]);
     expect(programsOf("find . -name x")).toEqual(["find"]);

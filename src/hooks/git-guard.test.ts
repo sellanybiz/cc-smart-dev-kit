@@ -519,6 +519,13 @@ describe("a shell keyword or a wrapper before the command is stepped over", () =
     ["sudo watch git push -f"],
     // The review of the follow-up: the spellings that still hid the inner program.
     ["watch -q 3 git push -f"],
+    // The second review: a -d with an attached value, arguments after `:::`, a third unknown option.
+    ["watch -dq git push -f"],
+    ["watch -dn git push -f"],
+    ["parallel git push ::: -f"],
+    ["parallel bash -c ::: 'git push -f'"],
+    ["parallel eval ::: 'git push -f'"],
+    ["parallel --tmpdir /tmp --wd . --ssh ssh git push -f ::: a"],
     ["watch --equexit 3 git push -f"],
     ["watch --int 5 git push -f"],
     ["parallel -u git push -f ::: a"],

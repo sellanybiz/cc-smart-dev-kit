@@ -559,11 +559,16 @@ crew flag reaches every path it answers through (`run`, `onConfigProblem`, `outs
 command of the line, its wrappers (`setsid env …`, `flock <file> env …`, `script -c …`,
 `busybox sh -c …`), and the lines it runs (`bash -c`, `eval`, a here-string,
 `cc-smart-dev-kit job run --`, `ssh host '…'`) — and the commands its **runners** run: `find`'s
-`-exec`/`-execdir`/`-ok`/`-okdir` (up to the `;` or `+`, every action), `watch`'s command (`-x`
-or through `sh -c`), `su -c`/`--command` (wherever the user stands) and `parallel`'s command
-(before its `:::` arguments), read in `nestedCommand` beside `bash -c` so every guard that walks
-the nesting — the git guard, the merge guard, the issue-write reader, `job-route`, the
-session-escape guard — sees the inner program (`xargs` is a wrapper). On one command: `CLAUDECODE=…` before it, `env -u
+`-exec`/`-execdir`/`-ok`/`-okdir` (every action, up to its `;` or a `+` right after `{}`; the
+value of a test such as `-name` starts none), `watch`'s command (`-x` or through `sh -c`; `-d`
+takes its value only attached), `su -c`/`--command`/`--session-command` (wherever the user
+stands, also after `--`) and `parallel`'s command (after its options, an unknown option read
+both ways; its `:::` arguments are added to the command, quoted, or put at its `{}`, and with no
+command they are the commands), read in `nestedCommand` beside `bash -c` so every guard that
+walks the nesting — the git guard, the merge guard, the issue-write reader, `job-route`, the
+session-escape guard — sees the inner program (`xargs` is a wrapper). A `{}` as the program is
+a computed one. The runners are `RUNNER_PROGRAM_NAMES`, and the merge reader's own table keys
+on the same names (a test keeps the two equal). On one command: `CLAUDECODE=…` before it, `env -u
 CLAUDECODE`, `env --unset`, `env -i` (and `env -`), `sudo`/`doas`/`su`/`runuser`/`ssh`/`systemd-run`
 (a fresh environment). For the commands after it in the same line: `unset CLAUDECODE`, `export
 CLAUDECODE=…`, `export -n`, `declare +x`, a step that is only `CLAUDECODE=`, and in PowerShell any

@@ -54,6 +54,11 @@ describe("a raw issue write", () => {
     "parallel --delay 1 gh issue create -t x -b y ::: a",
     "parallel --arg-sep ,, gh issue create -t x -b y ,, a",
     "watch -q 3 gh issue create -t x -b y",
+    // The second review.
+    "watch -dq gh issue create -t x -b y",
+    "parallel gh issue ::: create",
+    "parallel bash -c ::: 'gh issue create -t x -b y'",
+    "parallel --tmpdir /tmp --wd . --ssh ssh gh issue create -t x -b y ::: a",
     "find . -maxdepth 0 -exec flock + gh issue create -t x -b y \\;",
     "su -- me -c 'gh issue create -t x -b y'",
     "su --session-command 'gh issue create -t x -b y' me",

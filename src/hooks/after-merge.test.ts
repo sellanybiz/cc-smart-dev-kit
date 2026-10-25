@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { readCrewEvents, writeLead } from "../crew/store";
+import { RUNNER_PROGRAM_NAMES } from "../shell/command";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -198,6 +199,25 @@ describe("did the command merge a pull request?", () => {
     expect(target("su -c 'gh pr merge 5' other")).toBeNull();
     expect(target("parallel gh pr merge ::: 5 6")).toBeNull();
     expect(target("parallel 'gh pr merge {}' ::: 5 6")).toBeNull();
+  });
+
+  test("every runner the shell reader knows has a merge refusal here (the two lists agree)", () => {
+    // `isRunnerProgram` (src/shell/command.ts) and the RUNNERS table here are two lists; a
+    // runner in only the first would have its merges judged as the line's own: looser.
+    const merging: Record<string, string> = {
+      find: "find . -exec gh pr merge 5 \\;",
+      parallel: "parallel gh pr merge ::: 5",
+      su: "su -c 'gh pr merge 5' me",
+      watch: "watch gh pr merge 5",
+    };
+    expect(Object.keys(merging).sort()).toEqual([...RUNNER_PROGRAM_NAMES].sort());
+    for (const command of Object.values(merging)) {
+      const calls = pullRequestMerges(command).filter((one) => !one.disarms);
+      expect([command, calls.length > 0 && calls.every((one) => one.refusal !== null)]).toEqual([
+        command,
+        true,
+      ]);
+    }
   });
 
   test("same repository: https, ssh, an ssh alias; case does not matter", () => {

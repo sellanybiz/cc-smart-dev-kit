@@ -9119,18 +9119,65 @@ function writtenText(segment) {
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
-var RUNNER_PROGRAMS = new Set(["find", "parallel", "su", "watch"]);
+var RUNNER_PROGRAM_NAMES = ["find", "parallel", "su", "watch"];
 function isRunnerProgram(program) {
-  return RUNNER_PROGRAMS.has(program);
+  return RUNNER_PROGRAM_NAMES.includes(program);
 }
 var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+var FIND_VALUED = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype"
+]);
 function endsFindCommand(word, before) {
   return word === ";" || word === "+" && before === "{}";
 }
 function findCommands(args) {
   const commands = [];
   for (let index = 0;index < args.length; index++) {
-    if (!FIND_EXEC.has(args[index] ?? ""))
+    const word = args[index] ?? "";
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word))
       continue;
     const words = [];
     for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
@@ -9185,11 +9232,18 @@ function watchCommand(args) {
         index++;
       continue;
     }
-    const { flags, wantsNext } = shortFlags(word, "nq");
-    if (flags.includes("x"))
-      exec = true;
-    if (wantsNext)
-      index++;
+    for (let at = 1;at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d")
+        break;
+      if (letter === "x")
+        exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1)
+          index++;
+        break;
+      }
+    }
   }
   const words = args.slice(index);
   if (words.length === 0)
@@ -9273,7 +9327,29 @@ var PARALLEL_VALUED = new Set([
   "--sshloginfile",
   "--tagstring",
   "--timeout",
-  "--workdir"
+  "--workdir",
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd"
 ]);
 var PARALLEL_SWITCHES = new Set([
   "--bar",
@@ -9293,57 +9369,75 @@ var PARALLEL_SWITCHES = new Set([
   "--xargs"
 ]);
 var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
-function parallelLines(args, from, unknown) {
-  let separator = null;
-  let index = from;
-  for (;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (word === "--") {
-      index++;
-      break;
-    }
-    if (!word.startsWith("-") || word === "-")
-      break;
-    if (word.startsWith("--")) {
-      const name = word.split("=")[0] ?? word;
+var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+function parallelStarts(args) {
+  const starts = new Set;
+  const seen = new Set;
+  const queue = [0];
+  for (let at = queue.pop();at !== undefined; at = queue.pop()) {
+    if (seen.has(at))
+      continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
       const carried = word.includes("=");
-      if (name === "--arg-sep") {
-        separator = carried ? word.slice(word.indexOf("=") + 1) : args[index + 1] ?? null;
-        if (!carried)
-          index++;
-      } else if (PARALLEL_VALUED.has(name)) {
-        if (!carried)
-          index++;
-      } else if (!PARALLEL_SWITCHES.has(name) && !carried && unknown < 2) {
-        return [
-          ...parallelLines(args, index + 1, unknown + 1),
-          ...parallelLines(args, index + 2, unknown + 1)
-        ];
-      }
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null)
+        queue.push(at + 1, at + 2);
+      else
+        queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+function parallelLines(args) {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator = sepWord === undefined ? null : sepWord.includes("=") ? sepWord.slice(sepWord.indexOf("=") + 1) : args[sepAt + 1] ?? null;
+  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command = [];
+    for (;index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    const given = [];
+    let reading = false;
+    for (;index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word))
+        reading = !word.startsWith("::::");
+      else if (reading)
+        given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0)
+        lines.push(given.join(" ; "));
       continue;
     }
-    if (shortFlags(word, "jnNPadSIELCsJ").wantsNext)
-      index++;
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0)
+      continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval")
+      lines.push(...given);
   }
-  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
-  const command = [];
-  for (;index < args.length && !isSource(args[index] ?? ""); index++)
-    command.push(args[index] ?? "");
-  if (command.length > 0)
-    return [command.join(" ")];
-  const lines = [];
-  let reading = false;
-  for (;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (isSource(word))
-      reading = !word.startsWith("::::");
-    else if (reading)
-      lines.push(word);
-  }
-  return lines.length === 0 ? [] : [lines.join(" ; ")];
+  return lines;
 }
 function parallelCommand(args) {
-  const lines = [...new Set(parallelLines(args, 0, 0))];
+  const lines = [...new Set(parallelLines(args))];
   return lines.length === 0 ? undefined : lines.join(" ; ");
 }
 function nestedCommand(program, args, pipedFrom = null) {

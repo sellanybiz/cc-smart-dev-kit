@@ -198,9 +198,10 @@ hide its `rm` from a `Bash(rm:*)` rule: the line would run what the person denie
 `cd` and assignments (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution, or a
 runner — `find`, `watch`, `su`, `parallel`, which do work of their own beside the command they
 run: `find -delete`, a user switch, an endless repeat, remote hosts)
-stays as written, and the person's rules see it. A runner's inner heavy command still counts
-when a line is queued some other way (`classifyHeavyCommand` reads through it for the
-reservation), but the route never rewrites a runner's line. A line of heavy commands only — `cd app &&
+stays as written, and the person's rules see it. The route never rewrites a runner's line;
+`classifyHeavyCommand` still reads through a runner, so with a project file that cannot be read
+the job-route hook asks about `watch tsc` as it does about any heavy command, and `job run
+--kind <kind> -- watch …` reserves by its `--kind`. A line of heavy commands only — `cd app &&
 bunx tsc --noEmit && bunx vitest run`, `FOO=1 bunx tsc --noEmit` — is still queued, under
 the kind that reserves the most.
 
