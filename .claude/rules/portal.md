@@ -108,9 +108,9 @@ in this turn.
 - **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
   in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
   and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>
-  claude|custom`. The old `portal.json` (the opus, fable and judge chains) is read once by
-  `gateway setup` into `kept`, loses its slot parts there, and stays on disk one release for a
-  rollback; nothing reads or writes it after that.
+  claude|custom`. The old `portal.json` (the opus, fable and judge chains) was the portal's memory up to
+  1.0.1; `gateway setup` moved it into `kept` from 1.1.0 to 1.4.0; from 1.4.1 nothing reads or
+  writes it.
   "Claude login" in the model list is what the router saw (`seenClaude` in the state file),
   never a list the portal made up.
 - `GatewayContext`, `runUpdate` and `doctorChecks` take their output from the caller

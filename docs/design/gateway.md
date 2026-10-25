@@ -60,8 +60,9 @@ An optional local router between Claude Code and the model providers
   byte on Anthropic.** A chain a slot is not using is saved in `kept[key]`, so switching to
   Claude never forgets it, and a 0.5.x router or CLI (a loose top-level object) reads the same
   file right and writes `kept` back untouched — a rollback turns nothing back on. The portal
-  keeps no slot state of its own, so no chain has a second home to disagree with (0.5.x's
-  `portal.json` is no longer read, from 1.4.1). A chain is the
+  keeps no slot state of its own, so no chain has a second home to disagree with (the old
+  portal's `portal.json` held them up to 1.0.1; 1.1.0 to 1.4.0 moved them at `gateway setup`;
+  from 1.4.1 nothing reads or writes it). A chain is the
   person's, any targets in any order, and each slot's fallback switch decides whether its next
   target may answer (it travels with a saved chain; the breaker switch goes with the slot's
   chain, as it always did); the router never adds a target, Claude included. A backend's

@@ -5,11 +5,14 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.4.1
 
-- **`gateway setup` no longer reads 0.5.x's `portal.json`.** 0.6.0 moved the opus, fable and
-  judge chains and their switches from that file into `gateway.json`, and kept the read for one
-  release; it ran for nine. Setup now leaves the file as it is, byte for byte, and moves nothing
-  from it. A machine still on 0.5.x updates with `migrate` and `setup`, which this does not
-  touch. `cliPaths()` no longer has `portalStateFile`.
+- **`gateway setup` no longer reads the old portal's `portal.json`.** Up to 1.0.1 the portal
+  kept the opus and fable chains, the judge chain and their fallback switches in that file.
+  1.1.0 moved them into `gateway.json`: `gateway setup` saved them in `kept` and took them out
+  of `portal.json`, and it kept that read in six releases (1.1.0, 1.1.1, 1.1.2, 1.2.0, 1.3.0
+  and 1.4.0). Setup now leaves the file as it is, byte for byte, and moves nothing from it.
+  `cliPaths()` no longer has `portalStateFile`. A machine that updates from 1.0.x or older
+  straight to 1.4.1 keeps those chains only in `portal.json`, which nothing reads now (`migrate`
+  does not move it): set each chain again with `cc-smart-dev-kit gateway slot <slot> <target>[,…]`.
 
 ## 1.4.0
 

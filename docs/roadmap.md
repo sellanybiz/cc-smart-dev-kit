@@ -434,3 +434,13 @@ shared view: [jobs.md](jobs.md).
 
 Each adopting project removes its own old copies of the pieces the plugin now ships,
 one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
+
+## Open, not yet planned
+
+- **`doctor`: a project hook that extends a kit hook.** Today `doctor`
+  (`src/cli/project-checks.ts`) warns "both answer" whenever a project wires its own hook on
+  the same event and matcher as a kit hook, and advises listing the hook in `ownHooks`. For a
+  project hook that keeps rules only that project has, and whose old copy of the kit's part
+  already goes quiet where the kit answers, that advice is wrong: it silences the kit's hook
+  and wakes the project's old copy. A project should be able to mark such a hook as an
+  extension, so `doctor` neither warns nor gives that advice.

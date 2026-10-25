@@ -593,12 +593,12 @@ describe("cc-smart-dev-kit gateway setup on a machine an older version set up", 
     expect(again.stdout).not.toContain("Restart every open Claude session now");
   });
 
-  test("a 0.5.x portal.json is no longer read: setup leaves it byte for byte and moves nothing", async () => {
+  test("a 1.0.x portal.json is no longer read: setup leaves it byte for byte and moves nothing", async () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1"] });
     const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
-    // As a 0.5.x portal left it: the opus chain and a switch, in a layout of its own.
+    // As a 1.0.x portal left it: the opus chain and a switch, in a layout of its own.
     const portalFile = join(paths.stateDir, "portal.json");
     const portalText = `${JSON.stringify(
       {

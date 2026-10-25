@@ -834,7 +834,7 @@ export function withoutRetiredDefaultClaude(config: GatewayConfig): {
  * `gateway setup`'s step for a config an older version wrote, saved only when something
  * changed, one line per slot it changed (none when nothing did):
  *   - 0.4.x's hidden Claude step goes (`withoutRetiredDefaultClaude`).
- * It reads no other file: 0.5.x's `portal.json` is no longer read, and stays as it is.
+ * It reads no other file: the old portal's `portal.json` (1.0.1 and older) is no longer read, and stays as it is.
  * With `stateDir`, a file this step changes is backed up first (`backupFile`).
  */
 export function upgradeConfig(
