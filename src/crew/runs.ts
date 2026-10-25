@@ -217,6 +217,8 @@ export const runRecordSchema = z.looseObject({
   base: z.looseObject({ ref: text, sha: text }).nullable(),
   /** The brief the run started from: its path (null for stdin) and the hash of its text. */
   brief: z.looseObject({ path: z.string().nullable(), sha256: z.string().nullable() }),
+  /** The GitHub issue the run started from (`crew start --issue`, GI3); absent when none. */
+  issue: z.looseObject({ number: z.number().int().positive(), url: text }).optional(),
   /** The lead that started it. */
   lead: actor,
   /** The run this one continues, and the run that continued this one. */
@@ -478,6 +480,9 @@ export function startOf(after: CrewRecord, at: string): RunRecord {
     effort: after.effort,
     events: [],
     id: after.id,
+    ...(after.issue === undefined
+      ? {}
+      : { issue: { number: after.issue.number, url: after.issue.url } }),
     kind: after.kind,
     lead: leadOf(after),
     model: { named: after.model.named, resolved: after.model.resolved, slot: after.model.slot },

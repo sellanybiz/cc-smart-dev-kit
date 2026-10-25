@@ -44,6 +44,7 @@ import { COMMAND, MARKETPLACE } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
+import { type PickedIssue, pickIssue } from "../issues/pickup";
 import type { McpContext } from "../mcp/servers";
 import { readTavilyKey } from "../mcp/tavily";
 import {
@@ -68,6 +69,7 @@ import {
   RETRY_WATCHDOG_RECHECK_MS,
   RETRY_WATCHDOG_VALUE,
 } from "../setup/retry-watchdog";
+import { runGh } from "../workflow/merge-check";
 import {
   personalWorkflowFile,
   type ResolvedValue,
@@ -77,7 +79,7 @@ import {
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
 import { findCrew } from "./board";
-import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
+import { BRIEF_FRAME_MARK, briefText, firstPrompt, issueBlock, REPORT_COMMAND } from "./brief";
 import { type Caller, readCaller, reasonOf, requireSession } from "./caller";
 import {
   CREW_PERMISSION_MODE,
@@ -159,6 +161,12 @@ export interface StartArgs {
   waitsFor: string[];
   /** The crew session this one continues (the hand-off): its name or its id; null when it is new. */
   continueFrom: null | string;
+  /**
+   * The GitHub issue the phase starts from (`--issue`): its number or address, already checked to
+   * be one; null when the brief alone starts it. The brief is then the issue's text, after
+   * `--brief`'s when both are given.
+   */
+  issue: null | string;
 }
 
 /** How long one quick git call may take (a `rev-parse`, a `check-ref-format`). */
@@ -341,10 +349,16 @@ async function readBrief(
   args: StartArgs,
   ctx: CrewContext,
   planFile: null | string,
+  issue: null | PickedIssue,
 ): Promise<BriefRead> {
   let text: string;
   let path: null | string = null;
   let line: null | string = null;
+  // A phase that starts from an issue with no `--brief`: the issue is the brief, and the plan's
+  // folder is not looked in (GI3).
+  if (issue !== null && args.brief === null) {
+    return { line: issueLine(issue), path: null, text: issueBlock(issue) };
+  }
   if (args.brief === "-") {
     text = await ctx.readStdin();
   } else {
@@ -370,7 +384,35 @@ async function readBrief(
     }
   }
   if (text.trim() === "") throw refusal("the brief is empty", undefined, 2);
+  if (issue !== null) {
+    return { line: issueLine(issue), path, text: `${text.trimEnd()}\n\n${issueBlock(issue)}` };
+  }
   return { line, path, text };
+}
+
+/** The line a start from an issue prints: which issue it took, and who chose it. */
+function issueLine(issue: PickedIssue): string {
+  return `brief: issue #${issue.number} ${issue.url} (labelled ${issue.readyLabel} by ${issue.labeledBy})`;
+}
+
+/**
+ * Reads the issue `--issue` names, through the one `gh` runner, or throws a refusal that says why
+ * a phase may not start from it (`pickup.ts`). Null when the start names no issue.
+ */
+async function readIssue(args: StartArgs, ctx: CrewContext): Promise<null | PickedIssue> {
+  if (args.issue === null) return null;
+  const picked = await pickIssue(
+    {
+      cwd: ctx.cwd,
+      env: ctx.env,
+      gh: ctx.gh ?? runGh,
+      home: ctx.paths.home,
+      paths: ctx.paths,
+    },
+    args.issue,
+  );
+  if (!picked.ok) throw refusal(picked.why);
+  return picked.issue;
 }
 
 /**
@@ -439,6 +481,8 @@ interface Plan {
   kind: KnownOr<CrewKind>;
   /** The files the phase owns. */
   files: string[];
+  /** The issue the phase started from (`--issue`), kept on the record; absent when none. */
+  issue?: { author: string; number: number; repo: string; url: string };
   /** The phases it waits for. */
   waitsFor: string[];
   /** The id of the crew session whose hand-off this one carries on; null for a crew session's first try. */
@@ -550,7 +594,10 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     return await planContinuation(args, ctx, caller, lead, claude);
   }
   const planFile = await leadPlanFile(lead, caller, ctx);
-  const brief = await readBrief(args, ctx, planFile);
+  // The issue is read first: its refusal says why a stranger's issue is no task, before a brief
+  // file is looked for.
+  const issue = await readIssue(args, ctx);
+  const brief = await readBrief(args, ctx, planFile, issue);
   const briefGiven = brief.text;
   const chosen = chooseLaunch(args.kind, args, ctx, caller.repo);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
@@ -591,6 +638,16 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     continues: null,
     planFile,
     files: args.files,
+    ...(issue === null
+      ? {}
+      : {
+          issue: {
+            author: issue.author,
+            number: issue.number,
+            repo: issue.repo,
+            url: issue.url,
+          },
+        }),
     kind: args.kind,
     lead,
     lean,
@@ -699,6 +756,7 @@ async function planContinuation(
     chosen,
     claude,
     continues: old.id,
+    ...(old.issue === undefined ? {} : { issue: old.issue }),
     planFile: old.planFile ?? (await leadPlanFile(lead, caller, ctx)),
     files: old.files,
     kind: old.kind,
@@ -1355,6 +1413,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
           effort: chosen.effort,
           files: planned.files,
           id: `${planned.phase}-${planned.slug}-${ctx.randomSuffix()}`,
+          ...(planned.issue === undefined ? {} : { issue: planned.issue }),
           kind: planned.kind,
           lastLine: null,
           leadName: lead.name,
@@ -1402,6 +1461,15 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         baseRef: planned.baseRef,
         branch: planned.branch,
         files: planned.files,
+        ...(planned.issue === undefined
+          ? {}
+          : {
+              issue: {
+                author: planned.issue.author,
+                number: planned.issue.number,
+                url: planned.issue.url,
+              },
+            }),
         leadName: lead.name,
         crewName: record.name,
         worktree: planned.worktree,

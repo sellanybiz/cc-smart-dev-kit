@@ -7,7 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fakeIssueGh } from "../issues/fake-github";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
+import { commitConfig } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { recordReview, reviewsFile } from "../workflow/reviews";
 import { runCrew } from "./command";
@@ -57,9 +59,22 @@ function taskFile(
   );
 }
 
+/** The project's policy with the crew and the issues switches on, as committed on `main`. */
+const ISSUES_POLICY = {
+  workflow: { crew: { enabled: true }, issues: { enabled: true } },
+  worktrees: { base: "main" },
+};
+
 /** A world with one crew session that has committed something on its branch. */
-async function crewWorld1(options: { files?: string[]; state?: "working" | "blocked" } = {}) {
+async function crewWorld1(
+  options: { files?: string[]; issue?: boolean; state?: "working" | "blocked" } = {},
+) {
   const world = crewWorld();
+  if (options.issue === true) {
+    // The phase started from issue #12: the project's own GitHub repository, the switch on.
+    git(world.repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
+    commitConfig(world.repo, ISSUES_POLICY, ["main"]);
+  }
   await writeLead(
     world.paths.stateDir,
     {
@@ -96,6 +111,16 @@ async function crewWorld1(options: { files?: string[]; state?: "working" | "bloc
       effort: "high",
       files: options.files ?? ["README.md"],
       id: ID,
+      ...(options.issue === true
+        ? {
+            issue: {
+              author: "outsider",
+              number: 12,
+              repo: "example-org/my-app",
+              url: "https://github.com/example-org/my-app/issues/12",
+            },
+          }
+        : {}),
       kind: "build",
       lastLine: null,
       leadName: "LEAD my-app master-plan",
@@ -807,5 +832,169 @@ describe("crew report", () => {
         "crew report: the part holds fields the report shape does not know (kept under `extra`): suite",
       );
     });
+  });
+});
+
+/** `crew report` on a phase that started from an issue (GI3): one comment on the issue. */
+describe("the hand-back on the issue", () => {
+  const ISSUE = { author: "outsider", body: "x", events: [], labels: [], number: 12, title: "t" };
+  const MARKER = (status: string) => `<!-- cc-smart-dev-kit:handback ${ID} ${status} -->`;
+  const CREW_ENV = { CC_SMART_DEV_KIT_CREW: ID };
+
+  async function issueReport(
+    status: "done" | "failed" | "handoff",
+    github: Partial<Parameters<typeof fakeIssueGh>[0]> = {},
+    part: string = modelPart(),
+  ) {
+    const world = await crewWorld1({ issue: true });
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {}, ...github });
+    const file = join(tempDir("report"), "part.json");
+    writeFileSync(file, part);
+    const code = await runCrew(
+      ["report", "--status", status, "--file", file],
+      world.ctx({ cwd: world.worktree, gh: fake.exec }, CREW_ENV),
+    );
+    const head = git(world.worktree, "rev-parse", "HEAD").trim();
+    return { code, fake, head, world };
+  }
+
+  test("a done report posts one comment: status, tests, checks, review, the head commit", async () => {
+    const { code, fake, head, world } = await issueReport("done");
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    const short = head.slice(0, 7);
+    expect(fake.posted).toEqual([
+      {
+        body: `**cc-smart-dev-kit:** phase \`B6b\` reported \`done\`.
+
+- Branch \`crew/B6b-portal-live\` at \`${short}\`: 2 files changed (+2, -0).
+- Tests: \`bun test src/crew\` 12 passed, 0 failed; the whole suite \`bun test\` 42 passed, 0 failed.
+- Checks: typecheck passed.
+- Review: \`cc-smart-dev-kit:reviewer\` on \`opus\` at effort \`xhigh\`, read \`${short}\`; 1 finding, fixed: a leak (closed).
+
+${MARKER("done")}
+`,
+        number: 12,
+      },
+    ]);
+    // The comment goes to the project's own repository on github.com, by the number.
+    expect(fake.calls.find((one) => one[1] === "comment")).toEqual([
+      "issue",
+      "comment",
+      "12",
+      "--repo",
+      "github.com/example-org/my-app",
+      "--body-file",
+      "-",
+    ]);
+  });
+
+  test("a failed test and a failed check are said, not hidden", async () => {
+    const part = JSON.parse(modelPart()) as Record<string, any>;
+    part.tests.targeted[0].failed = 2;
+    part.tests.targeted[0].ok = false;
+    part.checks = [{ name: "lint", note: "3 errors", ok: false }];
+    const { fake } = await issueReport("failed", {}, JSON.stringify(part));
+    const body = fake.posted[0]?.body ?? "";
+    expect(body).toContain("reported `failed`");
+    expect(body).toContain("`bun test src/crew` 12 passed, 2 failed");
+    expect(body).toContain("Checks: lint failed (3 errors).");
+  });
+
+  test("a hand-off says it in one line, at the commit", async () => {
+    const { fake, head } = await issueReport("handoff");
+    expect(fake.posted).toEqual([
+      {
+        body: `**cc-smart-dev-kit:** phase \`B6b\` handed off at \`${head.slice(0, 7)}\` on \`crew/B6b-portal-live\`; the next session carries on.
+
+${MARKER("handoff")}
+`,
+        number: 12,
+      },
+    ]);
+  });
+
+  test("a report already commented on is not commented on again", async () => {
+    const { code, fake } = await issueReport("done", {
+      comments: { 12: [`earlier\n\n${MARKER("done")}\n`] },
+    });
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+  });
+
+  test("another session's comment on the same issue does not stop this one", async () => {
+    const other = "<!-- cc-smart-dev-kit:handback B6b-other-aaaaaa done -->";
+    const { fake } = await issueReport("done", { comments: { 12: [`x\n${other}\n`] } });
+    expect(fake.posted).toHaveLength(1);
+  });
+
+  test("GitHub cannot be reached: one line to the lead, the report is recorded all the same", async () => {
+    const world = await crewWorld1({ issue: true });
+    const down = async () => ({ code: null, err: "", kind: "timeout" as const, out: "" });
+    const code = await runCrew(doneArgs(), world.ctx({ cwd: world.worktree, gh: down }, CREW_ENV));
+    expect(code).toBe(0);
+    expect(world.err).toEqual([]);
+    const line = world.out.find((one) => one.startsWith("note: the hand-back comment")) ?? "";
+    expect(line).toContain("#12");
+    expect(line).toContain("timed out");
+    const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
+    expect(report?.status).toBe("done");
+    expect(report?.open.some((one) => one.includes("not posted on issue #12"))).toBe(true);
+    expect(world.out.some((one) => one.startsWith("report done"))).toBe(true);
+  });
+
+  test("the switch is off now: no comment, one line, the report is recorded", async () => {
+    const world = await crewWorld1({ issue: true });
+    commitConfig(
+      world.repo,
+      { workflow: { crew: { enabled: true } }, worktrees: { base: "main" } },
+      ["main"],
+    );
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {} });
+    const code = await runCrew(
+      doneArgs(),
+      world.ctx({ cwd: world.worktree, gh: fake.exec }, CREW_ENV),
+    );
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+    expect(
+      world.out.some(
+        (one) =>
+          one.startsWith("note: the hand-back comment") && one.includes("issues.enabled is off"),
+      ),
+    ).toBe(true);
+  });
+
+  test("a public repository without allowPublic: no comment", async () => {
+    const world = await crewWorld1({ issue: true });
+    const fake = fakeIssueGh({ gh: { visibility: "PUBLIC" }, issues: [ISSUE], permissions: {} });
+    const code = await runCrew(
+      doneArgs(),
+      world.ctx({ cwd: world.worktree, gh: fake.exec }, CREW_ENV),
+    );
+    expect(code).toBe(0);
+    expect(fake.posted).toEqual([]);
+    expect(world.out.some((one) => one.includes("allowPublic"))).toBe(true);
+  });
+
+  test("a secret in a finding and an @mention are not posted as written", async () => {
+    const part = JSON.parse(modelPart()) as Record<string, any>;
+    part.review.findings = [{ finding: `key ghp_${"a".repeat(36)} @octocat`, fix: "removed" }];
+    const { fake } = await issueReport("done", {}, JSON.stringify(part));
+    const body = fake.posted[0]?.body ?? "";
+    expect(body).not.toContain("ghp_");
+    expect(body).toContain("[redacted: a key or token]");
+    expect(body).not.toContain("@octocat");
+  });
+
+  test("a phase that did not start from an issue never calls gh", async () => {
+    const world = await crewWorld1();
+    const fake = fakeIssueGh({ issues: [ISSUE], permissions: {} });
+    const code = await runCrew(
+      doneArgs(),
+      world.ctx({ cwd: world.worktree, gh: fake.exec }, CREW_ENV),
+    );
+    expect(code).toBe(0);
+    expect(fake.calls).toEqual([]);
   });
 });

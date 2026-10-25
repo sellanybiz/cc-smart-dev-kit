@@ -35,6 +35,8 @@ export interface PickedIssue {
   labeledBy: string;
   labels: string[];
   number: number;
+  /** The ready label's name, as the project's switch spells it. */
+  readyLabel: string;
   /** `owner/name`, as GitHub spells it in the address. */
   repo: string;
   title: string;
@@ -313,6 +315,7 @@ export async function pickIssue(world: IssueWorld, ref: string): Promise<PickOut
       labeledBy: plainLogin(last.actor),
       labels,
       number,
+      readyLabel: label,
       repo: name,
       title: redactText(issue.title, world.home).replace(/\s+/g, " ").trim(),
       url: issue.html_url,

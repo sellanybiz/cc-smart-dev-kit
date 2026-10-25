@@ -565,6 +565,15 @@ const crewFields = z.object({
   planFile: text.nullable().optional(),
   /** The brief the run started from: its path (null for stdin) and the sha-256 of its text. */
   briefSource: z.looseObject({ path: z.string().nullable(), sha256: text }).optional(),
+  /**
+   * The GitHub issue the phase started from (`crew start --issue`, GI3): its number, its address,
+   * the repository (`owner/name`) and the account that wrote it. Set by the start itself and carried to a hand-off's next
+   * session; the hand-back comment and the merge comment (GI2) find the issue here. Absent for a
+   * phase that started from a brief alone.
+   */
+  issue: z
+    .looseObject({ author: text, number: z.number().int().positive(), repo: text, url: text })
+    .optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
