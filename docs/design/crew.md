@@ -280,6 +280,13 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
    because `crew start` never asks — the person starts such a session themselves. Fable is
    refused: no crew session carries the person's `Fable reason: build` line.
+   A `--continue` start takes `--model` and `--effort` too (`changedLaunch`): without them the next
+   crew session runs on the old one's model and effort, judged again like any launch. **The lead
+   picks the effort by the phase's task** (the owner, 2026-10-25): the kind's effort is the
+   default, and `--effort` is allowed without the person asking — `crew start` and the Agent
+   guard refuse only what they always refused (a `ui` session below `high`, a value the guard
+   asks about). `--model` still changes only when the person asks (`plugin/skills/lead/SKILL.md`
+   § 2).
 3. **Start now, or queued** (`places.ts`), decided under one machine-wide lock
    (`<stateDir>/crew/lock`) so two starts never both take the last place, and recorded
    (`starting` or `queued`) under the same hold. First the name must be free: no crew session of this
@@ -536,6 +543,44 @@ agent view cannot show is said with the reason, and the record keeps its state a
 never `working` on a guess. Such a resume may have started a session nobody can name, so the
 watch **does not try it again by itself**: it says so once, and the lead's own `crew resume`
 brings it back (the hold goes when the record is no longer `paused`).
+
+#### Changing a crew session's model or effort (MC1)
+
+`crew model <name> [--model <m>] [--effort <e>]` (`model.ts`) is the one way to change what a
+running crew session runs on; before it, only the person could (`claude attach`, then `/model`),
+and the record kept naming the old model, so the caps and `crew list` were wrong.
+
+- **The same checks as a start.** The values go through `chooseLaunch` (`changedLaunch` says what
+  a model alone, an effort alone, or both ask for): a `ui` session never runs on an affordable
+  model or below `high` (D50), and anything the Agent guard refuses or would ask about is
+  refused (exit 2, the guard's words).
+- **By state.** A **running** crew session (`working`, `blocked`, `quiet`) is stopped when its
+  process lives (`stopSession`) and resumed with the new flags through `resumeSession` — the one
+  resume path, so the session Claude Code opens is followed — with a prompt that says what
+  changed and to go on from where it stopped. A **stopped** or **paused** one keeps its state
+  and its wait: the record holds the values, and its next resume reads them (`resumeArgs`, from
+  the record) — the opus caps are judged once, when the values are stored, and `crew resume`
+  judges none. A **queued** one starts on them (`startQueued` re-reads the record, so a change
+  made after the watch listed it is used). A session that ended its phase, a removed or
+  discarded one, one still `starting` and a `blocked` one (it waits for the lead's answer, and a
+  resume that says "go on" would tell it to continue without it) take no change.
+- **The record is the truth.** The model, the tier and the effort are written under the places
+  lock *before* the session is touched, so the caps and `crew list` count the new tier at once
+  and a resume that fails leaves the values stored for the next one. The resumed session's id
+  comes in the write that makes it `working`, as everywhere (§ The session a resume brings
+  back).
+- **The caps.** A move onto the opus tier is judged as a new opus session by `placeFor` (the
+  per-lead and machine opus caps, the usage window), with the session itself left out of the
+  counts and the total caps left out too, since a change adds no place. When one holds, the
+  change waits on the record (`pendingLaunch`: the model, the effort, the reason, when): the
+  session runs on as it is, the line says `queued (<reason>)`, and the lead's watch applies it on
+  a pass where the caps allow (`applyPendingModels`, under the lease like a start). A later
+  `crew model` that lands on a value replaces or drops it.
+- **A crew session never runs it** (`CREW_NEVER_DOES.model`, the Bash judge): its model is its
+  lead's call.
+- **Proved on 2.1.310** (`docs/claude-code-contract.md`): `--resume --model --effort` runs the
+  next turn on the new model and effort, and a crew-shaped `--settings` file pins neither. The
+  live `--bg --resume` form is owed (a crew session's guard refuses `claude --bg`).
 
 ### A removed crew session's conversation (AR1)
 

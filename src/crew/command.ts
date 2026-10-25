@@ -4,7 +4,7 @@
  * (`lead.ts`), `start` (`start.ts`), `step` (`step.ts`), `report` (`report.ts`), `answer`
  * (`answer.ts`), `tell` (`tell.ts`), `watch` (`watch.ts`), `self-watch` (`self-watch.ts`), the
  * board — `list`, `status`, `kinds`, `attach` (`board.ts`) — and the end of a crew session —
- * `stop`, `resume` (`end.ts`) and `rm` (`remove.ts`).
+ * `stop`, `resume` (`end.ts`), `model` (`model.ts`) and `rm` (`remove.ts`).
  *
  * Exit codes, as everywhere in the command: 0 done, 1 a refusal or an error, 2 a wrong command
  * or option — one line, then where the help is.
@@ -21,6 +21,7 @@ import type { CrewContext } from "./context";
 import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
 import { runLeadTell } from "./lead-tell";
+import { type ModelArgs, runCrewModel } from "./model";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
 import { runCrewRm } from "./remove";
 import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } from "./report";
@@ -147,7 +148,8 @@ The board and the end of a crew session (a command's own help: crew <command> --
 ${OTHER_COMMANDS}
 
 The kind gives the model and the effort (--model and --effort override them, judged
-by the agent guard's rules; one the guard would ask you about is refused):
+by the agent guard's rules; one the guard would ask you about is refused; crew model
+changes them later, even for a running crew session):
 ${KIND_LINES}
 
 Crew sessions are off until workflow.crew.enabled is on: ${COMMAND} workflow set
@@ -170,6 +172,35 @@ const START_OPTIONS = [
   "--waits-for",
   "--continue",
 ] as const;
+
+/** The mistake in an `--effort` value (`crew start`, `crew model`); null when it is none. */
+function effortMistake(effort: null | string): null | string {
+  if (effort === null || (ALLOWED_EFFORTS as readonly string[]).includes(effort)) return null;
+  return `Unknown effort: ${effort} (a crew session runs at ${ALLOWED_EFFORTS.join(", ")})`;
+}
+
+/** `crew model`'s arguments, checked; or the mistake. */
+export function parseModelArgs(argv: readonly string[]): ModelArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--model", "--effort"]);
+  if ("error" in parsed) return parsed;
+  const [crew, ...extra] = parsed.positionals;
+  if (crew === undefined) {
+    return {
+      error: "Say which crew session: crew model <name|id> [--model <model>] [--effort <effort>]",
+    };
+  }
+  if (extra.length > 0) {
+    return { error: `Unknown argument: ${extra.join(" ")} (put a name with spaces in quotes)` };
+  }
+  const model = parsed.options.get("--model") ?? null;
+  const effort = parsed.options.get("--effort")?.toLowerCase() ?? null;
+  const badEffort = effortMistake(effort);
+  if (badEffort !== null) return { error: badEffort };
+  if (model === null && effort === null) {
+    return { error: "Say what changes: --model <model> or --effort <effort>, or both" };
+  }
+  return { crew, effort, model };
+}
 
 /** `crew start`'s arguments, checked; or the mistake. */
 export function parseStartArgs(argv: readonly string[]): StartArgs | { error: string } {
@@ -202,11 +233,8 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
     return { error: "Give the crew session its brief: --brief <file>, or --brief - for stdin" };
   }
   const effort = options.get("--effort")?.toLowerCase() ?? null;
-  if (effort !== null && !(ALLOWED_EFFORTS as readonly string[]).includes(effort)) {
-    return {
-      error: `Unknown effort: ${effort} (a crew session runs at ${ALLOWED_EFFORTS.join(", ")})`,
-    };
-  }
+  const badEffort = effortMistake(effort);
+  if (badEffort !== null) return { error: badEffort };
   const waitsFor = commaList(options.get("--waits-for"));
   const badWait = waitsFor.find((one) => !isPhase(one));
   if (badWait !== undefined) {
@@ -441,6 +469,14 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       stop: () => runCrewStop(ref, ctx),
     }[sub];
     return await guarded(sub, ctx, run);
+  }
+  if (sub === "model") {
+    const args = parseModelArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () => runCrewModel(args, ctx));
   }
   if (sub === "start") {
     const args = parseStartArgs(rest);

@@ -7660,6 +7660,17 @@ var crewFields = object({
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
   resumeClaim: looseObject({ at: text, token: text }).optional(),
+  pendingLaunch: looseObject({
+    at: text,
+    effort: text,
+    model: looseObject({
+      named: text,
+      slot: text.nullable(),
+      resolved: text,
+      tier: text.nullable()
+    }),
+    why: text
+  }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),

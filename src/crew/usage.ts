@@ -18,7 +18,7 @@ export interface BoardCommand {
   /** What `crew <name> --help` prints. */
   help: string;
   /** The word after `crew`. */
-  name: "attach" | "kinds" | "list" | "resume" | "rm" | "status" | "stop";
+  name: "attach" | "kinds" | "list" | "model" | "resume" | "rm" | "status" | "stop";
   /** One short line for the list of commands. */
   summary: string;
 }
@@ -133,6 +133,32 @@ to resume. Never claude respawn --all.
 ${NAMED}`,
     name: "resume",
     summary: "Bring one crew session back, or every paused one.",
+  },
+  {
+    args: `${CREW} [--model <model>] [--effort <effort>]`,
+    help: `Usage: ${COMMAND} crew model ${CREW} [--model <model>] [--effort <effort>]
+
+Changes the model or the effort of one crew session, when the person asks (the model) or the
+phase's task calls for it (the effort). Give --model, --effort or both. The same checks as
+crew start judge the values: a ui session never runs on an affordable model or below high, and
+anything the agent guard would refuse or ask about is refused. A model asked for alone runs at
+its kind's effort; an effort alone keeps the model.
+
+What happens depends on the crew session:
+  running   stopped and resumed (claude --bg --resume) with the new flags and a prompt that
+            says what changed and to go on from where it stopped; the record takes the new
+            values in the write that makes it working again
+  stopped, paused   the record keeps its state and takes the values; its next resume uses them
+  queued    the record takes the values; its start uses them
+A change to the opus tier that a cap holds back (crew.perLeadOpus, crew.maxOpus, the usage
+window) is queued with its reason: the crew session runs on, and the lead's watch applies the
+change once the caps allow. A crew session that ended its phase takes no change, a blocked one
+is refused until its question is answered, and a crew session never runs this command. The
+resume form with changed flags (claude --bg --resume) is not yet proved live; see the contract.
+
+${NAMED}`,
+    name: "model",
+    summary: "Change one crew session's model or effort.",
   },
   {
     args: CREW,

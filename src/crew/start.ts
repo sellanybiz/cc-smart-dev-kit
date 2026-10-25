@@ -100,11 +100,9 @@ import { activeContinuationOf } from "./lifecycle";
 import { CREW_REF, crewName } from "./names";
 import {
   OPUS_TIER,
-  onOpusTier,
   placeFor,
+  placeInputOf,
   RUNNING_STATES,
-  runningCrew,
-  runningForLead,
   unmetWaits,
   withPlacesLock,
 } from "./places";
@@ -123,6 +121,7 @@ import {
   type LeadRecord,
   listAllCrew,
   listCrew,
+  readCrew,
   readCrewEvents,
   readLead,
   readReport,
@@ -254,6 +253,22 @@ export function chooseLaunch(
     };
   }
   return { effort, model, real, slot: answeringSlot(model, gateway, ctx.env) };
+}
+
+/**
+ * What `chooseLaunch` is asked for a crew session that runs on `current` and is asked for `asked`
+ * (`--model`, `--effort`): a continuation and `crew model` (`model.ts`) both read it. A model asked
+ * for alone brings the effort its kind runs it at; an effort alone keeps the model; neither keeps
+ * both.
+ */
+export function changedLaunch(
+  current: { effort: string; model: string },
+  asked: { effort: null | string; model: null | string },
+): { effort: null | string; model: string } {
+  return {
+    effort: asked.effort ?? (asked.model === null ? current.effort : null),
+    model: asked.model ?? current.model,
+  };
 }
 
 /** One git call's trimmed output, or null when it failed. */
@@ -536,7 +551,12 @@ async function planContinuation(
   if (!isCrewKind(old.kind)) {
     throw refusal(`${old.name} has a kind this kit does not know (${old.kind})`);
   }
-  const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
+  // The old crew session's model and effort, unless the lead asks for others (`--model`, `--effort`).
+  const chosen = chooseLaunch(
+    old.kind,
+    changedLaunch({ effort: old.effort, model: old.model.named }, args),
+    ctx,
+  );
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
   // The next crew session is lean like any other, on the old crew session's kind.
   const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
@@ -1201,25 +1221,10 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         planned.waitsFor,
         all.filter((one) => one.repo === caller.repo),
       );
-      const running = runningCrew(all);
-      const mine = runningForLead(all, lead.sessionId);
-      const input = {
-        freeGb: null,
-        leadRunning: mine.length,
-        leadRunningOpus: onOpusTier(mine).length,
-        max: crew.max.value,
-        maxOpus: crew.maxOpus.value,
-        needGb: crew.memoryGb.value,
+      const input = placeInputOf(all, lead.sessionId, crew, usage, {
         opus: chosen.real.tier === OPUS_TIER,
-        opusFallback: usage.opusFallback,
-        perLead: crew.perLead.value,
-        perLeadOpus: crew.perLeadOpus.value,
-        running: running.length,
-        runningOpus: onOpusTier(running).length,
         unmet,
-        usageHoldPercent: crew.usagePercent.value,
-        usagePercent: usage.percent,
-      };
+      });
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
       const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
@@ -1344,35 +1349,24 @@ function specOf(planned: Plan): LaunchSpec {
  * the crew session (the caps, the free memory, or a phase it waits for).
  */
 export async function startQueued(
-  record: CrewRecord,
+  listed: CrewRecord,
   ctx: CrewContext,
   resolved: ResolvedWorkflow,
 ): Promise<void> {
+  // The record as it is now, not as the watch listed it a moment ago: the lead may have changed
+  // its model or effort since (`crew model`), or the crew session may have left the queue.
+  const record = readCrew(ctx.paths.stateDir, listed.repo, listed.id);
+  if (record === null || record.state !== "queued") return;
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
   const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
-    const running = runningCrew(all);
-    const mine = runningForLead(all, record.leadSessionId);
-    const input = {
-      freeGb: null,
-      leadRunning: mine.length,
-      leadRunningOpus: onOpusTier(mine).length,
-      max: crew.max.value,
-      maxOpus: crew.maxOpus.value,
-      needGb: crew.memoryGb.value,
+    const input = placeInputOf(all, record.leadSessionId, crew, usage, {
       opus: record.model.tier === OPUS_TIER,
-      opusFallback: usage.opusFallback,
-      perLead: crew.perLead.value,
-      perLeadOpus: crew.perLeadOpus.value,
-      running: running.length,
-      runningOpus: onOpusTier(running).length,
       unmet: unmetWaits(record.waitsFor, here),
-      usageHoldPercent: crew.usagePercent.value,
-      usagePercent: usage.percent,
-    };
+    });
     const first = placeFor(input);
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
     if (!place.start) return null;
