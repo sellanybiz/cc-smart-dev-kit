@@ -19,7 +19,8 @@
  *     is off, a model it does not know, and EVERY other path → Anthropic: method, path,
  *     query, body bytes and headers unchanged (only hop-by-hop headers, `host` and
  *     `content-length` are dropped). The answer streams back unbuffered, compressed bytes
- *     and all (`decompress: false`).
+ *     and all (`decompress: false`); one that goes silent for `timeouts.streamIdleMs` is
+ *     ended (`endIfSilent`), and nothing else is done to it.
  *   - A `claude-…` model whose family's slot has a chain (`familySlotFor`: haiku → scout,
  *     sonnet → worker, opus → opus, fable → fable), and a slot key (`cc-smart-dev-kit-worker`)
  *     → the slot's targets in order (`targets.ts`), the same way for every slot. An
@@ -38,7 +39,8 @@
  *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
  *     exception: when every target failed for want of capacity and the last one is a
  *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
- *     429 that Claude Code retries by itself; Anthropic's own answers always pass. A Claude
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass (a stream silent for
+ *     `timeouts.streamIdleMs` is ended). A Claude
  *     target behind the first, resting at a plan limit the router knows, is not tried as the
  *     last target (the owner's D65, `chain`).
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
@@ -135,6 +137,7 @@ import {
   profileNames,
   profileNamesSlot,
   profileView,
+  streamIdleMs,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -1772,6 +1775,100 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * Whether a stalled stream rests its target: a backend's does, like any failure it has
+   * (`noteCooldown`). A Claude target's does not: it fails in the middle of an answer, and the
+   * router rests nothing for that (a Claude plan limit is read from headers only:
+   * `observeClaude`; the breaker and the fallback act only before an answer reaches Claude
+   * Code). Claude Code's retry is the recovery.
+   */
+  function restsAfterStall(target: null | Target): boolean {
+    return target?.kind === "backend";
+  }
+
+  /**
+   * A streaming answer that goes silent is ended once `idleMs` pass with no byte (an event, a
+   * ping or a comment line all count), counted from its headers: the body fails, the way a
+   * cut connection does, which Claude Code answers by sending the request again at once
+   * (`docs/claude-code-contract.md`, P14); it has no limit of its own once a stream has
+   * started. A held stream's wait for its first event is `firstByteMs`'s (`holdFirstEvent`),
+   * over when this starts; every other stream has no deadline but this one. The log line
+   * names the target and the idle time; a backend's target rests like any failure
+   * (`restsAfterStall`, `noteCooldown`, the existing rest rules). The clock runs only while
+   * the router waits on the upstream: a client slow to read stops the pulls, and so the clock.
+   * A client that hangs up cancels the upstream and rests nothing. Until the stream is ended
+   * its status, headers and bytes pass as they came.
+   */
+  function endIfSilent(
+    response: Response,
+    label: string,
+    idleMs: number,
+    rests: boolean,
+  ): Response {
+    const body = response.body;
+    if (body === null) return response;
+    const reader = body.getReader();
+    const guarded = new ReadableStream<Uint8Array>({
+      cancel: (reason) => reader.cancel(reason),
+      async pull(controller) {
+        const timer = deadline(idleMs);
+        const read = reader.read();
+        try {
+          const step = await Promise.race([read, timer.done]);
+          if (step === "timeout") {
+            // Not awaited: a stalled upstream may never settle its cancel. The pending read
+            // ends with the cancel, or fails on its own: neither is news.
+            read.catch(() => undefined);
+            reader.cancel().catch((error: unknown) => {
+              deps.log(`WARN could not cancel a stalled upstream stream: ${messageOf(error)}`);
+            });
+            deps.log(
+              `WARN ${label} sent no byte for ${idleMs} ms (timeouts.streamIdleMs); its stream was ended${rests ? " and the target rests" : ""}`,
+            );
+            if (rests) noteCooldown(label, { failure: `no byte for ${idleMs} ms`, status: null });
+            controller.error(new Error(`${label} sent no byte for ${idleMs} ms`));
+            return;
+          }
+          if (step.done) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(step.value);
+        } catch (error) {
+          controller.error(error);
+        } finally {
+          timer.clear();
+        }
+      },
+    });
+    return new Response(guarded, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+
+  /**
+   * A model call's answer from any target, as Claude Code gets it: a 2xx event stream of
+   * `/v1/messages` is bounded by `endIfSilent` (Anthropic's too: the owner, 2026-10-25); every
+   * other answer — an error status, JSON, another path — passes as it is.
+   */
+  function relayAnswer(
+    upstream: Response,
+    target: null | Target,
+    label: string,
+    config: GatewayConfig,
+    url: URL,
+  ): Response {
+    const bounded =
+      url.pathname === MESSAGES_PATH &&
+      upstream.ok &&
+      (upstream.headers.get("content-type") ?? "").includes("text/event-stream")
+        ? endIfSilent(upstream, label, streamIdleMs(config), restsAfterStall(target))
+        : upstream;
+    return relay(bounded, target);
+  }
+
   /** The upstream response, as Claude Code gets it: status, headers, streamed body. */
   function relay(upstream: Response, target: null | Target): Response {
     const headers = responseHeaders(
@@ -2164,7 +2261,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // probe of a request that does not stream gets a deadline too (`firstByteMs`): with
       // none, a hung probe would block every other request's probe of that target for ever,
       // and the breaker could never close. Anthropic keeps its own wait: its answers always
-      // pass unchanged.
+      // pass unchanged (but for the idle limit after the headers, `endIfSilent`).
       const budgetMs =
         last && target.kind === "backend" && body.stream === true && hold !== null
           ? BREAKER_HEARTBEAT_WAIT_MS
@@ -2345,7 +2442,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         }
         const answer: Outcome = {
           fallbacks,
-          response: relay(result.response, target),
+          response: relayAnswer(result.response, target, label, config, url),
           skipped,
           target: label,
         };
@@ -3005,7 +3102,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       const response =
         "response" in result
-          ? relay(result.response, null)
+          ? relayAnswer(result.response, null, "anthropic", config, url)
           : anthropicError(
               502,
               "api_error",
