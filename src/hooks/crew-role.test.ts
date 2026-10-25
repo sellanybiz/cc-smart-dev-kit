@@ -1025,9 +1025,11 @@ describe("D42: a model limit pauses the crew session", () => {
       world.repo,
       { nowMs: NOW, timeZone: "UTC" },
     );
+    // The wait keeps the state key of the session's own slot, so the watch asks its breaker.
     expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
       kind: "unknown",
       since: "2026-10-21T22:00:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
     });
     expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
       "it stopped on server_error; the watch goes on with it once a model answers",
