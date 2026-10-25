@@ -1801,7 +1801,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
       [
         "This launch asks for effort `low`, which no subagent may run at (the plugin's rule).",
         "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
-        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).",
+        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).",
       ].join("\n"),
     );
   });

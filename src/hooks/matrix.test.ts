@@ -56,6 +56,7 @@ import {
   sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
+  tierViewHook,
   userAwayHook,
   verifyGateHook,
   worktreeLeftoversHook,
@@ -272,6 +273,25 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       const said: string = JSON.parse(result.stdout ?? "{}").systemMessage;
       expect(said).toStartWith("cc-smart-dev-kit: this session runs on Claude Fable");
+    },
+  },
+  {
+    spec: tierViewHook,
+    own: { event: "SessionStart", matcher: "startup" },
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "SessionStart",
+        session_id: SESSION,
+        cwd: project(config),
+        source: "startup",
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const said: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+      expect(said).toStartWith("Subagent tiers now (the Agent tool's `model`):");
     },
   },
   {
