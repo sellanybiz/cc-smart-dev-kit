@@ -734,6 +734,11 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   resumes the record's first session, not the copy that works, so a second resume of GI1 made a
   stray copy (`24d8a075`, stopped, told to change nothing): `claude rm` it only after GI1's crew rm,
   never before (it would take GI1's worktree). 1.2.1's resume fix ends this.
+  **GI2 merged** into `release-1.3.0` (`d430695`). Owed at the 1.3.0 release: this repo's own
+  `release` skill (`.claude/skills/release`) gains one line in its pull-request step: run
+  `cc-smart-dev-kit issue fixed --base main --head <release branch>` and paste its `Fixes #<n>`
+  lines into the body (exit 1: say so under "Still owed"). After GI3: `phaseIssues` may read
+  `record.issue.number` typed (GI2 reads it by shape today).
 
 ### For the owner in the morning
 
