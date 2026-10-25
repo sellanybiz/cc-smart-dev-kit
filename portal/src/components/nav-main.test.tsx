@@ -39,4 +39,25 @@ describe("the sidebar's menus", () => {
       expect(gapStep(gaps[0] ?? "")).toBeGreaterThanOrEqual(1);
     }
   });
+
+  // UI1: folded to icons, a group's label turns invisible and moves up over the last item of
+  // the group above; it must let the pointer through, or that item loses half its hover.
+  test("a folded group's invisible label never takes the pointer from the item under it", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <SidebarProvider>
+          <NavMain />
+        </SidebarProvider>
+      </TooltipProvider>,
+    );
+    const labels = (html.match(/<div [^>]*>/g) ?? []).filter((tag) =>
+      tag.includes('data-sidebar="group-label"'),
+    );
+    expect(labels.length).toBeGreaterThan(0);
+    for (const tag of labels) {
+      const classes = (tag.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/);
+      expect(classes).toContain("group-data-[collapsible=icon]:opacity-0");
+      expect(classes).toContain("group-data-[collapsible=icon]:pointer-events-none");
+    }
+  });
 });
