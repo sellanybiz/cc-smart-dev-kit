@@ -47,8 +47,9 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
   model), each with its file and the fix; a model key is named only where its file decides it,
   and a file whose address alone is malformed is still read for its other keys. The router
   question goes straight to `127.0.0.1`, so a proxy in your environment no longer makes a running
-  router look silent (`setup` and `doctor` ask it the same way). On Windows, where the console
-  already gives a Ctrl+C or a close to the session, `launch` hands on no signal.
+  router look silent (`setup` and `doctor` ask it the same way). On Windows, where a Ctrl+C or a
+  closed console already reaches the session, `launch` hands on no signal but waits for the
+  session and returns its exit code; a kill there ends the command alone.
 - **`gateway off` and `restore` switch running sessions at once.** They write Anthropic's own
   address in place of the gateway's, and a running session picks that up within about a second,
   so no session needs a restart. A second `restore` takes the key out. One exception: on a

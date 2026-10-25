@@ -340,8 +340,10 @@ the command's.
   number for a session a signal ended (143 for SIGTERM). **On Windows the command hands on no
   signal**: a Ctrl+C or a closed console is a console event every process on that console gets
   by itself, and `kill` there ends a process outright instead of delivering a signal, so a
-  forwarded one would turn the session's own handling into a hard stop. The Windows run is owed
-  (P11). What happens to the session on Ctrl+Z is Claude Code's own and not proved here.
+  forwarded one would turn the session's own handling into a hard stop. The command still
+  listens for them (Ctrl+C, Ctrl+Break, a closed console), so the default action does not end it
+  before its session: it waits, removes its settings file and returns the session's exit code. A
+  `kill` of the command alone ends it alone. The Windows run is owed (P11). What happens to the session on Ctrl+Z is Claude Code's own and not proved here.
 - **A router that does not answer is refused, in both gateway modes.** The config alone proves
   nothing: `restore` keeps `gateway.json` and removes the router, and a stopped service leaves it
   too. A session pointed at a silent port fails every request with a connection error that Claude

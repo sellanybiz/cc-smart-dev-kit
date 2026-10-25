@@ -780,6 +780,20 @@ describe("what a paused crew session waits for", () => {
     const saved = JSON.parse(readFileSync(crewFile(state, REPO, "crew-K-contracts"), "utf8"));
     expect(saved.waitingFor).toEqual(unknown);
     expect(readCrew(state, REPO, "crew-K-contracts")?.waitingFor).toEqual(unknown);
+    // The field is declared, not just kept as an extra of a loose object: a key that is empty or
+    // not a text is a broken record, named, as for the `slot` wait's own key.
+    const fail = (slot: unknown, id: string) => {
+      const file = onDisk(state, { waitingFor: { kind: "unknown", since: "t", slot } }, id);
+      return { file, read: () => readCrew(state, REPO, id) };
+    };
+    const empty = fail("", "crew-empty");
+    expect(empty.read).toThrow(
+      `Invalid ${empty.file}: waitingFor.slot: Too small: expected string to have >=1 characters`,
+    );
+    const number = fail(42, "crew-number");
+    expect(number.read).toThrow(
+      `Invalid ${number.file}: waitingFor.slot: Invalid input: expected string, received number`,
+    );
   });
 
   test("when the crew session goes on, the wait is cleared and leaves nothing in the file", async () => {

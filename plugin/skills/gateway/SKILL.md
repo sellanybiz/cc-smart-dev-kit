@@ -264,8 +264,9 @@ one session, in the folder it runs in, whatever the machine's and the project's 
 
 - `--no-gateway`: plain Claude at Anthropic, on the person's own claude.ai login. Use it for a
   task that must not go through an affordable model. A login key or helper in their settings
-  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) still bills the session in every
-  mode: the launch starts anyway and names each one on stderr, with its file.
+  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) still bills the session in the
+  three modes that pass a file: the launch starts anyway and names each one on stderr, with its
+  file.
 - `--gateway`: this machine's router; `--profile <name>`: the router with one profile's chains.
 - No mode: no `--settings` file, and the settings decide as for `claude`.
 - Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). The session is
@@ -292,8 +293,9 @@ A profile is a named set of chains and switches over the machine's, reached by t
 - `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the
   one before it fails or rests?
 - `gateway profile <name> breaker <slot> on|off`: may the router hold a request while every target
-  of the profile's slot is limited or down? The judge has none. This is the profile's switch;
-  `gateway breaker` changes the machine's chain, never a profile's.
+  of the profile's slot is limited or down? The judge has none. This is the profile's own switch.
+  `gateway breaker` sets the machine's, which a profile that sets none follows; it never changes a
+  profile's own setting.
 - `gateway profile <name> remove`: deletes the profile; a project whose URL still names it answers
   as plain Claude.
 - The change is live: the router reads the config again within about a second.

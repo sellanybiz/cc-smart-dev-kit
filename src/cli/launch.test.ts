@@ -22,12 +22,13 @@ import type { HealthFetch } from "../gateway/health";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
-  forwardedSignals,
   type LaunchContext,
+  launcherSignals,
   launchSettingsFile,
   parseLaunchArgs,
   realRunSession,
   runLaunch,
+  type SignalPlan,
 } from "./launch";
 
 /** A port no router uses: the config only names it, nothing connects. */
@@ -491,10 +492,15 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
   /**
    * Runs `realRunSession` in a bun process of its own around a fake `claude` that says "ready",
    * then ends with its own code for the signal it gets (TERM 7, HUP 8, INT 9), and writes the
-   * signal it got to a file. Sends `signal` to the launcher alone, as `kill <pid>` does.
+   * signal it got to a file. Sends `signal` to the launcher alone, as `kill <pid>` does; with
+   * `consoleToo`, it then sends the same signal to the session, as a Windows console does with
+   * a Ctrl+C (every process on it gets the event). `platform` is what the launcher is told it
+   * runs on.
    */
   async function signalLauncher(
     signal: "SIGHUP" | "SIGINT" | "SIGTERM",
+    platform: NodeJS.Platform = process.platform,
+    consoleToo = false,
   ): Promise<{ code: null | number; got: string }> {
     const dir = tempDir("launch-signal");
     const got = join(dir, "got.txt");
@@ -518,7 +524,7 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
       runner,
       [
         `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
-        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, verbatim: false });`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, platform: ${JSON.stringify(platform)}, verbatim: false });`,
       ].join("\n"),
     );
     const guard = subprocessGuard();
@@ -538,6 +544,7 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
       }
       expect(said).toContain("ready");
       launcher.kill(signal);
+      if (consoleToo) process.kill(Number(readFileSync(pidFile, "utf8").trim()), signal);
       const code = await launcher.exited;
       return { code, got: existsSync(got) ? readFileSync(got, "utf8").trim() : "" };
     } finally {
@@ -563,7 +570,7 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
       runner,
       [
         `import { realRunSession } from ${JSON.stringify(join(import.meta.dir, "launch"))};`,
-        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, verbatim: false });`,
+        `process.exitCode = await realRunSession([${JSON.stringify(claude)}], { cwd: ${JSON.stringify(dir)}, env: process.env, platform: ${JSON.stringify(process.platform)}, verbatim: false });`,
       ].join("\n"),
     );
     const guard = subprocessGuard();
@@ -575,10 +582,29 @@ describe("RV3: the launcher hands a signal sent to it on to the session it runs"
     expect(await launcher.exited).toBe(137);
   });
 
-  test("Windows hands no signal on: its console gives them to the session itself, and kill ends it outright", () => {
-    expect(forwardedSignals("win32")).toEqual([]);
-    expect(forwardedSignals("linux")).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
-    expect(forwardedSignals("darwin")).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+  test("on Windows a console signal does not end the launcher before the session: it waits and returns the session's code", async () => {
+    // The console gives a Ctrl+C to every process on it: the launcher and the session each get
+    // the signal by themselves, and the launcher forwards nothing. With no listener Bun's default
+    // action would end the launcher at once, skipping its cleanup and the session's exit code.
+    expect(await signalLauncher("SIGINT", "win32", true)).toEqual({ code: 9, got: "INT" });
+    expect(await signalLauncher("SIGHUP", "win32", true)).toEqual({ code: 8, got: "HUP" });
+  });
+
+  test("the signals the launcher listens for: handed on off Windows; on Windows taken, handed on to no one", () => {
+    const handedOn: SignalPlan[] = [
+      { forward: true, signal: "SIGHUP" },
+      { forward: true, signal: "SIGINT" },
+      { forward: true, signal: "SIGTERM" },
+    ];
+    expect(launcherSignals("linux")).toEqual(handedOn);
+    expect(launcherSignals("darwin")).toEqual(handedOn);
+    // The console gives a Ctrl+C, a Ctrl+Break and a close to the session itself, and kill ends
+    // a process outright there: nothing is forwarded, but the launcher still listens.
+    expect(launcherSignals("win32")).toEqual([
+      { forward: false, signal: "SIGHUP" },
+      { forward: false, signal: "SIGINT" },
+      { forward: false, signal: "SIGBREAK" },
+    ]);
   });
 
   test.each([

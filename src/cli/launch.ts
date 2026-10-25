@@ -124,21 +124,38 @@ export function parseLaunchArgs(args: readonly string[]): LaunchArgs | { error: 
 /** Runs `claude` attached to this terminal and answers the exit code it ended with. */
 export type RunSession = (
   argv: string[],
-  options: { cwd: string; env: Env; verbatim: boolean },
+  options: { cwd: string; env: Env; platform: NodeJS.Platform; verbatim: boolean },
 ) => Promise<number>;
 
-/** The signals a launch hands on to its session (a terminal's close, `kill`, Ctrl+C). */
-const FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+/** One signal the launcher listens for, and whether it hands the signal on to the session. */
+export interface SignalPlan {
+  forward: boolean;
+  signal: NodeJS.Signals;
+}
 
 /**
- * The signals the launcher hands on on `platform`: the three above, and none on Windows. There a
- * Ctrl+C or a closed console is a console event every process on that console gets by itself
- * (`docs/windows-setup.md`), and `kill` ignores the signal and ends the process outright (Node's
- * `subprocess.kill()`, which Bun follows), so a forwarded one would turn the session's own
- * handling into a hard stop. The Windows run (P11) is still owed.
+ * The signals the launcher listens for on `platform`, and what it does with each.
+ *
+ * Off Windows it hands on SIGHUP, SIGINT and SIGTERM (a terminal's close, Ctrl+C, `kill`).
+ *
+ * On Windows it hands on nothing, but it still listens for SIGHUP (a closed console), SIGINT
+ * (Ctrl+C) and SIGBREAK (Ctrl+Break). A console event goes to every process on that console, so
+ * the session gets it by itself (`docs/windows-setup.md`), and `kill` there ignores the signal and
+ * ends the process outright (Node's `subprocess.kill()`, which Bun follows): a forwarded one would
+ * turn the session's own handling into a hard stop. But with no listener at all, the default
+ * action ends the launcher on the same event, before the session: it would skip removing its
+ * settings file and return Windows' code in place of the session's. A listener that does nothing
+ * keeps the launcher waiting for the session. A `kill` of the launcher alone ends it alone, as
+ * no listener can stop it. The Windows run (P11) is still owed.
  */
-export function forwardedSignals(platform: NodeJS.Platform): readonly NodeJS.Signals[] {
-  return platform === "win32" ? [] : FORWARDED_SIGNALS;
+export function launcherSignals(platform: NodeJS.Platform): readonly SignalPlan[] {
+  if (platform === "win32") {
+    return (["SIGHUP", "SIGINT", "SIGBREAK"] as const).map((signal) => ({
+      forward: false,
+      signal,
+    }));
+  }
+  return (["SIGHUP", "SIGINT", "SIGTERM"] as const).map((signal) => ({ forward: true, signal }));
 }
 
 /**
@@ -154,10 +171,12 @@ export const realRunSession: RunSession = async (argv, options) => {
   // that ends it once, as it would have. The handlers are in place BEFORE the session starts: a
   // signal that came between its start and the handlers would still find the default action.
   // (A handler runs on the event loop, after `Bun.spawn` returned, so `child` is set by then.)
+  // On Windows the handlers hand nothing on: they only keep the default action from ending the
+  // launcher before its session (`launcherSignals`).
   let child: ReturnType<typeof Bun.spawn> | null = null;
-  const forward = (signal: NodeJS.Signals) => () => child?.kill(signal);
-  const handlers = forwardedSignals(process.platform).map(
-    (signal) => [signal, forward(signal)] as const,
+  const handlers = launcherSignals(options.platform).map(
+    ({ forward, signal }) =>
+      [signal, forward ? () => child?.kill(signal) : () => undefined] as const,
   );
   for (const [signal, handler] of handlers) process.on(signal, handler);
   try {
@@ -434,6 +453,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
       env: ctx.env,
+      platform: ctx.platform,
       verbatim: command.verbatim,
     });
   } catch (error) {

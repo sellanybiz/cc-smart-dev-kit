@@ -37543,14 +37543,20 @@ function parseLaunchArgs(args) {
     return { error };
   return { claudeArgs, mode: mode ?? { kind: "default" } };
 }
-var FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"];
-function forwardedSignals(platform) {
-  return platform === "win32" ? [] : FORWARDED_SIGNALS;
+function launcherSignals(platform) {
+  if (platform === "win32") {
+    return ["SIGHUP", "SIGINT", "SIGBREAK"].map((signal) => ({
+      forward: false,
+      signal
+    }));
+  }
+  return ["SIGHUP", "SIGINT", "SIGTERM"].map((signal) => ({ forward: true, signal }));
 }
 var realRunSession = async (argv, options) => {
   let child = null;
-  const forward = (signal) => () => child?.kill(signal);
-  const handlers = forwardedSignals(process.platform).map((signal) => [signal, forward(signal)]);
+  const handlers = launcherSignals(options.platform).map(({ forward, signal }) => [signal, forward ? () => child?.kill(signal) : () => {
+    return;
+  }]);
   for (const [signal, handler] of handlers)
     process.on(signal, handler);
   try {
@@ -37731,6 +37737,7 @@ See: ${COMMAND} launch --help`);
     return await ctx.runSession(command.argv, {
       cwd: ctx.cwd,
       env: ctx.env,
+      platform: ctx.platform,
       verbatim: command.verbatim
     });
   } catch (error) {
