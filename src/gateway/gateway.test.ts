@@ -2946,6 +2946,27 @@ describe("streaming", () => {
       expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
     });
 
+    it("a client that hangs up mid-stream cancels the upstream and rests nothing", async () => {
+      const open = gatedStream([START, DELTA, DELTA]);
+      open.open(1);
+      const { handle, logs } = router([() => open.response], { config: idleConfig() });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
+      );
+      const reader = res.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      expect(await readSoon(reader)).toBe(START);
+      await reader.cancel();
+      // Past the limit: a timer left running would log and rest the target now.
+      await Bun.sleep(IDLE_MS * 2);
+      expect(open.state.cancelled).toBe(true);
+      expect(logs.filter((line) => line.includes("sent no byte"))).toEqual([]);
+      const health: unknown = await (
+        await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
+      ).json();
+      expect(health).toMatchObject({ cooling: {} });
+    });
+
     it("a Claude target's stalled stream is not cut (the owner: Anthropic's answers pass untouched)", async () => {
       const stalled = gatedStream([START, DELTA]);
       const { handle, logs } = router([() => stalled.response], { config: idleConfig() });
