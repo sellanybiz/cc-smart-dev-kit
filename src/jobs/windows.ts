@@ -150,6 +150,6 @@ export function processIsGone(pid: number): boolean {
     process.kill(pid, 0);
     return false;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "EPERM";
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
 }

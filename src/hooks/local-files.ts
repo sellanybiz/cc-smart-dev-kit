@@ -28,6 +28,11 @@ export const REBUILDABLE: readonly RegExp[] = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   // Build output.
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  // Supabase CLI cmd/root.go checkUpgrade/shouldFetchRelease writes this version-check
+  // cache when missing (read 2026-10-24); internal/utils/misc.go names CliVersionPath:
+  // https://github.com/supabase/cli/blob/develop/apps/cli-go/cmd/root.go
+  // Never exempt its parent: .temp also holds project-ref and pooler-url link state.
+  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
   // Caches.
   /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
   /\.(?:tsbuildinfo|pyc|pyo)$/,
@@ -83,6 +88,23 @@ export function sameAsMain(worktree: string, mainCheckout: string, path: string)
   return same(path.replace(/\/$/, ""));
 }
 
+/** The one disposable-entry policy, shared by removal and explicit archival. */
+export function safeIgnoredEntry(
+  worktree: string,
+  mainCheckout: string | null,
+  entry: string,
+): boolean {
+  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+    if (!entry.endsWith("/cli-latest")) return true;
+    try {
+      if (lstatSync(join(worktree, entry)).isFile()) return true;
+    } catch {
+      return false;
+    }
+  }
+  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+}
+
 /**
  * The ignored files and folders in `worktree` that removing it would lose, as git names
  * them (a folder ends in `/`). Null when git cannot list them: then nothing is proved safe.
@@ -109,9 +131,29 @@ export function localFiles(
     30_000,
   );
   if (!status.ok) return null;
-  return parseIgnored(status.out).filter(
-    (entry) =>
-      !REBUILDABLE.some((pattern) => pattern.test(entry)) &&
-      !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)),
-  );
+  const safe = (entry: string): boolean => safeIgnoredEntry(worktree, mainCheckout, entry);
+  // Git reports an ignored directory as one entry. Inspect only this tool's directory,
+  // so exempting one cache never exempts changed link state beside it. Bound the walk and
+  // keep unreadable files and links, just as the main-copy comparison does.
+  const supabaseCacheOnly = (entry: string): boolean => {
+    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry)) return false;
+    let budget = MAX_COMPARED;
+    const visit = (path: string): boolean => {
+      if (--budget < 0) return false;
+      if (safe(path)) return true;
+      try {
+        const stat = lstatSync(join(worktree, path));
+        return (
+          stat.isDirectory() &&
+          readdirSync(join(worktree, path)).every((name) =>
+            visit(`${path.replace(/\/$/, "")}/${name}`),
+          )
+        );
+      } catch {
+        return false;
+      }
+    };
+    return visit(entry);
+  };
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
 }

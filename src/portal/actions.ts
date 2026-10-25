@@ -35,7 +35,7 @@ import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import { tildify } from "../cli/paths";
 import { runUpdate } from "../cli/update";
-import { type CrewRecord, listAllCrew } from "../crew/store";
+import { type CrewRecord, listAllCrew, listAllLeads } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
 import {
   chainProblem,
@@ -77,6 +77,7 @@ import {
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
 import { locateCheckoutAsync } from "../project/resolve";
+import { readFinishedSessions } from "../sessions/finished";
 import { type AutoModeSource, applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
@@ -93,6 +94,8 @@ import {
 } from "../update/state";
 import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
 import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
+import { readPortalAgents } from "./api/agents-read";
+import { readCleanupOffLoop } from "./api/cleanup-read";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -1758,7 +1761,13 @@ function crewRef(body: Record<string, unknown>): string {
 function crewById(action: ActionContext, ref: string): { record: CrewRecord } | { why: string } {
   let records: CrewRecord[];
   try {
-    records = listAllCrew(action.portal.paths.stateDir).records;
+    const crew = listAllCrew(action.portal.paths.stateDir);
+    const leads = listAllLeads(action.portal.paths.stateDir);
+    if (crew.broken.length || leads.broken.length)
+      return {
+        why: "Could not read every crew and lead record; repair the crew store before removing sessions.",
+      };
+    records = crew.records;
   } catch (error) {
     return { why: `the crew store could not be read: ${messageOf(error)}` };
   }
@@ -1830,6 +1839,48 @@ async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
 }
 
+/** Remove only a newly revalidated unowned finished session; the CLI checks again before claude rm. */
+async function removeFinishedSession(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("removed");
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!/^[0-9a-f]{8}$/.test(id))
+    return { ok: false, lines: ["Pick the finished session to remove."] };
+  const agents = await readPortalAgents(action.portal, action.cwd);
+  const current = readFinishedSessions(action.portal.paths, {
+    agents: () => agents.sessions,
+    now: action.portal.now(),
+  });
+  if (current.error !== null) return { ok: false, lines: [current.error] };
+  const session = current.sessions.find((one) => one.id === id);
+  if (session === undefined)
+    return {
+      ok: false,
+      lines: [
+        "Nothing was removed: this session is no longer an eligible finished background session.",
+      ],
+    };
+  const run = await runCliChild(
+    action.portal,
+    ["sessions", "--finished", "--remove", "--yes", "--id", session.id],
+    {
+      // Machine-wide removal must still work after the session's worktree is gone.
+      cwd: action.portal.paths.home,
+      onLine: (line) => action.publish?.("action", { action: "sessions.rm", line }),
+    },
+  );
+  forgetWorktrees(action.portal);
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut)
+    lines.push(
+      `sessions removal did not answer in time; check ${COMMAND} sessions --finished before trying again.`,
+    );
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
 // ── The door ────────────────────────────────────────────────────────────────────
 
 /**
@@ -1863,6 +1914,7 @@ export const ACTION_NAMES = [
   "project.workflow.propose",
   "project.write",
   "router.restart",
+  "sessions.rm",
   "slot.breaker",
   "slot.check",
   "slot.fallback",
@@ -2007,12 +2059,64 @@ export async function runAction(
       if ("why" in found) return { lines: [found.why], ok: false };
       return crewCliAction(action, "crew.resume", ["resume", found.record.id], found.record);
     }
+    case "sessions.rm":
+      return removeFinishedSession(action, body);
     case "crew.rm": {
       const crew = crewRef(body);
       if (crew === "") return { lines: ["Pick the crew session to remove."], ok: false };
       if (body.confirm !== true) return notConfirmed("removed");
+      if (body.discard === true && body.discardConfirm !== true) return notConfirmed("discarded");
+      const agents = await readPortalAgents(action.portal, action.cwd);
+      if (agents.crew === null)
+        return {
+          ok: false,
+          lines: ["Could not read Claude Code's agent list; nothing was removed."],
+        };
       const found = crewById(action, crew);
       if ("why" in found) return { lines: [found.why], ok: false };
+      if (body.discard === true) {
+        const cleanup = await readCleanupOffLoop(action.portal, found.record.repo);
+        if (cleanup.error !== null) return { ok: false, lines: [cleanup.error] };
+        const preview = cleanup.stopped.find(
+          (one) => one.crew.id === found.record.id && one.repo === found.record.repo,
+        )?.discard;
+        if (preview?.facts == null)
+          return {
+            ok: false,
+            lines: [
+              preview?.error ??
+                "This crew session no longer has a stopped-work discard preview; refresh Needs before trying again.",
+            ],
+          };
+        const facts = preview.facts;
+        if (body.discardToken !== facts.token)
+          return {
+            ok: false,
+            lines: [
+              "The work changed or its archive facts were not confirmed. Refresh Needs and confirm the new preview; nothing was discarded.",
+            ],
+          };
+        // Both reads were awaited: revalidate the agent view and ownership before spawning.
+        const latestAgents = await readPortalAgents(action.portal, found.record.repo);
+        if (latestAgents.crew === null)
+          return {
+            ok: false,
+            lines: ["Could not read Claude Code's agent list; nothing was discarded."],
+          };
+        const current = crewById(action, crew);
+        if ("why" in current) return { ok: false, lines: [current.why] };
+        if (current.record.repo !== found.record.repo)
+          return {
+            ok: false,
+            lines: ["The crew record changed; refresh Needs before trying again."],
+          };
+        return crewCliAction(
+          action,
+          "crew.rm",
+          ["rm", current.record.id, "--discard", "--yes", "--discard-token", facts.token],
+          current.record,
+        );
+      }
       return crewCliAction(action, "crew.rm", ["rm", found.record.id], found.record);
     }
     case "worktrees.clean":

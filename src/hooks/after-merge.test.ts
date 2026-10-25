@@ -375,6 +375,31 @@ describe("the hook", () => {
     mergedAt: new Date().toISOString(),
   };
 
+  test("a recorded lead's own merged worktree gets the ExitWorktree removal note", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: worktree,
+        repo,
+        sessionId: "11111111-2222-3333-4444-555555555555",
+        name: "LEAD app plan",
+        tag: "app",
+        plan: "plan",
+      },
+      Date.now(),
+    );
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr merge --squash"),
+      env,
+    );
+    expect(result.stdout).toContain(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action \\"remove\\").',
+    );
+  });
+
   test("after merging its own branch from a worktree: both notes, then announced once", async () => {
     const { worktree } = project();
     const env = fakeGh(merged);
@@ -501,6 +526,9 @@ describe("the hook", () => {
         'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
         'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
       ].join("\n"),
+    );
+    expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "fix/a", true)).toBe(
+      'The work of fix/a is in the base; once nothing remains to do here, leave and remove this lead\'s worktree with ExitWorktree (action "remove").',
     );
     // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
     // discard_changes is needed.

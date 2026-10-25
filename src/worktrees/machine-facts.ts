@@ -32,7 +32,7 @@
  * this came from did — and a folder a program still uses cannot be renamed there anyway, so
  * the move that starts a removal fails and nothing is touched.
  */
-import { readdirSync, readlinkSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { IGNORE_CASE, isInside, realPath } from "../hooks/git";
 
@@ -53,6 +53,12 @@ export interface RunningProgram {
    * own command line names it — from a program that uses it.
    */
   parentPid?: number;
+  /**
+   * When it was started (epoch ms), when a test supplies it. This does not prove ownership:
+   * stopping a finished session's leftover program needs its crew marker and the exact process
+   * identity from `processStartTime` (`src/crew/end.ts`, D62). Absent when unknown.
+   */
+  startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
   cwd?: string;
 }
@@ -232,9 +238,32 @@ function lineage(programs: RunningProgram[], pid: number): Set<number> {
 }
 
 /**
- * The programs that use `worktree`: one started from a file inside it (its command line names
- * it), or one whose working folder is inside it (Linux), each once, sorted by name. The tools
- * this scan runs itself are left out.
+ * True when `pid` is `ancestor` or was started by it, as far as the listing says: the chain a
+ * session's shell and the program it ran form. A dead session's orphans are reparented, so a
+ * listing read after the end often cannot prove this — the crew id in a program's environment is
+ * the other witness (`stopLeftoverProcesses`, `src/crew/end.ts`, D62).
+ */
+export function descendsFrom(programs: RunningProgram[], pid: number, ancestor: number): boolean {
+  return lineage(programs, pid).has(ancestor);
+}
+
+/** The tools this scan runs itself: short-lived children that would otherwise keep a worktree. */
+const OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+
+/**
+ * The name a line prints for a program: the file it was started from, without its folder, or
+ * its pid when only its working folder is known.
+ */
+export function programName(program: RunningProgram): string {
+  const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
+  const base = file.replace(/^.*[\\/]/, "");
+  return base === "" ? `pid ${String(program.pid)}` : base;
+}
+
+/**
+ * The programs of the listing that use `worktree`: one started from a file inside it (its
+ * command line names it), or one whose working folder is inside it (Linux). The tools this scan
+ * runs itself are left out.
  *
  * So is `ownPid` — the process asking, this one by default — and every process that started
  * it: the command line of `cc-smart-dev-kit worktrees --remove <path>` names the worktree, and
@@ -246,18 +275,20 @@ function lineage(programs: RunningProgram[], pid: number): Set<number> {
  * with, while `/proc/<pid>/cwd` — and a command line written from it — holds the physical one.
  * So the working folder is compared as a real path on both sides, and a command line is
  * matched against BOTH forms of the worktree.
+ *
+ * One home for the matching rule: `programsInside` names them, and a crew session's removal
+ * asks which pids they are (`stopLeftoverProcesses`, `src/crew/end.ts`).
  */
-export function programsInside(
+export function programsUsing(
   programs: RunningProgram[],
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
-): string[] {
-  const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+): RunningProgram[] {
   const asking = lineage(programs, ownPid);
   const real = realPath(worktree);
   const forms = real === worktree ? [worktree] : [worktree, real];
-  const names = new Set<string>();
+  const found: RunningProgram[] = [];
   for (const program of programs) {
     const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
     const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
@@ -265,10 +296,22 @@ export function programsInside(
     // The chain that asked names the worktree only in its command line — unless one of them
     // works in it, and then `working` says so and it counts.
     if (!working && asking.has(program.pid)) continue;
-    const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
-    const base = file.replace(/^.*[\\/]/, "");
-    if (ours.has(base)) continue;
-    names.add(base === "" ? `pid ${String(program.pid)}` : base);
+    if (OUR_TOOLS.has(programName(program))) continue;
+    found.push(program);
+  }
+  return found;
+}
+
+/** The programs that use `worktree`, each once, sorted by name (`programsUsing`). */
+export function programsInside(
+  programs: RunningProgram[],
+  worktree: string,
+  ignoreCase = IGNORE_CASE,
+  ownPid = process.pid,
+): string[] {
+  const names = new Set<string>();
+  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid)) {
+    names.add(programName(program));
   }
   return [...names].sort();
 }
@@ -352,7 +395,8 @@ function procPids(): number[] {
  *
  * Linux reads both the command lines and each process's working folder; macOS reads the
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
- * folder a program's file is in cannot be renamed there.
+ * folder a program's file is in cannot be renamed there. A removal reads exact process identities
+ * separately, only for the few owned programs it is about to stop (`src/crew/end.ts`).
  */
 export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
   if (on === "win32") {
@@ -395,4 +439,53 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
     else known.cwd = cwd;
   }
   return programs;
+}
+
+/** Mount destinations from Linux mountinfo, including same-device bind mounts. */
+export function parseMountPoints(text: string): string[] | null {
+  const mounts: string[] = [];
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    const destination = fields[4];
+    if (
+      separator < 6 ||
+      fields.length < separator + 4 ||
+      !/^\d+$/.test(fields[0] ?? "") ||
+      !/^\d+$/.test(fields[1] ?? "") ||
+      !/^\d+:\d+$/.test(fields[2] ?? "") ||
+      destination === undefined ||
+      !destination.startsWith("/") ||
+      /\\(?!040|011|012|134)/.test(destination)
+    )
+      return null;
+    mounts.push(
+      destination.replace(/\\(040|011|012|134)/g, (_, octal: string) =>
+        String.fromCharCode(Number.parseInt(octal, 8)),
+      ),
+    );
+  }
+  return mounts.includes("/") ? mounts : null;
+}
+
+/** One mount guard for registered parked worktrees and unregistered remnants. */
+export function mountKeptWhy(
+  worktree: string,
+  mounts: "unknown" | readonly string[],
+): null | string {
+  if (mounts === "unknown")
+    return "its mount points could not be read, so it cannot be shown that nothing is mounted in it";
+  const mounted = mounts.find((path) => isInside(realPath(path), realPath(worktree)));
+  return mounted === undefined ? null : `a mount point lies inside it: ${mounted}`;
+}
+
+/** Unknown on unsupported systems or an unreadable listing: never assume no mounts. */
+export function mountPoints(on: NodeJS.Platform = platform()): "unknown" | string[] {
+  if (on !== "linux") return "unknown";
+  try {
+    return parseMountPoints(readFileSync("/proc/self/mountinfo", "utf8")) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }

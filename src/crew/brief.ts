@@ -104,8 +104,10 @@ export function briefFrame(facts: BriefFacts): string {
   }
   lines.push(
     `- Work by \`/${CREW_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`,
+    "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
     "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
     `- When the phase is ready, hand it back with \`${REPORT_COMMAND} --status done\`; when it cannot be done, with \`--status failed\` and why.`,
+    "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.",
     `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`,
   );
   return lines.join("\n");

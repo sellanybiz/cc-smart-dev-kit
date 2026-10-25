@@ -7560,6 +7560,9 @@ var realSharedFolderFacts = {
   }
 };
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/workflow/reviews.ts
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
@@ -7611,6 +7614,12 @@ var waitingForSchema = discriminatedUnion("kind", [
     since: text
   })
 ]);
+var discardArchiveSchema = looseObject({
+  ref: text,
+  head: sha,
+  at: text,
+  prunedAt: text.optional()
+});
 var crewFields = object({
   version: version2,
   id: string2().regex(FILE_ID, "a plain file name"),
@@ -7649,6 +7658,17 @@ var crewFields = object({
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  archive: discardArchiveSchema.optional(),
+  archiveHistory: array(discardArchiveSchema).optional(),
+  discardPending: looseObject({
+    head: sha,
+    archivedHead: sha,
+    indexPath: text,
+    indexBackup: text,
+    indexArchived: text
+  }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -7661,6 +7681,8 @@ var leadFields = object({
   plan: text,
   tag: text,
   cwd: text,
+  endedAt: text.nullable().optional(),
+  sessionUnknownSince: text.nullable().optional(),
   pausedAgents: array(text).optional(),
   createdAt: text,
   updatedAt: text
@@ -7716,11 +7738,14 @@ var handBackReportSchema = reportFields.loose().superRefine((report, context) =>
   }
 });
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
+  parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional()
+  routerRequests: number2().int().min(0).nullable().optional(),
+  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
@@ -7735,10 +7760,8 @@ var storedSchema = looseObject({
   fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
   readAt: string2()
 });
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts

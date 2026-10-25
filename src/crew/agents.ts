@@ -3,7 +3,13 @@
  * that is a crew session's Claude session. The watch reads it every pass; `crew answer` reads it once, to
  * know whether a crew session the store calls stopped is in fact still alive.
  */
-import { type AgentRow, type ClaudeDeps, callClaude, findClaude, parseAgents } from "./claude";
+import {
+  type AgentRow,
+  type ClaudeDeps,
+  callClaude,
+  findClaude,
+  parseAgentPresence,
+} from "./claude";
 import type { CrewContext } from "./context";
 import type { CrewRecord } from "./store";
 
@@ -24,7 +30,7 @@ export function agentRows(ctx: CrewContext): null | AgentRow[] {
   if (claude === null) return null;
   const called = callClaude(claudeDeps(ctx), claude, ["agents", "--json", "--all"], ctx.cwd);
   if (!called.ok || called.run.exitCode !== 0) return null;
-  return parseAgents(called.run.stdout);
+  return parseAgentPresence(called.run.stdout);
 }
 
 /** The row of agent view for the session `record`, or null when it is not listed. */

@@ -10,10 +10,13 @@
  * or option — one line, then where the help is.
  */
 import { COMMAND } from "../build-info/names";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
 import { ALLOWED_EFFORTS, CREW_KIND_NAMES, CREW_KINDS, isCrewKind } from "../models/launch-policy";
 import { type AnswerArgs, runCrewAnswer } from "./answer";
 import { commaList, parseOptions } from "./args";
 import { runCrewAttach, runCrewKinds, runCrewList, runCrewStatus } from "./board";
+import { crewCleanupAnswer } from "./cleanup-read";
 import type { CrewContext } from "./context";
 import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
@@ -83,10 +86,11 @@ const STEPS_LINE = wrapText(
 export const CREW_USAGE = `Usage: ${COMMAND} crew <command>
 
 Commands:
-  lead [--plan <slug>] [--tag <tag>]
+  lead [--plan <slug>] [--tag <tag>] [--end]
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads: the session takes that name at its next prompt.
+                 --end records its plan ended; crew work stays unless on the base.
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as
@@ -225,7 +229,7 @@ export function parseStartArgs(argv: readonly string[]): StartArgs | { error: st
 
 /** `crew lead`'s arguments, checked; or the mistake. */
 export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: string } {
-  const parsed = parseOptions(argv, ["--plan", "--tag"]);
+  const parsed = parseOptions(argv, ["--plan", "--tag"], ["--end"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
@@ -233,19 +237,27 @@ export function parseLeadArgs(argv: readonly string[]): LeadArgs | { error: stri
   const tag = parsed.options.get("--tag") ?? null;
   if (tag !== null && !isNameTag(tag))
     return { error: `The tag "${tag}" is not one: a tag is ${TAG_RULE}` };
-  return { plan: parsed.options.get("--plan") ?? null, tag };
+  return {
+    plan: parsed.options.get("--plan") ?? null,
+    tag,
+    ...(parsed.flags.has("--end") ? { end: true } : {}),
+  };
 }
 
 /** `crew list`'s arguments, checked; or the mistake. */
 export function parseListArgs(
   argv: readonly string[],
-): { all: boolean; json: boolean } | { error: string } {
-  const parsed = parseOptions(argv, [], ["--all", "--json"]);
+): { all: boolean; json: boolean; discarded?: boolean } | { error: string } {
+  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
   }
-  return { all: parsed.flags.has("--all"), json: parsed.flags.has("--json") };
+  return {
+    all: parsed.flags.has("--all"),
+    json: parsed.flags.has("--json"),
+    ...(parsed.flags.has("--discarded") ? { discarded: true } : {}),
+  };
 }
 
 /** The one crew session `crew <command>` names: its name, id or short id; or the mistake. */
@@ -345,6 +357,50 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     ctx.print(sub === "tell" ? TELL_USAGE : (boardCommand(sub)?.help ?? CREW_USAGE));
     return 0;
   }
+  if (sub === "cleanup") {
+    if (rest.length !== 1 || rest[0] !== "--json") {
+      ctx.error("crew cleanup takes only --json");
+      return 2;
+    }
+    return await guarded(sub, ctx, () => {
+      const answer = crewCleanupAnswer(ctx);
+      ctx.print(JSON.stringify(answer));
+      return answer.error === null ? 0 : 1;
+    });
+  }
+  if (sub === "rm") {
+    const parsed = parseOptions(rest, ["--discard-token"], ["--discard", "--yes"]);
+    if ("error" in parsed) {
+      ctx.error(usageError(parsed.error, sub));
+      return 2;
+    }
+    const args = parseTargetArgs(sub, parsed.positionals);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    if (
+      !parsed.flags.has("--discard") &&
+      (parsed.flags.has("--yes") || parsed.options.has("--discard-token"))
+    ) {
+      ctx.error("--yes and --discard-token require --discard");
+      return 2;
+    }
+    const token = parsed.options.get("--discard-token");
+    if (token !== undefined && !/^[a-f0-9]{64}$/.test(token)) {
+      ctx.error("--discard-token must be a preview token");
+      return 2;
+    }
+    return await guarded(sub, ctx, () =>
+      runCrewRm(args.ref, ctx, {
+        confirm: (question) =>
+          terminalPrompts(currentTerminal(ctx.env))?.confirm(question) ?? false,
+        discard: parsed.flags.has("--discard"),
+        yes: parsed.flags.has("--yes"),
+        ...(token === undefined ? {} : { expectedDiscardToken: token }),
+      }),
+    );
+  }
   if (sub === "list") {
     const args = parseListArgs(rest);
     if ("error" in args) {
@@ -371,7 +427,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       "all" in args ? runCrewResumePaused(args.lead, ctx) : runCrewResume(args.ref, ctx),
     );
   }
-  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "rm") {
+  if (sub === "status" || sub === "attach" || sub === "stop") {
     const args = parseTargetArgs(sub, rest);
     if ("error" in args) {
       ctx.error(usageError(args.error, sub));

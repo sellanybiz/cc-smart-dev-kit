@@ -197,11 +197,20 @@ installs it in the background; --hold stops that on this machine, --resume start
 Nothing restarts: restart the sessions to load it.`;
 
 const SESSIONS_HELP = `Usage: ${COMMAND} sessions [--open] [--dry-run]
+       ${COMMAND} sessions --finished [--remove [--yes] [--id <short-id>…]]
 
 This project's Claude Code sessions of the last two days, by name and worktree, with the
 command that resumes each. --open reopens every session that was open when the machine went
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
-it would open and opens nothing.`;
+it would open and opens nothing.
+
+--finished lists this machine's background sessions done or stopped for more than one day,
+with their name, folder and age. Crew sessions and leads stay out, even when renamed.
+Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
+A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
+A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
+--id limits removal to that exact eligible session; repeat it to name several.
+Use --finished separately from --open and --dry-run.`;
 
 const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 

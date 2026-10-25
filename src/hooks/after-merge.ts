@@ -1483,7 +1483,10 @@ export function insideClaudeWorktrees(path: string): boolean {
  * finished-worktree check (`worktrees --remove`, `src/worktrees/`), which removes the folder
  * and the branch only when the worktree is finished.
  */
-export function clearWorktreeNote(path: string, branch: string): string {
+export function clearWorktreeNote(path: string, branch: string, lead = false): string {
+  if (lead) {
+    return `The work of ${branch} is in the base; once nothing remains to do here, leave and remove this lead's worktree with ExitWorktree (action "remove").`;
+  }
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path)
@@ -1693,8 +1696,17 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
     worktree,
   });
   const notes: string[] = [];
-  if (outcome.clear !== null)
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  if (outcome.clear !== null) {
+    let lead = false;
+    try {
+      lead = listLeads(context.paths.stateDir, repo).records.some(
+        (one) => one.sessionId === input.session_id,
+      );
+    } catch {
+      // The ordinary note still gives ExitWorktree when the lead's store cannot be read.
+    }
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, lead));
+  }
   if (outcome.announce !== null && record !== null) {
     const pr = outcome.announce;
     // The other leads of this repo (D55): the note names them, and each one's watch also gets

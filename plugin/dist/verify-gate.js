@@ -7456,6 +7456,9 @@ function pathForm(path, ignoreCase = IGNORE_CASE) {
   const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
   return ignoreCase ? forward.toLowerCase() : forward;
 }
+function samePath(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
 
 // src/hooks/git.ts
 var GUARD_GIT_TIMEOUT_MS = 5000;
@@ -7563,6 +7566,7 @@ function hasChanges(folder, env) {
 }
 
 // src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 // src/crew/session.ts
@@ -8881,6 +8885,15 @@ var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
     });
   }
 });
+function crewOfWorktree(records, path) {
+  let found = null;
+  for (const one of records) {
+    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path))
+      continue;
+    found = one;
+  }
+  return found;
+}
 var waitingForSchema = discriminatedUnion("kind", [
   looseObject({
     kind: literal("slot"),
@@ -8897,6 +8910,12 @@ var waitingForSchema = discriminatedUnion("kind", [
     since: text
   })
 ]);
+var discardArchiveSchema = looseObject({
+  ref: text,
+  head: sha,
+  at: text,
+  prunedAt: text.optional()
+});
 var crewFields = object({
   version: version2,
   id: string2().regex(FILE_ID, "a plain file name"),
@@ -8935,6 +8954,17 @@ var crewFields = object({
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text, leadCommit: sha }).optional(),
+  archive: discardArchiveSchema.optional(),
+  archiveHistory: array(discardArchiveSchema).optional(),
+  discardPending: looseObject({
+    head: sha,
+    archivedHead: sha,
+    indexPath: text,
+    indexBackup: text,
+    indexArchived: text
+  }).optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -8947,6 +8977,8 @@ var leadFields = object({
   plan: text,
   tag: text,
   cwd: text,
+  endedAt: text.nullable().optional(),
+  sessionUnknownSince: text.nullable().optional(),
   pausedAgents: array(text).optional(),
   createdAt: text,
   updatedAt: text
@@ -9153,6 +9185,8 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     if (merged.state === "removed") {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
+    if (merged.state === "merged" && before.state === "stopped")
+      merged.mergedWhileStopped = true;
     const after = checked(crewRecordSchema, merged, file);
     writeJsonFile(file, after);
     const line = event(after);
@@ -9218,11 +9252,14 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
+  parkedAt: number2().int().min(0).optional(),
   noted: boolean2().default(false),
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional()
+  routerRequests: number2().int().min(0).nullable().optional(),
+  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
 function eventsEndOffset(stateDir, repo) {
   try {
@@ -9465,9 +9502,11 @@ function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
       return false;
   }
   const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
+  const env = gitEnv(context.env);
+  delete env[CREW_ENV];
   (context.start ?? startDetached)(process.platform, argv, {
     cwd: context.paths.home,
-    env: gitEnv(context.env),
+    env,
     onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
   });
   return true;
@@ -10949,7 +10988,10 @@ function quotableTitle(title) {
 function insideClaudeWorktrees(path) {
   return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
 }
-function clearWorktreeNote(path, branch) {
+function clearWorktreeNote(path, branch, lead = false) {
+  if (lead) {
+    return `The work of ${branch} is in the base; once nothing remains to do here, leave and remove this lead's worktree with ExitWorktree (action "remove").`;
+  }
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
@@ -11075,8 +11117,13 @@ async function afterMerge(context) {
     worktree
   });
   const notes = [];
-  if (outcome.clear !== null)
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  if (outcome.clear !== null) {
+    let lead = false;
+    try {
+      lead = listLeads(context.paths.stateDir, repo).records.some((one) => one.sessionId === input.session_id);
+    } catch {}
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, lead));
+  }
   if (outcome.announce !== null && record !== null) {
     const pr = outcome.announce;
     const mergedBy = isSessionId(input.session_id) ? input.session_id : null;
@@ -16227,6 +16274,7 @@ import { join as join28 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)supabase\/\.temp\/cli-latest$/,
   /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
@@ -16260,6 +16308,19 @@ function sameAsMain(worktree, mainCheckout, path) {
   };
   return same(path.replace(/\/$/, ""));
 }
+function safeIgnoredEntry(worktree, mainCheckout, entry) {
+  if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
+    if (!entry.endsWith("/cli-latest"))
+      return true;
+    try {
+      if (lstatSync2(join28(worktree, entry)).isFile())
+        return true;
+    } catch {
+      return false;
+    }
+  }
+  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+}
 function localFiles(worktree, mainCheckout, env) {
   const status = runGit(worktree, [
     "--no-optional-locks",
@@ -16271,7 +16332,26 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+  const safe = (entry) => safeIgnoredEntry(worktree, mainCheckout, entry);
+  const supabaseCacheOnly = (entry) => {
+    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry))
+      return false;
+    let budget = MAX_COMPARED;
+    const visit = (path) => {
+      if (--budget < 0)
+        return false;
+      if (safe(path))
+        return true;
+      try {
+        const stat = lstatSync2(join28(worktree, path));
+        return stat.isDirectory() && readdirSync8(join28(worktree, path)).every((name) => visit(`${path.replace(/\/$/, "")}/${name}`));
+      } catch {
+        return false;
+      }
+    };
+    return visit(entry);
+  };
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
 }
 
 // src/hooks/worktree-leftovers.ts
@@ -16413,9 +16493,12 @@ function worktreeLeftovers(context) {
     return answer(null);
   }
   const now = Date.now();
+  const crewRecords = crewRecordsOf(paths, repo);
   const finished = [];
   const gone = [];
   for (const listed of linked) {
+    if (crewOfWorktree(crewRecords, listed.path) !== null)
+      continue;
     const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
     if (verdict === "finished")
       finished.push(listed);
@@ -16706,8 +16789,29 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
 }
 
+// src/crew/lifecycle.ts
+var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+
 // src/crew/board.ts
 var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+
+// src/crew/discard.ts
+var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
+var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
+var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
+var DISCARD_IGNORED_MAX_FILES = 256;
+var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
+
+// src/ports.ts
+var DEFAULT_PORTAL_PORT = 20150;
+// src/worktrees/command.ts
+function crewRecordsOf(paths, repo) {
+  try {
+    return listCrew(paths.stateDir, repo).records;
+  } catch {
+    return [];
+  }
+}
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
@@ -16750,6 +16854,7 @@ var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -17747,12 +17852,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname10, isAbsolute as isAbsolute8, posix as posix2, relative, resolve as resolve9, win32 as win322 } from "path";
-
-// src/ports.ts
-var DEFAULT_PORTAL_PORT = 20150;
-
-// src/hooks/session-escape-guard.ts
+import { dirname as dirname10, isAbsolute as isAbsolute8, posix as posix2, relative as relative2, resolve as resolve9, win32 as win322 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -17967,7 +18067,7 @@ function protectedNeedles(paths) {
   const settings = dirname10(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
-    const underHome = relative(paths.home, folder);
+    const underHome = relative2(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute8(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));

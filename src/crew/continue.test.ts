@@ -155,6 +155,18 @@ describe("crew start --continue", () => {
     );
   });
 
+  test("CL2: stopped, done and failed work can be continued without changing the old outcome", async () => {
+    for (const state of ["stopped", "done", "failed"] as const) {
+      const world = await handoffWorld();
+      const { updateCrew } = await import("./store");
+      await updateCrew(world.paths.stateDir, world.repo, ID, { state }, T0);
+      expect(await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT))).toBe(0);
+      expect(crewNamed(listCrew(world.paths.stateDir, world.repo).records, NAME)?.state).toBe(
+        state,
+      );
+    }
+  });
+
   test("D25: a crew session that did not hand off cannot be continued", async () => {
     const world = await handoffWorld();
     const { updateCrew } = await import("./store");

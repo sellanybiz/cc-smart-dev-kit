@@ -99,6 +99,8 @@ on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
 
 ### Also in 1.2.0: what 1.1.3 was to ship
 
+- **CL2 cleanup:** daily reminders keep stopped unmerged crew work visible. `crew lead --end` records an ended plan; the board and Work API mark a lead proved gone. Manual and background cleans remove its crew work only after current project-base merge proof, through `crew rm`. Exact-head merge proofs survive lead rewrites and object pruning; later crew commits still need today's check. Explicit `crew rm --discard` archives work first, with shared confirmation facts and a checked content token; `crew list --discarded` prints recovery steps, and cleaners prune completed archives after 30 days. The watch never discards. Older records recover stopped-to-merged intent from positive historical events; missing history retains the previous merged-record policy. Finished non-crew background sessions have confirmed removal, with repeatable `--id` for an exact selection. Linux stale Claude locks require process proof and all normal safety checks; failed moves restore their lock. Supabase's `cli-latest` cache alone no longer keeps a worktree. Portal cleanup API contracts and actions are ready for a separate UI phase; no new controls are rendered by this change.
+
 **Every crew session keeps a to-do list, and a lead is reminded to keep one.** Measured before
 this release: 17 of 24 live crew sessions used `TaskCreate`, and the rest skipped it, because
 Claude Code leaves the task tools out until a session looks them up and the crew skill only
@@ -145,6 +147,25 @@ you open it.
   `job run` sent that one on, and its leftover processes when they had to be stopped. The first
   waiting line carries one hint about the pipe, once per job. A job that never waited prints
   neither line: no noise on a free machine.
+- **Finished crew work cleans itself up (D62).** A project with seven leads held 39 crew
+  worktrees, 13 working and the rest finished work nobody had removed (7 merged, 11 handed off,
+  6 stopped), plus 2 folders a removal left half done. The lead's watch now removes a merged crew
+  session with `crew rm`'s own steps and says a refusal once; it waits until every later
+  continuation's work is merged into the first record's base, and never removes a `stopped` one (that stays your call,
+  though it is still marked merged, so a phase that waits for it starts).
+  The merge is judged against the branch the session was cut from, not the lead's current one.
+  The programs a finished session's own turn left running (its background `bun run check` and
+  their `sh` and `bash`) are stopped, SIGTERM then SIGKILL, instead of refusing the removal; a
+  dev server you started there still keeps it. Ownership requires a readable environment naming
+  that crew session; an unreadable environment (including macOS) keeps the folder. Other blockers
+  are judged before its programs are stopped. Older records rewritten to `stopped` need a manual
+  `crew rm`; the watch does not guess whether their stop was intentional. A `…-removing-<time>` folder is finished by the
+  next `crew rm`, `worktrees --clean` or watch pass: while git lists it, under the usual checks;
+  when git no longer lists it (5 of the 8 found on one machine), only when nothing runs from it
+  and no file in it is newer than the move its name records. `worktrees` names a crew worktree as one,
+  with its lead and who removes it, and `--clean` leaves it alone instead of listing 30 of them
+  "kept" and saying "Nothing finished to clear". A finished session's unanswered question is
+  closed, so it leaves the Needs page.
 
 **Three more fixes, found by 1.1.2's own review.**
 

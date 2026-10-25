@@ -37,6 +37,7 @@ import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
+import { parseOptions } from "../crew/args";
 import { runCrew } from "../crew/command";
 import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
@@ -764,14 +765,47 @@ async function main(argv: string[]): Promise<number> {
       // Everything after `--` is Claude Code's: the command reads its own options and no more.
       return await runLaunch(rest, launchContext(paths));
     case "sessions": {
-      const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
+      const parsed = parseOptions(
+        rest,
+        ["--id"],
+        ["--open", "--dry-run", "--finished", "--remove", "--yes"],
+        ["--id"],
+      );
+      if ("error" in parsed) {
+        console.error(usageError(parsed.error, "sessions"));
+        return 2;
+      }
+      const unknown = parsed.positionals;
+      const ids = parsed.lists.get("--id") ?? [];
+      if (rest.includes("--finished") && (rest.includes("--open") || rest.includes("--dry-run"))) {
+        console.error(
+          usageError("--finished cannot be combined with --open or --dry-run", "sessions"),
+        );
+        return 2;
+      }
+      if (
+        (rest.includes("--remove") && !rest.includes("--finished")) ||
+        (rest.includes("--yes") && !rest.includes("--remove"))
+      ) {
+        console.error(
+          usageError("--remove requires --finished, and --yes requires --remove", "sessions"),
+        );
+        return 2;
+      }
       if (unknown.length > 0) {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "sessions"));
         return 2;
       }
       return await runSessions(
         paths,
-        { dryRun: rest.includes("--dry-run"), open: rest.includes("--open") },
+        {
+          dryRun: rest.includes("--dry-run"),
+          open: rest.includes("--open"),
+          finished: rest.includes("--finished"),
+          ids,
+          remove: rest.includes("--remove"),
+          yes: rest.includes("--yes"),
+        },
         {
           command: COMMAND,
           now: Date.now(),

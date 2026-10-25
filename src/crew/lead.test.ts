@@ -6,10 +6,24 @@ import { namesDir } from "../hooks/session-name";
 import { crewWorld, LEAD_SESSION, SESSION_PID, writeSessionRecord } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { runCrewLead } from "./lead";
 import { CREW_STEPS } from "./step";
 import { listLeads, readLead } from "./store";
 
 describe("D26: crew lead", () => {
+  test("an explicitly ended lead is recorded; recording the plan again reopens it", async () => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    expect(await runCrewLead({ plan: null, tag: null, end: true }, world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.endedAt).toBe(
+      "2026-10-21T10:00:00.000Z",
+    );
+    expect(world.out.at(-1)).toBe(
+      "ended lead LEAD my-app master-plan; its crew work is kept unless the project base holds it",
+    );
+    await runCrewLead({ plan: null, tag: null }, world.ctx());
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.endedAt).toBeNull();
+  });
   test("D26: the session's record, its LEAD <tag> <plan> name, and the next prompt's name", async () => {
     const world = crewWorld();
     expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);

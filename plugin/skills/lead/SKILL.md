@@ -201,8 +201,16 @@ only the part that does not.
 a new crew session (`crew start` with a new slug), or the phase back into the plan.
 
 **The end of a crew session.** A crew session never outlives its work: each one holds hundreds of MB.
-Once you merged its branch, the watch marks it `merged` and ends its session;
-`cc-smart-dev-kit crew rm <name>` removes its worktree, branch and record.
+Once you merged its branch, the watch marks it `merged` and **removes it by itself**, with
+`crew rm`'s own steps (worktree, branch, session, record); a handed-off one goes the same way once
+its work is merged. Nothing is left for you but two cases, and the watch names both: a removal it
+refused (a program of someone else's still runs there, or work nobody committed) — it says that
+once, in one line; clear it and run `cc-smart-dev-kit crew rm <name>` — and a **stopped** crew
+session, which it marks merged but never removes (stopping one was your call, and so is its
+removal). The clean also uses `crew rm` when a lead is proved gone and its crew work reached the
+project base; it never discards unmerged work.
+
+A crew worktree is removed only by `crew rm` or the watch, and anything else the kit keeps is named with its step by `worktrees --clean`; never give the person a removal loop.
 
 ## 7. Caps and the queue
 
@@ -244,6 +252,7 @@ Each crew session's phase carries its own review. Your own integration commits g
 before the push (`/cc-smart-dev-kit:review` § Second opinion). Then the push, the pull request
 and the merge go as the workflow says (`/cc-smart-dev-kit:commit`). The plan's last wave, the
 heavy cleanup, starts only once everything is verified live (`/cc-smart-dev-kit:plan-task` § 5).
+After the pull request merges and no work remains here, mark the plan ended with `crew lead --end`, then leave and remove your own lead worktree with `ExitWorktree` (action `remove`).
 
 ## Never
 

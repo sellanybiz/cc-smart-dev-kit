@@ -95,7 +95,9 @@ import {
 } from "./claude";
 import type { CrewContext, Env } from "./context";
 import { filePattern, matchesFilePattern } from "./diff";
+import { pendingDiscardWhy } from "./discard";
 import { lastLine, modelText } from "./display";
+import { activeContinuationOf } from "./lifecycle";
 import { CREW_REF, crewName } from "./names";
 import {
   OPUS_TIER,
@@ -508,23 +510,23 @@ async function planContinuation(
       `the crew here: ${records.map((one) => one.name).join(", ")}`,
     );
   }
+  const pending = pendingDiscardWhy(old);
+  if (pending !== null) throw refusal(pending);
   if (old.phase !== args.phase) {
     throw refusal(
       `${old.name} works on phase ${old.phase}, and this one is ${args.phase}`,
       `crew start ${old.phase} --continue "${old.name}"`,
     );
   }
-  if (old.state !== "handoff") {
+  if (!["handoff", "stopped", "done", "failed"].includes(old.state)) {
     throw refusal(
-      `${old.name} is ${old.state}, and only a crew session that handed off can be continued`,
-      `the crew session hands off with \`${REPORT_COMMAND} --status handoff\``,
+      `${old.name} is ${old.state}, and only a crew session that handed off or stopped can be continued`,
+      `stop its work first, or let the crew session hand off with \`${REPORT_COMMAND} --status handoff\``,
     );
   }
   // One next crew session per hand-off: a second `--continue` of the same crew session would put two
   // crew sessions on one phase. A next crew session that failed or was removed leaves the way free.
-  const next = records.find(
-    (one) => one.continues === old.id && one.state !== "failed" && one.state !== "removed",
-  );
+  const next = activeContinuationOf(old, records);
   if (next !== undefined) {
     throw refusal(
       `${old.name} has its next crew session already: ${next.name}, ${next.state}`,
@@ -631,7 +633,7 @@ function reportBlock(report: HandBackReport): string {
  * what it made was taken back) — the record stays as history, and a second try may start.
  */
 export function holdsName(record: CrewRecord): boolean {
-  if (record.state === "removed") return false;
+  if (["removed", "discarded"].includes(record.state)) return false;
   return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
 }
 

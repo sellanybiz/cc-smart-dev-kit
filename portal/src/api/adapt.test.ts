@@ -135,6 +135,7 @@ const CREW: CrewSummary = {
   kind: "ui",
   lastEvent: { at: "2026-10-22T10:04:00.000Z", text: "tests-green", type: "step" },
   lastLine: null,
+  leadGone: false,
   leadName: "LEAD my-app plan",
   leadSessionId: "lead-1",
   memory: [
@@ -201,6 +202,8 @@ describe("the adapters", () => {
     };
     const work: WorkAnswer = {
       crew: [CREW, { ...CREW, id: "crew-2", state: "done" }],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,
@@ -271,6 +274,8 @@ describe("the adapters", () => {
           updatedAt: "2026-10-22T10:00:00.000Z",
         },
       ],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       note: null,
       repo: "/home/user/my-app",
@@ -315,6 +320,8 @@ describe("the adapters", () => {
   test("Work: a crew session of another lead is shown under that lead's own name", () => {
     const data = workOf({
       crew: [{ ...CREW, id: "crew-9", leadName: "LEAD my-app old", leadSessionId: "lead-0" }],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,
@@ -333,6 +340,8 @@ describe("the adapters", () => {
     // a failure and stays in `note`.
     const quiet = workOf({
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote:
         "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
       leads: [],
@@ -346,6 +355,8 @@ describe("the adapters", () => {
     expect(quiet.leads).toEqual([]);
     const broken = workOf({
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: "the crew store could not be read: EACCES: permission denied",
@@ -468,6 +479,8 @@ describe("the adapters", () => {
 
   test("Needs you: every open breaker, doctor's fix, the attach command, newest first", () => {
     const answer: NeedsAnswer = {
+      stopped: [],
+      stoppedError: null,
       breakers: [
         {
           held: 4,
@@ -1018,6 +1031,8 @@ describe("the flow report that did not run (B6e)", () => {
         doctor: { at: null, failures: [] },
         permissions: [],
         permissionsError: "the flow report did not run (exit 3): no bun",
+        stopped: [],
+        stoppedError: null,
         update: null,
       },
       "1.1.0",
@@ -1031,6 +1046,8 @@ describe("the flow report that did not run (B6e)", () => {
   test("Work says no session can show a wait, and why; none when the report ran", () => {
     const answer = {
       crew: [],
+      finishedSessions: [],
+      finishedSessionsError: null,
       folderNote: null,
       leads: [],
       note: null,
