@@ -62,7 +62,7 @@ function printValue(
     if (value.length === 0) return "[]";
     const scalars = value.every((item) => !Array.isArray(item) && !isObject(item));
     if (scalars) {
-      const flat = `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+      const flat = `[${value.map((item) => JSON.stringify(item) ?? "null").join(", ")}]`;
       if (column + flat.length + trailing <= layout.width) return flat;
     }
     const inner = indent + layout.unit;
@@ -241,7 +241,10 @@ function editObject(
     (key) => after[key] !== undefined && !Object.hasOwn(before, key),
   );
   const indent = lineIndent(text, node.start);
-  const expanded = text.slice(node.start, node.end).includes("\n");
+  // Expanded: the keys start on their own lines. A one-line object around a nested multi-line
+  // one is not.
+  const first = members[0];
+  const expanded = first !== undefined && text.slice(node.start, first.keyStart).includes("\n");
   const memberIndent =
     survivors.length > 0 && expanded
       ? lineIndent(text, (survivors[0] as Member).keyStart)

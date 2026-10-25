@@ -121,6 +121,18 @@ describe("editJsonText", () => {
     expect(editJsonText(`{\n  "a": 1,\n  "b": 2\n}\n`, { c: 3 })).toBe(`{\n  "c": 3\n}\n`);
   });
 
+  test("a one-line object around a multi-line one gets its new key on the same line", () => {
+    expect(editJsonText('{"a": {\n  "x": 1\n}}', { a: { x: 1 }, b: 2 })).toBe(
+      '{"a": {\n  "x": 1\n}, "b": 2}',
+    );
+  });
+
+  test("an undefined item in an array prints as null, as JSON.stringify does", () => {
+    expect(editJsonText('{\n  "a": [1, 2]\n}\n', { a: [1, undefined] })).toBe(
+      '{\n  "a": [1, null]\n}\n',
+    );
+  });
+
   test("nothing to change returns the text itself", () => {
     expect(editJsonText(BIOME_FILE, parsed(BIOME_FILE))).toBe(BIOME_FILE);
   });

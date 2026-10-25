@@ -16653,7 +16653,7 @@ function printValue(value, layout, indent, column, trailing) {
       return "[]";
     const scalars = value.every((item) => !Array.isArray(item) && !isObject3(item));
     if (scalars) {
-      const flat = `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+      const flat = `[${value.map((item) => JSON.stringify(item) ?? "null").join(", ")}]`;
       if (column + flat.length + trailing <= layout.width)
         return flat;
     }
@@ -16795,7 +16795,8 @@ function editObject(text, node, before, after, layout, edits) {
   }
   const added = Object.keys(after).filter((key) => after[key] !== undefined && !Object.hasOwn(before, key));
   const indent = lineIndent(text, node.start);
-  const expanded = text.slice(node.start, node.end).includes(`
+  const first = members[0];
+  const expanded = first !== undefined && text.slice(node.start, first.keyStart).includes(`
 `);
   const memberIndent = survivors.length > 0 && expanded ? lineIndent(text, survivors[0].keyStart) : indent + layout.unit;
   const printed = added.map((key, index) => printMember(key, after[key], layout, memberIndent, index === added.length - 1 ? 0 : 1));

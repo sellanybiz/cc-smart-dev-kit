@@ -34,11 +34,17 @@ text of what differs: a changed value is replaced, a new key is added after the 
 the file's own indent, a removed key goes with its line and the comma it leaves. Every other
 byte stays. What it prints new follows the formatters: a short array of scalars on one line
 (when it fits the width — 80 columns, or the longest line the file already has, up to 120),
-otherwise one item per line; objects with their keys on their own lines. A file that does not
+otherwise one item per line; objects with their keys on their own lines. The width is a
+guess from the file's own lines (a project that formats at a width its file never shows can
+still ask for a format run: the helper does not read `biome.json`). The file's key order stays:
+a changed key keeps its place and a new key goes last, so `project init`'s `FILE_ORDER` only
+orders a file it creates. A file that does not
 exist yet is printed the same way (`printJson`), so a new file passes the check too. A file
 that is not valid JSON is refused before this, as before; the backup, the atomic write and the
-lock are unchanged. No library does this: the repo has one runtime dependency, and the helper
-is about 200 lines.
+lock are unchanged. No library is added: the repo has one runtime dependency, and a library
+(`jsonc-parser`, about 43 KB in each bundle) would still print a new array one item per line.
+The user-level `settings.json` writers (`managed-json.ts` and the hook and list writers) still
+lay their file out with `JSON.stringify`: they are not part of this.
 
 **The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`,
 `switches.jobRoute` and `switches.updateHold` are not stored in either workflow file: each
