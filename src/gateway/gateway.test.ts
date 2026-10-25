@@ -2997,7 +2997,8 @@ describe("streaming", () => {
       const health: unknown = await (
         await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
       ).json();
-      expect(health).toMatchObject({ cooling: {} });
+      // `toEqual`, not `toMatchObject`: an empty object matches any object there.
+      expect((health as { cooling?: unknown }).cooling).toEqual({});
     });
 
     /** What the next read comes to: its failure's words, a chunk, the end, or no answer in 1 s. */
@@ -3047,7 +3048,8 @@ describe("streaming", () => {
       const health: unknown = await (
         await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
       ).json();
-      expect(health).toMatchObject({ cooling: {} });
+      // `toEqual`, not `toMatchObject`: an empty object matches any object there.
+      expect((health as { cooling?: unknown }).cooling).toEqual({});
     });
 
     it("an answer sent straight to Anthropic that stalls is ended too, its bytes as they came until then", async () => {

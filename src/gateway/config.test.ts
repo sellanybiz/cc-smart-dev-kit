@@ -320,7 +320,7 @@ describe("timeouts.firstByteMs (SC1)", () => {
     );
     expect(parseConfig(raw({ timeouts: { firstByteMs: 2_147_483_648 } }))).toEqual({
       error: [
-        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every request would be cut)",
+        "✖ too long: at most 2147483647 ms, the longest a timer can wait (above it the wait is 1 ms and every wait it bounds would end at once)",
         "  → at timeouts.firstByteMs",
       ].join("\n"),
     });

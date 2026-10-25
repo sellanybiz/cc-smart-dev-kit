@@ -672,8 +672,8 @@ switches `--fallback-model` (a 529 does after three).
 - every target in use failed with a **capacity kind** (`isCapacityFailure`: 408, 429, 500,
   502, 503, 504, 529, a network error, no response headers in time, or no real event in time),
   or rests, or is being probed by another request;
-- the last target is an affordable backend. **Anthropic's own answers always pass unchanged**,
-  quota 429 included: Claude Code's auto-continue, its watchdog's wait for a reset and the
+- the last target is an affordable backend. **Anthropic's own answers always pass unchanged**
+  (a stream silent for `timeouts.streamIdleMs` is ended: § Fallback rules), quota 429 included: Claude Code's auto-continue, its watchdog's wait for a reset and the
   StopFailure alert need the real headers. A refused key (401, 403), a refusal (400, 422) and
   an error inside a 200 stream are not capacity failures: the person must fix them, and they
   are never held.
@@ -1334,8 +1334,8 @@ reaches Claude Code**.
   none answered at all. No request goes to Anthropic that the chain does not name. **With the
   slot's breaker on** (§ The breaker), a last answer that is a backend's capacity failure,
   when every other target failed that way too, becomes the breaker's 429 after a hold.
-  Anthropic's own answers always pass unchanged. The one exception (D65): a Claude target
-  behind the first, resting at a plan limit the router knows, is not tried as the last target
+  Anthropic's own answers always pass unchanged (but for the idle limit, below). The one
+  exception (D65): a Claude target behind the first, resting at a plan limit the router knows, is not tried as the last target
   (the cooldown, below).
 - **Two exceptions: a backend refusing its key, or the request.** When the answer that goes
   back is a backend's 401 or 403, Claude Code gets a 424 `invalid_request_error` instead, with
@@ -1359,8 +1359,9 @@ reaches Claude Code**.
 - **Deadline:** `timeouts.firstByteMs`, 60 s by default. For a safety check on a backend (the
   judge), on every target, the last too, and for a stream until its first real event; when
   the last one misses it, the answer is a 504 `timeout_error` in Anthropic's shape.
-- **The stream idle limit (SC1).** `timeouts.firstByteMs` covers only a held stream's wait for
-  its first real event. Any other stream that went silent had no bound: on 2026-10-24, 12 of
+- **The stream idle limit (SC1).** `timeouts.firstByteMs` bounds the wait for a backend's
+  headers and, for a held stream, its first real event (a backend that is not last, the judge,
+  a breaker probe). A stream that went silent after that, or that no deadline held, had no bound: on 2026-10-24, 12 of
   4,957 answers from one OmniRoute target in 3 hours sent a 200 and then nothing, and one crew
   session waited 21 minutes, until Claude Code gave up. Claude Code ended no stalled stream by
   itself in the 179 s a probe watched (`docs/claude-code-contract.md` § The gateway). So
@@ -1370,7 +1371,9 @@ reaches Claude Code**.
   its headers. Any byte resets it: an event, a `ping`, OmniRoute's `: keepalive` comment line,
   so a slow but live first token is never cut. A held stream's wait for its first real event
   is `firstByteMs`'s and is over when this starts; the last backend with no deadline of its
-  own (the breaker off or `breakerHoldMs` 0), and every Claude target, have this one alone.
+  own (the breaker off or `breakerHoldMs` 0), and every Claude target, have this one alone
+  once their headers are in. **Before the headers, neither has any bound**: a target that
+  never sends them is still waited on.
   At most 2147483647 (the longest a timer waits; above it the wait would be 1 ms and every
   stream would be cut; `firstByteMs` has the same cap). Absent, it is **120000** (120 s, `DEFAULT_STREAM_IDLE_MS`),
   **a judgment, not a measurement**: the request history is metadata only and its `ms` is the
@@ -1390,6 +1393,14 @@ reaches Claude Code**.
   middle of an answer, which the router already treats so (a stream that breaks after its first
   byte rests nothing; a plan limit is read from headers only; the breaker and the fallback act
   before an answer reaches Claude Code), so Claude Code's retry asks the same chain again.
+  The cost: with a chain of a Claude target and then a backend, fallback on, during an
+  Anthropic incident that hangs streams after their headers, every retry goes back to the
+  Claude target and waits another `streamIdleMs`; it never reaches the backend. (A Claude
+  429, 5xx or network error before the headers does rest the target; a stall after them is
+  not that.) The 120 s default for Anthropic rests on its ping events, which keep a live
+  stream moving; Anthropic's docs give no interval, and one third-party measurement of a direct
+  stream saw about 30 s between events, with the first content 235 s in. Not measured here. To
+  turn the bound off in effect, set `streamIdleMs` to 2147483647.
   Until the stream is ended, an Anthropic answer's status, headers and bytes pass as they came;
   an error status or a JSON answer is never bounded. The clock runs only while the router
   waits for the upstream (a client slow to read pauses it), and a client that hangs up cancels

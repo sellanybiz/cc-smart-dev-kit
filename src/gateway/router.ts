@@ -19,7 +19,8 @@
  *     is off, a model it does not know, and EVERY other path → Anthropic: method, path,
  *     query, body bytes and headers unchanged (only hop-by-hop headers, `host` and
  *     `content-length` are dropped). The answer streams back unbuffered, compressed bytes
- *     and all (`decompress: false`).
+ *     and all (`decompress: false`); one that goes silent for `timeouts.streamIdleMs` is
+ *     ended (`endIfSilent`), and nothing else is done to it.
  *   - A `claude-…` model whose family's slot has a chain (`familySlotFor`: haiku → scout,
  *     sonnet → worker, opus → opus, fable → fable), and a slot key (`cc-smart-dev-kit-worker`)
  *     → the slot's targets in order (`targets.ts`), the same way for every slot. An
@@ -38,7 +39,8 @@
  *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
  *     exception: when every target failed for want of capacity and the last one is a
  *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
- *     429 that Claude Code retries by itself; Anthropic's own answers always pass. A Claude
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass (a stream silent for
+ *     `timeouts.streamIdleMs` is ended). A Claude
  *     target behind the first, resting at a plan limit the router knows, is not tried as the
  *     last target (the owner's D65, `chain`).
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
@@ -2259,7 +2261,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // probe of a request that does not stream gets a deadline too (`firstByteMs`): with
       // none, a hung probe would block every other request's probe of that target for ever,
       // and the breaker could never close. Anthropic keeps its own wait: its answers always
-      // pass unchanged.
+      // pass unchanged (but for the idle limit after the headers, `endIfSilent`).
       const budgetMs =
         last && target.kind === "backend" && body.stream === true && hold !== null
           ? BREAKER_HEARTBEAT_WAIT_MS

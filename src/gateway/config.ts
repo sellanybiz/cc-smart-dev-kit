@@ -51,7 +51,9 @@ export const DEFAULT_FIRST_BYTE_MS = 60_000;
  * on the slowest target and 102 s at most). A pause inside an answer (a reasoning pause, a large
  * tool call) is likely of the same size, so 120 s sits above the longest wait seen, and still ends
  * a stall in two minutes, not in the 21 a session once waited (Claude Code ended no stalled
- * stream in 179 s: `docs/claude-code-contract.md` § The gateway).
+ * stream in 179 s: `docs/claude-code-contract.md` § The gateway). For Anthropic the margin
+ * is its ping events (no interval in its docs; one third-party measurement saw about 30 s
+ * between events), not measured here.
  */
 export const DEFAULT_STREAM_IDLE_MS = 120_000;
 /** The longest a `setTimeout` waits (2^31 - 1 ms); a longer one fires after 1 ms. */
@@ -249,7 +251,7 @@ export const gatewayConfigSchema = z
         firstByteMs: z
           .int()
           .positive()
-          .max(MAX_TIMER_MS, timerTooLong("every request would be cut"))
+          .max(MAX_TIMER_MS, timerTooLong("every wait it bounds would end at once"))
           .default(DEFAULT_FIRST_BYTE_MS),
         /**
          * How long a streaming answer may send no byte (an event, a ping or a comment line
