@@ -36896,7 +36896,7 @@ async function followSetup(paths, check = checkAffordableTarget) {
     ok: true
   };
 }
-var TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for; where your address comes back, your key comes back with it, from the backup of your file.`;
+var TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for. Where your address comes back, your key comes back with it, from the backup of your file; with no backup that holds it, the kit's key is removed.`;
 async function takeOver(paths) {
   const ready = readReady(paths);
   if ("blocked" in ready)

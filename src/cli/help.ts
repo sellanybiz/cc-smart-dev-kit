@@ -277,8 +277,9 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
         stays exactly as it is until you pick another, and ${COMMAND} restore puts it back. A
         key's value is never written down: restore leaves your key as it is while it is still
         yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address
-        it was written for; where your address comes back, your key comes back with it, from
-        the backup of your file. It asks first; --yes takes them over without the question.`;
+        it was written for. Where your address comes back, your key comes back with it, from
+        the backup of your file; with no backup that holds it, the kit's key is removed. It
+        asks first; --yes takes them over without the question.`;
 
 export const COMMAND_HELP: readonly CommandHelp[] = [
   {

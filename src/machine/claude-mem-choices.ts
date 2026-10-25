@@ -934,7 +934,7 @@ export async function followSetup(
  * What the take-over tells the person about their key, before and after they agree: the one text
  * the command (`take-over`) and the take-over's own answer print.
  */
-export const TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for; where your address comes back, your key comes back with it, from the backup of your file.`;
+export const TAKE_OVER_KEY_NOTE = `A key's value is never written down: restore leaves your key as it is while it is still yours. Once ${COMMAND} replaced it, restore keeps the kit's key only with the address it was written for. Where your address comes back, your key comes back with it, from the backup of your file; with no backup that holds it, the kit's key is removed.`;
 
 /**
  * **The take-over** (D63, owner 2026-10-24): records the values the person set by hand in
@@ -1055,15 +1055,28 @@ function backupHoldingTakenKey(
  * it away with the kit's other keys, would pair the key with a host it was never made for.
  *
  * It answers from the kit's own records and the file, never from `gateway.json`, which may be
- * gone or unreadable: yes when the kit never wrote the address or the person changed it since
- * (restore leaves it as it is), and when the address already holds the value it will get back.
+ * gone or unreadable. Yes when the kit never wrote the address, and when the address already
+ * holds the value it will get back (the kit never changed it). No when the kit changed it and
+ * restore changes it back, and also when the kit changed it and the person set it back to the
+ * value they had by hand: the kit's key was written for the address the kit set, not for that
+ * one. An address the person set to some third value is theirs, and the key beside it is left.
  */
 function keyKeepsItsAddress(records: OwnedRecord[], data: JsonObject, keyPath: KeyPath): boolean {
   const addressPath = [...keyPath.slice(0, -1), pairedAddress(keyPath.at(-1) ?? "")];
   const held = records.find((record) => samePath(record.path, addressPath));
+  if (held === undefined) return true;
   const current = getKey(data, addressPath);
-  if (held === undefined || ownership(records, addressPath, current) !== "ours") return true;
-  return held.was !== undefined && Bun.deepEquals(current.value, held.was, true);
+  if (ownership(records, addressPath, current) === "ours") {
+    return held.was !== undefined && Bun.deepEquals(current.value, held.was, true);
+  }
+  // Changed by the person since the kit wrote it (an "ours" record holds what the file holds, so
+  // a changed one is never the value the kit left): back to what they had, it is not the address
+  // the kit's key was written for.
+  return !(
+    current.found &&
+    held.was !== undefined &&
+    Bun.deepEquals(current.value, held.was, true)
+  );
 }
 
 /** What a restore does with one taken-over secret, from what it holds now. */
@@ -1150,7 +1163,11 @@ function secretRestoreLine(
  * over with lives in the record. Returns the lines it wrote; none when there was nothing to put
  * back.
  */
-export async function restoreTakenOver(paths: CliPaths): Promise<ChoiceResult> {
+export async function restoreTakenOver(
+  paths: CliPaths,
+  /** Tests only: `applyManagedJson`'s own seam, to play another program's write. */
+  hooks: { onBeforeWrite?: () => void } = {},
+): Promise<ChoiceResult> {
   const file = paths.claudeMemSettingsFile;
   const records = ownedRecords(paths.stateDir, realTarget(file));
   const plain = records.filter((record) => record.was !== undefined);
@@ -1195,9 +1212,12 @@ export async function restoreTakenOver(paths: CliPaths): Promise<ChoiceResult> {
     withdraw: plans
       .filter(({ plan }) => plan?.kind === "withdraw")
       .map(({ record }) => record.path),
+    ...(hooks.onBeforeWrite && { onBeforeWrite: hooks.onBeforeWrite }),
   });
-  // A secret's line comes from its plan, so no change of one is reported here (a value is
-  // never printed, not even masked).
+  // A secret's line comes from its plan, and from what the writer really did. The writer starts
+  // again when another program wrote the file meanwhile, and a key that moved then is the
+  // person's, left as it is: a put-back or a removal is reported only when the writer made that
+  // change. No value is printed, not even masked, so a secret's change is never listed above.
   const lines = result.changes
     .filter((change) => !isSecretPath(change.path))
     .map(
@@ -1205,7 +1225,16 @@ export async function restoreTakenOver(paths: CliPaths): Promise<ChoiceResult> {
         `~ ${short}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.after)} (yours again)`,
     );
   for (const { plan, record } of plans) {
-    if (plan !== null) lines.push(secretRestoreLine(paths, short, record, plan));
+    if (plan === null) continue;
+    const wrote =
+      plan.kind !== "give-back" && plan.kind !== "withdraw"
+        ? true
+        : result.changes.some((change) => samePath(change.path, record.path));
+    lines.push(
+      wrote
+        ? secretRestoreLine(paths, short, record, plan)
+        : `~ ${short}: ${formatKeyPath(record.path)}: changed while restore ran; left as it is, and yours.`,
+    );
   }
   return { lines, ok: true };
 }

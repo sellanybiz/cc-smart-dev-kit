@@ -110,7 +110,7 @@ export function stageOneDone(
   // still use the router until they restart.
   const switched = wrote
     ? "Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run."
-    : "Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it.";
+    : "No settings file had an address of ours to switch (an address you set, changed or removed is yours, and restore leaves it), so nothing was written and running Claude sessions may still use the router. Restart them, and change any address of yours that still names the router, before the second run: when the router stops, a session that still uses it fails.";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (existsSync(launcher)) {
     return `${switched} Then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -276,17 +276,26 @@ function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string
  * back lives in the record. It runs in both stages.
  *
  * A value cc-smart-dev-kit never wrote is not its to remove: without this, a restore would take
- * away the values the person had before the take-over. A key is the one exception — its value is
- * never written down, so there is nothing to put back: `restore` drops the claim and leaves the
- * key exactly as it is (`TAKEN_SECRET_LEFT`).
+ * away the values the person had before the take-over. A key is the exception — its value is
+ * never written down, so what it gets depends on what it holds (`restoreTakenOver`, `SecretPlan`):
+ * left as it is while it is still theirs, their own key back from the backup when the kit's key
+ * was written for an address that goes back.
  *
- * A failure here is one line, never a stop: the restore itself still runs, and says what it did.
+ * A failure here is one line, and the restore itself still runs — but **not on claude-mem's
+ * file**: the plain pass would put the address back and leave the kit's key beside it, and it
+ * would drop the records the next run needs. So the file is held back (it stays tracked, with its
+ * records), the line says so, and the restore exits 1. Returns the files to leave.
  */
-async function takeOverBack(paths: CliPaths): Promise<void> {
+async function takeOverBack(paths: CliPaths): Promise<string[]> {
   try {
     for (const line of (await restoreTakenOver(paths)).lines) console.log(line);
+    return [];
   } catch (error) {
     console.log(`! the values a take-over recorded could not be put back (${messageOf(error)})`);
+    console.log(
+      "! claude-mem's file is left as it is: run restore again to put them back, and take the rest out.",
+    );
+    return [realTarget(paths.claudeMemSettingsFile)];
   }
 }
 
@@ -427,7 +436,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     return withLock(
       paths.stateDir,
       async () => {
-        await takeOverBack(paths);
+        const heldBack = await takeOverBack(paths);
         // Inside the lock: the settings can change while the lock waits (a `gateway on`, a hand
         // edit), so the address each file gets is read now, not before the wait.
         const addresses = offWrites(settingsFiles, paths.stateDir);
@@ -446,7 +455,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
                 )
                 .map(([file]) => file);
         const results = restore(paths.stateDir, {
-          except: [...routerFiles, ...excludeFiles],
+          except: [...routerFiles, ...excludeFiles, ...heldBack],
           writeInstead: (file, path) => {
             const address = addresses.get(file);
             return samePath(path, BASE_URL_PATH) && address !== undefined
@@ -477,7 +486,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         forgetInstructionChoice(paths.stateDir, short);
         forgetClaudeMemChoice(paths.stateDir, short);
         console.log(stageOneDone(paths, options.cliBundle, addresses.size > 0));
-        return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
+        return !mcp.ok || heldBack.length > 0 || results.some((r) => r.action === "no-backup")
+          ? 1
+          : 0;
       },
       { waitMs: 10_000 },
     );
@@ -558,8 +569,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
             break;
         }
       }
-      await takeOverBack(paths);
-      const results = restore(paths.stateDir);
+      const heldBack = await takeOverBack(paths);
+      const results = restore(paths.stateDir, { except: heldBack });
       if (definitionTracked) service.forget(options.runner);
       // The MCP servers setup registered, and the record of them.
       const mcp = removeMcp(paths, options, short);
@@ -585,9 +596,11 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         browser.lines.length === 0
       ) {
         if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
-        return 0;
+        return heldBack.length > 0 ? 1 : 0;
       }
-      return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
+      return !mcp.ok || heldBack.length > 0 || results.some((r) => r.action === "no-backup")
+        ? 1
+        : 0;
     },
     { waitMs: 10_000 },
   );

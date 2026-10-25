@@ -1427,7 +1427,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   const STAGE_1_AGAIN = `Every running Claude session switches to Anthropic by itself, within about a second — a request one made just before it switched would be cut off by a stop in the same run. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
 
   /** The same run when nothing was written: the address is the person's, so sessions keep the router. */
-  const STAGE_1_UNWRITTEN = `Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
+  const STAGE_1_UNWRITTEN = `No settings file had an address of ours to switch (an address you set, changed or removed is yours, and restore leaves it), so nothing was written and running Claude sessions may still use the router. Restart them, and change any address of yours that still names the router, before the second run: when the router stops, a session that still uses it fails. Then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
 
   test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
     const home = tempDir("stage-one");
@@ -1445,7 +1445,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     // An address the person set, changed or removed: nothing was written, so the sessions still
     // use the router until they restart.
     expect(stageOneDone(paths, "/plugin/dist/cli.js", false)).toBe(
-      "Running Claude sessions still use the router: no settings file had an address of ours to switch (an address you set, changed or removed is yours), so nothing was written. Restart them to leave the router; then run restore again to stop it. Then run `cc-smart-dev-kit restore` again to stop and remove the router.",
+      "No settings file had an address of ours to switch (an address you set, changed or removed is yours, and restore leaves it), so nothing was written and running Claude sessions may still use the router. Restart them, and change any address of yours that still names the router, before the second run: when the router stops, a session that still uses it fails. Then run `cc-smart-dev-kit restore` again to stop and remove the router.",
     );
   });
 
