@@ -7213,7 +7213,6 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/breaker.ts
@@ -7427,7 +7426,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -7957,6 +7956,7 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+var REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
 function normalizedBaseUrl(url) {
   return url.replace(/\/+$/, "");
 }

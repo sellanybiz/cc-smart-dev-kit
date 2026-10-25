@@ -24,7 +24,7 @@
  * `<backend>:<model>` works as a model name too, for a one-off try):
  *   - `claude-sonnet-5-5`  → Anthropic, the body's model set to that id;
  *   - `<backend>:<model>`  → that backend (its own API key), e.g.
- *                            `omniroute:glm-5.3-flash`. The model part may hold `:` or
+ *                            `omniroute:<model>`. The model part may hold `:` or
  *                            `/` itself: only the first `:` splits.
  *
  * The functions here are pure, so they can be tested. The router is `router.ts`; the

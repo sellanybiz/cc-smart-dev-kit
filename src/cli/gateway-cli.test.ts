@@ -3603,11 +3603,8 @@ describe("the gateway commands' output, as plain text", () => {
     expect(lines).toContain(
       "· Claude Code (~/.claude/settings.json): gateway OFF (no ANTHROPIC_BASE_URL)",
     );
-    expect(lines.slice(-5)).toEqual([
-      "· The router answers, and Claude Code does not use it.",
-      "Next steps:",
-      "  1. Point every Claude Code session on this machine at it:",
-      "       cc-smart-dev-kit gateway on",
+    expect(lines.slice(-2)).toEqual([
+      "· The gateway is off: the router answers, and Claude Code does not use it. cc-smart-dev-kit gateway on points every Claude Code session on this machine at it.",
       "",
     ]);
   });

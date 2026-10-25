@@ -5,9 +5,37 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.2.0
 
-The gateway per project and per session, a project's workflow from the portal, claude-mem from the
-kit, and the effort pin. It also carries everything 1.1.3 was to ship (below), which never went out
-on its own. The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
+Claude by default (every slot on Claude, every fallback off, the gateway off), the gateway per
+project and per session, a project's workflow from the portal, claude-mem from the kit, and the
+effort pin. It also carries everything 1.1.3 was to ship (below), which never went out on its own.
+The rest of the planned crew clean-up (CL1, CL2) follows in 1.2.1.
+
+- **Claude by default** (the owner's decision, D66). A new machine has every slot on Claude —
+  scout, worker, opus, fable and the judge — every fallback off, the judge's too, and the gateway
+  off. `gateway setup` asks only for OmniRoute's address and key, leaves every slot on Claude, and
+  never turns the gateway on; the installer's gateway question and last line say the same.
+  OmniRoute and the router are set up exactly as before. The kit suggests no model: a slot gets a
+  chain with `gateway slot`, a fallback is turned on with `gateway fallback`. The judge is Claude
+  alone until `gateway fallback judge on` lets the worker's tested targets stand in for it.
+- **A machine set up before this moves once, at its next `cc-smart-dev-kit setup`** (the installer
+  runs it). Every slot's chain, the machine's and each profile's, goes back to Claude (a machine
+  chain waits in the config, and `gateway slot <slot> custom` brings it back), every fallback
+  switch goes off, and the gateway turns off through the same code as `gateway off`. `gateway.json`
+  is backed up first, setup prints one line per change (`worker: omniroute:x,omniroute:y →
+  Claude`) and where the backup is, and `--dry-run` shows the lines and changes nothing. It runs
+  once per machine: a marker in the kit's state folder says so, so a chain or a switch you set
+  afterwards is never touched by a later setup. A session start or the background update never runs
+  it, and a project's own `gateway project on` is left as it is. A running session on the router
+  goes to Claude at once; the gateway-off address reaches a session at its next start.
+- **claude-mem goes back to Claude Haiku** on your own login with that move: the scout is on Claude
+  again, so setup takes out the five provider keys it set for claude-mem. A route you chose with
+  `claude-mem route` or in the portal stays. The note about a backend claude-mem still uses now
+  names `claude-mem route claude`, and an address in a "left alone" note never shows credentials.
+- **`gateway on` says Remote Control is off while the gateway is on.** Claude Code allows Remote
+  Control only when its address is unset or `api.anthropic.com`; `gateway off` writes that
+  address, so it comes back. The kit never writes `remoteControlAtStartup`.
+- **`gateway status` calls a router that Claude Code does not use "off"**, and names `gateway on`
+  in its words, with no next step: that is the default state now.
 
 - **The gateway per project.** `gateway project on|off|default [--team] [--profile <name>]` turns
   the gateway on or off for one project only. The kit writes it to that project's own settings, so
@@ -212,7 +240,7 @@ that is not one.
 router bundle, so a machine updates the copy it runs; setup says what the restart costs and
 asks first.
 
-**What to run for 1.2.0:** `cc-smart-dev-kit gateway setup` once — the router changed (the effort pin, the token and price fixes) and setup asks before it restarts it. Then restart your sessions, so each runs the new version.
+**What to run for 1.2.0:** `cc-smart-dev-kit gateway setup` once — the router changed (the effort pin, the token and price fixes, the fallback default) and setup asks before it restarts it. Then `cc-smart-dev-kit setup` once: it moves your slots, fallbacks and gateway switch back to Claude and off, with a backup (`--dry-run` first shows what it would do). Then restart your sessions, so each runs the new version.
 
 ## 1.1.2
 

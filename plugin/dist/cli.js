@@ -1,8 +1,8 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync80, statSync as statSync29 } from "fs";
+import { existsSync as existsSync81, statSync as statSync29 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join90, resolve as resolve18 } from "path";
+import { join as join91, resolve as resolve18 } from "path";
 
 // src/browser/check.ts
 import { existsSync as existsSync4, mkdtempSync, readdirSync as readdirSync3, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -8773,7 +8773,6 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
@@ -9032,7 +9031,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 function breakerOn(config, slot) {
   if (slot === JUDGE_SLOT)
@@ -9775,6 +9774,7 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+var REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
 function normalizedBaseUrl(url) {
   return url.replace(/\/+$/, "");
 }
@@ -9940,6 +9940,16 @@ function turnOff(options) {
     result,
     switched: address.kind === "write" && result.changes.some((change) => change.after !== undefined)
   };
+}
+function foreignRouting(foreign, settingsFile) {
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  return { routing, ownAddressRoutes };
 }
 function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
@@ -10545,24 +10555,31 @@ var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-
 function compatBaseUrl(backendBaseUrl) {
   return `${backendBaseUrl}/v1`;
 }
-function gatewayAffordableTarget(gatewayConfigFile) {
-  if (!existsSync13(gatewayConfigFile))
-    return { reason: "the gateway is not set up" };
+function gatewayAffordableTarget(gatewayConfigFile, after) {
   let config;
-  try {
-    config = loadConfigFile(gatewayConfigFile);
-  } catch (error) {
-    return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+  if (after !== undefined) {
+    config = after;
+  } else {
+    if (!existsSync13(gatewayConfigFile))
+      return { reason: "the gateway is not set up" };
+    try {
+      config = loadConfigFile(gatewayConfigFile);
+    } catch (error) {
+      return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+    }
   }
   const slot = familySlotKey("haiku");
-  const first = slot === null ? undefined : config.slots[slot]?.[0];
-  if (slot === null || first === undefined) {
-    return { reason: `${slot ?? "the scout slot"} has no chain` };
-  }
+  if (slot === null)
+    return { reason: "the scout slot is unknown" };
+  const first = config.slots[slot]?.[0];
+  if (first === undefined)
+    return { claude: true };
   const parsed = parseTarget(first);
-  if ("error" in parsed || parsed.target.kind !== "backend") {
+  if ("error" in parsed) {
     return { reason: `${slot} starts with ${first}, not an affordable model` };
   }
+  if (parsed.target.kind !== "backend")
+    return { claude: true };
   const backend = config.backends[parsed.target.backend];
   if (backend === undefined)
     return { reason: `${first} names no backend in gateway.json` };
@@ -10686,19 +10703,46 @@ function planStartBlocks(read, notes) {
   }
   return planned;
 }
-function planProvider(paths, install, read, notes) {
+function leftAloneNote(read, key, value) {
+  const shown = key === API_KEY ? "another key" : shownClaudeMemValue(read.at(key), value);
+  return `  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`;
+}
+function planBackToClaude(read, notes) {
+  const setups = [];
+  for (const key of PROVIDER_KEYS) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found)
+      continue;
+    const whose = ownership(read.records, path, current, unchosen);
+    if (whose === "ours") {
+      setups.push(path);
+    } else if (!(whose === "none" && unchosen(path, current.value))) {
+      notes.push(leftAloneNote(read, key, current.value));
+      return [];
+    }
+  }
+  if (setups.length > 0) {
+    notes.push(`  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`);
+  }
+  return setups;
+}
+function planProvider(paths, install, read, notes, after) {
+  const none = { provider: null, remove: [] };
   const chosen = PROVIDER_KEYS.find((key) => isPersonsChoice(read, key));
   if (chosen !== undefined) {
     notes.push(`  claude-mem settings left alone: you chose ${chosen} in the portal (your choice)`);
-    return null;
+    return none;
   }
-  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
+  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile, after);
+  if ("claude" in affordable)
+    return { provider: null, remove: planBackToClaude(read, notes) };
   if ("reason" in affordable) {
     const provider = getKey(read.data, read.at(PROVIDER));
     if (provider.found && ownership(read.records, read.at(PROVIDER), provider) === "ours") {
-      notes.push(`! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`);
+      notes.push(`! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. To send its summaries to Claude again: ${COMMAND} claude-mem route claude`);
     }
-    return null;
+    return none;
   }
   const version = comparableVersion(install.version);
   if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
@@ -10707,12 +10751,12 @@ function planProvider(paths, install, read, notes) {
     if (state !== "outside-range" && state !== "unknown-version") {
       notes.push(`! claude-mem settings left alone: ${version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`}`);
     }
-    return null;
+    return none;
   }
   const pool = getKey(read.data, read.at(API_KEY_POOL));
   if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
     notes.push(`  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${read.short} (your choice)`);
-    return null;
+    return none;
   }
   const target = affordable.target;
   const wanted = {
@@ -10730,19 +10774,21 @@ function planProvider(paths, install, read, notes) {
     const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours" || whose === "none" && unchosen(path, current.value))
       continue;
-    const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
-    notes.push(`  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`);
-    return null;
+    notes.push(leftAloneNote(read, key, current.value));
+    return none;
   }
   return {
-    target,
-    set: Object.entries(wanted).map(([key, value]) => [read.at(key), value])
+    provider: {
+      target,
+      set: Object.entries(wanted).map(([key, value]) => [read.at(key), value])
+    },
+    remove: []
   };
 }
 function isOldNestedForm(data) {
   return isObject(data.env) && Object.keys(data).every((key) => key === "env");
 }
-function claudeMemPlan(paths) {
+function claudeMemPlan(paths, gatewayAfter) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
   if (install === null || !existsSync13(install.installPath))
     return { notInstalled: true };
@@ -10755,10 +10801,13 @@ function claudeMemPlan(paths) {
   }
   const notes = [];
   const startBlocks = planStartBlocks(read, notes);
-  const provider = planProvider(paths, install, read, notes);
+  const { provider, remove: backToClaude } = planProvider(paths, install, read, notes, gatewayAfter);
   return {
     plan: {
-      remove: RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+      remove: [
+        ...RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+        ...backToClaude
+      ],
       startBlocks,
       provider,
       notes,
@@ -29102,7 +29151,6 @@ function scheduledTaskService(options) {
 }
 
 // src/gateway/setup-questions.ts
-var OFF = "off";
 var SETUP_QUESTIONS_INTRO = "Enter keeps the answer in [brackets].";
 function addressProblem(text) {
   let url;
@@ -29115,22 +29163,6 @@ function addressProblem(text) {
     return "the address starts with http:// or https://";
   }
   return url.username === "" && url.password === "" ? null : "give the address with no user or password in it";
-}
-function resolvePicks(answer, ids, backend) {
-  const parts = answer.split(",").map((part) => part.trim()).filter((part) => part !== "");
-  const resolved = [];
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) {
-      resolved.push(part);
-      continue;
-    }
-    const id = ids[Number(part) - 1];
-    if (id === undefined) {
-      return { error: `there is no model ${part} on the list (1 to ${String(ids.length)})` };
-    }
-    resolved.push(`${backend}:${id}`);
-  }
-  return { text: resolved.join(",") };
 }
 async function askSetupQuestions(prompts, facts) {
   facts.print(SETUP_QUESTIONS_INTRO);
@@ -29157,54 +29189,13 @@ async function askSetupQuestions(prompts, facts) {
   const key = typed.trim() === "" ? null : typed.trim();
   const apiKey = key ?? facts.saved?.apiKey;
   if (apiKey === undefined && facts.hasConfig) {
-    facts.print(`\xB7 no ${facts.label} API key was given: the config stays as it is, and no slot is asked`);
-    return { answers: { baseUrl, chains: {}, ids: [], key: null, turnOn: false } };
+    facts.print(`\xB7 no ${facts.label} API key was given: the config stays as it is`);
+    return { answers: { baseUrl, key: null } };
   }
   if (apiKey === undefined) {
     return { error: `no ${facts.label} API key was given. Give one: ${facts.keyFlags}` };
   }
-  const backend = { apiKey, baseUrl };
-  const chains = {};
-  const listed = await facts.listModels(backend);
-  const ids = "ids" in listed ? listed.ids : [];
-  if ("reason" in listed || ids.length === 0) {
-    const why = "reason" in listed ? listed.reason : "it lists no model";
-    facts.print(`! ${facts.label}'s model list could not be read (${why}), so every slot stays as it is. Pick them later: ${facts.pickLater}.`);
-  } else {
-    facts.print(`${facts.label}'s models:`);
-    ids.forEach((id, index) => {
-      facts.print(`  ${String(index + 1)}. ${facts.backend}:${id}`);
-    });
-    for (const slot of facts.slots) {
-      const now = slot.chain.join(",");
-      const isClaude = (text) => facts.claudeWords.includes(text);
-      const answer = prompts.ask(`The ${slot.name} slot (${capitalized(slot.family)}'s work): numbers or targets, comma-separated, or "${OFF}"`, {
-        default: now === "" ? OFF : now,
-        check: (text) => {
-          const picked = resolvePicks(text, ids, facts.backend);
-          if ("error" in picked)
-            return picked.error;
-          if (isClaude(picked.text) && slot.chain.length === 0)
-            return null;
-          return facts.checkChain(slot.key, picked.text, ids, backend);
-        }
-      });
-      const picked = resolvePicks(answer, ids, facts.backend);
-      if ("error" in picked)
-        continue;
-      if (isClaude(picked.text)) {
-        if (slot.chain.length > 0)
-          chains[slot.key] = picked.text;
-      } else if (picked.text !== now) {
-        chains[slot.key] = picked.text;
-      }
-    }
-  }
-  const turnOn = !facts.gatewayOn && prompts.confirm("Turn the gateway on now? Every Claude Code session on this machine then sends its requests through it", false);
-  return { answers: { baseUrl, chains, ids, key, turnOn } };
-}
-function capitalized(word) {
-  return word.charAt(0).toUpperCase() + word.slice(1);
+  return { answers: { baseUrl, key } };
 }
 
 // src/gateway/commands.ts
@@ -30234,13 +30225,7 @@ async function commandStatus(ctx) {
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
   } else if (!pointsAtGateway) {
-    out.verdict("info", "The router answers, and Claude Code does not use it.");
-    out.next([
-      {
-        command: `${COMMAND} gateway on`,
-        text: "Point every Claude Code session on this machine at it:"
-      }
-    ]);
+    out.verdict("info", `The gateway is off: the router answers, and Claude Code does not use it. ${COMMAND} gateway on points every Claude Code session on this machine at it.`);
   } else
     out.verdict("ok", "The gateway is on, and its router and backends answer.");
   return 0;
@@ -30538,12 +30523,12 @@ async function commandSetup(ctx, args) {
       if (upgraded.length > 0) {
         ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
-      if (answers !== null)
-        saveAnsweredChains(ctx, answers);
+      if (existsSync41(configPath))
+        warnUntestedJudge(ctx);
       const now = existsSync41(configPath) ? loadConfigFile(configPath) : null;
       if (now !== null && Object.keys(now.slots).length === 0) {
         const saved = Object.keys(now.kept ?? {}).length;
-        ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
+        ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude, on your own login. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : "Every slot is Claude, so every Claude model stays plain Claude, on your own login.");
       }
       if (keyBackedUp)
         ctx.print(keyBackupLine(backups, paths.home));
@@ -30566,8 +30551,8 @@ async function commandSetup(ctx, args) {
 `));
         ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
-      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) && answers?.turnOn !== true) {
-        ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
+      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
+        ctx.print(`The gateway is off: Claude Code sends its requests to Anthropic itself. ${COMMAND} gateway on routes them through the router.`);
       }
       return 0;
     }, { waitMs: 1e4 });
@@ -30576,8 +30561,6 @@ async function commandSetup(ctx, args) {
   }
   if (code === 0)
     await proveWorkerTargets(ctx);
-  if (code === 0 && answers?.turnOn === true)
-    return await commandOn(ctx);
   return code;
 }
 var SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the address and the key again)`;
@@ -30591,60 +30574,17 @@ function savedOmniroute(configPath) {
 }
 function setupFacts(ctx) {
   const configPath = ctx.paths.gatewayConfigFile;
-  const config = existsSync41(configPath) ? loadConfigFile(configPath) : null;
   return {
-    backend: OMNIROUTE,
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
-    hasConfig: config !== null,
+    hasConfig: existsSync41(configPath),
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
-    slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
-      chain: config?.slots[key] ?? [],
-      family,
-      key,
-      name: slotName(key)
-    })),
-    claudeWords: SLOT_WORDS.claude,
-    listModels: async ({ apiKey, baseUrl }) => {
-      const listed = await listModels(baseUrl, apiKey, LIST_MODELS_TIMEOUT_MS, ctx.apiFetch);
-      if ("error" in listed)
-        return { reason: listed.error };
-      if (listed.status !== 200)
-        return { reason: `HTTP ${String(listed.status)}` };
-      return { ids: listed.models.map((model) => model.id) };
-    },
-    checkChain: (slot, text, ids, backend) => {
-      const base = config ?? defaultConfig(backend.apiKey, backend.baseUrl);
-      const answered = { apiKey: backend.apiKey, baseUrl: backend.baseUrl };
-      const withBackend = { ...base, backends: { ...base.backends, [OMNIROUTE]: answered } };
-      const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
-      return "error" in plan ? plan.error : null;
-    },
-    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
-    pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print
   };
 }
-var LIST_MODELS_TIMEOUT_MS = 1e4;
-function saveAnsweredChains(ctx, answers) {
-  const configPath = ctx.paths.gatewayConfigFile;
-  for (const [slot, text] of Object.entries(answers.chains)) {
-    const plan = planSlotChange(loadConfigFile(configPath), slot, text, {
-      [OMNIROUTE]: answers.ids
-    });
-    if ("error" in plan) {
-      ctx.print(`! ${slot} stays as it was: ${plan.error}`);
-      continue;
-    }
-    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
-    saveConfig(configPath, next);
-    if (plan.next.length === 0)
-      dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
-    for (const line of slotChangeLines({ ...plan, config: next }))
-      ctx.print(line);
-  }
-  const now = loadConfigFile(configPath);
+function warnUntestedJudge(ctx) {
+  const now = loadConfigFile(ctx.paths.gatewayConfigFile);
   const judge = now.slots[JUDGE_SLOT] ?? [];
   const untested = judge.filter((target) => !judgeTargetUsable(now, target));
   if (untested.length > 0) {
@@ -30743,6 +30683,7 @@ async function commandOn(ctx) {
     printChanges(out, result, paths.home);
     out.verdict("ok", `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`);
     out.say("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
+    out.say(`Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`);
   }
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
@@ -30764,13 +30705,7 @@ async function commandOff(ctx) {
   const { result, foreign, switched } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  let ownAddressRoutes = true;
-  try {
-    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
-  } catch {
-    ownAddressRoutes = true;
-  }
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {
       out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it already points at Anthropic`);
@@ -40578,8 +40513,10 @@ Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-updat
 kit's background update is the one updater, so a major version waits for you), installs the
 plugin's instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported
 by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem
-at the scout slot's affordable model (when its chain starts with one), and copies the
-project's auto-mode entries into your settings. The entries are trust rules: they are shown
+at the scout slot's first model (when its chain starts with a backend model), and copies the
+project's auto-mode entries into your settings. Once per machine, a gateway set up before the
+Claude defaults moves to them: every slot on Claude, every fallback off, the gateway off, a
+backup first and one line per change. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
 with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
 prints a section per part, one verdict line, and the next steps to run, in order.
@@ -40763,7 +40700,7 @@ var COMMAND_HELP = [
   },
   {
     name: "gateway setup",
-    summary: "Optional: more affordable models, through a local gateway",
+    summary: "Optional: set up the local AI gateway",
     listed: "start",
     help: USAGE
   },
@@ -42367,7 +42304,7 @@ function setupMadeIt(name, recorded, current, paths) {
     return true;
   return recorded.pending === true && name === "serena" && setupsSerenaShape(current, serenaLeftoverPaths(paths).contextFile);
 }
-function leftAloneNote(name) {
+function leftAloneNote2(name) {
   return `\xB7 MCP server ${name} holds a config other than the one ${PLUGIN} registered: left alone, and its record forgotten. ` + `${COMMAND} no longer registers ${name} (${SERENA_RETIRED_IN}); to remove it: claude mcp remove ${name} --scope user`;
 }
 function planRetiredServers(records, live, paths) {
@@ -42384,7 +42321,7 @@ function planRetiredServers(records, live, paths) {
     } else if (setupMadeIt(name, recorded, current, paths)) {
       plan.push({ action: "remove", json: "", name, note: null });
     } else {
-      plan.push({ action: "foreign", forget: true, json: "", name, note: leftAloneNote(name) });
+      plan.push({ action: "foreign", forget: true, json: "", name, note: leftAloneNote2(name) });
     }
   }
   return plan;
@@ -50106,11 +50043,147 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync75, mkdirSync as mkdirSync29, rmSync as rmSync20 } from "fs";
-import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute9, join as join83, relative as relative8 } from "path";
+import { existsSync as existsSync76, mkdirSync as mkdirSync29, rmSync as rmSync20 } from "fs";
+import { basename as basename13, delimiter, dirname as dirname29, isAbsolute as isAbsolute9, join as join84, relative as relative8 } from "path";
+
+// src/gateway/claude-defaults.ts
+import { existsSync as existsSync75 } from "fs";
+import { dirname as dirname28, join as join82 } from "path";
+function inSlotOrder(keys) {
+  const known = [...Object.keys(FAMILY_SLOTS), JUDGE_SLOT].filter((key) => keys.includes(key));
+  return [...known, ...keys.filter((key) => !known.includes(key)).sort()];
+}
+function switchedOn(record) {
+  return inSlotOrder(Object.entries(record ?? {}).filter(([, on]) => on).map(([slot]) => slot));
+}
+function withoutFallback(saved) {
+  const { fallback: _off, ...rest } = saved;
+  return rest;
+}
+function keptWithoutFallback(kept) {
+  if (kept === undefined)
+    return;
+  return Object.fromEntries(Object.entries(kept).map(([slot, saved]) => [slot, withoutFallback(saved)]));
+}
+function planClaudeDefaults(config) {
+  const chainLines = [];
+  const profileFallbackLines = [];
+  let next = config;
+  for (const key of inSlotOrder(Object.keys(config.slots))) {
+    const plan = planSlotChange(next, key, "claude", {});
+    if ("error" in plan)
+      return { error: plan.error };
+    chainLines.push(`${slotName(key)}: ${plan.old.join(",")} \u2192 Claude`);
+    next = plan.config;
+  }
+  const profiles = Object.fromEntries(Object.entries(next.profiles ?? {}).map(([name, profile]) => {
+    const { breaker: _breaker, fallback: _fallback, kept, slots, ...rest } = profile;
+    const own = Object.entries(slots ?? {});
+    for (const [key, entry] of own) {
+      if (entry !== "claude") {
+        chainLines.push(`profile ${name} ${slotName(key)}: ${entry.join(",")} \u2192 Claude`);
+      }
+    }
+    for (const key of switchedOn(profile.fallback)) {
+      profileFallbackLines.push(`profile ${name} fallback ${slotName(key)}: on \u2192 off`);
+    }
+    for (const key of switchedOn(Object.fromEntries(Object.entries(kept ?? {}).map(([slot, saved]) => [slot, saved.fallback === true])))) {
+      profileFallbackLines.push(`profile ${name} fallback ${slotName(key)} (saved chain): on \u2192 off`);
+    }
+    const claudeOnly = Object.fromEntries(own.filter(([, entry]) => entry === "claude"));
+    return [
+      name,
+      {
+        ...rest,
+        ...Object.keys(claudeOnly).length > 0 ? { slots: claudeOnly } : {},
+        ...kept === undefined ? {} : { kept: keptWithoutFallback(kept) }
+      }
+    ];
+  }));
+  const machineFallbackLines = switchedOn(config.fallback).map((key) => `fallback ${slotName(key)}: on \u2192 off`);
+  const savedOn = Object.entries(config.kept ?? {}).filter(([, saved]) => saved.fallback === true).map(([slot]) => slot);
+  const savedFallbackLines = inSlotOrder(savedOn).map((key) => `fallback ${slotName(key)} (saved chain): on \u2192 off`);
+  const { fallback: _machine, kept, profiles: _profiles, ...rest } = next;
+  const moved = {
+    ...rest,
+    ...kept === undefined ? {} : { kept: keptWithoutFallback(kept) },
+    ...Object.keys(profiles).length === 0 ? {} : { profiles }
+  };
+  const checked = parseConfig(moved);
+  if ("error" in checked)
+    return { error: checked.error };
+  return {
+    config: checked.config,
+    lines: [...chainLines, ...machineFallbackLines, ...savedFallbackLines, ...profileFallbackLines]
+  };
+}
+var CLAUDE_DEFAULTS_MARKER = "claude-by-default";
+var claudeDefaultsMarkerFile = (stateDir) => join82(stateDir, CLAUDE_DEFAULTS_MARKER);
+function markClaudeDefaultsDone(stateDir) {
+  atomicWrite(claudeDefaultsMarkerFile(stateDir), `${VERSION}
+`, 384);
+}
+function planClaudeDefaultsStep(paths) {
+  if (existsSync75(claudeDefaultsMarkerFile(paths.stateDir)))
+    return { kind: "done" };
+  if (!existsSync75(paths.gatewayConfigFile))
+    return { kind: "nothing" };
+  const file = tildify(paths.gatewayConfigFile, paths.home);
+  const unreadable = (why) => ({
+    kind: "unreadable",
+    line: `! setup did not move the slots to Claude or turn the gateway off: ${maskedLine(why, [], 300).replaceAll(paths.gatewayConfigFile, file)} Then run ${COMMAND} setup again.`
+  });
+  let config;
+  try {
+    config = loadConfigFile(paths.gatewayConfigFile);
+  } catch (error) {
+    return unreadable(messageOf(error));
+  }
+  const plan = planClaudeDefaults(config);
+  if ("error" in plan)
+    return unreadable(plan.error);
+  return { kind: "move", plan };
+}
+function gatewayAfterStep(step) {
+  return step.kind === "move" ? step.plan.config : undefined;
+}
+function applyClaudeDefaultsStep(paths, step, dryRun) {
+  if (step.kind === "unreadable")
+    return [step.line];
+  if (step.kind === "done")
+    return [];
+  if (step.kind === "nothing") {
+    if (!dryRun)
+      markClaudeDefaultsDone(paths.stateDir);
+    return [];
+  }
+  const { plan } = step;
+  const changes = plan.lines.length > 0;
+  let backup = null;
+  if (changes && !dryRun) {
+    backup = backupFile(paths.stateDir, paths.gatewayConfigFile);
+    saveConfig(paths.gatewayConfigFile, plan.config);
+  }
+  const off = turnOff({ dryRun, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
+  if (!dryRun)
+    markClaudeDefaultsDone(paths.stateDir);
+  const lines = [];
+  if (off.switched)
+    lines.push("~ the gateway: on \u2192 off");
+  lines.push(...plan.lines.map((line) => `~ ${line}`));
+  lines.push(...changeLines2(off.result, paths.home));
+  for (const key of foreignRouting(off.foreign, paths.settingsFile).routing) {
+    lines.push(`! env.${key} stays: ${COMMAND} did not set it. Remove it by hand to turn the gateway off`);
+  }
+  if (changes) {
+    const where = backup === null ? backupDir(paths.stateDir, paths.gatewayConfigFile) : dirname28(backup);
+    lines.push(dryRun ? `  the config would be kept in ${tildify(where, paths.home)}/ before it changes` : `  the config as it was before is in ${tildify(where, paths.home)}/`);
+  }
+  return lines;
+}
 
 // src/setup/auto-mode.ts
-import { join as join82 } from "path";
+import { join as join83 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -50122,9 +50195,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join82(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join83(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join82(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join83(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -50158,7 +50231,7 @@ function shownValue2(path, value) {
   return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync75(settingsFile))
+  if (!existsSync76(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -50169,10 +50242,10 @@ function marketplaceKnown(settingsFile) {
   }
 }
 function statuslineDeclinedFile(stateDir) {
-  return join83(stateDir, "statusline-declined");
+  return join84(stateDir, "statusline-declined");
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync75(settingsFile))
+  if (!existsSync76(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -50184,6 +50257,7 @@ function hasStatusline(settingsFile) {
 var SETUP_SECTIONS = [
   { id: "command", title: "The command" },
   { id: "settings", title: "Claude Code settings" },
+  { id: "gateway", title: groupTitle("gateway") },
   { id: "instructions", title: "Instructions" },
   { id: "companions", title: groupTitle("companions") },
   { id: "mcp", title: groupTitle("mcp") },
@@ -50228,9 +50302,9 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync75(paths.tavilyKeyFile) ? "changed" : "created";
+    const mark = existsSync76(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
-      mkdirSync29(dirname28(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync29(dirname29(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
@@ -50436,7 +50510,7 @@ function askAutoMode(paths, options, planned, out, screen, report) {
   return wanted;
 }
 function askStatusline(paths, machine, managed, yes) {
-  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync75(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync76(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
@@ -50467,8 +50541,8 @@ function workStateWarning(paths) {
     text: `claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`
   };
 }
-async function decideClaudeMem(paths, dryRun, report, out) {
-  const planned = claudeMemPlan(paths);
+async function decideClaudeMem(paths, dryRun, report, out, gatewayAfter) {
+  const planned = claudeMemPlan(paths, gatewayAfter);
   if ("notInstalled" in planned)
     return "not-installed";
   if ("note" in planned) {
@@ -50588,6 +50662,7 @@ function restartStep(claudeMemChanged) {
 }
 var RESTART_SECTIONS = new Set([
   "settings",
+  "gateway",
   "instructions",
   "companions",
   "mcp",
@@ -50627,7 +50702,9 @@ async function runSetup(paths, options) {
     claudeSteps = [];
     ok = false;
   }
-  const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out);
+  const claudeDefaults = planClaudeDefaultsStep(paths);
+  const gatewayAfter = gatewayAfterStep(claudeDefaults);
+  const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out, gatewayAfter);
   const autoMode = planAutoMode(paths, options, report);
   const tmuxLine = machine.which("tmux") !== null;
   const tmuxRunning = tmuxLine && tmuxServerRunning(machine.run);
@@ -50679,7 +50756,7 @@ async function runSetup(paths, options) {
   const tmuxNow = `tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`;
   if (options.dryRun) {
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
-    report.push(...warp.commands.map((command) => ({ section: "terminal", mark: "run", text: showCommand(command) })), ...claudeSteps.map((step) => reportLine(stepSection(step), step.line)), ...reportLines("terminal", warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []), ...reportLines("mcp", wouldRegister.wouldRun), ...planned.lines, ...reportLines("terminal", warp.info), ...reportLines("mcp", wouldRegister.notes));
+    report.push(...warp.commands.map((command) => ({ section: "terminal", mark: "run", text: showCommand(command) })), ...claudeSteps.map((step) => reportLine(stepSection(step), step.line)), ...reportLines("terminal", warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []), ...reportLines("mcp", wouldRegister.wouldRun), ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)), ...planned.lines, ...reportLines("terminal", warp.info), ...reportLines("mcp", wouldRegister.notes));
     if (autoMode !== null) {
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null)
@@ -50752,7 +50829,7 @@ async function runSetup(paths, options) {
       ok = false;
   }
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
-    const again = await decideClaudeMem(paths, false, report, out);
+    const again = await decideClaudeMem(paths, false, report, out, gatewayAfter);
     if (again !== "not-installed")
       managed.claudeMem = again;
   }
@@ -50762,6 +50839,7 @@ async function runSetup(paths, options) {
       markMcpServerAdding(paths.stateDir, name, json, now);
     });
     const shortcuts = warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
+    const gateway = applyClaudeDefaultsStep(paths, planClaudeDefaultsStep(paths), false);
     const files = applySetup(paths, managed, false, mcp.removed, machine.platform);
     recordApplied(paths.stateDir, mcp, now);
     if (declined)
@@ -50775,15 +50853,16 @@ async function runSetup(paths, options) {
       rmSync20(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
     }
     return {
+      gateway: reportLines("gateway", gateway),
       mcp,
       files: { ...files, lines: [...reportLines("terminal", shortcuts), ...files.lines] }
     };
   }, { waitMs: 1e4 }));
-  report.push(...reportLines("mcp", written.mcp.changes), ...reportLines("mcp", written.mcp.notes), ...written.files.lines);
+  report.push(...reportLines("mcp", written.mcp.changes), ...reportLines("mcp", written.mcp.notes), ...written.gateway, ...written.files.lines);
   if (!written.mcp.ok)
     ok = false;
   const counts = printSections(out, report, false);
-  const filesWritten = written.files.lines.some((line) => CHANGE_MARKS.has(line.mark));
+  const filesWritten = [...written.gateway, ...written.files.lines].some((line) => CHANGE_MARKS.has(line.mark));
   out.blank();
   const verdict = setupVerdict(counts, {
     dryRun: false,
@@ -51066,12 +51145,12 @@ function terminalQuestions(terminal, shown) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync76, readFileSync as readFileSync80, rmSync as rmSync21, statSync as statSync27, writeFileSync as writeFileSync14 } from "fs";
+import { existsSync as existsSync77, readFileSync as readFileSync80, rmSync as rmSync21, statSync as statSync27, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir10 } from "os";
-import { basename as basename14, join as join85 } from "path";
+import { basename as basename14, join as join86 } from "path";
 
 // src/hooks/alert-sound.ts
-import { join as join84 } from "path";
+import { join as join85 } from "path";
 var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
 var MACOS_SOUNDS = {
   "dialog-warning": "Basso",
@@ -51082,13 +51161,13 @@ function soundArgv(moment, platform, which) {
   if (platform === "linux") {
     const paplay = which("paplay");
     if (paplay !== null)
-      return [paplay, join84(SOUND_DIR, `${moment}.oga`)];
+      return [paplay, join85(SOUND_DIR, `${moment}.oga`)];
     const canberra = which("canberra-gtk-play");
     return canberra === null ? null : [canberra, "-i", moment];
   }
   if (platform === "darwin") {
     const afplay = which("afplay");
-    return afplay === null ? null : [afplay, join84("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+    return afplay === null ? null : [afplay, join85("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
 }
@@ -51168,7 +51247,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync80(join85(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync80(join86(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject21(settings) || !isJsonObject21(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -51177,7 +51256,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync80(join85(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync80(join86(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject21(installed) || !isJsonObject21(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -51290,7 +51369,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync76(ctx.finished))
+      if (input.stop_hook_active === true && existsSync77(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -51462,9 +51541,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join85(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join85(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join85(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join86(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join86(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join86(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -51548,12 +51627,12 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync77 } from "fs";
-import { join as join87 } from "path";
+import { existsSync as existsSync78 } from "fs";
+import { join as join88 } from "path";
 
 // src/hooks/terminal.ts
 import { closeSync as closeSync11, constants as constants4, openSync as openSync11, readlinkSync as readlinkSync6, statSync as statSync28, writeSync as writeSync2 } from "fs";
-import { join as join86 } from "path";
+import { join as join87 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -51572,7 +51651,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join86(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join87(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -51635,11 +51714,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join87(paths.binDir, LAUNCHER_NAME);
+    const launcher = join88(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync77(launcher) ? launcher : null,
+      launcher: existsSync78(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,
@@ -51662,14 +51741,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync78, readFileSync as readFileSync81 } from "fs";
+import { existsSync as existsSync79, readFileSync as readFileSync81 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
-    exists: (path) => existsSync78(path),
+    exists: (path) => existsSync79(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync78("/etc/os-release") ? readFileSync81("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync79("/etc/os-release") ? readFileSync81("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -51750,17 +51829,17 @@ function realMachine(env, confirm) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync79, mkdirSync as mkdirSync30, readFileSync as readFileSync82 } from "fs";
-import { basename as basename16, dirname as dirname29, join as join89, relative as relative9 } from "path";
+import { existsSync as existsSync80, mkdirSync as mkdirSync30, readFileSync as readFileSync82 } from "fs";
+import { basename as basename16, dirname as dirname30, join as join90, relative as relative9 } from "path";
 
 // src/portal/facts.ts
-import { basename as basename15, join as join88 } from "path";
+import { basename as basename15, join as join89 } from "path";
 var SLOT_ORDER = ["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)];
 function projectFiles(root) {
   return {
-    config: join88(root, ".claude", "cc-smart-dev-kit.json"),
-    localSettings: join88(root, ".claude", "settings.local.json"),
-    settings: join88(root, ".claude", "settings.json")
+    config: join89(root, ".claude", "cc-smart-dev-kit.json"),
+    localSettings: join89(root, ".claude", "settings.local.json"),
+    settings: join89(root, ".claude", "settings.json")
   };
 }
 
@@ -51906,7 +51985,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync79(files.config);
+  const set = existsSync80(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -52293,8 +52372,8 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 
 // src/entries/cli.ts
 function distBundle(name) {
-  const beside = join90(import.meta.dir, name);
-  return existsSync80(beside) ? beside : join90(import.meta.dir, "..", "..", "plugin", "dist", name);
+  const beside = join91(import.meta.dir, name);
+  return existsSync81(beside) ? beside : join91(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -52472,7 +52551,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync80(project) || !statSync29(project).isDirectory()) {
+      if (!existsSync81(project) || !statSync29(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
@@ -52532,7 +52611,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join90(paths.binDir, LAUNCHER_NAME);
+      const launcher = join91(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
         console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
@@ -52561,7 +52640,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         portal: () => testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
         project: {
           cwd: process.cwd(),
-          pluginHooksFile: join90(pluginDir(), "hooks", "hooks.json")
+          pluginHooksFile: join91(pluginDir(), "hooks", "hooks.json")
         },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),

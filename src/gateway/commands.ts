@@ -1929,13 +1929,11 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
   } else if (!pointsAtGateway) {
-    out.verdict("info", "The router answers, and Claude Code does not use it.");
-    out.next([
-      {
-        command: `${COMMAND} gateway on`,
-        text: "Point every Claude Code session on this machine at it:",
-      },
-    ]);
+    // The default state (D66): information, how to change it, no to-do.
+    out.verdict(
+      "info",
+      `The gateway is off: the router answers, and Claude Code does not use it. ${COMMAND} gateway on points every Claude Code session on this machine at it.`,
+    );
   } else out.verdict("ok", "The gateway is on, and its router and backends answer.");
   return 0;
 }

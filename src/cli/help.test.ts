@@ -144,7 +144,7 @@ describe("the top-level help", () => {
       "  setup            Set up this machine (safe to run again)",
       "  doctor           Check that everything works, and say what to fix",
       "  browser setup    Let Claude use your own Chrome",
-      "  gateway setup    Optional: more affordable models, through a local gateway",
+      "  gateway setup    Optional: set up the local AI gateway",
       "  project init     Turn the plugin's features on in this project",
       "",
       "Examples",

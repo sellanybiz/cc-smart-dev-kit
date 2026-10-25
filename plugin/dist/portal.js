@@ -7383,7 +7383,6 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
@@ -7642,7 +7641,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+  return false;
 }
 function breakerOn(config, slot) {
   if (slot === JUDGE_SLOT)
@@ -17780,6 +17779,7 @@ function gatewayEnv(port) {
 function routerBaseUrl(port) {
   return `http://127.0.0.1:${port}`;
 }
+var REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
 function normalizedBaseUrl(url) {
   return url.replace(/\/+$/, "");
 }
@@ -17929,6 +17929,16 @@ function turnOff(options) {
     result,
     switched: address.kind === "write" && result.changes.some((change) => change.after !== undefined)
   };
+}
+function foreignRouting(foreign, settingsFile) {
+  let ownAddressRoutes = true;
+  try {
+    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(settingsFile).baseUrl);
+  } catch {
+    ownAddressRoutes = true;
+  }
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  return { routing, ownAddressRoutes };
 }
 function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
@@ -19759,7 +19769,6 @@ function scheduledTaskService(options) {
 }
 
 // src/gateway/setup-questions.ts
-var OFF = "off";
 var SETUP_QUESTIONS_INTRO = "Enter keeps the answer in [brackets].";
 function addressProblem(text) {
   let url;
@@ -19772,22 +19781,6 @@ function addressProblem(text) {
     return "the address starts with http:// or https://";
   }
   return url.username === "" && url.password === "" ? null : "give the address with no user or password in it";
-}
-function resolvePicks(answer, ids, backend) {
-  const parts = answer.split(",").map((part) => part.trim()).filter((part) => part !== "");
-  const resolved = [];
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) {
-      resolved.push(part);
-      continue;
-    }
-    const id = ids[Number(part) - 1];
-    if (id === undefined) {
-      return { error: `there is no model ${part} on the list (1 to ${String(ids.length)})` };
-    }
-    resolved.push(`${backend}:${id}`);
-  }
-  return { text: resolved.join(",") };
 }
 async function askSetupQuestions(prompts, facts) {
   facts.print(SETUP_QUESTIONS_INTRO);
@@ -19814,54 +19807,13 @@ async function askSetupQuestions(prompts, facts) {
   const key = typed.trim() === "" ? null : typed.trim();
   const apiKey = key ?? facts.saved?.apiKey;
   if (apiKey === undefined && facts.hasConfig) {
-    facts.print(`\xB7 no ${facts.label} API key was given: the config stays as it is, and no slot is asked`);
-    return { answers: { baseUrl, chains: {}, ids: [], key: null, turnOn: false } };
+    facts.print(`\xB7 no ${facts.label} API key was given: the config stays as it is`);
+    return { answers: { baseUrl, key: null } };
   }
   if (apiKey === undefined) {
     return { error: `no ${facts.label} API key was given. Give one: ${facts.keyFlags}` };
   }
-  const backend = { apiKey, baseUrl };
-  const chains = {};
-  const listed = await facts.listModels(backend);
-  const ids = "ids" in listed ? listed.ids : [];
-  if ("reason" in listed || ids.length === 0) {
-    const why = "reason" in listed ? listed.reason : "it lists no model";
-    facts.print(`! ${facts.label}'s model list could not be read (${why}), so every slot stays as it is. Pick them later: ${facts.pickLater}.`);
-  } else {
-    facts.print(`${facts.label}'s models:`);
-    ids.forEach((id, index) => {
-      facts.print(`  ${String(index + 1)}. ${facts.backend}:${id}`);
-    });
-    for (const slot of facts.slots) {
-      const now = slot.chain.join(",");
-      const isClaude = (text) => facts.claudeWords.includes(text);
-      const answer = prompts.ask(`The ${slot.name} slot (${capitalized(slot.family)}'s work): numbers or targets, comma-separated, or "${OFF}"`, {
-        default: now === "" ? OFF : now,
-        check: (text) => {
-          const picked = resolvePicks(text, ids, facts.backend);
-          if ("error" in picked)
-            return picked.error;
-          if (isClaude(picked.text) && slot.chain.length === 0)
-            return null;
-          return facts.checkChain(slot.key, picked.text, ids, backend);
-        }
-      });
-      const picked = resolvePicks(answer, ids, facts.backend);
-      if ("error" in picked)
-        continue;
-      if (isClaude(picked.text)) {
-        if (slot.chain.length > 0)
-          chains[slot.key] = picked.text;
-      } else if (picked.text !== now) {
-        chains[slot.key] = picked.text;
-      }
-    }
-  }
-  const turnOn = !facts.gatewayOn && prompts.confirm("Turn the gateway on now? Every Claude Code session on this machine then sends its requests through it", false);
-  return { answers: { baseUrl, chains, ids, key, turnOn } };
-}
-function capitalized(word) {
-  return word.charAt(0).toUpperCase() + word.slice(1);
+  return { answers: { baseUrl, key } };
 }
 
 // src/gateway/commands.ts
@@ -20932,13 +20884,7 @@ async function commandStatus(ctx) {
   } else if (!backendsAnswer) {
     out.verdict("warn", "The router answers, and a backend does not.");
   } else if (!pointsAtGateway) {
-    out.verdict("info", "The router answers, and Claude Code does not use it.");
-    out.next([
-      {
-        command: `${COMMAND} gateway on`,
-        text: "Point every Claude Code session on this machine at it:"
-      }
-    ]);
+    out.verdict("info", `The gateway is off: the router answers, and Claude Code does not use it. ${COMMAND} gateway on points every Claude Code session on this machine at it.`);
   } else
     out.verdict("ok", "The gateway is on, and its router and backends answer.");
   return 0;
@@ -21236,12 +21182,12 @@ async function commandSetup(ctx, args) {
       if (upgraded.length > 0) {
         ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
-      if (answers !== null)
-        saveAnsweredChains(ctx, answers);
+      if (existsSync30(configPath))
+        warnUntestedJudge(ctx);
       const now = existsSync30(configPath) ? loadConfigFile(configPath) : null;
       if (now !== null && Object.keys(now.slots).length === 0) {
         const saved = Object.keys(now.kept ?? {}).length;
-        ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
+        ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude, on your own login. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : "Every slot is Claude, so every Claude model stays plain Claude, on your own login.");
       }
       if (keyBackedUp)
         ctx.print(keyBackupLine(backups, paths.home));
@@ -21264,8 +21210,8 @@ async function commandSetup(ctx, args) {
 `));
         ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
-      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl) && answers?.turnOn !== true) {
-        ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
+      if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
+        ctx.print(`The gateway is off: Claude Code sends its requests to Anthropic itself. ${COMMAND} gateway on routes them through the router.`);
       }
       return 0;
     }, { waitMs: 1e4 });
@@ -21274,8 +21220,6 @@ async function commandSetup(ctx, args) {
   }
   if (code === 0)
     await proveWorkerTargets(ctx);
-  if (code === 0 && answers?.turnOn === true)
-    return await commandOn(ctx);
   return code;
 }
 var SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the address and the key again)`;
@@ -21289,60 +21233,17 @@ function savedOmniroute(configPath) {
 }
 function setupFacts(ctx) {
   const configPath = ctx.paths.gatewayConfigFile;
-  const config = existsSync30(configPath) ? loadConfigFile(configPath) : null;
   return {
-    backend: OMNIROUTE,
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
-    hasConfig: config !== null,
+    hasConfig: existsSync30(configPath),
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
-    slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
-      chain: config?.slots[key] ?? [],
-      family,
-      key,
-      name: slotName(key)
-    })),
-    claudeWords: SLOT_WORDS.claude,
-    listModels: async ({ apiKey, baseUrl }) => {
-      const listed = await listModels(baseUrl, apiKey, LIST_MODELS_TIMEOUT_MS, ctx.apiFetch);
-      if ("error" in listed)
-        return { reason: listed.error };
-      if (listed.status !== 200)
-        return { reason: `HTTP ${String(listed.status)}` };
-      return { ids: listed.models.map((model) => model.id) };
-    },
-    checkChain: (slot, text, ids, backend) => {
-      const base = config ?? defaultConfig(backend.apiKey, backend.baseUrl);
-      const answered = { apiKey: backend.apiKey, baseUrl: backend.baseUrl };
-      const withBackend = { ...base, backends: { ...base.backends, [OMNIROUTE]: answered } };
-      const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
-      return "error" in plan ? plan.error : null;
-    },
-    gatewayOn: baseUrlPointsAtGateway(settingsReport(ctx.paths.settingsFile).baseUrl),
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
-    pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
     print: ctx.print
   };
 }
-var LIST_MODELS_TIMEOUT_MS = 1e4;
-function saveAnsweredChains(ctx, answers) {
-  const configPath = ctx.paths.gatewayConfigFile;
-  for (const [slot, text] of Object.entries(answers.chains)) {
-    const plan = planSlotChange(loadConfigFile(configPath), slot, text, {
-      [OMNIROUTE]: answers.ids
-    });
-    if ("error" in plan) {
-      ctx.print(`! ${slot} stays as it was: ${plan.error}`);
-      continue;
-    }
-    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
-    saveConfig(configPath, next);
-    if (plan.next.length === 0)
-      dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
-    for (const line of slotChangeLines({ ...plan, config: next }))
-      ctx.print(line);
-  }
-  const now = loadConfigFile(configPath);
+function warnUntestedJudge(ctx) {
+  const now = loadConfigFile(ctx.paths.gatewayConfigFile);
   const judge = now.slots[JUDGE_SLOT] ?? [];
   const untested = judge.filter((target) => !judgeTargetUsable(now, target));
   if (untested.length > 0) {
@@ -21441,6 +21342,7 @@ async function commandOn(ctx) {
     printChanges(out, result, paths.home);
     out.verdict("ok", `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`);
     out.say("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
+    out.say(`Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`);
   }
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
@@ -21462,13 +21364,7 @@ async function commandOff(ctx) {
   const { result, foreign, switched } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  let ownAddressRoutes = true;
-  try {
-    ownAddressRoutes = baseUrlPointsAtGateway(readGatewaySettings(paths.settingsFile).baseUrl);
-  } catch {
-    ownAddressRoutes = true;
-  }
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {
       out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it already points at Anthropic`);
@@ -27621,24 +27517,31 @@ var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-
 function compatBaseUrl(backendBaseUrl) {
   return `${backendBaseUrl}/v1`;
 }
-function gatewayAffordableTarget(gatewayConfigFile) {
-  if (!existsSync42(gatewayConfigFile))
-    return { reason: "the gateway is not set up" };
+function gatewayAffordableTarget(gatewayConfigFile, after) {
   let config;
-  try {
-    config = loadConfigFile(gatewayConfigFile);
-  } catch (error) {
-    return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+  if (after !== undefined) {
+    config = after;
+  } else {
+    if (!existsSync42(gatewayConfigFile))
+      return { reason: "the gateway is not set up" };
+    try {
+      config = loadConfigFile(gatewayConfigFile);
+    } catch (error) {
+      return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+    }
   }
   const slot = familySlotKey("haiku");
-  const first = slot === null ? undefined : config.slots[slot]?.[0];
-  if (slot === null || first === undefined) {
-    return { reason: `${slot ?? "the scout slot"} has no chain` };
-  }
+  if (slot === null)
+    return { reason: "the scout slot is unknown" };
+  const first = config.slots[slot]?.[0];
+  if (first === undefined)
+    return { claude: true };
   const parsed = parseTarget(first);
-  if ("error" in parsed || parsed.target.kind !== "backend") {
+  if ("error" in parsed) {
     return { reason: `${slot} starts with ${first}, not an affordable model` };
   }
+  if (parsed.target.kind !== "backend")
+    return { claude: true };
   const backend = config.backends[parsed.target.backend];
   if (backend === undefined)
     return { reason: `${first} names no backend in gateway.json` };
@@ -27755,19 +27658,46 @@ function planStartBlocks(read, notes) {
   }
   return planned;
 }
-function planProvider(paths, install, read, notes) {
+function leftAloneNote(read, key, value) {
+  const shown = key === API_KEY ? "another key" : shownClaudeMemValue(read.at(key), value);
+  return `  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`;
+}
+function planBackToClaude(read, notes) {
+  const setups = [];
+  for (const key of PROVIDER_KEYS) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found)
+      continue;
+    const whose = ownership(read.records, path, current, unchosen);
+    if (whose === "ours") {
+      setups.push(path);
+    } else if (!(whose === "none" && unchosen(path, current.value))) {
+      notes.push(leftAloneNote(read, key, current.value));
+      return [];
+    }
+  }
+  if (setups.length > 0) {
+    notes.push(`  claude-mem goes back to Claude on your own login: the scout slot is Claude, and the provider keys ${COMMAND} set are taken out`);
+  }
+  return setups;
+}
+function planProvider(paths, install, read, notes, after) {
+  const none = { provider: null, remove: [] };
   const chosen = PROVIDER_KEYS.find((key) => isPersonsChoice(read, key));
   if (chosen !== undefined) {
     notes.push(`  claude-mem settings left alone: you chose ${chosen} in the portal (your choice)`);
-    return null;
+    return none;
   }
-  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
+  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile, after);
+  if ("claude" in affordable)
+    return { provider: null, remove: planBackToClaude(read, notes) };
   if ("reason" in affordable) {
     const provider = getKey(read.data, read.at(PROVIDER));
     if (provider.found && ownership(read.records, read.at(PROVIDER), provider) === "ours") {
-      notes.push(`! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`);
+      notes.push(`! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. To send its summaries to Claude again: ${COMMAND} claude-mem route claude`);
     }
-    return null;
+    return none;
   }
   const version = comparableVersion(install.version);
   if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
@@ -27776,12 +27706,12 @@ function planProvider(paths, install, read, notes) {
     if (state !== "outside-range" && state !== "unknown-version") {
       notes.push(`! claude-mem settings left alone: ${version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`}`);
     }
-    return null;
+    return none;
   }
   const pool = getKey(read.data, read.at(API_KEY_POOL));
   if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
     notes.push(`  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${read.short} (your choice)`);
-    return null;
+    return none;
   }
   const target = affordable.target;
   const wanted = {
@@ -27799,19 +27729,21 @@ function planProvider(paths, install, read, notes) {
     const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours" || whose === "none" && unchosen(path, current.value))
       continue;
-    const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
-    notes.push(`  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`);
-    return null;
+    notes.push(leftAloneNote(read, key, current.value));
+    return none;
   }
   return {
-    target,
-    set: Object.entries(wanted).map(([key, value]) => [read.at(key), value])
+    provider: {
+      target,
+      set: Object.entries(wanted).map(([key, value]) => [read.at(key), value])
+    },
+    remove: []
   };
 }
 function isOldNestedForm(data) {
   return isObject2(data.env) && Object.keys(data).every((key) => key === "env");
 }
-function claudeMemPlan(paths) {
+function claudeMemPlan(paths, gatewayAfter) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
   if (install === null || !existsSync42(install.installPath))
     return { notInstalled: true };
@@ -27824,10 +27756,13 @@ function claudeMemPlan(paths) {
   }
   const notes = [];
   const startBlocks = planStartBlocks(read, notes);
-  const provider = planProvider(paths, install, read, notes);
+  const { provider, remove: backToClaude } = planProvider(paths, install, read, notes, gatewayAfter);
   return {
     plan: {
-      remove: RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+      remove: [
+        ...RETIRED_KEYS.filter((key) => !isPersonsChoice(read, key)).map(read.at),
+        ...backToClaude
+      ],
       startBlocks,
       provider,
       notes,
