@@ -137,6 +137,30 @@ describe("the note at a session start", () => {
     );
   });
 
+  it("a slot or an override that answers with another Claude family names that model", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] });
+    const slot = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
+    expect(said(slot)).toBe(
+      note(
+        "- haiku → Claude Sonnet: the effort the task needs, medium to max.",
+        SONNET_CLAUDE,
+        OPUS_CLAUDE,
+        FABLE_CLAUDE,
+      ),
+    );
+    const plain = hookEnv();
+    const override = { ...plain, ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-sonnet-5-5" };
+    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), override))).toBe(
+      note(
+        "- haiku → Claude Sonnet: the effort the task needs, medium to max.",
+        SONNET_CLAUDE,
+        OPUS_CLAUDE,
+        FABLE_CLAUDE,
+      ),
+    );
+  });
+
   it("the opus tier keeps its rule when a backend answers it", async () => {
     const env = hookEnv();
     writeGateway(env, { "cc-smart-dev-kit-opus": ["omniroute:glm-o"] });

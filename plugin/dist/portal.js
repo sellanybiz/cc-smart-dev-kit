@@ -35294,8 +35294,8 @@ function capitalised(family) {
 function modelName(real) {
   if (!real.claude)
     return `${real.model} (a backend)`;
-  const family = CLAUDE_FAMILIES.find((one) => one === real.family);
-  return family === undefined ? real.model : `Claude ${capitalised(family)}`;
+  const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+  return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 function effortRule(real, gatewayOn) {
   if (real.tier === "fable")

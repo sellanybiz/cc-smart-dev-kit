@@ -19,7 +19,7 @@
  * that tier (`sonnet` whose worker chain starts with a Claude Opus id is the `opus` tier).
  */
 
-import { CLAUDE_FAMILIES, type ClaudeFamily } from "../gateway/targets";
+import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
 import type { Env } from "../hooks/run";
 import {
   AFFORDABLE_EFFORT,
@@ -46,8 +46,14 @@ function capitalised(family: ClaudeFamily): string {
 /** How the note names the model behind a tier: `Claude Sonnet`, or the backend target. */
 function modelName(real: LaunchModel): string {
   if (!real.claude) return `${real.model} (a backend)`;
-  const family = CLAUDE_FAMILIES.find((one) => one === real.family);
-  return family === undefined ? real.model : `Claude ${capitalised(family)}`;
+  // The model that answers, never the tier's name: `real.family` keeps the NAME's family, so a
+  // scout slot on a Claude Sonnet id would read as Haiku. With no slot and no override the model
+  // is the family name itself (`haiku`).
+  const family =
+    claudeFamily(real.model) ??
+    CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ??
+    null;
+  return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 
 /** The effort rule for the model behind a tier. */

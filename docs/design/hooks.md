@@ -265,8 +265,9 @@ session's model — on an Opus session, every plain `Explore` is an Opus spawn �
 Fable agent spends the person's own plan usage, and a subagent at `low` does work nobody chose
 to cheapen. So the guard holds the effort rule first — `medium`, `high`, `xhigh` or `max` only,
 `ALLOWED_EFFORTS` in the code, `low` refused on every model (D5, D13: `medium` for searches and
-reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the
-person asks) — and then reads the launch's
+reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on a Claude
+`haiku` or `sonnet` when the task wants it; the `opus` tier asks at `max`, an affordable backend
+runs at `max`) — and then reads the launch's
 `model`, `effort`, `subagent_type` and prompt, and resolves the model the launch will really
 run on:
 

@@ -73,8 +73,8 @@ every launch. Which agent fits which job, how to brief it, and model and effort 
 - **Effort:** `medium` for searches and reads, `high` for building and reviews, `xhigh` for the
   hardest judgment. The session-start note says what each tier runs now: Claude `haiku` or `sonnet`
   takes the effort its task needs, `max` too; `opus` at `max` asks the person; a backend, `max`.
-- **Say it when you launch:** the reply that starts an agent names its slot, the model behind it
-  and its effort — "a reviewer (`sonnet` → Claude Sonnet, effort high)" — for whose usage it spends.
+- **Say it when you launch:** the reply that starts an agent names its slot, model and effort —
+  "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees whose usage it spends.
 - **Your own model:** never remark on it or on a `/model` switch unasked; asked, answer plainly.
 - **The gateway's slots and switches are the person's.** Never set one, and never change the
   path your own model traffic takes (`gateway on`/`off`, a restart) from your shell: give the
