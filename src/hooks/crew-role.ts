@@ -78,6 +78,7 @@ import {
   appendCrewEvent,
   type CrewRecord,
   crewBriefFile,
+  isQuestionOpen,
   readCrew,
   readCrewEvents,
   readStopState,
@@ -219,7 +220,7 @@ export function isPersonPrompt(
   // no answer, a prompt in a stopped record is that resume. A stopped record with no open
   // question takes no answer at all (`crew answer` refuses it), so a prompt there is a person
   // who attached to the kept conversation and typed.
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt)) return false;

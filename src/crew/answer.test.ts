@@ -13,6 +13,7 @@ import { resumeArgs, runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
+  answerCrewQuestion,
   createCrew,
   crewMcpFile,
   crewReportFile,
@@ -697,5 +698,56 @@ describe("a finished crew session's question is never open", () => {
     expect(world.err).toEqual([
       `crew answer: ${NAME} is finished (handoff), so its question needs no answer`,
     ]);
+  });
+});
+
+describe("RG1: crew answer after a supersede", () => {
+  test("the answer goes to the newest question, and the superseded one stays unanswered", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    const code = await runCrew(["answer", NAME, "3211"], world.ctx());
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out[0]).toBe(`answered ${NAME}: which port, exactly?`);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(record?.questions[1]).toMatchObject({ answer: "3211" });
+  });
+
+  test("a second answer finds no question waiting: the superseded one is not open", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    expect(await runCrew(["answer", NAME, "3211"], world.ctx())).toBe(0);
+    world.err.length = 0;
+    expect(await runCrew(["answer", NAME, "3211 again"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([`crew answer: ${NAME} has no question waiting for an answer`]);
+  });
+
+  test("a finished session with only a superseded question left says it has none waiting", async () => {
+    const world = await askedWorld("working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
+      T0 + 1000,
+    );
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "3211", T0 + 2000);
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "merged" }, T0 + 3000);
+    expect(await runCrew(["answer", NAME, "late"], world.ctx())).toBe(1);
+    // The old question was superseded, never left open: the line is the plain "none waiting" one.
+    expect(world.err).toEqual([`crew answer: ${NAME} has no question waiting for an answer`]);
   });
 });

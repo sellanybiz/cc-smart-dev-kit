@@ -28,6 +28,7 @@ import {
   crewStoreDir,
   type HandBackReport,
   isKnownState,
+  isQuestionOpen,
   leadFile,
   listAllCrew,
   listAllLeads,
@@ -1138,5 +1139,74 @@ describe("the hand-back report", () => {
     const newer = { ...report(), cost: { tokens: 1 }, status: "split", version: 2 };
     writeFileSync(file, JSON.stringify(newer));
     expect(readReport(file)).toEqual(newer);
+  });
+});
+
+describe("RG1: a new question supersedes the crew session's older open one", () => {
+  const first = { options: ["a", "b"], question: "Which port?", recommended: null };
+  const second = { options: ["c", "d"], question: "Which port, 3210 or 3211?", recommended: 1 };
+
+  test("two questions in a row: the first is closed as superseded, with a pointer, and one is open", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    const after = await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    // Never deleted: both are on the record, the older one points at the newer.
+    expect(after.questions.map((one) => one.question)).toEqual([
+      "Which port?",
+      "Which port, 3210 or 3211?",
+    ]);
+    expect(after.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(after.questions[1]?.supersededBy ?? null).toBeNull();
+    expect(openQuestionIndex(after)).toBe(1);
+    expect(after.questions.map(isQuestionOpen)).toEqual([false, true]);
+  });
+
+  test("three in a row: only the newest is open, and each older one points at the one that replaced it", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", second, T0 + 1000);
+    const after = await addCrewQuestion(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { ...second, question: "Third?" },
+      T0 + 2000,
+    );
+    expect(after.questions.map((one) => one.supersededBy ?? null)).toEqual([1, 2, null]);
+    expect(openQuestionIndex(after)).toBe(2);
+    // An answer to the oldest is refused with the line that names the newest, not the middle one.
+    await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1)).rejects.toThrow(
+      'was superseded by question 2 ("Third?"): answer that one',
+    );
+  });
+
+  test("an answer to a superseded question is refused with the line that names the newest", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    await expect(
+      answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "3210", T1),
+    ).rejects.toThrow(
+      'question 0 of crew session "crew-K-contracts" was superseded by question 1 ("Which port, 3210 or 3211?"): answer that one',
+    );
+    expect(readCrew(state, REPO, "crew-K-contracts")?.questions[0]?.answer).toBeNull();
+    // The newest takes the answer.
+    const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 1, "3210", T1);
+    expect(answered.questions[1]).toMatchObject({ answer: "3210" });
+    expect(openQuestionIndex(answered)).toBeNull();
+  });
+
+  test("a question after an answered one is a new question: the answered one is not superseded", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
+    await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T0 + 1000);
+    const after = await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    expect(after.questions[0]?.supersededBy ?? null).toBeNull();
+    expect(after.questions[0]?.answer).toBe("a");
+    expect(openQuestionIndex(after)).toBe(1);
   });
 });

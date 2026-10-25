@@ -14637,7 +14637,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -14675,11 +14676,15 @@ var QUESTION_CLOSED_STATES = [
 function questionClosed(state) {
   return QUESTION_CLOSED_STATES.includes(state);
 }
+function isQuestionOpen(asked) {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
+}
 function openQuestionIndex(record2) {
   if (questionClosed(record2.state))
     return null;
   for (let index = record2.questions.length - 1;index >= 0; index -= 1) {
-    if (record2.questions[index]?.answer === null)
+    const asked = record2.questions[index];
+    if (asked !== undefined && isQuestionOpen(asked))
       return index;
   }
   return null;
@@ -14810,11 +14815,16 @@ var reportFields = object({
     sha,
     findings: array(looseObject({ finding: text, fix: text }))
   }).nullable(),
+  ownReview: looseObject({
+    reason: text,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable().optional(),
   docs: array(text),
   needsLead: array(text),
   open: array(text),
   question: text.nullable(),
-  summary: text.nullable().optional()
+  summary: text.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
   if (report.status === "blocked" && report.question === null) {
@@ -14957,7 +14967,10 @@ async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text 
 async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }]
+      questions: [
+        ...before.questions.map((one) => isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one),
+        { ...asked, answer: null, answeredAt: null, askedAt: at }
+      ]
     },
     event: (after) => eventOf(after, at, "question", asked.question)
   }));
@@ -14970,6 +14983,13 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       throw new CrewStoreError(`crew "${id}" has no question ${index}`);
     if (asked.answer !== null) {
       throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
+    }
+    if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
+      let newest = asked.supersededBy;
+      for (let next = before.questions[newest]?.supersededBy;next !== undefined && next !== null; next = before.questions[newest]?.supersededBy) {
+        newest = next;
+      }
+      throw new CrewStoreError(`question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`);
     }
     const questions = before.questions.map((one, which) => which === index ? { ...one, answer, answeredAt: at } : one);
     const waiting = before.state === "blocked" || before.state === "stopped";
@@ -28245,7 +28265,7 @@ async function runCrewAnswer(args, ctx) {
   }
   const index = openQuestionIndex(record);
   if (index === null) {
-    if (questionClosed(record.state) && record.questions.some((one) => one.answer === null)) {
+    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
       ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`);
       return 1;
     }
@@ -28971,6 +28991,10 @@ var modelReviewFields = looseObject({
   effort: string2().min(1),
   findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) }))
 });
+var ownReviewFields = looseObject({
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) })),
+  reason: string2().min(1)
+});
 var modelReportSchema = looseObject({
   tests: looseObject({
     targeted: array(testRunFields).default([]),
@@ -28978,20 +29002,22 @@ var modelReportSchema = looseObject({
   }).default({ targeted: [], full: null }),
   checks: array(checkFields).default([]),
   review: modelReviewFields.nullable().default(null),
+  ownReview: ownReviewFields.nullable().default(null),
   docs: array(string2().min(1)).default([]),
   needsLead: array(string2().min(1)).default([]),
   open: array(string2().min(1)).default([]),
-  question: string2().nullable().default(null)
+  question: string2().nullable().default(null),
+  summary: string2().nullable().default(null).transform((value) => value === null || value.trim() === "" ? null : value.trim())
 });
 function modelPartOf(raw) {
   if (raw.trim() === "") {
-    return { part: modelReportSchema.parse({}), summary: null };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { part: modelReportSchema.parse({}), summary: raw.trim() };
+    return { extra: {}, part: modelReportSchema.parse({}), summary: raw.trim() };
   }
   const model = modelReportSchema.safeParse(parsed);
   if (!model.success) {
@@ -28999,7 +29025,11 @@ function modelPartOf(raw) {
       error: `the report does not read as the report shape: ${model.error.issues.map((issue) => `${issue.path.join(".") || "the report"}: ${issue.message}`).join("; ")}`
     };
   }
-  return { part: model.data, summary: null };
+  return { extra: unknownFieldsOf(model.data), part: model.data, summary: null };
+}
+function unknownFieldsOf(part) {
+  const known = new Set(Object.keys(modelReportSchema.shape));
+  return Object.fromEntries(Object.entries(part).filter(([name]) => !known.has(name)));
 }
 
 class ReportRefusal extends Error {
@@ -29065,15 +29095,51 @@ function doneReportGate(record, ctx) {
 function taskLine(task) {
   return task.subject === "" ? `#${task.id} (${task.status})` : `#${task.id} "${task.subject}" (${task.status})`;
 }
+function runLine(run) {
+  return `\`${run.command}\`: ${run.failed > 0 ? `${run.failed} failed` : "not ok"}`;
+}
+function doneReportRefusal(model, extra = {}) {
+  const red = [];
+  const full = model.tests.full;
+  if (full !== null && (!full.ok || full.failed > 0)) {
+    red.push(`the whole suite failed (${runLine(full)})`);
+  }
+  for (const run of model.tests.targeted) {
+    if (!run.ok || run.failed > 0)
+      red.push(`a test run failed (${runLine(run)})`);
+  }
+  for (const check of model.checks) {
+    if (!check.ok) {
+      red.push(`the check \`${check.name}\` failed${check.note === null ? "" : ` (${check.note})`}`);
+    }
+  }
+  const lines = [];
+  if (red.length > 0) {
+    lines.push(`crew report: a done report cannot carry red work: ${red.join("; ")}`);
+  }
+  if (full === null) {
+    lines.push("crew report: a done report needs the whole suite: none is recorded (`tests.full`)");
+  }
+  if (model.review === null && model.ownReview === null) {
+    lines.push("crew report: a done report needs a review: none is recorded (a reviewer's `review`, or an `ownReview` where the brief asked for no second opinion)");
+  }
+  if (lines.length === 0)
+    return null;
+  if (Object.keys(extra).length > 0) {
+    lines.push(`crew report: the part holds fields the report shape does not know (kept under \`extra\`): ${Object.keys(extra).join(", ")}`);
+  }
+  lines.push(`Fix: fix it and run the whole suite and the checks again, then report \`done\` with the JSON part (\`crew report --status done --file -\`: tests, checks, review); report \`failed\` or \`blocked\` instead when the phase cannot be finished`);
+  return new ReportRefusal(lines, 1);
+}
 function openQuestion(record) {
   for (let index = record.questions.length - 1;index >= 0; index -= 1) {
     const asked = record.questions[index];
-    if (asked?.answer === null)
+    if (asked !== undefined && isQuestionOpen(asked))
       return asked.question;
   }
   return null;
 }
-function buildReport(model, facts, status, record, summary = null) {
+function buildReport(model, facts, status, record, summary = null, extra = {}) {
   if (model.review !== null && facts.reviewSha === null) {
     throw refusal2("the review record holds no review of this branch, so the report cannot claim one", "record the review (workflow review-done), or report no review");
   }
@@ -29087,14 +29153,16 @@ function buildReport(model, facts, status, record, summary = null) {
     needsLead: model.needsLead,
     open: model.open,
     outsideBrief: facts.outsideBrief,
+    ownReview: model.ownReview,
     phase: record.phase,
     pr: facts.pr,
     question: status === "blocked" ? model.question ?? openQuestion(record) : null,
     review,
     status,
-    summary,
+    summary: summary ?? model.summary,
     tests: model.tests,
-    version: 1
+    version: 1,
+    ...Object.keys(extra).length === 0 ? {} : { extra }
   };
 }
 function say(ctx, refused) {
@@ -29159,10 +29227,15 @@ async function runCrewReport(args, ctx) {
   if ("error" in model) {
     return say(ctx, refusal2(model.error, "the report is JSON: the tests, the checks, the review, the docs, what the lead must do, and what is open"));
   }
+  if (args.status === "done") {
+    const held = doneReportRefusal(model.part, model.extra);
+    if (held !== null)
+      return say(ctx, held);
+  }
   let report;
   try {
     const facts = reportFacts(record, record.base, repo, ctx, resolved.reviewAgents.value);
-    report = buildReport(model.part, facts, args.status, record, model.summary);
+    report = buildReport(model.part, facts, args.status, record, model.summary, model.extra);
   } catch (error) {
     if (!(error instanceof ReportRefusal))
       throw error;
@@ -48626,7 +48699,7 @@ function isPersonPrompt(record, prompt2, briefFile, nowMs) {
     return false;
   if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt2))

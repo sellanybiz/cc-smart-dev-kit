@@ -13303,7 +13303,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -13341,11 +13342,15 @@ var QUESTION_CLOSED_STATES = [
 function questionClosed(state) {
   return QUESTION_CLOSED_STATES.includes(state);
 }
+function isQuestionOpen(asked) {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
+}
 function openQuestionIndex(record2) {
   if (questionClosed(record2.state))
     return null;
   for (let index = record2.questions.length - 1;index >= 0; index -= 1) {
-    if (record2.questions[index]?.answer === null)
+    const asked = record2.questions[index];
+    if (asked !== undefined && isQuestionOpen(asked))
       return index;
   }
   return null;
@@ -13476,11 +13481,16 @@ var reportFields = object({
     sha,
     findings: array(looseObject({ finding: text, fix: text }))
   }).nullable(),
+  ownReview: looseObject({
+    reason: text,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable().optional(),
   docs: array(text),
   needsLead: array(text),
   open: array(text),
   question: text.nullable(),
-  summary: text.nullable().optional()
+  summary: text.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
   if (report.status === "blocked" && report.question === null) {
@@ -32353,7 +32363,7 @@ function isPersonPrompt(record, prompt2, briefFile, nowMs) {
     return false;
   if (isLaunchPrompt(record, prompt2, briefFile))
     return false;
-  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
     return false;
   }
   if (isWaitOverResume(record, prompt2))

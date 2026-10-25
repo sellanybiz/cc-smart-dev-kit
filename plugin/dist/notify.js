@@ -7782,7 +7782,8 @@ var crewQuestionFields = looseObject({
   recommended: number2().int().min(1).nullable(),
   askedAt: text,
   answeredAt: text.nullable(),
-  answer: text.nullable()
+  answer: text.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional()
 });
 var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
   if (asked.recommended !== null && asked.recommended > asked.options.length) {
@@ -7926,11 +7927,16 @@ var reportFields = object({
     sha,
     findings: array(looseObject({ finding: text, fix: text }))
   }).nullable(),
+  ownReview: looseObject({
+    reason: text,
+    findings: array(looseObject({ finding: text, fix: text }))
+  }).nullable().optional(),
   docs: array(text),
   needsLead: array(text),
   open: array(text),
   question: text.nullable(),
-  summary: text.nullable().optional()
+  summary: text.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
 });
 var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
   if (report.status === "blocked" && report.question === null) {

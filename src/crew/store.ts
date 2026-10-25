@@ -248,6 +248,12 @@ const crewQuestionFields = z.looseObject({
   askedAt: text,
   answeredAt: text.nullable(),
   answer: text.nullable(),
+  /**
+   * The index (in `questions`) of the newer question that closed this one: the crew session asked
+   * again while this one had no answer. Absent on a question nothing replaced, and on a record
+   * written before the field. A superseded question is closed, never deleted (RG1).
+   */
+  supersededBy: z.number().int().min(0).nullable().optional(),
 });
 
 /** A question as recorded: its recommendation is one of its options, its answer has its time. */
@@ -312,6 +318,16 @@ export function questionClosed(state: string): boolean {
 }
 
 /**
+ * True when `asked` still waits for the lead: no answer, and no newer question of the crew
+ * session's own replaced it. The one home for "is it open" (`openQuestionIndex`, `crew answer`,
+ * the report's blocked question, the crew-role hook): a reader that tests `answer === null` alone
+ * would count a superseded question as open.
+ */
+export function isQuestionOpen(asked: CrewQuestion): boolean {
+  return asked.answer === null && (asked.supersededBy ?? null) === null;
+}
+
+/**
  * The index of the question the lead may still answer: the newest with no answer, while the crew
  * session's phase is not over. Null when every question has its answer, or the phase is over: a
  * question the crew session left behind at its end needs no answer, and every reader agrees
@@ -320,7 +336,8 @@ export function questionClosed(state: string): boolean {
 export function openQuestionIndex(record: CrewRecord): null | number {
   if (questionClosed(record.state)) return null;
   for (let index = record.questions.length - 1; index >= 0; index -= 1) {
-    if (record.questions[index]?.answer === null) return index;
+    const asked = record.questions[index];
+    if (asked !== undefined && isQuestionOpen(asked)) return index;
   }
   return null;
 }
@@ -617,6 +634,17 @@ const reportFields = z.object({
       findings: z.array(z.looseObject({ finding: text, fix: text })),
     })
     .nullable(),
+  /**
+   * The crew session's own review, where its brief asked for no second opinion: why none was
+   * needed, and each finding with its fix. Null when there is none (older reports have no field).
+   */
+  ownReview: z
+    .looseObject({
+      reason: text,
+      findings: z.array(z.looseObject({ finding: text, fix: text })),
+    })
+    .nullable()
+    .optional(),
   /** The docs it changed. */
   docs: z.array(text),
   /** What only the lead may do: text for the lead's own files, a decision. */
@@ -625,8 +653,13 @@ const reportFields = z.object({
   open: z.array(text),
   /** The question it is blocked on; null unless it is blocked. */
   question: text.nullable(),
-  /** The crew session's own words about the phase, when it wrote prose instead of the fields. */
+  /** The crew session's own words about the phase: its `summary` field, or its prose report. */
   summary: text.nullable().optional(),
+  /**
+   * Fields the crew session wrote that this shape does not know, kept as written (RG1): a
+   * `measurements` list is data for the lead, a misspelt `tests` is a clue. Absent when none.
+   */
+  extra: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** A blocked report must say what it waits on: the lead cannot answer a question it never saw. */
@@ -876,8 +909,10 @@ export async function updateCrewIfState(
 /**
  * Records a question crew session `id` asks its lead (D36), and its `question` event, under one hold:
  * the question goes at the end of its `questions`, with no answer yet, and the event's line is
- * the question. Throws when the crew session is not recorded, or the question breaks the schema (fewer
- * than two options, a recommendation that is not one of them): then nothing is written.
+ * the question. **A question of its own that is still open is superseded** (RG1): it points at the
+ * new one and is closed, so the lead and every reader see the newest open question alone. Throws
+ * when the crew session is not recorded, or the question breaks the schema (fewer than two
+ * options, a recommendation that is not one of them): then nothing is written.
  */
 export async function addCrewQuestion(
   stateDir: string,
@@ -888,7 +923,12 @@ export async function addCrewQuestion(
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }],
+      questions: [
+        ...before.questions.map((one) =>
+          isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one,
+        ),
+        { ...asked, answer: null, answeredAt: null, askedAt: at },
+      ],
     },
     event: (after) => eventOf(after, at, "question", asked.question),
   }));
@@ -897,7 +937,8 @@ export async function addCrewQuestion(
 
 /**
  * Records the lead's answer to question `index` (counted from 0, in `questions`) of crew session `id`.
- * Throws when there is no such question, or it has its answer already: an answer is given once.
+ * Throws when there is no such question, it has its answer already (an answer is given once), or
+ * a newer question superseded it (RG1): the line names the newest, which takes the answer.
  *
  * `resumes` is the state the answer brings the crew session back to, when it was waiting for it — a
  * `blocked` crew session the answer reaches, or a `stopped` one resumed with it, is `working` again —
@@ -923,6 +964,20 @@ export async function answerCrewQuestion(
     if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
     if (asked.answer !== null) {
       throw new CrewStoreError(`question ${index} of crew session "${id}" has its answer already`);
+    }
+    if (asked.supersededBy !== undefined && asked.supersededBy !== null) {
+      // Follow the pointers to the newest: a superseded question points at the one that replaced it.
+      let newest = asked.supersededBy;
+      for (
+        let next = before.questions[newest]?.supersededBy;
+        next !== undefined && next !== null;
+        next = before.questions[newest]?.supersededBy
+      ) {
+        newest = next;
+      }
+      throw new CrewStoreError(
+        `question ${index} of crew session "${id}" was superseded by question ${newest} ("${before.questions[newest]?.question ?? ""}"): answer that one`,
+      );
     }
     const questions = before.questions.map((one, which) =>
       which === index ? { ...one, answer, answeredAt: at } : one,
