@@ -40,9 +40,13 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { appendCrewEvent, type LeadRecord, listLeads } from "../crew/store";
 import {
+  anyFill,
   CHANGE_DIR,
   type Dialect,
   dialectOfTool,
+  type FillTest,
+  fillOfStep,
+  fillTest,
   invocationOf,
   isRunnerProgram,
   isShort,
@@ -56,6 +60,7 @@ import {
   shortFlags,
   withoutRedirections,
   wordsOf,
+  wordsWithFill,
 } from "../shell/command";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
@@ -280,7 +285,8 @@ function pullRequestCalls(
   const seen = new Set<string>();
   const calls: MergeCall[] = [];
   for (const reading of readingsOf(command, dialect)) {
-    for (const one of readMerges(command, reading.dialect, reading.joinLines, aliases, 0, null)) {
+    const merges = readMerges(command, reading.dialect, reading.joinLines, aliases, 0, null, false);
+    for (const one of merges) {
       const key = JSON.stringify(one);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -292,7 +298,9 @@ function pullRequestCalls(
 
 /**
  * The merges of one reading of a line. `movedBefore` is for the recursive read of a nested
- * command: a `cd` before the shell that runs it moves that one too.
+ * command: a `cd` before the shell that runs it moves that one too. `filledIn`: the line is the
+ * text of a command the shell filled in (`bash -c "…$K…"`), so every word of it counts as filled
+ * (`fillOfStep`).
  */
 function readMerges(
   command: string,
@@ -301,11 +309,15 @@ function readMerges(
   aliases: ReadonlyMap<string, string> | null,
   depth: number,
   movedBefore: string | null,
+  filledIn: boolean,
 ): MergeCall[] {
   const calls: MergeCall[] = [];
   let moved = movedBefore;
   for (const step of shellSteps(command, { dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const read = wordsWithFill(step.text, dialect);
+    const words = read.map((word) => word.text);
+    const fill = fillOfStep(step, read, dialect, filledIn);
+    const isFilled = fillTest(fill.filled);
     // Any mention of `GH_REPO` / `GH_HOST` in a step points the gh calls after it somewhere
     // else — in every spelling (`export GH_REPO=…`, `$env:GH_REPO='…'`, `set GH_REPO=…`),
     // including a step that is nothing but the assignment.
@@ -336,7 +348,7 @@ function readMerges(
     if (runner === null && runnerWord !== undefined) moved ??= runnerWord.moved;
     const prefix = prefixMoved(invocation.prefix);
     if (program === "gh" && runner === null) {
-      calls.push(...dispatch(args, moved ?? prefix, aliases, depth));
+      calls.push(...dispatch(args, moved ?? prefix, aliases, depth, null, isFilled));
       moved ??= ghSwitchReason(args, aliases, depth);
     } else if (runner !== null) {
       // The merge is run by a program the line does not show in full: `xargs` / `parallel`
@@ -346,7 +358,14 @@ function readMerges(
     }
     const nested = nestedCommand(program, invocation.args, step.pipedFrom);
     if (nested !== undefined && depth < MAX_NESTING) {
-      const merges = lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved);
+      const merges = lineMerges(
+        nested,
+        nestedDialect(program),
+        aliases,
+        depth + 1,
+        moved,
+        fill.passes,
+      );
       // The command a runner runs (`su -c '…'`, `find -exec …`, `parallel …`, `watch …`) is read
       // by the shell reader, but it is never judged as the line's own: the runner decides whose
       // gh, how often, and with which arguments, so it is the runner's refusal.
@@ -365,9 +384,10 @@ function lineMerges(
   aliases: ReadonlyMap<string, string> | null,
   depth: number,
   moved: string | null,
+  filledIn: boolean,
 ): MergeCall[] {
   return readingsOf(line, dialect).flatMap((reading) =>
-    readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved),
+    readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved, filledIn),
   );
 }
 
@@ -455,7 +475,8 @@ function runnerCalls(
     (word) => /\bgh\b/i.test(word) && /\b(merge|create|new|ready)\b/i.test(word),
   );
   if (held === undefined) return [];
-  return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null), runner);
+  // The runner hands the word to a shell of its own, which fills it in again.
+  return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null, true), runner);
 }
 
 /**
@@ -570,7 +591,9 @@ function onlyOpens(rest: string[]): boolean {
 /**
  * The merges one `gh` invocation asks for. `moved`: why the folder, branch or repository it
  * acts on is already uncertain, or null; `repo`: the `-R` gh itself carried before the
- * command, when one was.
+ * command, when one was. `isFilled`: does the shell fill in this word (`RunInvocation.filled`);
+ * a caller that has not read the words with the shell reader leaves the default, which counts
+ * any `$` or backtick as filled.
  */
 function dispatch(
   words: string[],
@@ -578,6 +601,7 @@ function dispatch(
   aliases: ReadonlyMap<string, string> | null,
   depth: number,
   repo: string | null = null,
+  isFilled: FillTest = anyFill,
 ): MergeCall[] {
   const leading = leadingFlags(words);
   const carried = repo ?? leading.repo;
@@ -600,34 +624,37 @@ function dispatch(
   if (word === undefined) return [];
   const command = word.toLowerCase();
   if (command === "pr") return prCalls(leading.rest.slice(1), moved, carried);
-  if (command === "api") return apiCalls(leading.rest.slice(1));
+  if (command === "api") return apiCalls(leading.rest.slice(1), isFilled);
   if (GH_COMMANDS.has(command)) return [];
   // A word after `gh` that names no gh command: one of the person's aliases, or an extension.
+  // gh finds its commands in any case, its aliases only as typed.
   const rest = leading.rest.slice(1);
-  if (aliases === null) return [call({ unknown: command })];
-  const expansion = aliases.get(command);
+  if (aliases === null) return [call({ unknown: word })];
+  const expansion = aliases.get(word);
   if (expansion === undefined) {
-    return leading.rest.some((word) => /merge/i.test(word))
+    return leading.rest.some((one) => /merge/i.test(one))
       ? [
           call({
-            refusal: `\`gh ${command}\` is no gh command or alias, and its words name a merge, which this guard does not judge`,
+            refusal: `\`gh ${word}\` is no gh command or alias, and its words name a merge, which this guard does not judge`,
           }),
         ]
       : [];
   }
   if (expansion.startsWith("!")) {
-    return [
-      call({ refusal: `\`gh ${command}\` is a shell alias, so what it runs cannot be read` }),
-    ];
+    return [call({ refusal: `\`gh ${word}\` is a shell alias, so what it runs cannot be read` })];
   }
   if (depth >= MAX_NESTING) {
     return [
       call({
-        refusal: `\`gh ${command}\` expands to further commands, which this guard does not follow`,
+        refusal: `\`gh ${word}\` expands to further commands, which this guard does not follow`,
       }),
     ];
   }
-  return dispatch([...wordsOf(expansion), ...rest], moved, aliases, depth + 1, carried);
+  // The expansion is the person's own config, read by no shell of this line: a `$` in it is
+  // gh's (`$1`) or a variable of its own, so its words fail closed by their text.
+  const own = wordsOf(expansion);
+  const filled: FillTest = (text) => (own.includes(text) && anyFill(text)) || isFilled(text);
+  return dispatch([...own, ...rest], moved, aliases, depth + 1, carried, filled);
 }
 
 /**
@@ -643,7 +670,8 @@ function ghSwitchReason(
   if (depth > MAX_NESTING) return null;
   const leading = leadingFlags(words);
   if (leading.unknown !== null) return null;
-  const command = leading.rest[0]?.toLowerCase();
+  const typed = leading.rest[0];
+  const command = typed?.toLowerCase();
   const args = leading.rest.slice(1);
   if (command === "co") {
     return "an earlier `gh co` in the same command changes the branch gh works on";
@@ -654,8 +682,9 @@ function ghSwitchReason(
   if (command === "repo" && args[0] === "set-default") {
     return "an earlier `gh repo set-default` in the same command changes the repository gh works on";
   }
-  if (command === undefined || GH_COMMANDS.has(command)) return null;
-  const expansion = aliases?.get(command);
+  if (typed === undefined || command === undefined || GH_COMMANDS.has(command)) return null;
+  // gh's aliases are found only as typed.
+  const expansion = aliases?.get(typed);
   if (expansion === undefined || expansion.startsWith("!")) return null;
   return ghSwitchReason([...wordsOf(expansion), ...args], aliases, depth + 1);
 }
@@ -922,6 +951,12 @@ export const API_PLAIN_FLAGS = new Set([
 /** The short letters of `gh api` that take a value. */
 export const API_VALUE_LETTERS = "FHXfpqt";
 
+/** A value of a `gh api` call, and whether the word it came from is one the shell fills in. */
+export interface ApiText {
+  value: string;
+  filled: boolean;
+}
+
 /** The refusal every `gh api` merge gets: the guard does not judge that form. */
 const API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not judge";
 
@@ -930,10 +965,11 @@ const API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not j
  * pull-request merge endpoint (any method spelling: the endpoint alone decides), or a
  * GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. A GraphQL
  * query that cannot be read at all (a file, the shell) is a refusal too. Anything else is no
- * merge, so `gh api graphql -f query='{ viewer { login } }'` stays silent.
+ * merge, so `gh api graphql -f query='{ viewer { login } }'` stays silent. `isFilled`: the
+ * shell fills in this word, so a value taken from it is not the text sent.
  */
-function apiCalls(rest: string[]): MergeCall[] {
-  const fields: string[] = [];
+function apiCalls(rest: string[], isFilled: FillTest): MergeCall[] {
+  const fields: ApiText[] = [];
   let endpoint: string | null = null;
   let body = false;
   let method: string | null = null;
@@ -955,9 +991,12 @@ function apiCalls(rest: string[]): MergeCall[] {
         ];
       }
       if (name === "--input") body = true;
-      if (name === "--method") method = at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1);
+      // The value is the next word, or what follows the `=` of this one.
+      const source = at === -1 ? (rest[index + 1] ?? "") : word;
+      const value = at === -1 ? source : word.slice(at + 1);
+      if (name === "--method") method = value;
       if (name === "--field" || name === "--raw-field") {
-        fields.push(at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1));
+        fields.push({ filled: isFilled(source), value });
       }
       if (at === -1 && API_VALUE_FLAGS.has(name)) index += 1;
       continue;
@@ -976,9 +1015,10 @@ function apiCalls(rest: string[]): MergeCall[] {
       }
       const letter = flags.slice(-1);
       if (letter === "" || !API_VALUE_LETTERS.includes(letter)) continue;
-      const value = wantsNext ? (rest[index + 1] ?? "") : attached;
+      const source = wantsNext ? (rest[index + 1] ?? "") : word;
+      const value = wantsNext ? source : attached;
       if (wantsNext) index += 1;
-      if (letter === "f" || letter === "F") fields.push(value);
+      if (letter === "f" || letter === "F") fields.push({ filled: isFilled(source), value });
       if (letter === "X") method = value;
       continue;
     }
@@ -1003,7 +1043,7 @@ function apiCalls(rest: string[]): MergeCall[] {
   if (merged !== null) return [call({ target: merged, refusal: API_MERGE_REFUSAL })];
   const created = pullRequestsPath(endpoint);
   if (created === null || !posts) return [];
-  const draft = fields.some((field) => /^draft=true$/i.test(field));
+  const draft = fields.some((field) => /^draft=true$/i.test(field.value));
   return [call({ draft, opens: "create", target: { ref: null, repo: created.repo } })];
 }
 
@@ -1017,7 +1057,7 @@ function isGraphqlEndpoint(endpoint: string): boolean {
 }
 
 /** The merges a `gh api graphql` call asks for: only a query the guard can read is judged. */
-function graphqlCalls(fields: string[], body: boolean): MergeCall[] {
+function graphqlCalls(fields: ApiText[], body: boolean): MergeCall[] {
   // The query is the `query` field (`-f query=…`, `-F query=…`); `--input` carries the body.
   if (body) {
     return [
@@ -1027,12 +1067,12 @@ function graphqlCalls(fields: string[], body: boolean): MergeCall[] {
       }),
     ];
   }
-  for (const field of fields) {
-    if (!field.startsWith("query=")) continue;
-    const query = field.slice("query=".length);
-    // A `$` is the shell's (`"$Q"`, `$(…)`, `${Q}`) or a GraphQL variable: either way the
-    // text that is sent is not the text read here, so the guard asks.
-    if (query.startsWith("@") || /[$`]/.test(query)) {
+  for (const { filled, value } of fields) {
+    if (!value.startsWith("query=")) continue;
+    const query = value.slice("query=".length);
+    // Text the shell fills in (`"$Q"`, `$(…)`, a backtick) is not the text read here, so the
+    // guard asks. A `$` in single quotes is GraphQL's own (`query($n: Int!)`): text.
+    if (query.startsWith("@") || filled) {
       return [
         call({
           refusal:

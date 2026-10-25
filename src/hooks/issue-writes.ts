@@ -41,6 +41,7 @@ import {
   API_PLAIN_FLAGS,
   API_VALUE_FLAGS,
   API_VALUE_LETTERS,
+  type ApiText,
   computedInvocationRisk,
   GH_COMMANDS,
 } from "./after-merge";
@@ -117,12 +118,6 @@ function graphqlWrite(fields: readonly ApiText[], body: boolean): string | null 
       : "a gh api graphql mutation";
   }
   return null;
-}
-
-/** A piece of a `gh api` line, and whether the word it came from is one the shell fills in. */
-interface ApiText {
-  value: string;
-  filled: boolean;
 }
 
 /**
