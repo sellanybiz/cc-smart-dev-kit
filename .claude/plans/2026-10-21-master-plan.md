@@ -714,6 +714,17 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
   Anthropic stream the same way** (replaces "backends only"). SC1 resumed with that, plus the
   `firstByteMs` cap at the timer maximum (the same fault its review found in `streamIdleMs`), and
   a second opus xhigh review since it now touches how Anthropic answers reach Claude Code.
+  **TV1 merged** into `release-1.2.1` (`905b032`; its `tier-view` hook beside UA1's `user-away`:
+  hooks.json, specs, matrix, the docs' machine-wide count now ten). **GI1 merged** into
+  `release-1.3.0` (`677d129`; worktree `rel-1.3.0` made), then **`release-1.2.1` at `15eb3e4`
+  into `release-1.3.0`** (`13ceea4`), so GI3 has PL1. **GI2 and GI3 started** (sonnet `high`),
+  **GI4 queued** on them. The watch judges "merged" against the lead folder's branch
+  (`release-1.2.0`), so GI4 may need a start by hand once GI2 and GI3 are in `release-1.3.0`.
+  **GI1 resumed** for one more fault: its `find -exec`, `watch`, `su -c`, `parallel` reading
+  lived in the issue guard only (`RUNNER_PROGRAMS`), so `watch git push` and `find … -exec gh pr
+  merge` still pass the git and merge guards; it moves into `src/shell/command.ts`, opus xhigh
+  review. Noted for a later fix: `claudeLimitHolds` compares exact Claude ids (TV1's review), so a
+  chain that starts with another Claude id of the same family reads as "does not hold".
 
 ### For the owner in the morning
 
