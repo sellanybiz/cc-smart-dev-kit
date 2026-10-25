@@ -8,6 +8,20 @@
 
 **Supersedes** `.claude/plans/archive/2026-10-17-audit-fixes.md` ("the audit plan": its phases, briefs and § Portal design are folded in here by name; its findings, `.claude/research/archive/2026-10-17-audit-fixes.findings.md`, stay the evidence for them). **Evidence:** `.claude/research/archive/2026-10-21-master-plan.md` ("the research file": R1–R9, with every claim the lead checked in the code; archived on approval, D32). Baseline: `release-0.6.0` `01a808a` (pushed as a backup, 2026-10-21), `origin/main` `1c3c0b2` (0.6.0), Claude Code 2.1.306 installed, 2.1.300 tested. Second read: `cc-smart-dev-kit:reviewer` (opus, xhigh), 5 high / 13 medium / 17 low findings, all applied below.
 
+## For the owner, when you are back (kept by the lead while you were away, 2026-10-25 night)
+
+**Actions that wait for your yes** (the workflow has `autoPush` off and `openPr` off):
+1. Push `release-1.2.0` and open its pull request into `main` (the release skill), once RV3, RV4, RV6, DF1, HO1 and UI1 are merged and the full check is green; then your yes to merge it. Its body says: every machine runs `cc-smart-dev-kit gateway setup` (`router.js` changed), the version skew (an older router refuses an alias at a Claude-mode slot), and D66's one-time move to Claude by default at the next `setup`.
+2. Your own workflow file still sets `crew.handoffPercent` 40: remove it once HO1 is merged, so the new default (70 % or 400k tokens) applies (40 % of a 200k window is 80k).
+3. After 1.2.1's merge: your look at the real `/resume` picker by AR1's steps (its report), and the lead's live `--bg --resume` copy proof (WF1's owed row).
+
+**Decisions the lead took while you were away** (each easy to change; say so and it is undone):
+1. `release-1.2.1` is cut from `release-1.2.0`'s head, not from `main`, so its phases run tonight; it takes in `release-1.2.0` again after each merge there. Merged into it: CL2B (with 1.1.3 and CL2), EF2, WF1, AR1 (conflicts resolved: `src/portal/actions.ts` and its test, `writeRecord` renamed `writeJsonFile` in 1.2.0, the CHANGELOG, the contract row, the crew page).
+2. RV3: `launch --no-gateway` warns, one line per login key or retired slot model name that still reaches the session, and starts it (not a refusal).
+3. RV6: after `restore`, claude-mem's key always belongs to the address in its file: the person's own key comes back with their address, or the kit's key is removed (it was sent to the wrong host before).
+4. RV6 and UI1 were started by hand: the installed watch never marked GF1's or RV5's merge (noted for 1.2.1).
+5. UA1 (`user-unavailable` / `user-available`) is briefed for 1.2.1 by your ask.
+
 ## Decisions
 
 D1–D16 are the audit plan's and keep their meaning, with three changes: **D4** (one release) is replaced by D18; **D5** is replaced by D13; **D11** shipped in 0.5.5 and is merged, not rebuilt (C3b is reference only).
@@ -413,6 +427,7 @@ every crew phase" stopgap ends; AR1 keeps running on Opus. The owner picked all 
 | RS1 the shipped workflows never drop a finding (the owner's pick) | build | `review-split` and `audit-run` rank by severity before the budget cut and return the rest as unchecked; a string or a bad argument object is refused at the start; the `review` and `audit` skills show the object. Brief `briefs/RS1-review-split-ranks.md`. |
 | SW1 a research sweep workflow (D28's third; the owner's pick) | build | `research-sweep`: one read-only researcher per angle, one refuter per claim with its quote, the unchecked past the budget, the open questions; it joins the guard's `READ_ONLY_WORKFLOWS`; the `research-first` skill says when. Ultracode stays off by default (the 2026-10-17 audit: "not adopt: ultracode default"). Brief `briefs/SW1-research-sweep.md`. |
 | PL1 a plan's own folder: its briefs and a record of each crew run (the owner's ask) | schema | Kit-wide `<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md`; `crew start` takes the brief from there when `--brief` is left out; a record per crew run in `<plan folder>/runs/` (its session ids, the lead's session id and name on each event, model and effort, queued, started, paused, reported, merged, removed, the wall and working time), never deleted: it stays after `crew rm` and moves with the plan to `archive/`; `crew history`. Brief `briefs/PL1-plan-folder-runs.md`. |
+| UA1 `user-unavailable` and `user-available` (the owner's ask, going to sleep) | permissions | One state for the machine and one list for the person (questions, actions, decisions parked while away); the `user-unavailable` skill (never stop to ask; take the reversible, recommended choice and park it as a decision; park the person's questions and every action that needs a yes, with its command); hooks that deny `AskUserQuestion` and turn a guard's ask into a deny that parks the command, never looser; the `user-available` skill goes through the list. Reviewer on `opus` `xhigh`. Brief `briefs/UA1-user-unavailable.md`. |
 
 Close: a split review again (CL1, CL1F, CL2, CL2B and EF2 were built by DeepSeek and Codex), its
 findings to crew phases on their kind's model, each reviewed on `opus` `xhigh`, the full check,
